@@ -137,6 +137,27 @@ class TestMultiUserIsolation(unittest.TestCase):
         self.assertNotIn("admin memory", result.result)
         self.assertNotIn("memory/users/user_b/MEMORY.md", result.result)
 
+    def test_memory_search_with_shared_scope_excludes_other_private_users(self):
+        results = [
+            SearchResult("MEMORY.md", 1, 2, 0.9, "root", "memory", None),
+            SearchResult("memory/users/admin/MEMORY.md", 1, 2, 0.8, "own", "memory", "admin"),
+            SearchResult("memory/users/user_b/MEMORY.md", 1, 2, 0.7, "other", "memory", "user_b"),
+            SearchResult("knowledge/index.md", 1, 2, 0.6, "knowledge", "knowledge", None),
+        ]
+        tool = MemorySearchTool(
+            FakeMemoryManager(results=results),
+            user_id="admin",
+            include_shared_memory=True,
+        )
+
+        result = tool.execute({"query": "anything"})
+
+        self.assertEqual(result.status, "success")
+        self.assertIn("MEMORY.md", result.result)
+        self.assertIn("memory/users/admin/MEMORY.md", result.result)
+        self.assertIn("knowledge/index.md", result.result)
+        self.assertNotIn("memory/users/user_b/MEMORY.md", result.result)
+
     def test_memory_get_allows_only_own_memory_and_knowledge(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -165,6 +186,33 @@ class TestMultiUserIsolation(unittest.TestCase):
             self.assertIn("own memory", own_result.result)
             self.assertEqual(knowledge_result.status, "success")
             self.assertIn("shared knowledge", knowledge_result.result)
+            self.assertEqual(other_result.status, "error")
+
+    def test_memory_get_with_shared_scope_blocks_other_private_users(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            own = root / "memory" / "users" / "admin"
+            other = root / "memory" / "users" / "user_b"
+            own.mkdir(parents=True)
+            other.mkdir(parents=True)
+            (root / "MEMORY.md").write_text("root memory", encoding="utf-8")
+            (own / "MEMORY.md").write_text("own memory", encoding="utf-8")
+            (other / "MEMORY.md").write_text("other memory", encoding="utf-8")
+
+            tool = MemoryGetTool(
+                FakeMemoryManager(workspace=root),
+                user_id="admin",
+                allow_shared_memory=True,
+            )
+
+            root_result = tool.execute({"path": "MEMORY.md"})
+            own_result = tool.execute({"path": "memory/users/admin/MEMORY.md"})
+            other_result = tool.execute({"path": "memory/users/user_b/MEMORY.md"})
+
+            self.assertEqual(root_result.status, "success")
+            self.assertIn("root memory", root_result.result)
+            self.assertEqual(own_result.status, "success")
+            self.assertIn("own memory", own_result.result)
             self.assertEqual(other_result.status, "error")
 
     def test_guarded_tool_denies_project_path_for_normal_user(self):

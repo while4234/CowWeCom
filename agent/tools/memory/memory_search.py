@@ -123,7 +123,16 @@ class MemorySearchTool(BaseTool):
 
     def _filter_visible_results(self, results):
         if self.include_shared_memory:
-            return results
+            if not self.user_id:
+                return results
+            visible = []
+            for result in results:
+                if result.user_id in (None, self.user_id):
+                    visible.append(result)
+                    continue
+                if result.source == "knowledge" or str(result.path).replace("\\", "/").startswith("knowledge/"):
+                    visible.append(result)
+            return visible
 
         visible = []
         for result in results:

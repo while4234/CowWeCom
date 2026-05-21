@@ -140,6 +140,10 @@ class MemoryGetTool(BaseTool):
         normalized = str(path).replace("\\", "/").lstrip("/")
 
         if self.allow_shared_memory:
+            if self.user_id and normalized.startswith("memory/users/"):
+                private_owner = normalized[len("memory/users/"):].split("/", 1)[0]
+                if private_owner != self.user_id:
+                    return None
             if (
                 not normalized.startswith("memory/")
                 and not normalized.startswith("knowledge/")
