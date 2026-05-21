@@ -94,6 +94,7 @@ class ToolAccessPolicy:
     FILE_READ_TOOLS = {"read", "ls", "grep", "find", "send", "vision"}
     FILE_WRITE_TOOLS = {"write", "edit"}
     BLOCKED_WITHOUT_OPT_IN = {"bash", "terminal", "env_config"}
+    ADMIN_ONLY_TOOLS = {"git_code_update"}
     PATH_KEYS = ("path", "location", "file_path", "image", "input_path", "output_path")
 
     def __init__(self, profile: AgentUserProfile):
@@ -105,6 +106,9 @@ class ToolAccessPolicy:
 
         if name == "browser":
             return self._authorize_browser()
+
+        if not self.profile.is_admin and name in self.ADMIN_ONLY_TOOLS:
+            return False, self._deny(f"普通用户不能使用 {name} 工具。")
 
         if not self.profile.is_admin and name in self.BLOCKED_WITHOUT_OPT_IN:
             if name == "bash" and self.profile.can_use_bash:
