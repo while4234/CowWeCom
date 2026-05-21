@@ -287,23 +287,35 @@ class Config(dict):
 config = Config()
 
 
+def _is_sensitive_config_key(key):
+    key = str(key).lower()
+    sensitive_markers = ("key", "secret", "password", "token", "cookie")
+    return any(marker in key for marker in sensitive_markers)
+
+
+def _mask_sensitive_value(key, value):
+    if not _is_sensitive_config_key(key) or not isinstance(value, str):
+        return value
+    if not value:
+        return value
+    if len(value) <= 6:
+        return "*" * len(value)
+    return value[0:3] + "*" * 5 + value[-3:]
+
+
 def drag_sensitive(config):
     try:
         if isinstance(config, str):
             conf_dict: dict = json.loads(config)
             conf_dict_copy = copy.deepcopy(conf_dict)
             for key in conf_dict_copy:
-                if "key" in key or "secret" in key:
-                    if isinstance(conf_dict_copy[key], str):
-                        conf_dict_copy[key] = conf_dict_copy[key][0:3] + "*" * 5 + conf_dict_copy[key][-3:]
+                conf_dict_copy[key] = _mask_sensitive_value(key, conf_dict_copy[key])
             return json.dumps(conf_dict_copy, indent=4)
 
         elif isinstance(config, dict):
             config_copy = copy.deepcopy(config)
             for key in config:
-                if "key" in key or "secret" in key:
-                    if isinstance(config_copy[key], str):
-                        config_copy[key] = config_copy[key][0:3] + "*" * 5 + config_copy[key][-3:]
+                config_copy[key] = _mask_sensitive_value(key, config_copy[key])
             return config_copy
     except Exception as e:
         logger.exception(e)
@@ -341,7 +353,8 @@ def load_config():
         if name.startswith("_"):
             continue
         if name in available_setting:
-            logger.info("[INIT] override config by environ args: {}={}".format(name, value))
+            masked_value = _mask_sensitive_value(name, value)
+            logger.info("[INIT] override config by environ args: {}={}".format(name, masked_value))
             try:
                 config[name] = eval(value)
             except Exception:

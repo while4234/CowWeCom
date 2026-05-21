@@ -8,12 +8,27 @@ venv*
 *.pyc
 python
 config.json
+config.json.backup.*
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials*.json
+token*.json
+cookies*.json
+session*.json
+service-account*.json
+id_rsa
+id_ed25519
+.weixin_cow_credentials.json
 QR.png
 nohup.out
 tmp
 plugins.json
 *.log
 logs/
+secrets/
 workspace
 config.yaml
 user_datas.pkl
@@ -38,6 +53,7 @@ client_config.json
 ref/
 **/.dev.vars
 .cursor/
+.codex/
 local/
 node_modules/
 
