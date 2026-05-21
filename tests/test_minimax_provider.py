@@ -65,7 +65,7 @@ class TestMinimaxBotDefaultModel(unittest.TestCase):
         """Verify the fallback string literal in minimax_bot.py is MiniMax-M2.7."""
         import ast
         bot_path = os.path.join(os.path.dirname(__file__), "..", "models", "minimax", "minimax_bot.py")
-        with open(bot_path) as f:
+        with open(bot_path, encoding="utf-8") as f:
             source = f.read()
         # Verify MiniMax-M2.7 is in the source (not M2.1)
         self.assertIn("MiniMax-M2.7", source)

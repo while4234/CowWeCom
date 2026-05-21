@@ -168,6 +168,12 @@ class AgentLLMModel(LLMModel):
                 session_id = getattr(self, 'session_id', None)
                 if session_id:
                     kwargs['session_id'] = session_id
+                user_id = getattr(self, 'user_id', None)
+                if user_id:
+                    kwargs['user_id'] = user_id
+                user_label = getattr(self, 'user_label', None)
+                if user_label:
+                    kwargs['user_label'] = user_label
 
                 # Thinking mode is a global toggle independent of the channel.
                 # IM channels (WeChat/WeCom/DingTalk/Feishu) won't render the
@@ -230,6 +236,12 @@ class AgentLLMModel(LLMModel):
                 session_id = getattr(self, 'session_id', None)
                 if session_id:
                     kwargs['session_id'] = session_id
+                user_id = getattr(self, 'user_id', None)
+                if user_id:
+                    kwargs['user_id'] = user_id
+                user_label = getattr(self, 'user_label', None)
+                if user_label:
+                    kwargs['user_label'] = user_label
 
                 # Thinking mode is a global toggle independent of the channel.
                 # IM channels (WeChat/WeCom/DingTalk/Feishu) won't render the
@@ -445,6 +457,10 @@ class AgentBridge:
             if context and hasattr(agent, 'model'):
                 agent.model.channel_type = context.get("channel_type", "")
                 agent.model.session_id = conversation_id or session_id or ""
+                if profile is not None:
+                    agent.model.user_id = profile.actor_id
+                    agent.model.user_label = profile.display_name
+                    agent.model.memory_user_id = profile.memory_user_id
 
             # Store session_id on agent so executor can clear DB on fatal errors
             agent._current_session_id = conversation_id or session_id

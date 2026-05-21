@@ -299,6 +299,7 @@ class AgentStreamExecutor:
         # Log user message with model info
         
         thinking_enabled = self._is_thinking_enabled()
+        self._request_runtime_context = self._build_runtime_context_text()
         thinking_label = " | 💭 thinking" if thinking_enabled else ""
         logger.info(f"🤖 {self.model.model}{thinking_label} | 👤 {user_message}")        
         
@@ -1624,5 +1625,63 @@ class AgentStreamExecutor:
         Note: For Claude API, system prompt should be passed separately via system parameter,
         not as a message. The AgentLLMModel will handle this.
         """
-        # Don't add system message here - it will be handled separately by the LLM adapter
-        return self.messages
+        # Don't add system message here - it will be handled separately by the LLM adapter.
+        runtime_context = getattr(self, "_request_runtime_context", "")
+        if not runtime_context:
+            return self.messages
+
+        messages = self._copy_messages_for_request()
+        self._prepend_runtime_context(messages, runtime_context)
+        return messages
+
+    def _build_runtime_context_text(self) -> str:
+        try:
+            from config import conf
+            if not conf().get("runtime_time_in_user_message", True):
+                return ""
+            runtime_info = getattr(self.agent, "runtime_info", {}) or {}
+            getter = runtime_info.get("_get_current_time")
+            if not callable(getter):
+                return ""
+            time_info = getter()
+            return (
+                "[Runtime context for this request: current time is "
+                f"{time_info['time']} {time_info['weekday']} ({time_info['timezone']}).]"
+            )
+        except Exception as e:
+            logger.debug(f"[PromptCache] Failed to build runtime context: {e}")
+            return ""
+
+    def _copy_messages_for_request(self) -> List[Dict[str, Any]]:
+        copied = []
+        for message in self.messages:
+            item = dict(message)
+            content = message.get("content")
+            if isinstance(content, list):
+                item["content"] = [
+                    dict(block) if isinstance(block, dict) else block
+                    for block in content
+                ]
+            elif isinstance(content, dict):
+                item["content"] = dict(content)
+            copied.append(item)
+        return copied
+
+    @staticmethod
+    def _prepend_runtime_context(messages: List[Dict[str, Any]], runtime_context: str) -> None:
+        for message in reversed(messages):
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, list):
+                if any(isinstance(block, dict) and block.get("type") == "tool_result" for block in content):
+                    continue
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        block["text"] = runtime_context + "\n\n" + str(block.get("text", ""))
+                        return
+                content.insert(0, {"type": "text", "text": runtime_context})
+                return
+            if isinstance(content, str):
+                message["content"] = runtime_context + "\n\n" + content
+                return

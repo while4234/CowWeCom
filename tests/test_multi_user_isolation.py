@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from agent.access_control import GuardedTool, ToolAccessPolicy, get_resource_leases
 from agent.tools.base_tool import BaseTool, ToolResult
@@ -56,6 +57,7 @@ def make_profile(role="user", root=None, conversation_id="conv-a", memory_user_i
         return AgentUserProfile(
             actor_id="weixin:admin",
             raw_user_id="admin",
+            display_name="",
             channel_type="weixin",
             role="admin",
             conversation_id=conversation_id,
@@ -68,6 +70,7 @@ def make_profile(role="user", root=None, conversation_id="conv-a", memory_user_i
     return AgentUserProfile(
         actor_id=f"weixin:{memory_user_id}",
         raw_user_id=memory_user_id,
+        display_name="",
         channel_type="weixin",
         role="user",
         conversation_id=conversation_id,
@@ -97,6 +100,25 @@ class TestMultiUserIsolation(unittest.TestCase):
         self.assertEqual(profile.conversation_id, "weixin:wx-user-a")
         self.assertEqual(profile.role, "user")
         self.assertNotIn(":", profile.memory_user_id)
+
+    @patch("config.conf")
+    def test_profile_uses_configured_usage_label_for_display_name(self, mock_conf):
+        mock_conf.return_value.get.side_effect = lambda key, default=None: {
+            "agent_workspace": tempfile.mkdtemp(),
+            "agent_user_profiles": {},
+            "llm_usage_user_labels": {"weixin:wx-user-a": "wechat-display-name"},
+            "agent_admin_users": [],
+            "agent_default_role": "user",
+        }.get(key, default)
+        msg = SimpleNamespace(from_user_id="wx-user-a", actual_user_id=None)
+        context = Context(ContextType.TEXT, "hi", {
+            "channel_type": "weixin",
+            "msg": msg,
+        })
+
+        profile = resolve_agent_user_profile(context)
+
+        self.assertEqual(profile.display_name, "wechat-display-name")
 
     def test_profile_can_use_explicit_owner_with_separate_conversation(self):
         context = Context(ContextType.TEXT, "scheduled")

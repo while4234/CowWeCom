@@ -98,7 +98,7 @@ const I18N = {
         cache_refresh: '刷新', cache_empty: '暂无缓存统计',
         cache_hit_rate: '命中率', cache_cached_tokens: '缓存 Token',
         cache_input_tokens: '输入 Token', cache_requests: '请求',
-        cache_recent_calls: '最近调用', cache_by_model: '按模型', cache_details: '明细',
+        cache_recent_calls: '最近调用', cache_by_model: '按模型', cache_by_user: '按用户', cache_details: '明细',
         logs_live: '实时', logs_coming_msg: '日志流即将在此提供。将连接 run.log 实现类似 tail -f 的实时输出。',
         new_chat: '新对话',
         session_history: '历史会话',
@@ -204,7 +204,7 @@ const I18N = {
         cache_refresh: 'Refresh', cache_empty: 'No cache telemetry yet',
         cache_hit_rate: 'Hit Rate', cache_cached_tokens: 'Cached Tokens',
         cache_input_tokens: 'Input Tokens', cache_requests: 'Requests',
-        cache_recent_calls: 'Recent Calls', cache_by_model: 'By Model', cache_details: 'Details',
+        cache_recent_calls: 'Recent Calls', cache_by_model: 'By Model', cache_by_user: 'By User', cache_details: 'Details',
         logs_live: 'Live', logs_coming_msg: 'Log streaming will be available here. Connects to run.log for real-time output similar to tail -f.',
         new_chat: 'New Chat',
         session_history: 'History',
@@ -4213,6 +4213,7 @@ function loadCacheUsageView(force) {
             const summary = data.summary || {};
             const recent = data.recent || [];
             const models = data.models || [];
+            const users = data.users || [];
 
             if (!recent.length && !summary.requests) {
                 emptyEl.classList.remove('hidden');
@@ -4225,6 +4226,7 @@ function loadCacheUsageView(force) {
             renderCacheSummary(summary);
             renderCacheBars(recent.slice(0, 14));
             renderCacheModels(models);
+            renderCacheUsers(users);
             renderCacheTable(recent);
         })
         .catch(err => {
@@ -4299,6 +4301,38 @@ function renderCacheModels(models) {
                 <div class="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
                     ${formatTokenCount(model.cached_tokens)} cached · ${formatTokenCount(model.prompt_tokens)} input
                 </div>
+            </div>`;
+    }).join('');
+}
+
+function renderCacheUsers(users) {
+    const container = document.getElementById('cache-users-table');
+    if (!container) return;
+    if (!users.length) {
+        container.innerHTML = `<p class="text-sm text-slate-400">${escapeHtml(t('cache_empty'))}</p>`;
+        return;
+    }
+    container.innerHTML = users.slice(0, 10).map((user, index) => {
+        const rate = Number(user.cache_hit_rate || 0);
+        const width = Math.max(0, Math.min(100, rate * 100)).toFixed(1);
+        const channels = Array.isArray(user.channels) && user.channels.length ? user.channels.join(', ') : '--';
+        return `
+            <div class="rounded-lg border border-slate-100 dark:border-white/10 p-3">
+                <div class="flex items-center gap-3 text-xs mb-2">
+                    <span class="w-6 h-6 rounded-full bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-300 flex items-center justify-center font-semibold">${index + 1}</span>
+                    <span class="font-medium text-slate-700 dark:text-slate-200 truncate">${escapeHtml(user.user_label || user.user_key || 'unknown')}</span>
+                    <span class="ml-auto text-slate-500 dark:text-slate-400">${formatTokenCount(user.total_tokens)} total</span>
+                </div>
+                <div class="h-2 rounded-full bg-slate-100 dark:bg-white/10 overflow-hidden">
+                    <div class="h-full rounded-full bg-violet-500" style="width:${width}%"></div>
+                </div>
+                <div class="mt-2 grid grid-cols-2 gap-2 text-[11px] text-slate-400 dark:text-slate-500">
+                    <span>${formatTokenCount(user.prompt_tokens)} input</span>
+                    <span class="text-right">${formatPercent(rate)} cached</span>
+                    <span>${formatTokenCount(user.completion_tokens)} output</span>
+                    <span class="text-right">${formatTokenCount(user.requests)} req</span>
+                </div>
+                <div class="mt-2 text-[11px] text-slate-400 dark:text-slate-500 truncate">${escapeHtml(channels)} · ${formatTokenCount(user.session_count)} sessions</div>
             </div>`;
     }).join('');
 }

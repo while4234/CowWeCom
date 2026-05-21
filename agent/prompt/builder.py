@@ -360,11 +360,19 @@ def _build_knowledge_section(workspace_dir: str, language: str) -> List[str]:
         "",
     ]
 
-    if index_content:
+    include_index = bool(conf().get("knowledge_index_in_system_prompt", False))
+    if index_content and include_index:
         lines.extend([
             "### 当前知识索引",
             "",
             index_content,
+            "",
+        ])
+    elif index_content:
+        lines.extend([
+            "### Knowledge index",
+            "",
+            "`knowledge/index.md` exists. Read it only when the current task needs knowledge lookup.",
             "",
         ])
 
@@ -508,9 +516,19 @@ def _build_runtime_section(runtime_info: Dict[str, Any], language: str) -> List[
         "",
     ]
     
-    # Add current time if available
-    # Support dynamic time via callable function
-    if callable(runtime_info.get("_get_current_time")):
+    # Add current time if available.
+    # Exact seconds change every request and break prompt-cache prefix reuse.
+    stable_runtime = bool(conf().get("prompt_cache_stable_runtime_info", True))
+    if callable(runtime_info.get("_get_current_time")) and stable_runtime:
+        try:
+            time_info = runtime_info["_get_current_time"]()
+            date_str = str(time_info.get("time", "")).split(" ")[0]
+            time_line = f"Current date: {date_str} {time_info['weekday']} ({time_info['timezone']})"
+            lines.append(time_line)
+            lines.append("")
+        except Exception as e:
+            logger.warning(f"[PromptBuilder] Failed to get dynamic date: {e}")
+    elif callable(runtime_info.get("_get_current_time")):
         try:
             time_info = runtime_info["_get_current_time"]()
             time_line = f"当前时间: {time_info['time']} {time_info['weekday']} ({time_info['timezone']})"

@@ -2,8 +2,9 @@
 
 """LLM usage telemetry focused on prompt-cache visibility.
 
-Only token counters and hashed identifiers are persisted. Prompt text, tool
-arguments, API keys, and raw session IDs must never be written here.
+Only token counters, hashed identifiers, and optional user display labels are
+persisted. Prompt text, tool arguments, API keys, and raw session IDs must
+never be written here.
 """
 
 import hashlib
@@ -116,7 +117,10 @@ def get_cache_usage_report(limit: int = 50) -> Dict[str, Any]:
     cache_hits = sum(1 for r in records if _to_int(r.get("cached_tokens")) > 0)
     cacheable_requests = sum(1 for r in records if _to_int(r.get("prompt_tokens")) >= 1024)
 
+    user_aliases = _user_aliases(records)
+    user_labels = _known_user_labels(records)
     by_model: Dict[str, Dict[str, Any]] = {}
+    by_user: Dict[str, Dict[str, Any]] = {}
     for record in records:
         model = str(record.get("model") or "unknown")
         bucket = by_model.setdefault(model, {
@@ -131,15 +135,38 @@ def get_cache_usage_report(limit: int = 50) -> Dict[str, Any]:
         bucket["cached_tokens"] += _to_int(record.get("cached_tokens"))
         bucket["completion_tokens"] += _to_int(record.get("completion_tokens"))
 
-    models = []
-    for bucket in by_model.values():
-        bucket["cache_hit_rate"] = (
-            bucket["cached_tokens"] / bucket["prompt_tokens"]
-            if bucket["prompt_tokens"]
-            else 0.0
-        )
-        models.append(bucket)
+        user_key = _user_key(record, user_aliases)
+        user_label = _record_user_label(record, user_labels, user_key)
+        user_bucket = by_user.setdefault(user_key, {
+            "user_key": user_key,
+            "user_label": user_label,
+            "requests": 0,
+            "prompt_tokens": 0,
+            "cached_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "channels": set(),
+            "sessions": set(),
+            "last_seen": "",
+        })
+        user_bucket["requests"] += 1
+        user_bucket["prompt_tokens"] += _to_int(record.get("prompt_tokens"))
+        user_bucket["cached_tokens"] += _to_int(record.get("cached_tokens"))
+        user_bucket["completion_tokens"] += _to_int(record.get("completion_tokens"))
+        user_bucket["total_tokens"] += _to_int(record.get("total_tokens"))
+        if record.get("channel_type"):
+            user_bucket["channels"].add(str(record.get("channel_type")))
+        if record.get("session_hash"):
+            user_bucket["sessions"].add(str(record.get("session_hash")))
+        if record.get("timestamp"):
+            user_bucket["last_seen"] = str(record.get("timestamp"))
+        if user_label and not user_label.startswith("user-"):
+            user_bucket["user_label"] = user_label
+
+    models = _finalize_buckets(by_model.values())
     models.sort(key=lambda item: item["prompt_tokens"], reverse=True)
+    users = _finalize_user_buckets(by_user.values())
+    users.sort(key=lambda item: item["total_tokens"], reverse=True)
 
     return {
         "summary": {
@@ -154,6 +181,7 @@ def get_cache_usage_report(limit: int = 50) -> Dict[str, Any]:
             "cache_hit_rate": (cached_tokens / prompt_tokens) if prompt_tokens else 0.0,
         },
         "models": models,
+        "users": users,
         "recent": recent,
         "tracking_enabled": _tracking_enabled(),
     }
@@ -227,6 +255,9 @@ def _safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     user_id = metadata.get("user_id")
     if user_id:
         safe["user_hash"] = _hash_value(user_id)
+    user_label = metadata.get("user_label")
+    if user_label and not _looks_internal_user_label(user_label):
+        safe["user_label"] = _safe_text(user_label, max_len=160)
     cache_key = metadata.get("prompt_cache_key")
     if cache_key:
         safe["prompt_cache_key_hash"] = _hash_value(cache_key)
@@ -236,11 +267,156 @@ def _safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in safe.items() if v}
 
 
+def _finalize_buckets(buckets) -> List[Dict[str, Any]]:
+    result = []
+    for bucket in buckets:
+        item = dict(bucket)
+        item["total_tokens"] = (
+            _to_int(item.get("total_tokens"))
+            or _to_int(item.get("prompt_tokens")) + _to_int(item.get("completion_tokens"))
+        )
+        item["cache_hit_rate"] = (
+            item["cached_tokens"] / item["prompt_tokens"]
+            if item.get("prompt_tokens")
+            else 0.0
+        )
+        result.append(item)
+    return result
+
+
+def _finalize_user_buckets(buckets) -> List[Dict[str, Any]]:
+    result = []
+    for bucket in buckets:
+        item = dict(bucket)
+        channels = sorted(item.pop("channels", set()))
+        sessions = sorted(item.pop("sessions", set()))
+        item["channels"] = channels
+        item["session_count"] = len(sessions)
+        item["cache_hit_rate"] = (
+            item["cached_tokens"] / item["prompt_tokens"]
+            if item.get("prompt_tokens")
+            else 0.0
+        )
+        result.append(item)
+    return result
+
+
+def _user_aliases(records: List[Dict[str, Any]]) -> Dict[str, str]:
+    aliases: Dict[str, str] = {}
+    for record in records:
+        user_hash = _safe_text(record.get("user_hash"))
+        session_hash = _safe_text(record.get("session_hash"))
+        if user_hash and session_hash:
+            aliases[session_hash] = user_hash
+    return aliases
+
+
+def _known_user_labels(records: List[Dict[str, Any]]) -> Dict[str, str]:
+    labels = _configured_user_labels()
+    for record in records:
+        label = _safe_text(record.get("user_label"), max_len=160)
+        if not label or _looks_internal_user_label(label):
+            continue
+        for key_name in ("user_hash", "session_hash"):
+            key = _safe_text(record.get(key_name))
+            if key:
+                labels[key] = label
+    return labels
+
+
+def _configured_user_labels() -> Dict[str, str]:
+    try:
+        from config import conf, global_config
+    except Exception:
+        return {}
+
+    labels: Dict[str, str] = {}
+
+    def add_identity(value: Any, label: Any = None, allow_self_label: bool = True) -> None:
+        text = _safe_text(value, max_len=160)
+        if not text:
+            return
+        display = _safe_text(label, max_len=160)
+        if not display and allow_self_label and not _looks_internal_user_label(text):
+            display = text
+        if not display:
+            return
+        candidates = {text}
+        if ":" not in text:
+            candidates.add(f"weixin:{text}")
+        for candidate in candidates:
+            labels[candidate] = display
+            labels[_hash_value(candidate)] = display
+
+    configured_admin_users = conf().get("agent_admin_users", []) or []
+    if isinstance(configured_admin_users, str):
+        configured_admin_users = [item.strip() for item in configured_admin_users.split(",")]
+    for item in configured_admin_users:
+        add_identity(item)
+    for item in global_config.get("admin_users", []) or []:
+        add_identity(item)
+
+    profiles = conf().get("agent_user_profiles", {}) or {}
+    if isinstance(profiles, dict):
+        for key, profile in profiles.items():
+            label = None
+            if isinstance(profile, dict):
+                label = (
+                    profile.get("wechat_id")
+                    or profile.get("raw_user_id")
+                    or profile.get("display_name")
+                    or profile.get("name")
+                )
+            add_identity(key, label)
+
+    configured_user_labels = conf().get("llm_usage_user_labels", {}) or {}
+    if isinstance(configured_user_labels, dict):
+        for key, label in configured_user_labels.items():
+            add_identity(key, label, allow_self_label=False)
+    return labels
+
+
+def _user_key(record: Dict[str, Any], aliases: Optional[Dict[str, str]] = None) -> str:
+    key = str(
+        record.get("user_hash")
+        or record.get("session_hash")
+        or record.get("channel_type")
+        or "unknown"
+    )
+    return (aliases or {}).get(key, key)
+
+
+def _record_user_label(record: Dict[str, Any], labels: Dict[str, str], user_key: str) -> str:
+    for key_name in ("user_hash", "session_hash"):
+        key = _safe_text(record.get(key_name))
+        if key and labels.get(key):
+            return labels[key]
+    if labels.get(user_key):
+        return labels[user_key]
+    label = _safe_text(record.get("user_label"), max_len=160)
+    if label and not _looks_internal_user_label(label):
+        return label
+    return _user_label(user_key)
+
+
+def _user_label(user_key: str) -> str:
+    if not user_key or user_key == "unknown":
+        return "unknown"
+    return f"user-{user_key[:8]}"
+
+
 def _safe_text(value: Any, max_len: int = 96) -> str:
     if value is None:
         return ""
     text = str(value).strip()
     return text[:max_len]
+
+
+def _looks_internal_user_label(value: Any) -> bool:
+    text = _safe_text(value, max_len=240).lower()
+    if not text:
+        return False
+    return "@im.wechat" in text or text.startswith("weixin:o")
 
 
 def _hash_value(value: Any) -> str:

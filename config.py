@@ -28,6 +28,10 @@ available_setting = {
     "prompt_cache_retention": "",  # Optional: in_memory or 24h when supported upstream
     "llm_usage_tracking": True,  # Persist token/cache usage counters for the web dashboard
     "llm_usage_history_limit": 2000,  # Max local usage records to keep
+    "llm_usage_user_labels": {},  # Optional usage-dashboard display labels keyed by actor id, raw id, or telemetry hash
+    "prompt_cache_stable_runtime_info": True,  # Keep volatile runtime time out of the reusable prompt prefix
+    "runtime_time_in_user_message": True,  # Add exact current time only to the active user request
+    "knowledge_index_in_system_prompt": False,  # Keep changing knowledge index out of the stable prompt prefix
     "claude_api_base": "https://api.anthropic.com/v1",  # claude api base
     "gemini_api_base": "https://generativelanguage.googleapis.com",  # gemini api base
     "custom_api_key": "",  # custom OpenAI-compatible provider api key (used when bot_type is "custom")
@@ -435,6 +439,9 @@ def load_config():
         "prompt_cache_retention": "OPENAI_PROMPT_CACHE_RETENTION",
         "llm_usage_tracking": "LLM_USAGE_TRACKING",
         "llm_usage_history_limit": "LLM_USAGE_HISTORY_LIMIT",
+        "prompt_cache_stable_runtime_info": "PROMPT_CACHE_STABLE_RUNTIME_INFO",
+        "runtime_time_in_user_message": "RUNTIME_TIME_IN_USER_MESSAGE",
+        "knowledge_index_in_system_prompt": "KNOWLEDGE_INDEX_IN_SYSTEM_PROMPT",
         "linkai_api_key": "LINKAI_API_KEY",
         "linkai_api_base": "LINKAI_API_BASE",
         "claude_api_key": "CLAUDE_API_KEY",

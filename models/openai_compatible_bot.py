@@ -112,6 +112,8 @@ class OpenAICompatibleBot:
             request_params["_cache_metadata"] = {
                 "channel_type": kwargs.get("channel_type") or getattr(self, "channel_type", ""),
                 "session_id": kwargs.get("session_id") or getattr(self, "session_id", ""),
+                "user_id": kwargs.get("user_id") or getattr(self, "user_id", ""),
+                "user_label": kwargs.get("user_label") or getattr(self, "user_label", ""),
             }
             
             # Add max_tokens if specified

@@ -52,6 +52,7 @@ def _as_tuple(paths: Iterable[Any]) -> Tuple[str, ...]:
 class AgentUserProfile:
     actor_id: str
     raw_user_id: str
+    display_name: str
     channel_type: str
     role: str
     conversation_id: str
@@ -117,6 +118,31 @@ def _configured_profile(actor_id: str, raw_user_id: str) -> Dict[str, Any]:
     return profile if isinstance(profile, dict) else {}
 
 
+def _configured_display_name(actor_id: str, raw_user_id: str, profile: Dict[str, Any]) -> str:
+    from config import conf
+
+    for key in ("llm_usage_label", "wechat_id", "raw_user_id", "display_name", "name"):
+        value = profile.get(key)
+        if value:
+            return str(value)
+
+    labels = conf().get("llm_usage_user_labels", {}) or {}
+    if not isinstance(labels, dict):
+        return ""
+
+    candidates = (
+        actor_id,
+        raw_user_id,
+        hashlib.sha256(actor_id.encode("utf-8", errors="ignore")).hexdigest()[:16],
+        hashlib.sha256(raw_user_id.encode("utf-8", errors="ignore")).hexdigest()[:16],
+    )
+    for candidate in candidates:
+        value = labels.get(candidate)
+        if value:
+            return str(value)
+    return ""
+
+
 def _configured_role(actor_id: str, raw_user_id: str, profile: Dict[str, Any]) -> str:
     from config import conf, global_config
 
@@ -153,6 +179,7 @@ def resolve_agent_user_profile(context: Any = None) -> AgentUserProfile:
         raw_user_id = _resolve_raw_user_id(context)
         actor_id = f"{channel_type}:{raw_user_id}"
     configured = _configured_profile(actor_id, raw_user_id)
+    display_name = _configured_display_name(actor_id, raw_user_id, configured)
     explicit_role = _get_context_value(context, "actor_role")
     role = _normalise_role(explicit_role) if explicit_role else _configured_role(actor_id, raw_user_id, configured)
 
@@ -226,6 +253,7 @@ def resolve_agent_user_profile(context: Any = None) -> AgentUserProfile:
     return AgentUserProfile(
         actor_id=actor_id,
         raw_user_id=raw_user_id,
+        display_name=display_name,
         channel_type=channel_type,
         role=role,
         conversation_id=conversation_id,
