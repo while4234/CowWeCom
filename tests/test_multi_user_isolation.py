@@ -1,0 +1,250 @@
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+from agent.access_control import GuardedTool, ToolAccessPolicy, get_resource_leases
+from agent.tools.base_tool import BaseTool, ToolResult
+from agent.tools.memory.memory_get import MemoryGetTool
+from agent.tools.memory.memory_search import MemorySearchTool
+from agent.user_profiles import AgentUserProfile, resolve_agent_user_profile
+from bridge.context import Context, ContextType
+from agent.memory.storage import SearchResult
+
+
+class FakeMemoryConfig:
+    def __init__(self, workspace):
+        self.workspace = Path(workspace)
+
+    def get_workspace(self):
+        return self.workspace
+
+
+class FakeMemoryManager:
+    def __init__(self, workspace=None, results=None):
+        self.config = FakeMemoryConfig(workspace or tempfile.mkdtemp())
+        self.results = results or []
+
+    async def search(self, **kwargs):
+        return self.results
+
+
+class DummyTool(BaseTool):
+    name = "dummy"
+    description = "dummy"
+    params = {"type": "object", "properties": {}}
+
+    def __init__(self, name="dummy", cwd=None):
+        super().__init__()
+        self.name = name
+        self.cwd = cwd or os.getcwd()
+        self.called = False
+
+    def execute(self, params):
+        self.called = True
+        self.last_params = params
+        return ToolResult.success("ok")
+
+
+def make_profile(role="user", root=None, conversation_id="conv-a", memory_user_id="user_a"):
+    root = os.path.abspath(root or tempfile.mkdtemp())
+    tool_workspace = os.path.join(root, "users", memory_user_id, "files")
+    private_memory = os.path.join(root, "memory", "users", memory_user_id)
+    knowledge = os.path.join(root, "knowledge")
+    if role == "admin":
+        return AgentUserProfile(
+            actor_id="weixin:admin",
+            raw_user_id="admin",
+            channel_type="weixin",
+            role="admin",
+            conversation_id=conversation_id,
+            memory_user_id=memory_user_id,
+            shared_workspace=root,
+            tool_workspace=root,
+            can_use_bash=True,
+            can_use_env_config=True,
+        )
+    return AgentUserProfile(
+        actor_id=f"weixin:{memory_user_id}",
+        raw_user_id=memory_user_id,
+        channel_type="weixin",
+        role="user",
+        conversation_id=conversation_id,
+        memory_user_id=memory_user_id,
+        shared_workspace=root,
+        tool_workspace=tool_workspace,
+        readable_roots=(tool_workspace, private_memory, knowledge, os.path.join(root, "skills")),
+        writable_roots=(tool_workspace, private_memory),
+        denied_roots=(os.path.abspath(os.getcwd()),),
+        denied_files=(os.path.join(root, "config.json"),),
+        can_use_bash=True,
+    )
+
+
+class TestMultiUserIsolation(unittest.TestCase):
+    def test_profile_uses_channel_and_sender_as_actor(self):
+        msg = SimpleNamespace(from_user_id="wx-user-a", actual_user_id=None)
+        context = Context(ContextType.TEXT, "hi", {
+            "channel_type": "weixin",
+            "session_id": "legacy-session",
+            "msg": msg,
+        })
+
+        profile = resolve_agent_user_profile(context)
+
+        self.assertEqual(profile.actor_id, "weixin:wx-user-a")
+        self.assertEqual(profile.conversation_id, "weixin:wx-user-a")
+        self.assertEqual(profile.role, "user")
+        self.assertNotIn(":", profile.memory_user_id)
+
+    def test_profile_can_use_explicit_owner_with_separate_conversation(self):
+        context = Context(ContextType.TEXT, "scheduled")
+        context["channel_type"] = "weixin_user"
+        context["session_id"] = "scheduler_normal_task1"
+        context["conversation_id"] = "scheduler_normal_task1"
+        context["actor_id"] = "weixin_user:normal"
+        context["actor_role"] = "user"
+        context["memory_user_id"] = "normal-memory"
+
+        profile = resolve_agent_user_profile(context)
+
+        self.assertEqual(profile.actor_id, "weixin_user:normal")
+        self.assertEqual(profile.raw_user_id, "normal")
+        self.assertEqual(profile.channel_type, "weixin_user")
+        self.assertEqual(profile.role, "user")
+        self.assertEqual(profile.memory_user_id, "normal-memory")
+        self.assertEqual(profile.conversation_id, "scheduler_normal_task1")
+
+    def test_memory_search_filters_shared_chat_memory_for_normal_user(self):
+        results = [
+            SearchResult("MEMORY.md", 1, 2, 0.9, "admin memory", "memory", None),
+            SearchResult("memory/users/user_a/MEMORY.md", 1, 2, 0.8, "own", "memory", "user_a"),
+            SearchResult("memory/users/user_b/MEMORY.md", 1, 2, 0.7, "other", "memory", "user_b"),
+            SearchResult("knowledge/index.md", 1, 2, 0.6, "knowledge", "knowledge", None),
+        ]
+        tool = MemorySearchTool(
+            FakeMemoryManager(results=results),
+            user_id="user_a",
+            include_shared_memory=False,
+        )
+
+        result = tool.execute({"query": "anything"})
+
+        self.assertEqual(result.status, "success")
+        self.assertIn("memory/users/user_a/MEMORY.md", result.result)
+        self.assertIn("knowledge/index.md", result.result)
+        self.assertNotIn("admin memory", result.result)
+        self.assertNotIn("memory/users/user_b/MEMORY.md", result.result)
+
+    def test_memory_get_allows_only_own_memory_and_knowledge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            own = root / "memory" / "users" / "user_a"
+            other = root / "memory" / "users" / "user_b"
+            knowledge = root / "knowledge"
+            own.mkdir(parents=True)
+            other.mkdir(parents=True)
+            knowledge.mkdir()
+            (own / "MEMORY.md").write_text("own memory", encoding="utf-8")
+            (other / "MEMORY.md").write_text("other memory", encoding="utf-8")
+            (knowledge / "index.md").write_text("shared knowledge", encoding="utf-8")
+            (root / "MEMORY.md").write_text("root memory", encoding="utf-8")
+
+            tool = MemoryGetTool(
+                FakeMemoryManager(workspace=root),
+                user_id="user_a",
+                allow_shared_memory=False,
+            )
+
+            own_result = tool.execute({"path": "MEMORY.md"})
+            knowledge_result = tool.execute({"path": "knowledge/index.md"})
+            other_result = tool.execute({"path": "memory/users/user_b/MEMORY.md"})
+
+            self.assertEqual(own_result.status, "success")
+            self.assertIn("own memory", own_result.result)
+            self.assertEqual(knowledge_result.status, "success")
+            self.assertIn("shared knowledge", knowledge_result.result)
+            self.assertEqual(other_result.status, "error")
+
+    def test_guarded_tool_denies_project_path_for_normal_user(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = make_profile(root=tmp)
+            tool = DummyTool(name="read", cwd=profile.tool_workspace)
+            guarded = GuardedTool(tool, ToolAccessPolicy(profile))
+
+            denied = guarded.execute({"path": os.path.abspath("config.py")})
+            allowed = guarded.execute({"path": "note.txt"})
+
+            self.assertEqual(denied.status, "error")
+            self.assertIn("权限拒绝", denied.result)
+            self.assertEqual(allowed.status, "success")
+
+    def test_guarded_tool_maps_memory_path_to_private_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = make_profile(root=tmp)
+            tool = DummyTool(name="write", cwd=profile.tool_workspace)
+            guarded = GuardedTool(tool, ToolAccessPolicy(profile))
+
+            result = guarded.execute({"path": "MEMORY.md", "content": "remember"})
+
+            expected = os.path.join(
+                profile.shared_workspace,
+                "memory",
+                "users",
+                profile.memory_user_id,
+                "MEMORY.md",
+            )
+            self.assertEqual(result.status, "success")
+            self.assertEqual(tool.last_params["path"], expected)
+
+    def test_normal_user_can_read_shared_skills(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = make_profile(root=tmp)
+            tool = DummyTool(name="read", cwd=profile.tool_workspace)
+            guarded = GuardedTool(tool, ToolAccessPolicy(profile))
+
+            result = guarded.execute({"path": os.path.join(tmp, "skills", "image-generation", "SKILL.md")})
+
+            self.assertEqual(result.status, "success")
+
+    def test_normal_user_bash_can_run_skill_but_not_sensitive_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = make_profile(root=tmp)
+            tool = DummyTool(name="bash", cwd=profile.tool_workspace)
+            guarded = GuardedTool(tool, ToolAccessPolicy(profile))
+
+            skill_script = os.path.join(tmp, "skills", "image-generation", "scripts", "generate.py")
+            allowed = guarded.execute({"command": f'python "{skill_script}" "{{}}"', "timeout": 600})
+            denied = guarded.execute({"command": f'type "{os.path.join(tmp, "config.json")}"'})
+
+            self.assertEqual(allowed.status, "success")
+            self.assertEqual(denied.status, "error")
+            self.assertIn("权限", denied.result)
+
+    def test_browser_lease_is_reentrant_and_blocks_other_users(self):
+        profile_a = make_profile(conversation_id="conv-a", memory_user_id="user_a")
+        profile_b = make_profile(conversation_id="conv-b", memory_user_id="user_b")
+        leases = get_resource_leases()
+        leases.release_owner("conv-a")
+        leases.release_owner("conv-b")
+
+        browser_a = GuardedTool(DummyTool(name="browser"), ToolAccessPolicy(profile_a))
+        browser_b = GuardedTool(DummyTool(name="browser"), ToolAccessPolicy(profile_b))
+
+        try:
+            first = browser_a.execute({"url": "https://example.com"})
+            reentrant = browser_a.execute({"url": "https://example.com/2"})
+            blocked = browser_b.execute({"url": "https://example.org"})
+
+            self.assertEqual(first.status, "success")
+            self.assertEqual(reentrant.status, "success")
+            self.assertEqual(blocked.status, "error")
+            self.assertIn("浏览器工具正在被另一个用户使用", blocked.result)
+        finally:
+            leases.release_owner("conv-a")
+            leases.release_owner("conv-b")
+
+
+if __name__ == "__main__":
+    unittest.main()

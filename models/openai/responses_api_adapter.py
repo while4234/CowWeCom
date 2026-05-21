@@ -132,6 +132,9 @@ def build_responses_payload(
             "metadata",
             "parallel_tool_calls",
             "previous_response_id",
+            "prompt_cache_key",
+            "prompt_cache_retention",
+            "safety_identifier",
             "text",
             "truncation",
             "user",
@@ -253,7 +256,7 @@ def chat_chunks_to_chat_completion(
     content_parts: List[str] = []
     tool_state: Dict[int, Dict[str, Any]] = {}
     finish_reason = None
-    usage: Dict[str, int] = {}
+    usage: Dict[str, Any] = {}
 
     for chunk in chunks:
         if not isinstance(chunk, dict):
@@ -574,17 +577,40 @@ def _convert_tool_choice(tool_choice: Any) -> Any:
     return tool_choice
 
 
-def _convert_usage(usage: Dict[str, Any]) -> Dict[str, int]:
+def _convert_usage(usage: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(usage, dict):
         return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     prompt = usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0
     completion = usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0
     total = usage.get("total_tokens", 0) or (prompt + completion)
-    return {
+    input_details = (
+        usage.get("input_tokens_details")
+        or usage.get("prompt_tokens_details")
+        or {}
+    )
+    completion_details = (
+        usage.get("output_tokens_details")
+        or usage.get("completion_tokens_details")
+        or {}
+    )
+    cached_tokens = 0
+    if isinstance(input_details, dict):
+        cached_tokens = input_details.get("cached_tokens", 0) or 0
+    cached_tokens = usage.get("cached_tokens", cached_tokens) or 0
+    result: Dict[str, Any] = {
         "prompt_tokens": prompt,
         "completion_tokens": completion,
         "total_tokens": total,
+        "cached_tokens": cached_tokens,
+        "cache_hit_rate": (cached_tokens / prompt) if prompt else 0,
     }
+    if isinstance(input_details, dict) and input_details:
+        result["input_tokens_details"] = dict(input_details)
+        result["prompt_tokens_details"] = dict(input_details)
+    if isinstance(completion_details, dict) and completion_details:
+        result["output_tokens_details"] = dict(completion_details)
+        result["completion_tokens_details"] = dict(completion_details)
+    return result
 
 
 def _remember_tool_item(tool_state: Dict[int, Dict[str, Any]], index: int, item: Dict[str, Any]) -> None:
@@ -612,7 +638,7 @@ def _make_tool_call_delta(index: int, item: Dict[str, Any], *, arguments: str) -
 def _make_chat_delta(
     delta: Dict[str, Any],
     finish_reason: Optional[str] = None,
-    usage: Optional[Dict[str, int]] = None,
+    usage: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     choice: Dict[str, Any] = {"index": 0, "delta": delta}
     if finish_reason is not None:

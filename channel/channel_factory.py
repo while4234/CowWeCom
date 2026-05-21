@@ -5,6 +5,10 @@ from common import const
 from .channel import Channel
 
 
+def _is_weixin_channel(channel_type: str) -> bool:
+    return channel_type in (const.WEIXIN, "wx") or str(channel_type).startswith("weixin_")
+
+
 def create_channel(channel_type) -> Channel:
     """
     create a channel instance
@@ -39,10 +43,11 @@ def create_channel(channel_type) -> Channel:
     elif channel_type == const.QQ:
         from channel.qq.qq_channel import QQChannel
         ch = QQChannel()
-    elif channel_type in (const.WEIXIN, "wx"):
+    elif _is_weixin_channel(channel_type):
         from channel.weixin.weixin_channel import WeixinChannel
-        ch = WeixinChannel()
-        channel_type = const.WEIXIN
+        instance_id = const.WEIXIN if channel_type == "wx" else channel_type
+        ch = WeixinChannel(instance_id=instance_id)
+        channel_type = instance_id
     else:
         raise RuntimeError
     ch.channel_type = channel_type

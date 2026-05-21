@@ -22,6 +22,12 @@ available_setting = {
     "model_reasoning_effort": "",  # Responses reasoning effort: none/low/medium/high/xhigh
     "model_context_window": 0,  # Optional explicit model context window
     "model_auto_compact_token_limit": 0,  # Optional compact limit hint for Agent mode
+    "enable_prompt_cache_key": True,  # Send prompt_cache_key for OpenAI Responses requests
+    "prompt_cache_key_prefix": "cowwechat",  # Stable namespace for prompt cache routing
+    "prompt_cache_key_granularity": "channel",  # global/channel/session
+    "prompt_cache_retention": "",  # Optional: in_memory or 24h when supported upstream
+    "llm_usage_tracking": True,  # Persist token/cache usage counters for the web dashboard
+    "llm_usage_history_limit": 2000,  # Max local usage records to keep
     "claude_api_base": "https://api.anthropic.com/v1",  # claude api base
     "gemini_api_base": "https://generativelanguage.googleapis.com",  # gemini api base
     "custom_api_key": "",  # custom OpenAI-compatible provider api key (used when bot_type is "custom")
@@ -181,6 +187,7 @@ available_setting = {
     "weixin_base_url": "https://ilinkai.weixin.qq.com",  # Weixin ilink API base URL
     "weixin_cdn_base_url": "https://novac2c.cdn.weixin.qq.com/c2c",  # CDN base URL
     "weixin_credentials_path": "~/.weixin_cow_credentials.json",  # credentials file path
+    "weixin_instances": {},  # Named personal Weixin instances, e.g. {"weixin_user": {"credentials_path": "~/.weixin_cow_credentials_user.json"}}
     # chatgpt指令自定义触发词
     "clear_memory_commands": ["#清除记忆"],  # 重置会话指令，必须以#开头
     # channel配置
@@ -225,13 +232,24 @@ available_setting = {
     "web_session_expire_days": 30,  # Auth session expiry in days
     "agent": True,  # 是否开启Agent模式
     "agent_workspace": "~/cow",  # agent工作空间路径，用于存储skills、memory等
+    "agent_default_role": "user",  # Multi-user agent default role: user/admin
+    "agent_admin_users": [],  # Actor ids or raw chat user ids with admin privileges
+    "agent_user_profiles": {},  # Per-actor overrides keyed by actor_id (e.g. weixin:<wxid>) or raw user id
+    "agent_user_workspace_root": "",  # Normal-user sandbox root; default is <agent_workspace>/users
+    "agent_sensitive_roots": [],  # Extra filesystem roots normal users cannot access
+    "agent_sensitive_files": [],  # Extra sensitive files normal users cannot access
+    "agent_browser_lock_timeout_seconds": 900,  # Browser tool lease timeout for cross-user contention
     "agent_max_context_tokens": 50000,  # Agent模式下最大上下文tokens
     "agent_max_context_turns": 20,  # Agent模式下最大上下文记忆轮次
     "agent_max_steps": 20,  # Agent模式下单次运行最大决策步数
     "enable_thinking": False,  # Enable deep-thinking mode for thinking-capable models
     "reasoning_effort": "high",  # Reasoning depth under thinking mode: "high" or "max"
     "knowledge": True,  # 是否开启知识库功能
-    "skill": {},  # Per-skill runtime config; nested keys flatten to SKILL_<NAME>_<KEY> env vars at startup
+    "skill": {
+        "image-generation": {
+            "runtime": "codex_auth",
+        }
+    },  # Per-skill runtime config; nested keys flatten to SKILL_<NAME>_<KEY> env vars at startup
     "mcp_servers": [],  # MCP server list; each entry supports type "stdio" (local process) or "sse" (remote URL)
 }
 
@@ -407,6 +425,16 @@ def load_config():
         "open_ai_wire_api": "OPENAI_WIRE_API",
         "openai_wire_api": "OPENAI_WIRE_API",
         "wire_api": "OPENAI_WIRE_API",
+        "model": "OPENAI_MODEL",
+        "disable_response_storage": "OPENAI_DISABLE_RESPONSE_STORAGE",
+        "model_reasoning_effort": "OPENAI_REASONING_EFFORT",
+        "reasoning_effort": "OPENAI_REASONING_EFFORT",
+        "enable_prompt_cache_key": "OPENAI_ENABLE_PROMPT_CACHE_KEY",
+        "prompt_cache_key_prefix": "OPENAI_PROMPT_CACHE_KEY_PREFIX",
+        "prompt_cache_key_granularity": "OPENAI_PROMPT_CACHE_KEY_GRANULARITY",
+        "prompt_cache_retention": "OPENAI_PROMPT_CACHE_RETENTION",
+        "llm_usage_tracking": "LLM_USAGE_TRACKING",
+        "llm_usage_history_limit": "LLM_USAGE_HISTORY_LIMIT",
         "linkai_api_key": "LINKAI_API_KEY",
         "linkai_api_base": "LINKAI_API_BASE",
         "claude_api_key": "CLAUDE_API_KEY",
@@ -449,6 +477,11 @@ def load_config():
                 injected += 1
 
     injected += _sync_skill_config_to_env(config.get("skill", {}))
+    if "SKILL_IMAGE_GENERATION_MODEL" not in os.environ:
+        image_model = config.get("text_to_image", "")
+        if image_model:
+            os.environ["SKILL_IMAGE_GENERATION_MODEL"] = str(image_model)
+            injected += 1
 
     if injected:
         logger.info("[INIT] Synced {} config values to environment variables".format(injected))

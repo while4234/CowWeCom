@@ -42,7 +42,7 @@ class AgentInitializer:
         self.bridge = bridge
         self.agent_bridge = agent_bridge
     
-    def initialize_agent(self, session_id: Optional[str] = None) -> Agent:
+    def initialize_agent(self, session_id: Optional[str] = None, profile=None) -> Agent:
         """
         Initialize agent for a session
         
@@ -70,24 +70,34 @@ class AgentInitializer:
         if session_id is None:
             logger.info(f"[AgentInitializer] Workspace initialized at: {workspace_root}")
         
+        if profile is not None:
+            os.makedirs(profile.tool_workspace, exist_ok=True)
+
         # Setup memory system
-        memory_manager, memory_tools = self._setup_memory_system(workspace_root, session_id)
+        memory_manager, memory_tools = self._setup_memory_system(workspace_root, session_id, profile)
         
         # Load tools
-        tools = self._load_tools(workspace_root, memory_manager, memory_tools, session_id)
+        tools = self._load_tools(workspace_root, memory_manager, memory_tools, session_id, profile)
         
         # Initialize scheduler if needed
         self._initialize_scheduler(tools, session_id)
+
+        tools = self._guard_tools(tools, profile)
         
         # Load context files
-        context_files = load_context_files(workspace_root)
+        context_files = self._load_context_files(workspace_root, profile)
         
         # Initialize skill manager
         skill_manager = self._initialize_skill_manager(workspace_root, session_id)
         
         # Build system prompt
-        prompt_builder = PromptBuilder(workspace_dir=workspace_root, language="zh")
-        runtime_info = self._get_runtime_info(workspace_root)
+        prompt_workspace = (
+            profile.tool_workspace
+            if profile is not None and not profile.is_admin
+            else workspace_root
+        )
+        prompt_builder = PromptBuilder(workspace_dir=prompt_workspace, language="zh")
+        runtime_info = self._get_runtime_info(profile.tool_workspace if profile else workspace_root)
         
         system_prompt = prompt_builder.build(
             tools=tools,
@@ -106,18 +116,23 @@ class AgentInitializer:
         )
         
         # Create agent
+        agent_workspace_dir = profile.tool_workspace if profile is not None else workspace_root
         agent = self.agent_bridge.create_agent(
             system_prompt=system_prompt,
             tools=tools,
             max_steps=max_steps,
             output_mode="logger",
-            workspace_dir=workspace_root,
+            workspace_dir=agent_workspace_dir,
             skill_manager=skill_manager,
             enable_skills=True,
             max_context_tokens=max_context_tokens,
             runtime_info=runtime_info  # Pass runtime_info for dynamic time updates
         )
-        
+
+        if profile is not None:
+            agent._current_user_id = profile.memory_user_id
+            agent._actor_profile = profile
+
         # Attach memory manager and share LLM model for summarization
         if memory_manager:
             agent.memory_manager = memory_manager
@@ -268,7 +283,7 @@ class AgentInitializer:
             except Exception as e:
                 logger.warning(f"[AgentInitializer] Failed to load .env file: {e}")
     
-    def _setup_memory_system(self, workspace_root: str, session_id: Optional[str] = None):
+    def _setup_memory_system(self, workspace_root: str, session_id: Optional[str] = None, profile=None):
         """
         Setup memory system
         
@@ -290,11 +305,24 @@ class AgentInitializer:
             )
 
             memory_manager = MemoryManager(memory_config, embedding_provider=embedding_provider)
+            if profile is not None:
+                from agent.memory.summarizer import create_memory_files_if_needed
+                create_memory_files_if_needed(memory_config.get_workspace(), profile.memory_user_id)
             self._sync_memory(memory_manager, session_id)
 
+            memory_user_id = getattr(profile, "memory_user_id", None)
+            include_shared_memory = bool(getattr(profile, "is_admin", True))
             memory_tools = [
-                MemorySearchTool(memory_manager),
-                MemoryGetTool(memory_manager)
+                MemorySearchTool(
+                    memory_manager,
+                    user_id=memory_user_id,
+                    include_shared_memory=include_shared_memory,
+                ),
+                MemoryGetTool(
+                    memory_manager,
+                    user_id=memory_user_id,
+                    allow_shared_memory=include_shared_memory,
+                )
             ]
             
             if session_id is None:
@@ -506,20 +534,82 @@ class AgentInitializer:
                 loop.run_until_complete(memory_manager.sync())
         except Exception as e:
             logger.warning(f"[AgentInitializer] Memory sync failed: {e}")
+
+    def _load_context_files(self, workspace_root: str, profile=None):
+        """Load prompt context without leaking shared chat memory to normal users."""
+        from agent.prompt import load_context_files
+
+        if profile is None or getattr(profile, "is_admin", True):
+            return load_context_files(workspace_root)
+
+        from agent.prompt.builder import ContextFile
+        from agent.prompt.workspace import _truncate_memory_content
+
+        context_files = load_context_files(
+            workspace_root,
+            files_to_load=["AGENT.md", "RULE.md", "BOOTSTRAP.md"],
+        )
+
+        context_files.append(ContextFile(
+            path="SESSION.md",
+            content=(
+                "当前会话是普通用户隔离会话。\n"
+                f"- actor_id: {profile.actor_id}\n"
+                f"- memory_user_id: {profile.memory_user_id}\n"
+                f"- 可写工作区: {profile.tool_workspace}\n"
+                f"- 主动写入长期记忆时使用绝对路径: {os.path.join(profile.shared_workspace, 'memory', 'users', profile.memory_user_id, 'MEMORY.md')}\n"
+                f"- 当天记忆写入: {os.path.join(profile.shared_workspace, 'memory', 'users', profile.memory_user_id, '<YYYY-MM-DD>.md')}\n"
+                "- 普通聊天记忆只写入和读取本用户自己的 memory/users/<memory_user_id>/ 目录。\n"
+                "- 共享 knowledge/ 可以读取；项目目录、配置、凭证和其他用户记忆不可访问。"
+            )
+        ))
+
+        private_memory = os.path.join(
+            workspace_root, "memory", "users", profile.memory_user_id, "MEMORY.md"
+        )
+        if os.path.exists(private_memory):
+            try:
+                with open(private_memory, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if content:
+                    context_files.append(ContextFile(
+                        path=f"memory/users/{profile.memory_user_id}/MEMORY.md",
+                        content=_truncate_memory_content(content),
+                    ))
+            except Exception as e:
+                logger.warning(f"[AgentInitializer] Failed to load private memory: {e}")
+
+        return context_files
+
+    def _guard_tools(self, tools: List, profile=None) -> List:
+        """Wrap tools with per-user access policy while preserving schemas."""
+        if profile is None:
+            return tools
+        from agent.access_control import GuardedTool, ToolAccessPolicy
+
+        policy = ToolAccessPolicy(profile)
+        return [GuardedTool(tool, policy) for tool in tools]
     
-    def _load_tools(self, workspace_root: str, memory_manager, memory_tools: List, session_id: Optional[str] = None):
+    def _load_tools(self, workspace_root: str, memory_manager, memory_tools: List, session_id: Optional[str] = None, profile=None):
         """Load all tools"""
         tool_manager = ToolManager()
         tool_manager.load_tools()
         
         tools = []
+        tool_workspace = getattr(profile, "tool_workspace", workspace_root)
         file_config = {
-            "cwd": workspace_root,
+            "cwd": tool_workspace,
             "memory_manager": memory_manager
-        } if memory_manager else {"cwd": workspace_root}
+        } if memory_manager else {"cwd": tool_workspace}
         
         for tool_name in tool_manager.tool_classes.keys():
             try:
+                if profile is not None and not profile.is_admin:
+                    if tool_name == "bash" and not profile.can_use_bash:
+                        continue
+                    if tool_name == "env_config" and not profile.can_use_env_config:
+                        continue
+
                 # Skip web_search if no API key is available
                 if tool_name == "web_search":
                     from agent.tools.web_search.web_search import WebSearch
@@ -603,11 +693,12 @@ class AgentInitializer:
                 scheduler_service = get_scheduler_service()
                 
                 for tool in tools:
-                    if isinstance(tool, SchedulerTool):
-                        tool.task_store = task_store
-                        tool.scheduler_service = scheduler_service
-                        if not tool.config:
-                            tool.config = {}
+                    target_tool = getattr(tool, "inner", tool)
+                    if isinstance(target_tool, SchedulerTool):
+                        target_tool.task_store = task_store
+                        target_tool.scheduler_service = scheduler_service
+                        if not target_tool.config:
+                            target_tool.config = {}
                         raw_ct = conf().get("channel_type", "unknown")
                         if isinstance(raw_ct, list):
                             ct = raw_ct[0] if raw_ct else "unknown"
@@ -615,7 +706,7 @@ class AgentInitializer:
                             ct = raw_ct.split(",")[0].strip()
                         else:
                             ct = raw_ct
-                        tool.config["channel_type"] = ct
+                        target_tool.config["channel_type"] = ct
             except Exception as e:
                 logger.warning(f"[AgentInitializer] Failed to inject scheduler dependencies: {e}")
     

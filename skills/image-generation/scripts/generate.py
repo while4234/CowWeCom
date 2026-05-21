@@ -1,21 +1,22 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Unified image generation script.
 
 Usage:
     python generate.py '<json_args>'
 
-Supported model families (each provider is tried in priority order:
-OpenAI → Gemini → Seedream → Qwen → MiniMax → LinkAI; missing API keys
-are skipped, and the provider that natively owns the requested model is
-promoted to the front of the queue):
+When runtime is "codex_broker", this script is broker-only: it calls the
+configured local broker command and will not fall back to API providers.
 
-    - gpt-image-2 / gpt-image-1                    → OpenAI
-    - nano-banana / gemini-*-image-*               → Gemini
-    - doubao-seedream-* / seedream-*               → Seedream (Volcengine Ark)
-    - qwen-image-2.0 / qwen-image-2.0-pro / etc.   → Qwen (DashScope)
-    - image-01 / minimax-image                     → MiniMax
-    - any model                                    → LinkAI (universal proxy)
+Standalone API-provider mode still supports these model families when broker
+runtime is not enabled:
+
+    - gpt-image-2 / gpt-image-1                    鈫?OpenAI
+    - nano-banana / gemini-*-image-*               鈫?Gemini
+    - doubao-seedream-* / seedream-*               鈫?Seedream (Volcengine Ark)
+    - qwen-image-2.0 / qwen-image-2.0-pro / etc.   鈫?Qwen (DashScope)
+    - image-01 / minimax-image                     鈫?MiniMax
+    - any model                                    鈫?LinkAI (universal proxy)
 
 Dependencies: requests (stdlib: json, sys, os, base64, io, abc, uuid, pathlib, urllib)
 """
@@ -28,6 +29,8 @@ import io
 import time
 import uuid
 import re
+import shlex
+import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 from urllib.request import urlopen, Request
@@ -40,6 +43,28 @@ try:
     _HAS_REQUESTS = True
 except ImportError:
     _HAS_REQUESTS = False
+
+_CODEX_SESSION_AUTH_VALUES = {
+    "codex",
+    "codex_auth",
+    "codex_builtin",
+    "codex_session",
+    "codex_login",
+    "chatgpt",
+    "openai_account",
+}
+
+_CODEX_AUTH_RUNTIMES = {
+    "codex",
+    "codex_auth",
+    "codex-auth",
+    "codex_session",
+    "codex-session",
+    "codex_login",
+    "codex-login",
+}
+
+_DATA_IMAGE_RE = re.compile(r"^data:image/[^;]+;base64,(.+)$", re.DOTALL)
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +137,11 @@ def resolve_size(size: str | None, aspect_ratio: str | None) -> str | None:
 
 def _load_image(source: str) -> bytes:
     """Load image from a local file path or URL."""
+    if source.startswith("file://"):
+        parsed = urlparse(source)
+        source = parsed.path or source[7:]
+        if os.name == "nt" and re.match(r"^/[A-Za-z]:/", source):
+            source = source[1:]
     if os.path.isfile(source):
         with open(source, "rb") as f:
             return f.read()
@@ -187,6 +217,129 @@ def _save_image(data: bytes, output_dir: str) -> str:
     return path
 
 
+def _save_result_image(source, output_dir: str) -> str:
+    """Normalize a provider/broker image result to a local file path."""
+    if not source:
+        raise RuntimeError("empty image result")
+    if isinstance(source, bytes):
+        return _save_image(source, output_dir)
+    if not isinstance(source, str):
+        raise RuntimeError(f"unsupported image result type: {type(source).__name__}")
+
+    match = _DATA_IMAGE_RE.match(source)
+    if match:
+        return _save_image(base64.b64decode(match.group(1)), output_dir)
+    if os.path.isfile(source):
+        return os.path.abspath(source)
+    return _save_image(_load_image(source), output_dir)
+
+
+def _normalize_call_args(args: dict) -> dict:
+    """Accept the compact Codex image prompt shape plus legacy script args."""
+    normalized = dict(args)
+    if not normalized.get("prompt"):
+        for key in ("input", "text"):
+            value = normalized.get(key)
+            if isinstance(value, str) and value.strip():
+                normalized["prompt"] = value
+                break
+
+    if not normalized.get("image_url"):
+        for key in ("input_images", "reference_images", "images"):
+            value = normalized.get(key)
+            if value:
+                normalized["image_url"] = value
+                break
+    return normalized
+
+
+def _normalized_token(value) -> str:
+    return str(value or "").strip().lower().replace("-", "_")
+
+
+def _truthy(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_BROKER_ONLY_RUNTIMES = {
+    "broker",
+    "codex_broker",
+    "codex-broker",
+    "external_broker",
+    "external-broker",
+    "local_broker",
+    "local-broker",
+}
+
+
+def _runtime_from_args_or_env(args: dict) -> str:
+    return (
+        str(
+            args.get("runtime")
+            or os.environ.get("SKILL_IMAGE_GENERATION_RUNTIME")
+            or os.environ.get("IMAGE_GENERATION_RUNTIME")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+
+
+def _is_broker_only_runtime(runtime: str) -> bool:
+    return runtime in _BROKER_ONLY_RUNTIMES
+
+
+def _is_codex_auth_runtime(runtime: str) -> bool:
+    return runtime in _CODEX_AUTH_RUNTIMES
+
+
+def _requests_codex_session_auth(args: dict) -> bool:
+    auth_source = _normalized_token(args.get("auth_source") or args.get("auth"))
+    provider = _normalized_token(args.get("provider"))
+    return (
+        auth_source in _CODEX_SESSION_AUTH_VALUES
+        or provider in {"codex", "codex_builtin", "image_gen"}
+    )
+
+
+def _codex_session_auth_error() -> str:
+    return (
+        "Codex session auth was requested, but this runtime is not configured "
+        "for direct Codex-auth image generation. Set runtime=codex_auth or "
+        "SKILL_IMAGE_GENERATION_RUNTIME=codex_auth."
+    )
+
+
+def _broker_command_from_env():
+    command_json = (
+        os.environ.get("IMAGE_GENERATION_BROKER_COMMAND_JSON")
+        or os.environ.get("SKILL_IMAGE_GENERATION_BROKER_COMMAND_JSON")
+        or ""
+    )
+    if command_json:
+        try:
+            parsed = json.loads(command_json)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Invalid IMAGE_GENERATION_BROKER_COMMAND_JSON: {e}")
+        if not isinstance(parsed, list) or not parsed:
+            raise RuntimeError("IMAGE_GENERATION_BROKER_COMMAND_JSON must be a non-empty JSON list")
+        return [str(part) for part in parsed]
+
+    command = (
+        os.environ.get("IMAGE_GENERATION_BROKER_COMMAND")
+        or os.environ.get("SKILL_IMAGE_GENERATION_BROKER_COMMAND")
+        or os.environ.get("CODEX_IMAGE_GEN_COMMAND")
+        or ""
+    ).strip()
+    if not command:
+        return None
+    return [
+        part.strip('"')
+        for part in shlex.split(command, posix=(os.name != "nt"))
+        if part.strip('"')
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Provider interface
 # ---------------------------------------------------------------------------
@@ -221,6 +374,8 @@ class OpenAIProvider(ImageProvider):
     """Provider for OpenAI Image API (generations + edits)."""
 
     DEFAULT_MODEL = "gpt-image-2"
+    RESPONSES_IMAGE_SIZES = {"auto", "1024x1024", "1024x1536", "1536x1024"}
+    RESPONSES_IMAGE_QUALITIES = {"auto", "low", "medium", "high"}
 
     def __init__(self, api_key: str, api_base: str, model: str):
         self.api_key = api_key
@@ -253,6 +408,45 @@ class OpenAIProvider(ImageProvider):
         req = Request(url, data=data, headers=headers, method="POST")
         with urlopen(req, timeout=300) as r:
             return json.loads(r.read())
+
+    def _post_sse_json_events(self, url: str, payload: dict) -> list[dict]:
+        """POST a streaming Responses request and parse JSON SSE data events."""
+        headers = {**self._headers(), "Content-Type": "application/json"}
+        events: list[dict] = []
+        if _HAS_REQUESTS:
+            resp = requests.post(url, headers=headers, json=payload, timeout=300, stream=True)
+            self._raise_for_api_error(resp)
+            for raw_line in resp.iter_lines(decode_unicode=True):
+                event = self._parse_sse_data_line(raw_line)
+                if event is not None:
+                    events.append(event)
+            return events
+
+        data = json.dumps(payload).encode()
+        req = Request(url, data=data, headers=headers, method="POST")
+        with urlopen(req, timeout=300) as r:
+            for raw_line in r:
+                event = self._parse_sse_data_line(raw_line)
+                if event is not None:
+                    events.append(event)
+        return events
+
+    @staticmethod
+    def _parse_sse_data_line(line: str | bytes | None) -> dict | None:
+        if not line:
+            return None
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", errors="replace")
+        line = line.strip()
+        if not line.startswith("data:"):
+            return None
+        data = line[5:].strip()
+        if not data or data == "[DONE]":
+            return None
+        parsed = json.loads(data)
+        if isinstance(parsed, dict):
+            return parsed
+        return None
 
     def _post_multipart(self, url: str, fields: dict, files: list[tuple]) -> dict:
         """POST multipart/form-data using requests (or fall back to urllib)."""
@@ -290,10 +484,21 @@ class OpenAIProvider(ImageProvider):
         # OpenAI Images API expects pixel size like 1024x1024.
         resolved = resolve_size(size, aspect_ratio) if (size or aspect_ratio) else None
         if image_url:
+            if self._use_responses_api():
+                return self._edit_with_responses(
+                    prompt,
+                    image_url=image_url,
+                    quality=quality,
+                    size=resolved,
+                    output_dir=output_dir,
+                )
             return self._edit(prompt, image_url=image_url, quality=quality, size=resolved, output_dir=output_dir)
         return self._create(prompt, quality=quality, size=resolved, output_dir=output_dir)
 
     def _create(self, prompt: str, *, quality: str | None, size: str | None, output_dir: str) -> list[str]:
+        if self._use_responses_api():
+            return self._create_with_responses(prompt, quality=quality, size=size, output_dir=output_dir)
+
         url = f"{self.api_base}/images/generations"
         payload: dict = {
             "model": self.model,
@@ -305,6 +510,131 @@ class OpenAIProvider(ImageProvider):
             payload["size"] = size
         result = self._post_json(url, payload)
         return self._save_results(result, output_dir)
+
+    def _use_responses_api(self) -> bool:
+        raw = (
+            os.environ.get("OPENAI_WIRE_API")
+            or os.environ.get("SKILL_IMAGE_GENERATION_OPENAI_WIRE_API")
+            or os.environ.get("SKILL_IMAGE_GENERATION_WIRE_API")
+            or ""
+        ).strip().lower()
+        return raw in {"response", "responses"}
+
+    def _responses_model(self) -> str:
+        return (
+            os.environ.get("SKILL_IMAGE_GENERATION_RESPONSES_MODEL")
+            or os.environ.get("OPENAI_RESPONSES_MODEL")
+            or os.environ.get("OPENAI_MODEL")
+            or "gpt-5"
+        )
+
+    def _responses_reasoning_effort(self) -> str | None:
+        raw = (
+            os.environ.get("SKILL_IMAGE_GENERATION_REASONING_EFFORT")
+            or os.environ.get("OPENAI_REASONING_EFFORT")
+            or ""
+        ).strip().lower()
+        if raw == "max":
+            raw = "xhigh"
+        if raw in {"none", "low", "medium", "high", "xhigh"}:
+            return raw
+        return None
+
+    def _create_with_responses(
+        self,
+        prompt: str,
+        *,
+        quality: str | None,
+        size: str | None,
+        output_dir: str,
+    ) -> list[str]:
+        url = f"{self.api_base}/responses"
+        tool = {"type": "image_generation"}
+        if size in self.RESPONSES_IMAGE_SIZES:
+            tool["size"] = size
+        if quality in self.RESPONSES_IMAGE_QUALITIES:
+            tool["quality"] = quality
+
+        payload = {
+            "model": self._responses_model(),
+            "input": [
+                {
+                    "role": "user",
+                    "content": self._responses_input_content(prompt),
+                }
+            ],
+            "tools": [tool],
+            "tool_choice": {"type": "image_generation"},
+            "stream": True,
+        }
+        reasoning_effort = self._responses_reasoning_effort()
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
+        if os.environ.get("OPENAI_DISABLE_RESPONSE_STORAGE", "").lower() in {"1", "true", "yes"}:
+            payload["store"] = False
+
+        events = self._post_sse_json_events(url, payload)
+        return self._save_responses_results({"output": events}, output_dir)
+
+    def _edit_with_responses(
+        self,
+        prompt: str,
+        *,
+        image_url,
+        quality: str | None,
+        size: str | None,
+        output_dir: str,
+    ) -> list[str]:
+        url = f"{self.api_base}/responses"
+        tool = {"type": "image_generation"}
+        if size in self.RESPONSES_IMAGE_SIZES:
+            tool["size"] = size
+        if quality in self.RESPONSES_IMAGE_QUALITIES:
+            tool["quality"] = quality
+
+        payload = {
+            "model": self._responses_model(),
+            "input": [
+                {
+                    "role": "user",
+                    "content": self._responses_input_content(prompt, image_url=image_url),
+                }
+            ],
+            "tools": [tool],
+            "tool_choice": {"type": "image_generation"},
+            "stream": True,
+        }
+        reasoning_effort = self._responses_reasoning_effort()
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
+        if os.environ.get("OPENAI_DISABLE_RESPONSE_STORAGE", "").lower() in {"1", "true", "yes"}:
+            payload["store"] = False
+
+        events = self._post_sse_json_events(url, payload)
+        return self._save_responses_results({"output": events}, output_dir)
+
+    @staticmethod
+    def _responses_input_content(prompt: str, image_url=None) -> list[dict]:
+        content = [{"type": "input_text", "text": prompt}]
+        if not image_url:
+            return content
+
+        urls = image_url if isinstance(image_url, list) else [image_url]
+        for url in urls:
+            content.append({
+                "type": "input_image",
+                "image_url": OpenAIProvider._responses_image_url(url),
+            })
+        return content
+
+    @staticmethod
+    def _responses_image_url(source: str) -> str:
+        if _DATA_IMAGE_RE.match(source) or source.startswith(("http://", "https://")):
+            return source
+        data = _compress_image(_load_image(source))
+        mime = _guess_mime(data)
+        encoded = base64.b64encode(data).decode()
+        return f"data:{mime};base64,{encoded}"
 
     def _edit(
         self,
@@ -347,6 +677,352 @@ class OpenAIProvider(ImageProvider):
             elif "url" in item:
                 raw = _load_image(item["url"])
                 paths.append(_save_image(raw, output_dir))
+        return paths
+
+    @staticmethod
+    def _save_responses_results(result: dict, output_dir: str) -> list[str]:
+        paths: list[str] = []
+        candidates = []
+        if isinstance(result.get("response"), dict):
+            candidates.extend(result["response"].get("output") or [])
+        candidates.extend(result.get("output") or [])
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "image_generation_call":
+                nested = item.get("item")
+                if isinstance(nested, dict) and nested.get("type") == "image_generation_call":
+                    item = nested
+                else:
+                    continue
+            image_b64 = item.get("result") or item.get("b64_json") or item.get("partial_image_b64")
+            if image_b64:
+                paths.append(_save_image(base64.b64decode(image_b64), output_dir))
+        if not paths:
+            raise RuntimeError(f"Responses image generation returned no image: {result}")
+        return paths
+
+
+# ---------------------------------------------------------------------------
+# Codex auth provider (uses logged-in Codex credentials)
+# ---------------------------------------------------------------------------
+
+class CodexAuthProvider(ImageProvider):
+    """Provider that calls the Codex image backend with local Codex auth."""
+
+    DEFAULT_MODEL = "gpt-5.5"
+    DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
+
+    def __init__(
+        self,
+        model: str = "",
+        *,
+        auth_file: str | None = None,
+        base_url: str | None = None,
+    ):
+        auth = self._load_auth(auth_file)
+        tokens = auth.get("tokens") or {}
+        access_token = str(tokens.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("Codex auth file does not contain an access token. Run `codex login` and try again.")
+
+        self.access_token = access_token
+        self.account_id = str(tokens.get("account_id") or "").strip()
+        self.api_base = (base_url or os.environ.get("CODEX_IMAGE_GENERATION_BASE_URL") or self.DEFAULT_BASE_URL).rstrip("/")
+        self.model = self._resolve_model(model)
+        self.timeout = int(
+            os.environ.get("CODEX_IMAGE_GENERATION_TIMEOUT")
+            or os.environ.get("SKILL_IMAGE_GENERATION_CODEX_TIMEOUT")
+            or "600"
+        )
+
+    @classmethod
+    def _load_auth(cls, auth_file: str | None) -> dict:
+        path = cls._auth_path(auth_file)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                auth = json.load(f)
+        except FileNotFoundError as e:
+            raise RuntimeError("Codex auth file not found. Run `codex login` and try again.") from e
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Codex auth file is not valid JSON: {e}") from e
+        if not isinstance(auth, dict):
+            raise RuntimeError("Codex auth file must contain a JSON object")
+        return auth
+
+    @staticmethod
+    def _auth_path(auth_file: str | None) -> str:
+        configured = (
+            auth_file
+            or os.environ.get("CODEX_AUTH_FILE")
+            or os.environ.get("CODEX_AUTH_JSON")
+            or ""
+        ).strip()
+        if configured:
+            return os.path.abspath(os.path.expanduser(configured))
+        codex_home = os.environ.get("CODEX_HOME")
+        root = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
+        return str((root / "auth.json").resolve())
+
+    @classmethod
+    def _resolve_model(cls, requested_model: str) -> str:
+        configured = (
+            os.environ.get("SKILL_IMAGE_GENERATION_CODEX_MODEL")
+            or os.environ.get("CODEX_IMAGE_GENERATION_MODEL")
+            or os.environ.get("SKILL_IMAGE_GENERATION_RESPONSES_MODEL")
+            or os.environ.get("OPENAI_RESPONSES_MODEL")
+            or os.environ.get("OPENAI_MODEL")
+            or ""
+        ).strip()
+        if configured:
+            return configured
+
+        requested = str(requested_model or "").strip()
+        if requested.startswith(("gpt-", "o1-", "o3-", "o4-")) and not requested.startswith("gpt-image"):
+            return requested
+        return cls.DEFAULT_MODEL
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        image_url=None,
+        quality: str | None = None,
+        size: str | None = None,
+        aspect_ratio: str | None = None,
+        output_dir: str = ".",
+    ) -> list[str]:
+        resolved_size = resolve_size(size, aspect_ratio) if (size or aspect_ratio) else None
+        payload = self._build_payload(
+            prompt,
+            image_url=image_url,
+            quality=quality,
+            size=resolved_size,
+        )
+        events = self._post_sse_json_events(f"{self.api_base}/responses", payload)
+        return self._save_image_events(events, output_dir)
+
+    def _headers(self) -> dict:
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "codex-cli",
+        }
+        if self.account_id:
+            headers["ChatGPT-Account-Id"] = self.account_id
+        return headers
+
+    def _build_payload(self, prompt: str, *, image_url=None, quality: str | None, size: str | None) -> dict:
+        tool = {"type": "image_generation"}
+        if size in OpenAIProvider.RESPONSES_IMAGE_SIZES:
+            tool["size"] = size
+        if quality in OpenAIProvider.RESPONSES_IMAGE_QUALITIES:
+            tool["quality"] = quality
+
+        content = [{"type": "input_text", "text": prompt}]
+        for image in self._image_list(image_url):
+            content.append({
+                "type": "input_image",
+                "image_url": OpenAIProvider._responses_image_url(image),
+            })
+
+        return {
+            "model": self.model,
+            "instructions": self._instructions(bool(image_url)),
+            "input": [{"role": "user", "content": content}],
+            "tools": [tool],
+            "tool_choice": {"type": "image_generation"},
+            "stream": True,
+            "store": False,
+        }
+
+    @staticmethod
+    def _image_list(image_url) -> list[str]:
+        if not image_url:
+            return []
+        return [str(item) for item in (image_url if isinstance(image_url, list) else [image_url]) if str(item or "").strip()]
+
+    @staticmethod
+    def _instructions(has_input_image: bool) -> str:
+        base = "Use the image_generation tool exactly once and return a short message after the image is generated."
+        if has_input_image:
+            return (
+                base
+                + " Preserve input identity, layout, and unchanged regions unless the user explicitly asks otherwise."
+            )
+        return base
+
+    def _post_sse_json_events(self, url: str, payload: dict) -> list[dict]:
+        headers = self._headers()
+        events: list[dict] = []
+        if _HAS_REQUESTS:
+            resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout, stream=True)
+            self._raise_for_api_error(resp)
+            for raw_line in resp.iter_lines(decode_unicode=True):
+                event = OpenAIProvider._parse_sse_data_line(raw_line)
+                if event is not None:
+                    events.append(event)
+            return events
+
+        data = json.dumps(payload).encode()
+        req = Request(url, data=data, headers=headers, method="POST")
+        try:
+            with urlopen(req, timeout=self.timeout) as resp:
+                for raw_line in resp:
+                    event = OpenAIProvider._parse_sse_data_line(raw_line)
+                    if event is not None:
+                        events.append(event)
+        except URLError as e:
+            raise RuntimeError(f"Codex image backend request failed: {e}") from e
+        return events
+
+    @staticmethod
+    def _raise_for_api_error(resp) -> None:
+        if resp.status_code < 400:
+            return
+        try:
+            body = resp.json()
+            msg = body.get("detail") or body.get("error", {}).get("message") or body.get("message") or resp.text
+        except Exception:
+            msg = resp.text or resp.reason
+        raise RuntimeError(f"Codex backend API {resp.status_code}: {msg} (url: {resp.url})")
+
+    @staticmethod
+    def _save_image_events(events: list[dict], output_dir: str) -> list[str]:
+        seen: set[str] = set()
+        last_image_b64: str | None = None
+        for image_b64 in CodexAuthProvider._iter_image_payloads(events):
+            if image_b64 in seen:
+                continue
+            seen.add(image_b64)
+            last_image_b64 = image_b64
+        if not last_image_b64:
+            raise RuntimeError("Codex image backend returned no image")
+        return [_save_image(base64.b64decode(last_image_b64), output_dir)]
+
+    @staticmethod
+    def _iter_image_payloads(events: list[dict]):
+        for event in events:
+            for item in CodexAuthProvider._candidate_items(event):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") != "image_generation_call" and not str(item.get("type") or "").startswith(
+                    "response.image_generation_call."
+                ):
+                    continue
+                image_b64 = item.get("result") or item.get("b64_json") or item.get("partial_image_b64")
+                if image_b64:
+                    yield image_b64
+
+    @staticmethod
+    def _candidate_items(event: dict) -> list[dict]:
+        candidates = [event]
+        item = event.get("item")
+        if isinstance(item, dict):
+            candidates.append(item)
+        response = event.get("response")
+        if isinstance(response, dict):
+            output = response.get("output") or []
+            if isinstance(output, list):
+                candidates.extend([entry for entry in output if isinstance(entry, dict)])
+        return candidates
+
+
+# ---------------------------------------------------------------------------
+# External broker provider
+# ---------------------------------------------------------------------------
+
+class ExternalBrokerProvider(ImageProvider):
+    """Provider that delegates image generation to a local command/broker.
+
+    The broker receives a JSON payload on stdin and must print JSON to stdout:
+    {"images": [{"url": "/path/to/output.png"}]} or {"error": "..."}.
+    Auth stays inside the broker process; this script never reads tokens.
+    """
+
+    DEFAULT_MODEL = "external-image-broker"
+
+    def __init__(self, command: list[str], model: str):
+        if not command:
+            raise RuntimeError("external broker command is empty")
+        self.command = command
+        self.model = (
+            model
+            or os.environ.get("IMAGE_GENERATION_BROKER_MODEL")
+            or os.environ.get("SKILL_IMAGE_GENERATION_BROKER_MODEL")
+            or self.DEFAULT_MODEL
+        )
+        self.timeout = int(
+            os.environ.get("IMAGE_GENERATION_BROKER_TIMEOUT")
+            or os.environ.get("SKILL_IMAGE_GENERATION_BROKER_TIMEOUT")
+            or "600"
+        )
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        image_url=None,
+        quality: str | None = None,
+        size: str | None = None,
+        aspect_ratio: str | None = None,
+        output_dir: str = ".",
+    ) -> list[str]:
+        payload = {
+            "prompt": prompt,
+            "image_url": image_url,
+            "quality": quality,
+            "size": size,
+            "aspect_ratio": aspect_ratio,
+            "output_dir": output_dir,
+            "model": self.model,
+        }
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        proc = subprocess.run(
+            self.command,
+            input=json.dumps(payload, ensure_ascii=False),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=self.timeout,
+            env=env,
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(f"external broker exited {proc.returncode}: {detail}")
+
+        try:
+            result = json.loads(proc.stdout)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"external broker returned invalid JSON: {e}") from e
+
+        if result.get("error"):
+            raise RuntimeError(str(result["error"]))
+
+        return self._extract_images(result, output_dir)
+
+    @staticmethod
+    def _extract_images(result: dict, output_dir: str) -> list[str]:
+        items = result.get("images") or result.get("data") or []
+        if isinstance(items, dict):
+            items = [items]
+        paths: list[str] = []
+        for item in items:
+            if isinstance(item, str):
+                paths.append(_save_result_image(item, output_dir))
+                continue
+            if not isinstance(item, dict):
+                continue
+            if item.get("b64_json"):
+                paths.append(_save_image(base64.b64decode(item["b64_json"]), output_dir))
+            elif item.get("url"):
+                paths.append(_save_result_image(item["url"], output_dir))
+            elif item.get("path"):
+                paths.append(_save_result_image(item["path"], output_dir))
+        if not paths:
+            raise RuntimeError(f"external broker returned no image: {result}")
         return paths
 
 
@@ -436,10 +1112,10 @@ class LinkAIProvider(ImageProvider):
 
 
 # ---------------------------------------------------------------------------
-# Gemini provider (Nano Banana family — gemini-*-image-*)
+# Gemini provider (Nano Banana family 鈥?gemini-*-image-*)
 # ---------------------------------------------------------------------------
 
-# Friendly aliases → real Gemini model id
+# Friendly aliases 鈫?real Gemini model id
 _GEMINI_MODEL_ALIASES = {
     "nano-banana": "gemini-2.5-flash-image",
     "nano-banana-2": "gemini-3.1-flash-image-preview",
@@ -598,7 +1274,7 @@ def _pixels_to_ratio(pixel_str: str) -> str | None:
 # Seedream provider (Volcengine Ark, OpenAI-compatible /images/generations)
 # ---------------------------------------------------------------------------
 
-# Friendly aliases → real Seedream model id (Ark Model IDs).
+# Friendly aliases 鈫?real Seedream model id (Ark Model IDs).
 _SEEDREAM_MODEL_ALIASES = {
     "seedream": "doubao-seedream-5-0-260128",
     "seedream-lite": "doubao-seedream-5-0-260128",
@@ -763,7 +1439,7 @@ class SeedreamProvider(ImageProvider):
 # Qwen provider (DashScope multimodal-generation: qwen-image-* family)
 # ---------------------------------------------------------------------------
 
-# Friendly aliases → real Qwen model id
+# Friendly aliases 鈫?real Qwen model id
 _QWEN_MODEL_ALIASES = {
     "qwen": "qwen-image-2.0-pro",
     "qwen-image": "qwen-image-2.0-pro",
@@ -782,7 +1458,7 @@ _QWEN_SIZE_TABLE = {
     ("1K", "3:2"): "1248*832",
     ("1K", "2:3"): "832*1248",
     ("2K", "1:1"): "2048*2048",
-    ("2K", "16:9"): "2688*1536",  # exceeds 2048 cap → clamped at runtime if needed
+    ("2K", "16:9"): "2688*1536",  # exceeds 2048 cap 鈫?clamped at runtime if needed
     ("2K", "9:16"): "1536*2688",
     ("2K", "4:3"): "2368*1728",
     ("2K", "3:4"): "1728*2368",
@@ -830,7 +1506,7 @@ class QwenProvider(ImageProvider):
             "input": {"messages": [{"role": "user", "content": content}]},
         }
 
-        # Map (size, aspect_ratio) → Qwen "W*H"
+        # Map (size, aspect_ratio) 鈫?Qwen "W*H"
         qwen_size = self._resolve_qwen_size(size, aspect_ratio)
         if qwen_size:
             payload["parameters"] = {"size": qwen_size}
@@ -895,7 +1571,7 @@ class QwenProvider(ImageProvider):
 # MiniMax provider (image-01 family)
 # ---------------------------------------------------------------------------
 
-# Friendly aliases → real MiniMax model id
+# Friendly aliases 鈫?real MiniMax model id
 _MINIMAX_MODEL_ALIASES = {
     "minimax": "image-01",
     "minimax-image": "image-01",
@@ -939,7 +1615,7 @@ class MinimaxProvider(ImageProvider):
         if ratio and ratio in _MINIMAX_SUPPORTED_RATIOS:
             payload["aspect_ratio"] = ratio
 
-        # Image-to-image uses subject_reference; accept URL or local file (→ base64).
+        # Image-to-image uses subject_reference; accept URL or local file (鈫?base64).
         if image_url:
             urls = image_url if isinstance(image_url, list) else [image_url]
             refs = []
@@ -997,10 +1673,12 @@ class MinimaxProvider(ImageProvider):
 # Provider factory
 # ---------------------------------------------------------------------------
 
-# Model-prefix → preferred provider label.
+# Model-prefix 鈫?preferred provider label.
 # When the requested model matches a prefix, that provider is promoted to the
 # front of the queue. All other configured providers still run as fallbacks.
 _MODEL_PREFERRED_PROVIDER: list[tuple[tuple[str, ...], str]] = [
+    (("codex", "codex-auth", "codex_auth"), "CodexAuth"),
+    (("broker", "external-broker", "local-broker"), "Broker"),
     (("gpt-image",), "OpenAI"),
     (("nano-banana", "gemini-"), "Gemini"),
     (("seedream", "doubao-seedream"), "Seedream"),
@@ -1009,7 +1687,7 @@ _MODEL_PREFERRED_PROVIDER: list[tuple[tuple[str, ...], str]] = [
 ]
 
 # Default global priority when the model has no preferred provider.
-_DEFAULT_PROVIDER_ORDER = ["OpenAI", "Gemini", "Seedream", "Qwen", "MiniMax", "LinkAI"]
+_DEFAULT_PROVIDER_ORDER = ["CodexAuth", "Broker", "OpenAI", "Gemini", "Seedream", "Qwen", "MiniMax", "LinkAI"]
 
 
 def _preferred_provider(model: str) -> str | None:
@@ -1020,20 +1698,33 @@ def _preferred_provider(model: str) -> str | None:
     return None
 
 
-def _build_providers(model: str) -> list[tuple[str, ImageProvider]]:
+def _build_providers(
+    model: str,
+    *,
+    runtime: str = "",
+    broker_only: bool = False,
+) -> list[tuple[str, ImageProvider]]:
     """Build an ordered list of (label, provider) to try.
 
     Behaviour:
       1. All providers with a configured API key are added in the global
-         priority order: OpenAI → Gemini → Seedream → Qwen → MiniMax → LinkAI.
+         priority order: OpenAI 鈫?Gemini 鈫?Seedream 鈫?Qwen 鈫?MiniMax 鈫?LinkAI.
       2. If `model` natively belongs to one of the providers AND that provider
          is configured, it is promoted to the front so it gets the first
          attempt with the right model id.
       3. If the preferred provider is NOT configured (no API key), the model
          id would 100% fail on every other backend, so we drop the explicit
-         model and fall back to automatic routing — every provider then uses
+         model and fall back to automatic routing 鈥?every provider then uses
          its own DEFAULT_MODEL.
     """
+    broker_command = _broker_command_from_env()
+    if _is_codex_auth_runtime(runtime):
+        return [("CodexAuth", CodexAuthProvider(model=model))]
+    if broker_only:
+        if not broker_command:
+            return []
+        return [("Broker", ExternalBrokerProvider(command=broker_command, model=model))]
+
     keys = {
         "OpenAI": os.environ.get("OPENAI_API_KEY", ""),
         "Gemini": os.environ.get("GEMINI_API_KEY", ""),
@@ -1054,8 +1745,11 @@ def _build_providers(model: str) -> list[tuple[str, ImageProvider]]:
     pref = _preferred_provider(model)
 
     # If a specific model is requested and its native provider has no key,
-    # other backends won't recognise the id → reset to auto routing.
-    if pref and not keys.get(pref):
+    # other backends won't recognise the id 鈫?reset to auto routing.
+    if pref == "Broker" and not broker_command:
+        model = ""
+        pref = None
+    elif pref and pref != "Broker" and not keys.get(pref):
         model = ""
         pref = None
 
@@ -1068,11 +1762,18 @@ def _build_providers(model: str) -> list[tuple[str, ImageProvider]]:
         "LinkAI": LinkAIProvider,
     }
     available: dict[str, ImageProvider] = {}
+    if os.environ.get("SKILL_IMAGE_GENERATION_ENABLE_CODEX_AUTH_FALLBACK", "").lower() in {"1", "true", "yes"}:
+        try:
+            available["CodexAuth"] = CodexAuthProvider(model=model)
+        except Exception:
+            pass
+    if broker_command:
+        available["Broker"] = ExternalBrokerProvider(command=broker_command, model=model)
     for label, key in keys.items():
         if key:
             available[label] = factories[label](api_key=key, api_base=bases[label], model=model)
 
-    # When a specific model is pinned, only try its native provider — other
+    # When a specific model is pinned, only try its native provider 鈥?other
     # backends won't recognise the model id so retrying them is pointless.
     if pref and pref in available:
         return [(pref, available[pref])]
@@ -1097,7 +1798,7 @@ def main():
     try:
         raw = sys.argv[1]
         raw = raw.replace('\u201c', '"').replace('\u201d', '"').replace('\u2018', "'").replace('\u2019', "'")
-        args = json.loads(raw)
+        args = _normalize_call_args(json.loads(raw))
     except json.JSONDecodeError as e:
         print(json.dumps({"error": f"Invalid JSON: {e}"}))
         sys.exit(1)
@@ -1107,32 +1808,73 @@ def main():
         print(json.dumps({"error": "Missing required parameter: prompt"}))
         sys.exit(1)
 
+    runtime = _runtime_from_args_or_env(args)
+    if _requests_codex_session_auth(args) and not runtime:
+        runtime = "codex_auth"
+    if _requests_codex_session_auth(args) and not _is_codex_auth_runtime(runtime):
+        print(json.dumps({"error": _codex_session_auth_error()}, ensure_ascii=False))
+        sys.exit(1)
+
     # Model resolution priority:
     #   1. Explicit `model` in the call args (agent / user override)
     #   2. SKILL_IMAGE_GENERATION_MODEL env var (synced from
     #      config["skill"]["image-generation"]["model"] at startup)
-    #   3. None → fall back to automatic provider routing (try every
+    #   3. None 鈫?fall back to automatic provider routing (try every
     #      provider with a configured API key in global priority order)
     model = args.get("model") or os.environ.get("SKILL_IMAGE_GENERATION_MODEL") or ""
     quality = args.get("quality")
     size = args.get("size")
     aspect_ratio = args.get("aspect_ratio")
     image_url = args.get("image_url")
+    broker_only = _is_broker_only_runtime(runtime)
+    allow_fallback = _truthy(args.get("fallback")) or _truthy(
+        os.environ.get("SKILL_IMAGE_GENERATION_FALLBACK")
+        or os.environ.get("IMAGE_GENERATION_FALLBACK")
+    )
 
-    output_dir = os.environ.get("IMAGE_OUTPUT_DIR", os.path.join(os.getcwd(), "images"))
+    output_dir = str(args.get("output_dir") or os.environ.get("IMAGE_OUTPUT_DIR", os.path.join(os.getcwd(), "images")))
 
-    providers = _build_providers(model)
+    try:
+        providers = _build_providers(model, runtime=runtime, broker_only=broker_only)
+    except Exception as e:
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
+        sys.exit(1)
     if not providers:
         target = f"model '{model}'" if model else "image generation"
+        if broker_only:
+            print(json.dumps({
+                "error": (
+                    "Codex broker runtime is enabled for image generation, but no "
+                    "broker command is configured. Start the Codex image broker "
+                    "and set IMAGE_GENERATION_BROKER_COMMAND_JSON, "
+                    "SKILL_IMAGE_GENERATION_BROKER_COMMAND_JSON, "
+                    "IMAGE_GENERATION_BROKER_COMMAND, or CODEX_IMAGE_GEN_COMMAND. "
+                    "CowWechat will not use API providers in codex_broker runtime."
+                )
+            }, ensure_ascii=False))
+            sys.exit(1)
+        if _is_codex_auth_runtime(runtime):
+            print(json.dumps({
+                "error": (
+                    "Codex auth runtime is enabled for image generation, but "
+                    "the local Codex auth file could not be loaded. Run `codex login` "
+                    "or set CODEX_AUTH_FILE to the Codex auth JSON file, then try again."
+                )
+            }, ensure_ascii=False))
+            sys.exit(1)
         print(json.dumps({
             "error": (
                 f"No API key configured for {target}. "
-                "Set at least one of OPENAI_API_KEY / GEMINI_API_KEY / "
+                "Set IMAGE_GENERATION_BROKER_COMMAND_JSON, "
+                "IMAGE_GENERATION_BROKER_COMMAND, CODEX_IMAGE_GEN_COMMAND, "
+                "or at least one of OPENAI_API_KEY / GEMINI_API_KEY / "
                 "ARK_API_KEY / DASHSCOPE_API_KEY / MINIMAX_API_KEY / "
                 "LINKAI_API_KEY via the env_config tool, then try again."
             )
         }, ensure_ascii=False))
         sys.exit(1)
+    if not allow_fallback and len(providers) > 1:
+        providers = providers[:1]
 
     errors = []
     for label, provider in providers:
@@ -1152,7 +1894,7 @@ def main():
             # Resolved model id (after alias expansion) actually sent to the API
             actual_model = getattr(provider, "model", model)
             print(
-                f"[image-generation] ✅ {label} succeeded in {elapsed:.1f}s "
+                f"[image-generation] OK {label} succeeded in {elapsed:.1f}s "
                 f"(model={actual_model})",
                 file=sys.stderr,
             )
@@ -1164,19 +1906,32 @@ def main():
             return
         except Exception as e:
             elapsed = time.time() - t0
-            print(f"[image-generation] ❌ {label} failed in {elapsed:.1f}s: {e}", file=sys.stderr)
+            print(f"[image-generation] FAILED {label} in {elapsed:.1f}s: {e}", file=sys.stderr)
             errors.append(f"{label}: {e}")
+            if not allow_fallback:
+                break
 
     hint = " | ".join(errors)
-    print(json.dumps({
-        "error": f"All providers failed — {hint}. "
-                 "This is likely an API key or base URL configuration issue. "
-                 "Do NOT retry with the same parameters. "
-                 "Ask the user to verify their API key / base URL "
-                 "(OPENAI_API_KEY, GEMINI_API_KEY, ARK_API_KEY, "
-                 "DASHSCOPE_API_KEY, MINIMAX_API_KEY, or LINKAI_API_KEY) "
-                 "via env_config."
-    }, ensure_ascii=False))
+    prefix = "Provider failed" if not allow_fallback else "All providers failed"
+    if broker_only:
+        print(json.dumps({
+            "error": f"Codex image broker failed: {hint}. "
+                     "CowWechat did not try API providers. Verify that the "
+                     "Codex image broker is running in the logged-in Codex "
+                     "environment and that its command is configured correctly."
+        }, ensure_ascii=True))
+    else:
+        print(json.dumps({
+            "error": f"{prefix}: {hint}. "
+                     "This is likely an API key or base URL configuration issue. "
+                     "Do NOT retry with the same parameters. "
+                     "Ask the user to verify their API key / base URL "
+                     "(or external broker command: IMAGE_GENERATION_BROKER_COMMAND_JSON, "
+                     "IMAGE_GENERATION_BROKER_COMMAND, CODEX_IMAGE_GEN_COMMAND; "
+                     "API keys: OPENAI_API_KEY, GEMINI_API_KEY, ARK_API_KEY, "
+                     "DASHSCOPE_API_KEY, MINIMAX_API_KEY, or LINKAI_API_KEY) "
+                     "via env_config."
+        }, ensure_ascii=True))
     sys.exit(1)
 
 

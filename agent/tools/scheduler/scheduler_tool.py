@@ -3,7 +3,7 @@ Scheduler tool for creating and managing scheduled tasks
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 from croniter import croniter
 
@@ -196,6 +196,10 @@ class SchedulerTool(BaseTool):
             "enabled": True,
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
+            "owner_actor_id": context.get("actor_id"),
+            "owner_role": context.get("actor_role", "user"),
+            "owner_memory_user_id": context.get("memory_user_id"),
+            "owner_conversation_id": context.get("conversation_id"),
             "schedule": schedule,
             "action": action
         }
@@ -204,32 +208,116 @@ class SchedulerTool(BaseTool):
         next_run = self._calculate_next_run(task_data)
         if next_run:
             task_data["next_run_at"] = next_run.isoformat()
+
+        duplicate = self._find_recent_duplicate_task(task_data)
+        if duplicate:
+            logger.warning(
+                f"[SchedulerTool] Reusing duplicate task {duplicate.get('id')} "
+                f"for create request '{name}'"
+            )
+            return self._format_create_response(duplicate, duplicate=True)
         
         # Save task
         self.task_store.add_task(task_data)
-        
-        # Format response
+        return self._format_create_response(task_data)
+
+    def _format_create_response(self, task_data: dict, duplicate: bool = False) -> str:
+        """Format the create response for a new or reused task."""
+        schedule = task_data.get("schedule", {})
+        action = task_data.get("action", {}) or {}
+        next_run = None
+        next_run_str = task_data.get("next_run_at")
+        if next_run_str:
+            try:
+                next_run = datetime.fromisoformat(next_run_str)
+            except Exception:
+                next_run = None
+
         schedule_desc = self._format_schedule_description(schedule)
-        receiver_desc = task_data["action"]["receiver_name"] or task_data["action"]["receiver"]
-        
-        if message:
-            content_desc = f"💬 固定消息: {message}"
+        receiver_desc = action.get("receiver_name") or action.get("receiver")
+
+        if action.get("type") == "send_message":
+            content_desc = f"💬 固定消息: {action.get('content', '')}"
         else:
-            content_desc = f"🤖 AI任务: {ai_task}"
-        
+            content_desc = f"🤖 AI任务: {action.get('task_description', '')}"
+
+        title = "✅ 相同定时任务已存在，未重复创建" if duplicate else "✅ 定时任务创建成功"
         return (
-            f"✅ 定时任务创建成功\n\n"
-            f"📋 任务ID: {task_id}\n"
-            f"📝 名称: {name}\n"
+            f"{title}\n\n"
+            f"📋 任务ID: {task_data.get('id')}\n"
+            f"📝 名称: {task_data.get('name')}\n"
             f"⏰ 调度: {schedule_desc}\n"
             f"👤 接收者: {receiver_desc}\n"
             f"{content_desc}\n"
             f"🕐 下次执行: {next_run.strftime('%Y-%m-%d %H:%M:%S') if next_run else '未知'}"
         )
+
+    def _find_recent_duplicate_task(self, candidate: dict) -> Optional[dict]:
+        """Find an equivalent task created moments ago by the same owner."""
+        try:
+            for existing in self.task_store.list_tasks(enabled_only=True):
+                if existing.get("id") == candidate.get("id"):
+                    continue
+                if self._is_recent_duplicate_task(existing, candidate):
+                    return existing
+        except Exception as e:
+            logger.warning(f"[SchedulerTool] Duplicate task check failed: {e}")
+        return None
+
+    def _is_recent_duplicate_task(self, existing: dict, candidate: dict) -> bool:
+        if existing.get("name") != candidate.get("name"):
+            return False
+        if self._task_owner(existing) != self._task_owner(candidate):
+            return False
+        if not self._created_within_duplicate_window(existing, candidate):
+            return False
+        if not self._actions_match(existing.get("action", {}), candidate.get("action", {})):
+            return False
+        return self._schedules_match(existing.get("schedule", {}), candidate.get("schedule", {}))
+
+    @staticmethod
+    def _created_within_duplicate_window(existing: dict, candidate: dict) -> bool:
+        try:
+            existing_created = datetime.fromisoformat(existing.get("created_at", ""))
+            candidate_created = datetime.fromisoformat(candidate.get("created_at", ""))
+        except Exception:
+            return False
+        return abs(candidate_created - existing_created) <= timedelta(seconds=30)
+
+    @staticmethod
+    def _actions_match(existing: dict, candidate: dict) -> bool:
+        fields = ("type", "receiver", "is_group", "channel_type", "notify_session_id")
+        if any(existing.get(field) != candidate.get(field) for field in fields):
+            return False
+
+        action_type = candidate.get("type")
+        if action_type == "send_message":
+            return existing.get("content") == candidate.get("content")
+        if action_type == "agent_task":
+            return existing.get("task_description") == candidate.get("task_description")
+        return False
+
+    @staticmethod
+    def _schedules_match(existing: dict, candidate: dict) -> bool:
+        schedule_type = candidate.get("type")
+        if existing.get("type") != schedule_type:
+            return False
+        if schedule_type == "cron":
+            return existing.get("expression") == candidate.get("expression")
+        if schedule_type == "interval":
+            return existing.get("seconds") == candidate.get("seconds")
+        if schedule_type == "once":
+            try:
+                existing_run_at = datetime.fromisoformat(existing.get("run_at", ""))
+                candidate_run_at = datetime.fromisoformat(candidate.get("run_at", ""))
+            except Exception:
+                return False
+            return abs(candidate_run_at - existing_run_at) <= timedelta(seconds=5)
+        return False
     
     def _list_tasks(self, **kwargs) -> str:
         """List all tasks"""
-        tasks = self.task_store.list_tasks()
+        tasks = self._filter_visible_tasks(self.task_store.list_tasks())
         
         if not tasks:
             return "📋 暂无定时任务"
@@ -260,6 +348,9 @@ class SchedulerTool(BaseTool):
             return f"错误: 任务 '{task_id}' 不存在"
         
         status = "启用" if task.get("enabled", True) else "禁用"
+        if not self._can_manage_task(task):
+            return "错误: 无权限查看该任务"
+
         schedule_desc = self._format_schedule_description(task.get("schedule", {}))
         action = task.get("action", {})
         next_run = task.get("next_run_at")
@@ -290,6 +381,9 @@ class SchedulerTool(BaseTool):
         if not task:
             return f"错误: 任务 '{task_id}' 不存在"
         
+        if not self._can_manage_task(task):
+            return "错误: 无权限删除该任务"
+
         self.task_store.delete_task(task_id)
         return f"✅ 任务 '{task['name']}' ({task_id}) 已删除"
     
@@ -303,6 +397,9 @@ class SchedulerTool(BaseTool):
         if not task:
             return f"错误: 任务 '{task_id}' 不存在"
         
+        if not self._can_manage_task(task):
+            return "错误: 无权限启用该任务"
+
         self.task_store.enable_task(task_id, True)
         return f"✅ 任务 '{task['name']}' ({task_id}) 已启用"
     
@@ -316,9 +413,42 @@ class SchedulerTool(BaseTool):
         if not task:
             return f"错误: 任务 '{task_id}' 不存在"
         
+        if not self._can_manage_task(task):
+            return "错误: 无权限禁用该任务"
+
         self.task_store.enable_task(task_id, False)
         return f"✅ 任务 '{task['name']}' ({task_id}) 已禁用"
     
+    def _filter_visible_tasks(self, tasks):
+        owner = self._owner_actor_id()
+        if not owner:
+            return []
+        return [task for task in tasks if self._task_owner(task) == owner]
+
+    def _can_manage_task(self, task: dict) -> bool:
+        owner = self._owner_actor_id()
+        return bool(owner and self._task_owner(task) == owner)
+
+    def _owner_actor_id(self) -> Optional[str]:
+        context = self.current_context
+        if context:
+            owner = context.get("actor_id")
+            if owner:
+                return owner
+        return None
+
+    @staticmethod
+    def _task_owner(task: dict) -> Optional[str]:
+        owner = task.get("owner_actor_id")
+        if owner:
+            return owner
+        action = task.get("action", {}) or {}
+        channel_type = action.get("channel_type")
+        legacy_user_id = action.get("notify_session_id")
+        if channel_type and legacy_user_id:
+            return f"{channel_type}:{legacy_user_id}"
+        return None
+
     def _parse_schedule(self, schedule_type: str, schedule_value: str) -> Optional[dict]:
         """Parse and validate schedule configuration"""
         try:

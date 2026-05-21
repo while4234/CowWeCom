@@ -766,6 +766,7 @@ class WebChannel(ChatChannel):
             '/api/sessions/(.*)/clear_context', 'SessionClearContextHandler',
             '/api/sessions/(.*)', 'SessionDetailHandler',
             '/api/history', 'HistoryHandler',
+            '/api/cache-usage', 'CacheUsageHandler',
             '/api/logs', 'LogsHandler',
             '/api/version', 'VersionHandler',
             '/assets/(.*)', 'AssetsHandler',
@@ -1578,6 +1579,107 @@ class WeixinQrHandler:
     """
 
     _qr_state = {}
+    _qr_poll_threads = {}
+
+    @staticmethod
+    def _normalize_instance(instance_id: str) -> str:
+        instance_id = str(instance_id or "weixin").strip()
+        if instance_id == "wx":
+            return "weixin"
+        if instance_id == "weixin" or instance_id.startswith("weixin_"):
+            return instance_id
+        raise ValueError("invalid weixin instance")
+
+    @staticmethod
+    def _default_credentials_path(instance_id: str) -> str:
+        if instance_id == "weixin":
+            return conf().get("weixin_credentials_path", "~/.weixin_cow_credentials.json")
+        suffix = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in instance_id)
+        return f"~/.weixin_cow_credentials_{suffix}.json"
+
+    @staticmethod
+    def _instance_config(instance_id: str) -> dict:
+        instances = conf().get("weixin_instances", {}) or {}
+        if not isinstance(instances, dict):
+            return {}
+        value = instances.get(instance_id, {}) or {}
+        return value if isinstance(value, dict) else {}
+
+    @classmethod
+    def _raw_credentials_path(cls, instance_id: str) -> str:
+        return cls._instance_config(instance_id).get(
+            "credentials_path",
+            cls._default_credentials_path(instance_id),
+        )
+
+    @classmethod
+    def _credentials_path(cls, instance_id: str) -> str:
+        return os.path.expanduser(cls._raw_credentials_path(instance_id))
+
+    @classmethod
+    def _base_url(cls, instance_id: str) -> str:
+        return cls._instance_config(instance_id).get(
+            "base_url",
+            conf().get("weixin_base_url", "https://ilinkai.weixin.qq.com"),
+        )
+
+    @staticmethod
+    def _channel_list(raw) -> list:
+        if isinstance(raw, list):
+            return [str(ch).strip() for ch in raw if str(ch).strip()]
+        if isinstance(raw, str):
+            return [ch.strip() for ch in raw.split(",") if ch.strip()]
+        return []
+
+    @staticmethod
+    def _save_config_patch(patch: dict):
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8-sig") as f:
+                file_cfg = json.load(f)
+        else:
+            file_cfg = {}
+        file_cfg.update(patch)
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(file_cfg, f, indent=4, ensure_ascii=False)
+
+    @staticmethod
+    def _get_manager():
+        try:
+            import sys
+            app_module = sys.modules.get('__main__') or sys.modules.get('app')
+            return getattr(app_module, '_channel_mgr', None) if app_module else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _start_background_poll(cls, instance_id: str):
+        current = cls._qr_poll_threads.get(instance_id)
+        if current and current.is_alive():
+            return
+
+        def _worker():
+            deadline = time.time() + 130
+            handler = cls()
+            try:
+                while time.time() < deadline:
+                    time.sleep(2)
+                    if instance_id not in cls._qr_state:
+                        break
+                    try:
+                        data = json.loads(handler._poll_status(instance_id))
+                    except Exception as e:
+                        logger.warning(f"[WebChannel] WeixinQr background poll error: {e}")
+                        continue
+                    if data.get("qr_status") in ("confirmed", "expired"):
+                        break
+            finally:
+                cls._qr_poll_threads.pop(instance_id, None)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        cls._qr_poll_threads[instance_id] = thread
+        thread.start()
 
     @staticmethod
     def _qr_to_data_uri(data: str) -> str:
@@ -1598,33 +1700,31 @@ class WeixinQrHandler:
             return ""
 
     @staticmethod
-    def _get_running_channel():
-        try:
-            import sys
-            app_module = sys.modules.get('__main__') or sys.modules.get('app')
-            mgr = getattr(app_module, '_channel_mgr', None) if app_module else None
-            if mgr:
-                return mgr.get_channel("weixin")
-        except Exception:
-            pass
+    def _get_running_channel(instance_id: str = "weixin"):
+        mgr = WeixinQrHandler._get_manager()
+        if mgr:
+            return mgr.get_channel(instance_id)
         return None
 
     def GET(self):
         _require_auth()
         web.header('Content-Type', 'application/json; charset=utf-8')
         try:
-            running_ch = self._get_running_channel()
+            params = web.input(instance="weixin")
+            instance_id = self._normalize_instance(params.instance)
+            running_ch = self._get_running_channel(instance_id)
             if running_ch and hasattr(running_ch, '_current_qr_url') and running_ch._current_qr_url:
                 qr_image = self._qr_to_data_uri(running_ch._current_qr_url)
                 return json.dumps({
                     "status": "success",
+                    "instance": instance_id,
                     "qrcode_url": running_ch._current_qr_url,
                     "qr_image": qr_image,
                     "source": "channel",
                 })
 
             from channel.weixin.weixin_api import WeixinApi, DEFAULT_BASE_URL
-            base_url = conf().get("weixin_base_url", DEFAULT_BASE_URL)
+            base_url = self._base_url(instance_id) or DEFAULT_BASE_URL
             api = WeixinApi(base_url=base_url)
             qr_resp = api.fetch_qr_code()
             qrcode = qr_resp.get("qrcode", "")
@@ -1632,12 +1732,19 @@ class WeixinQrHandler:
             if not qrcode:
                 return json.dumps({"status": "error", "message": "No QR code returned"})
             qr_image = self._qr_to_data_uri(qrcode_url)
-            WeixinQrHandler._qr_state = {
+            WeixinQrHandler._qr_state[instance_id] = {
                 "qrcode": qrcode,
                 "qrcode_url": qrcode_url,
                 "base_url": base_url,
+                "instance": instance_id,
             }
-            return json.dumps({"status": "success", "qrcode_url": qrcode_url, "qr_image": qr_image})
+            self._start_background_poll(instance_id)
+            return json.dumps({
+                "status": "success",
+                "instance": instance_id,
+                "qrcode_url": qrcode_url,
+                "qr_image": qr_image,
+            })
         except Exception as e:
             logger.error(f"[WebChannel] WeixinQr GET error: {e}")
             return json.dumps({"status": "error", "message": str(e)})
@@ -1648,9 +1755,11 @@ class WeixinQrHandler:
         try:
             body = json.loads(web.data())
             action = body.get("action", "poll")
+            params = web.input(instance="")
+            instance_id = self._normalize_instance(body.get("instance") or params.instance or "weixin")
 
             if action == "poll":
-                return self._poll_status()
+                return self._poll_status(instance_id)
             elif action == "refresh":
                 return self.GET()
             else:
@@ -1659,8 +1768,8 @@ class WeixinQrHandler:
             logger.error(f"[WebChannel] WeixinQr POST error: {e}")
             return json.dumps({"status": "error", "message": str(e)})
 
-    def _poll_status(self):
-        state = WeixinQrHandler._qr_state
+    def _poll_status(self, instance_id: str = "weixin"):
+        state = WeixinQrHandler._qr_state.get(instance_id, {})
         qrcode = state.get("qrcode", "")
         base_url = state.get("base_url", "")
         if not qrcode:
@@ -1684,9 +1793,7 @@ class WeixinQrHandler:
             if not bot_token or not bot_id:
                 return json.dumps({"status": "error", "message": "Login confirmed but missing token"})
 
-            cred_path = os.path.expanduser(
-                conf().get("weixin_credentials_path", "~/.weixin_cow_credentials.json")
-            )
+            cred_path = self._credentials_path(instance_id)
             from channel.weixin.weixin_channel import _save_credentials
             _save_credentials(cred_path, {
                 "token": bot_token,
@@ -1694,14 +1801,38 @@ class WeixinQrHandler:
                 "bot_id": bot_id,
                 "user_id": user_id,
             })
-            conf()["weixin_token"] = bot_token
-            conf()["weixin_base_url"] = result_base_url
+            if instance_id == "weixin":
+                conf()["weixin_token"] = bot_token
+                conf()["weixin_base_url"] = result_base_url
+            else:
+                instances = conf().get("weixin_instances", {}) or {}
+                if not isinstance(instances, dict):
+                    instances = {}
+                inst_conf = dict(instances.get(instance_id, {}) or {})
+                inst_conf["credentials_path"] = self._raw_credentials_path(instance_id)
+                inst_conf["base_url"] = result_base_url
+                instances[instance_id] = inst_conf
+                conf()["weixin_instances"] = instances
 
-            WeixinQrHandler._qr_state = {}
-            logger.info(f"[WebChannel] WeChat QR login confirmed: bot_id={bot_id}")
+                channels = self._channel_list(conf().get("channel_type", ""))
+                if instance_id not in channels:
+                    channels.append(instance_id)
+                conf()["channel_type"] = ",".join(channels)
+                self._save_config_patch({
+                    "weixin_instances": instances,
+                    "channel_type": conf()["channel_type"],
+                })
+
+                mgr = self._get_manager()
+                if mgr:
+                    threading.Thread(target=mgr.add_channel, args=(instance_id,), daemon=True).start()
+
+            WeixinQrHandler._qr_state.pop(instance_id, None)
+            logger.info(f"[WebChannel] WeChat QR login confirmed: instance={instance_id} bot_id={bot_id}")
 
             return json.dumps({
                 "status": "success",
+                "instance": instance_id,
                 "qr_status": "confirmed",
                 "bot_id": bot_id,
             })
@@ -1711,16 +1842,18 @@ class WeixinQrHandler:
             new_qrcode = new_resp.get("qrcode", "")
             new_qrcode_url = new_resp.get("qrcode_img_content", "")
             new_qr_image = self._qr_to_data_uri(new_qrcode_url)
-            WeixinQrHandler._qr_state["qrcode"] = new_qrcode
-            WeixinQrHandler._qr_state["qrcode_url"] = new_qrcode_url
+            WeixinQrHandler._qr_state.setdefault(instance_id, {})
+            WeixinQrHandler._qr_state[instance_id]["qrcode"] = new_qrcode
+            WeixinQrHandler._qr_state[instance_id]["qrcode_url"] = new_qrcode_url
             return json.dumps({
                 "status": "success",
+                "instance": instance_id,
                 "qr_status": "expired",
                 "qrcode_url": new_qrcode_url,
                 "qr_image": new_qr_image,
             })
 
-        return json.dumps({"status": "success", "qr_status": qr_status})
+        return json.dumps({"status": "success", "instance": instance_id, "qr_status": qr_status})
 
 
 class FeishuRegisterHandler:
@@ -2220,6 +2353,20 @@ class LogsHandler:
                 return
 
         return generate()
+
+
+class CacheUsageHandler:
+    def GET(self):
+        _require_auth()
+        web.header('Content-Type', 'application/json; charset=utf-8')
+        try:
+            params = web.input(limit='50')
+            from common.llm_usage_tracker import get_cache_usage_report
+            report = get_cache_usage_report(limit=int(params.limit or 50))
+            return json.dumps({"status": "success", **report}, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[WebChannel] Cache usage API error: {e}")
+            return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
 
 
 class AssetsHandler:

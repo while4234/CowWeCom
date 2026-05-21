@@ -5,6 +5,7 @@ Provides high-level interface for memory operations
 """
 
 import os
+import threading
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 import hashlib
@@ -15,6 +16,9 @@ from agent.memory.storage import MemoryStorage, MemoryChunk, SearchResult
 from agent.memory.chunker import TextChunker
 from agent.memory.embedding import EmbeddingProvider
 from agent.memory.summarizer import MemoryFlushManager, create_memory_files_if_needed
+
+
+_memory_index_lock = threading.RLock()
 
 
 class MemoryManager:
@@ -225,17 +229,18 @@ class MemoryManager:
             ))
         
         # Save to storage
-        self.storage.save_chunks_batch(memory_chunks)
-        
-        # Update file metadata
-        file_hash = MemoryStorage.compute_hash(content)
-        self.storage.update_file_metadata(
-            path=path,
-            source=source,
-            file_hash=file_hash,
-            mtime=int(os.path.getmtime(__file__)),  # Use current time
-            size=len(content)
-        )
+        with _memory_index_lock:
+            self.storage.save_chunks_batch(memory_chunks)
+
+            # Update file metadata
+            file_hash = MemoryStorage.compute_hash(content)
+            self.storage.update_file_metadata(
+                path=path,
+                source=source,
+                file_hash=file_hash,
+                mtime=int(os.path.getmtime(__file__)),  # Use current time
+                size=len(content)
+            )
     
     async def sync(self, force: bool = False):
         """
@@ -359,40 +364,41 @@ class MemoryManager:
                 return
 
         # Pass 3: inline persist — same self-contained reasoning as Pass 1.
-        cursor = 0
-        for entry in pending:
-            n = len(entry["texts"])
-            entry_embeddings = all_embeddings[cursor:cursor + n]
-            cursor += n
+        with _memory_index_lock:
+            cursor = 0
+            for entry in pending:
+                n = len(entry["texts"])
+                entry_embeddings = all_embeddings[cursor:cursor + n]
+                cursor += n
 
-            rel_path = entry["rel_path"]
-            self.storage.delete_by_path(rel_path)
-            memory_chunks = []
-            for chunk, embedding in zip(entry["chunks"], entry_embeddings):
-                chunk_id = self._generate_chunk_id(rel_path, chunk.start_line, chunk.end_line)
-                chunk_hash = MemoryStorage.compute_hash(chunk.text)
-                memory_chunks.append(MemoryChunk(
-                    id=chunk_id,
-                    user_id=entry["user_id"],
-                    scope=entry["scope"],
-                    source=entry["source"],
+                rel_path = entry["rel_path"]
+                self.storage.delete_by_path(rel_path)
+                memory_chunks = []
+                for chunk, embedding in zip(entry["chunks"], entry_embeddings):
+                    chunk_id = self._generate_chunk_id(rel_path, chunk.start_line, chunk.end_line)
+                    chunk_hash = MemoryStorage.compute_hash(chunk.text)
+                    memory_chunks.append(MemoryChunk(
+                        id=chunk_id,
+                        user_id=entry["user_id"],
+                        scope=entry["scope"],
+                        source=entry["source"],
+                        path=rel_path,
+                        start_line=chunk.start_line,
+                        end_line=chunk.end_line,
+                        text=chunk.text,
+                        embedding=embedding,
+                        hash=chunk_hash,
+                        metadata=None,
+                    ))
+                self.storage.save_chunks_batch(memory_chunks)
+                stat = entry["file_path"].stat()
+                self.storage.update_file_metadata(
                     path=rel_path,
-                    start_line=chunk.start_line,
-                    end_line=chunk.end_line,
-                    text=chunk.text,
-                    embedding=embedding,
-                    hash=chunk_hash,
-                    metadata=None,
-                ))
-            self.storage.save_chunks_batch(memory_chunks)
-            stat = entry["file_path"].stat()
-            self.storage.update_file_metadata(
-                path=rel_path,
-                source=entry["source"],
-                file_hash=entry["file_hash"],
-                mtime=int(stat.st_mtime),
-                size=stat.st_size,
-            )
+                    source=entry["source"],
+                    file_hash=entry["file_hash"],
+                    mtime=int(stat.st_mtime),
+                    size=stat.st_size,
+                )
 
         self._dirty = False
 

@@ -532,7 +532,7 @@ class ToolManager:
         if isinstance(agent_tools, dict):
             agent_mcp_names = {
                 name for name, tool in agent_tools.items()
-                if isinstance(tool, McpTool)
+                if isinstance(getattr(tool, "inner", tool), McpTool)
             }
             added = registry_names - agent_mcp_names
             removed = agent_mcp_names - registry_names
@@ -545,7 +545,7 @@ class ToolManager:
 
         elif isinstance(agent_tools, list):
             agent_mcp_names = {
-                t.name for t in agent_tools if isinstance(t, McpTool)
+                t.name for t in agent_tools if isinstance(getattr(t, "inner", t), McpTool)
             }
             added = registry_names - agent_mcp_names
             removed = agent_mcp_names - registry_names
@@ -554,7 +554,7 @@ class ToolManager:
             if removed:
                 agent.tools = [
                     t for t in agent_tools
-                    if not (isinstance(t, McpTool) and t.name in removed)
+                    if not (isinstance(getattr(t, "inner", t), McpTool) and t.name in removed)
                 ]
             for name in added:
                 agent.tools.append(current[name])

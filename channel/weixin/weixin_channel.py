@@ -23,7 +23,6 @@ from channel.weixin.weixin_api import (
 from channel.weixin.weixin_message import WeixinMessage
 from common.expired_dict import ExpiredDict
 from common.log import logger
-from common.singleton import singleton
 from config import conf
 
 MAX_CONSECUTIVE_FAILURES = 3
@@ -46,6 +45,20 @@ def _load_credentials(cred_path: str) -> dict:
     return {}
 
 
+def _safe_instance_id(instance_id: str) -> str:
+    instance_id = str(instance_id or "weixin").strip()
+    if instance_id == "wx":
+        return "weixin"
+    return instance_id or "weixin"
+
+
+def _default_credentials_path(instance_id: str) -> str:
+    if instance_id == "weixin":
+        return conf().get("weixin_credentials_path", "~/.weixin_cow_credentials.json")
+    suffix = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in instance_id)
+    return f"~/.weixin_cow_credentials_{suffix}.json"
+
+
 def _save_credentials(cred_path: str, data: dict):
     """Save credentials to JSON file."""
     os.makedirs(os.path.dirname(cred_path), exist_ok=True)
@@ -57,7 +70,6 @@ def _save_credentials(cred_path: str, data: dict):
         pass
 
 
-@singleton
 class WeixinChannel(ChatChannel):
 
     LOGIN_STATUS_IDLE = "idle"
@@ -65,31 +77,77 @@ class WeixinChannel(ChatChannel):
     LOGIN_STATUS_SCANNED = "scanned"
     LOGIN_STATUS_OK = "logged_in"
 
-    def __init__(self):
+    def __init__(self, instance_id: str = "weixin"):
         super().__init__()
+        self.instance_id = _safe_instance_id(instance_id)
         self.api = None
         self._stop_event = threading.Event()
         self._poll_thread = None
         self._context_tokens = {}  # user_id -> context_token
         self._received_msgs = ExpiredDict(60 * 60 * 7.1)
         self._get_updates_buf = ""
-        self._credentials_path = ""
         self.login_status = self.LOGIN_STATUS_IDLE
         self._current_qr_url = ""
+        self._credentials_path = os.path.expanduser(
+            self._get_instance_value("credentials_path", _default_credentials_path(self.instance_id))
+        )
 
         conf()["single_chat_prefix"] = [""]
+
+    def _instance_config(self) -> dict:
+        instances = conf().get("weixin_instances", {}) or {}
+        if not isinstance(instances, dict):
+            return {}
+        value = instances.get(self.instance_id, {}) or {}
+        return value if isinstance(value, dict) else {}
+
+    def _get_instance_value(self, key: str, default=None):
+        inst = self._instance_config()
+        if key in inst:
+            return inst.get(key)
+        if self.instance_id == "weixin":
+            return conf().get(f"weixin_{key}", default)
+        return default
+
+    def _ensure_api(self) -> bool:
+        if self.api is not None:
+            return True
+
+        base_url = self._get_instance_value("base_url", conf().get("weixin_base_url", DEFAULT_BASE_URL))
+        cdn_base_url = self._get_instance_value("cdn_base_url", conf().get("weixin_cdn_base_url", CDN_BASE_URL))
+        token = self._get_instance_value("token", "")
+
+        if not self._credentials_path:
+            self._credentials_path = os.path.expanduser(
+                self._get_instance_value("credentials_path", _default_credentials_path(self.instance_id))
+            )
+
+        if not token:
+            creds = _load_credentials(self._credentials_path)
+            token = creds.get("token", "")
+            if creds.get("base_url"):
+                base_url = creds["base_url"]
+
+        if not token:
+            logger.error(f"[Weixin] No token available for instance={self.instance_id}, cannot send")
+            return False
+
+        self.api = WeixinApi(base_url=base_url, token=token, cdn_base_url=cdn_base_url)
+        self.login_status = self.LOGIN_STATUS_OK
+        logger.info(f"[Weixin] Reinitialized send API for instance={self.instance_id} from saved credentials")
+        return True
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
     def startup(self):
         self._stop_event.clear()
 
-        base_url = conf().get("weixin_base_url", DEFAULT_BASE_URL)
-        cdn_base_url = conf().get("weixin_cdn_base_url", CDN_BASE_URL)
-        token = conf().get("weixin_token", "")
+        base_url = self._get_instance_value("base_url", conf().get("weixin_base_url", DEFAULT_BASE_URL))
+        cdn_base_url = self._get_instance_value("cdn_base_url", conf().get("weixin_cdn_base_url", CDN_BASE_URL))
+        token = self._get_instance_value("token", "")
 
         self._credentials_path = os.path.expanduser(
-            conf().get("weixin_credentials_path", "~/.weixin_cow_credentials.json")
+            self._get_instance_value("credentials_path", _default_credentials_path(self.instance_id))
         )
 
         if not token:
@@ -476,6 +534,9 @@ class WeixinChannel(ChatChannel):
 
         if not context_token:
             logger.error(f"[Weixin] No context_token for receiver={receiver}, cannot send")
+            return
+
+        if not self._ensure_api():
             return
 
         if reply.type == ReplyType.TEXT:

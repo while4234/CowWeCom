@@ -54,6 +54,7 @@ ref/
 **/.dev.vars
 .cursor/
 .codex/
+.playwright-mcp/
 local/
 node_modules/
 

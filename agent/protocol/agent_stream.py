@@ -11,6 +11,7 @@ from agent.protocol.models import LLMRequest, LLMModel
 from agent.protocol.message_utils import sanitize_claude_messages, compress_turn_to_text_only
 from agent.tools.base_tool import BaseTool, ToolResult
 from common.log import logger
+from common.llm_usage_tracker import normalize_usage
 
 
 # Maximum number of characters of model "reasoning / thinking" content to persist
@@ -228,6 +229,63 @@ class AgentStreamExecutor:
         if len(self.tool_failure_history) > 50:
             self.tool_failure_history = self.tool_failure_history[-50:]
 
+    def _tool_call_fingerprint(self, tool_call: Dict[str, Any]) -> Tuple[str, str]:
+        """Return a stable key for duplicate calls in one LLM turn."""
+        arguments = tool_call.get("arguments", {})
+        try:
+            normalized_args = json.dumps(
+                arguments,
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+        except TypeError:
+            normalized_args = repr(arguments)
+
+        parse_error = tool_call.get("_parse_error")
+        if parse_error:
+            normalized_args = f"{normalized_args}|parse_error:{parse_error}"
+
+        return tool_call.get("name", ""), normalized_args
+
+    def _reuse_duplicate_tool_result(
+        self,
+        duplicate_call: Dict[str, Any],
+        original: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Reuse the first result for an identical same-turn tool call."""
+        original_call = original["tool_call"]
+        original_result = original["result"]
+        result = dict(original_result)
+        result["execution_time"] = 0
+        result["duplicate_skipped"] = True
+        result["duplicate_of_tool_call_id"] = original_call.get("id")
+
+        tool_name = duplicate_call["name"]
+        tool_id = duplicate_call["id"]
+        arguments = duplicate_call.get("arguments", {})
+
+        logger.warning(
+            f"Skipped duplicate same-turn tool call: {tool_name} "
+            f"({tool_id}) duplicates {original_call.get('id')}"
+        )
+
+        self._emit_event("tool_execution_start", {
+            "tool_call_id": tool_id,
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "duplicate_skipped": True,
+            "duplicate_of_tool_call_id": original_call.get("id"),
+        })
+        self._emit_event("tool_execution_end", {
+            "tool_call_id": tool_id,
+            "tool_name": tool_name,
+            **result,
+        })
+
+        return result
+
     def run_stream(self, user_message: str) -> str:
         """
         Execute streaming reasoning loop
@@ -374,8 +432,20 @@ class AgentStreamExecutor:
                 tool_result_blocks = []
 
                 try:
+                    executed_tool_results = {}
                     for tool_call in tool_calls:
-                        result = self._execute_tool(tool_call)
+                        fingerprint = self._tool_call_fingerprint(tool_call)
+                        if fingerprint in executed_tool_results:
+                            result = self._reuse_duplicate_tool_result(
+                                tool_call,
+                                executed_tool_results[fingerprint],
+                            )
+                        else:
+                            result = self._execute_tool(tool_call)
+                            executed_tool_results[fingerprint] = {
+                                "tool_call": tool_call,
+                                "result": result,
+                            }
                         tool_results.append(result)
                         
                         # Debug: Check if tool is being called repeatedly with same args
@@ -392,7 +462,11 @@ class AgentStreamExecutor:
                                 )
                         
                         # Check if this is a file to send
-                        if result.get("status") == "success" and isinstance(result.get("result"), dict):
+                        if (
+                            not result.get("duplicate_skipped")
+                            and result.get("status") == "success"
+                            and isinstance(result.get("result"), dict)
+                        ):
                             result_data = result.get("result")
                             if result_data.get("type") == "file_to_send":
                                 self.files_to_send.append(result_data)
@@ -607,7 +681,7 @@ class AgentStreamExecutor:
         tools_schema = None
         if self.tools:
             tools_schema = []
-            for tool in self.tools.values():
+            for tool in sorted(self.tools.values(), key=lambda item: item.name):
                 tools_schema.append({
                     "name": tool.name,
                     "description": tool.description,
@@ -631,6 +705,7 @@ class AgentStreamExecutor:
         tool_calls_buffer = {}  # {index: {id, name, arguments}}
         gemini_raw_parts = None  # Preserve Gemini thoughtSignature for round-trip
         stop_reason = None  # Track why the stream stopped
+        last_usage = None
 
         try:
             stream = self.model.call_stream(request)
@@ -674,6 +749,12 @@ class AgentStreamExecutor:
                     else:
                         # Raise exception with full error message for retry logic
                         raise Exception(f"{error_msg} (Status: {status_code}, Code: {error_code}, Type: {error_type})")
+
+                if isinstance(chunk, dict) and chunk.get("usage"):
+                    last_usage = normalize_usage(chunk.get("usage") or {})
+                    self.agent.last_usage = last_usage
+                    setattr(self.model, "last_usage", last_usage)
+                    self._emit_event("llm_usage", {"usage": last_usage})
 
                 # Parse chunk
                 if isinstance(chunk, dict) and chunk.get("choices"):
@@ -878,7 +959,8 @@ class AgentStreamExecutor:
                 "content": "",
                 "tool_calls": [],
                 "empty_retry": True,
-                "stop_reason": stop_reason
+                "stop_reason": stop_reason,
+                "usage": last_usage,
             })
             # Retry without retry flag to avoid infinite loop
             return self._call_llm_stream(
@@ -930,7 +1012,8 @@ class AgentStreamExecutor:
 
         self._emit_event("message_end", {
             "content": full_content,
-            "tool_calls": tool_calls
+            "tool_calls": tool_calls,
+            "usage": last_usage,
         })
 
         return full_content, tool_calls

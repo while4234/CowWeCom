@@ -4,6 +4,9 @@ Memory get tool
 Allows agents to read specific sections from memory files
 """
 
+from pathlib import Path
+from typing import Optional
+
 from agent.tools.base_tool import BaseTool
 
 
@@ -35,7 +38,12 @@ class MemoryGetTool(BaseTool):
         "required": ["path"]
     }
     
-    def __init__(self, memory_manager):
+    def __init__(
+        self,
+        memory_manager,
+        user_id: Optional[str] = None,
+        allow_shared_memory: bool = True,
+    ):
         """
         Initialize memory get tool
         
@@ -44,6 +52,8 @@ class MemoryGetTool(BaseTool):
         """
         super().__init__()
         self.memory_manager = memory_manager
+        self.user_id = user_id
+        self.allow_shared_memory = allow_shared_memory
 
         from config import conf
         if conf().get("knowledge", True):
@@ -80,15 +90,14 @@ class MemoryGetTool(BaseTool):
         try:
             workspace_dir = self.memory_manager.config.get_workspace()
             
-            # Auto-prepend memory/ if not present and not absolute path
-            # Exceptions: MEMORY.md in root, knowledge/ files at workspace root
-            if not path.startswith('memory/') and not path.startswith('knowledge/') and not path.startswith('/') and path != 'MEMORY.md':
-                path = f'memory/{path}'
+            path = self._normalize_visible_path(path)
+            if path is None:
+                return ToolResult.fail("Error: Access denied: memory belongs to another user or shared chat memory")
             
             file_path = (workspace_dir / path).resolve()
             workspace_resolved = workspace_dir.resolve()
             
-            if not str(file_path).startswith(str(workspace_resolved) + '/') and file_path != workspace_resolved:
+            if not self._is_relative_to(file_path, workspace_resolved):
                 return ToolResult.fail(f"Error: Access denied: path outside workspace")
             
             if not file_path.exists():
@@ -126,3 +135,44 @@ class MemoryGetTool(BaseTool):
             
         except Exception as e:
             return ToolResult.fail(f"Error reading memory file: {str(e)}")
+
+    def _normalize_visible_path(self, path: str) -> Optional[str]:
+        normalized = str(path).replace("\\", "/").lstrip("/")
+
+        if self.allow_shared_memory:
+            if (
+                not normalized.startswith("memory/")
+                and not normalized.startswith("knowledge/")
+                and normalized != "MEMORY.md"
+            ):
+                return f"memory/{normalized}"
+            return normalized
+
+        if normalized.startswith("knowledge/"):
+            return normalized
+
+        if not self.user_id:
+            return None
+
+        own_prefix = f"memory/users/{self.user_id}/"
+        if normalized.startswith(own_prefix):
+            return normalized
+        if normalized == "MEMORY.md":
+            return f"{own_prefix}MEMORY.md"
+        if normalized.startswith("memory/users/"):
+            return None
+        if normalized.startswith("memory/"):
+            candidate = normalized[len("memory/"):]
+        else:
+            candidate = normalized
+        if "/" in candidate:
+            return None
+        return f"{own_prefix}{candidate}"
+
+    @staticmethod
+    def _is_relative_to(path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False

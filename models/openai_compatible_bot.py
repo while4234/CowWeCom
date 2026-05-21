@@ -7,10 +7,12 @@ Provides a common implementation for bots that are compatible with OpenAI's API 
 This includes: OpenAI, LinkAI, Azure OpenAI, and many third-party providers.
 """
 
+import hashlib
 import json
 import requests
-from typing import Optional
+from typing import Any, Dict, Optional
 from common.log import logger
+from common.llm_usage_tracker import record_usage
 from agent.protocol.message_utils import drop_orphaned_tool_results_openai
 from models.openai.openai_http_client import OpenAIHTTPClient, OpenAIHTTPError
 from models.openai.responses_api_adapter import (
@@ -107,6 +109,10 @@ class OpenAICompatibleBot:
                 "presence_penalty": kwargs.get("presence_penalty", api_config.get('default_presence_penalty', 0.0)),
                 "stream": stream
             }
+            request_params["_cache_metadata"] = {
+                "channel_type": kwargs.get("channel_type") or getattr(self, "channel_type", ""),
+                "session_id": kwargs.get("session_id") or getattr(self, "session_id", ""),
+            }
             
             # Add max_tokens if specified
             if kwargs.get("max_tokens"):
@@ -183,6 +189,138 @@ class OpenAICompatibleBot:
             effort = conf().get("reasoning_effort")
         return normalize_reasoning_effort(effort)
 
+    def _build_prompt_cache_options(
+        self,
+        model: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build OpenAI prompt-cache controls without exposing raw user IDs."""
+        from config import conf
+
+        if not conf().get("enable_prompt_cache_key", True):
+            return {}
+
+        metadata = metadata or {}
+        prefix = str(conf().get("prompt_cache_key_prefix") or "cowwechat").strip()
+        granularity = str(conf().get("prompt_cache_key_granularity") or "channel").strip().lower()
+        parts = [prefix, self._cache_key_part(model or conf().get("model") or "model")]
+
+        channel_type = metadata.get("channel_type") or getattr(self, "channel_type", "")
+        session_id = metadata.get("session_id") or getattr(self, "session_id", "")
+        if granularity in {"channel", "session"}:
+            parts.append(self._cache_key_part(channel_type or "default"))
+        if granularity == "session" and session_id:
+            parts.append(self._hash_cache_part(session_id))
+
+        cache_key = ":".join(part for part in parts if part)
+        options: Dict[str, Any] = {"prompt_cache_key": cache_key}
+
+        retention = str(conf().get("prompt_cache_retention") or "").strip()
+        if retention:
+            options["prompt_cache_retention"] = retention
+        return options
+
+    @staticmethod
+    def _cache_key_part(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        safe = []
+        for ch in text:
+            safe.append(ch if ch.isalnum() or ch in {"-", "_", "."} else "-")
+        return "".join(safe).strip("-")[:48]
+
+    @staticmethod
+    def _hash_cache_part(value: Any) -> str:
+        return hashlib.sha256(str(value).encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+    def _record_prompt_cache_usage(
+        self,
+        usage: Optional[Dict[str, Any]],
+        *,
+        request_payload: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        wire_api: str = "",
+    ) -> None:
+        if not usage:
+            return
+        request_payload = request_payload or {}
+        record_metadata = dict(metadata or {})
+        record_metadata.update({
+            "model": request_payload.get("model"),
+            "wire_api": wire_api,
+            "prompt_cache_key": request_payload.get("prompt_cache_key"),
+            "prompt_cache_retention": request_payload.get("prompt_cache_retention"),
+        })
+        normalized = record_usage(usage, record_metadata)
+        logger.info(
+            "[PromptCache] input=%s cached=%s hit_rate=%.1f%% model=%s",
+            normalized.get("prompt_tokens", 0),
+            normalized.get("cached_tokens", 0),
+            float(normalized.get("cache_hit_rate", 0) or 0) * 100,
+            request_payload.get("model") or "",
+        )
+
+    @staticmethod
+    def _is_prompt_cache_param_error(chunk: Dict[str, Any]) -> bool:
+        if not isinstance(chunk, dict) or not chunk.get("error"):
+            return False
+        error = chunk.get("error")
+        if isinstance(error, dict):
+            text = " ".join(str(error.get(k, "")) for k in ("message", "code", "type"))
+        else:
+            text = str(error)
+        text += " " + str(chunk.get("message", ""))
+        text = text.lower()
+        return (
+            "prompt_cache" in text
+            and any(word in text for word in ("unknown", "unsupported", "unrecognized", "invalid"))
+        )
+
+    @staticmethod
+    def _drop_prompt_cache_options(payload: Dict[str, Any]) -> bool:
+        removed = False
+        for key in ("prompt_cache_key", "prompt_cache_retention"):
+            if key in payload:
+                payload.pop(key, None)
+                removed = True
+        return removed
+
+    def _responses_events_with_cache_fallback(
+        self,
+        client: OpenAIHTTPClient,
+        *,
+        api_key: str,
+        api_base: str,
+        timeout: Optional[float],
+        payload: Dict[str, Any],
+    ):
+        events = client.responses(
+            api_key=api_key,
+            api_base=self._responses_api_base(api_base),
+            timeout=timeout,
+            stream=True,
+            **payload,
+        )
+        first = True
+        for event in events:
+            if first and self._is_prompt_cache_param_error(event):
+                if self._drop_prompt_cache_options(payload):
+                    fallback_payload = dict(payload)
+                    logger.warning(
+                        "[PromptCache] Upstream rejected prompt-cache parameters; retrying without them"
+                    )
+                    fallback_events = client.responses(
+                        api_key=api_key,
+                        api_base=self._responses_api_base(api_base),
+                        timeout=timeout,
+                        stream=True,
+                        **fallback_payload,
+                    )
+                    for fallback_event in fallback_events:
+                        yield fallback_event
+                    return
+            first = False
+            yield event
+
     def _responses_api_base(self, api_base):
         return api_base
 
@@ -190,36 +328,57 @@ class OpenAICompatibleBot:
         """Handle synchronous chat-completion via HTTP."""
         params = dict(request_params)
         params.pop("stream", None)
+        cache_metadata = params.pop("_cache_metadata", {}) or {}
         # Translate legacy SDK timeout kwarg to our HTTP client kwarg.
         timeout = params.pop("request_timeout", None) or params.pop("timeout", None)
         try:
             client = self._get_http_client()
-            if is_responses_wire_api(self._get_wire_api(api_config)):
+            wire_api = self._get_wire_api(api_config)
+            if is_responses_wire_api(wire_api):
                 responses_payload = build_responses_payload(
                     params,
                     store=self._resolve_response_store(),
                     reasoning_effort=params.get("reasoning_effort"),
                 )
-                events = client.responses(
-                    api_key=api_key,
-                    api_base=self._responses_api_base(api_base),
-                    timeout=timeout,
-                    stream=True,
-                    **responses_payload,
+                responses_payload.update(
+                    self._build_prompt_cache_options(
+                        responses_payload.get("model"),
+                        cache_metadata,
+                    )
                 )
-                chunks = responses_stream_events_to_chat_chunks(events)
-                return chat_chunks_to_chat_completion(
-                    chunks,
+                events = self._responses_events_with_cache_fallback(
+                    client,
+                    api_key=api_key,
+                    api_base=api_base,
+                    timeout=timeout,
+                    payload=responses_payload,
+                )
+                result = chat_chunks_to_chat_completion(
+                    responses_stream_events_to_chat_chunks(events),
                     model=responses_payload.get("model"),
                 )
+                self._record_prompt_cache_usage(
+                    result.get("usage"),
+                    request_payload=responses_payload,
+                    metadata=cache_metadata,
+                    wire_api=wire_api,
+                )
+                return result
 
-            return client.chat_completions(
+            result = client.chat_completions(
                 api_key=api_key,
                 api_base=api_base,
                 timeout=timeout,
                 stream=False,
                 **params,
             )
+            self._record_prompt_cache_usage(
+                result.get("usage") if isinstance(result, dict) else None,
+                request_payload=params,
+                metadata=cache_metadata,
+                wire_api=wire_api,
+            )
+            return result
         except OpenAIHTTPError as e:
             logger.error(
                 f"[{self.__class__.__name__}] sync response error: "
@@ -248,23 +407,40 @@ class OpenAICompatibleBot:
         """
         params = dict(request_params)
         params.pop("stream", None)
+        cache_metadata = params.pop("_cache_metadata", {}) or {}
         timeout = params.pop("request_timeout", None) or params.pop("timeout", None)
         try:
             client = self._get_http_client()
-            if is_responses_wire_api(self._get_wire_api(api_config)):
+            wire_api = self._get_wire_api(api_config)
+            if is_responses_wire_api(wire_api):
                 responses_payload = build_responses_payload(
                     params,
                     store=self._resolve_response_store(),
                     reasoning_effort=params.get("reasoning_effort"),
                 )
-                events = client.responses(
-                    api_key=api_key,
-                    api_base=self._responses_api_base(api_base),
-                    timeout=timeout,
-                    stream=True,
-                    **responses_payload,
+                responses_payload.update(
+                    self._build_prompt_cache_options(
+                        responses_payload.get("model"),
+                        cache_metadata,
+                    )
                 )
+                events = self._responses_events_with_cache_fallback(
+                    client,
+                    api_key=api_key,
+                    api_base=api_base,
+                    timeout=timeout,
+                    payload=responses_payload,
+                )
+                recorded_usage = False
                 for chunk in responses_stream_events_to_chat_chunks(events):
+                    if not recorded_usage and isinstance(chunk, dict) and chunk.get("usage"):
+                        self._record_prompt_cache_usage(
+                            chunk.get("usage"),
+                            request_payload=responses_payload,
+                            metadata=cache_metadata,
+                            wire_api=wire_api,
+                        )
+                        recorded_usage = True
                     yield chunk
                 return
 
@@ -275,7 +451,16 @@ class OpenAICompatibleBot:
                 stream=True,
                 **params,
             )
+            recorded_usage = False
             for chunk in stream:
+                if not recorded_usage and isinstance(chunk, dict) and chunk.get("usage"):
+                    self._record_prompt_cache_usage(
+                        chunk.get("usage"),
+                        request_payload=params,
+                        metadata=cache_metadata,
+                        wire_api=wire_api,
+                    )
+                    recorded_usage = True
                 yield chunk
         except OpenAIHTTPError as e:
             logger.error(

@@ -102,6 +102,65 @@ def get_scheduler_service():
     return _scheduler_service
 
 
+def _legacy_task_owner(task: dict) -> Optional[str]:
+    action = task.get("action", {}) or {}
+    channel_type = action.get("channel_type")
+    legacy_user_id = action.get("notify_session_id")
+    if channel_type and legacy_user_id:
+        return f"{channel_type}:{legacy_user_id}"
+    return None
+
+
+def _scheduler_session_id(task: dict, receiver: str) -> str:
+    return f"scheduler_{receiver}_{task['id']}"
+
+
+def _apply_task_owner_context(
+    task: dict,
+    context: Context,
+    channel_type: str,
+    conversation_id: Optional[str] = None,
+) -> bool:
+    """Attach the task creator identity while preserving scheduler isolation."""
+    owner_actor_id = task.get("owner_actor_id") or _legacy_task_owner(task)
+    if not owner_actor_id:
+        logger.error(f"[Scheduler] Task {task.get('id')}: missing owner identity")
+        return False
+
+    context["channel_type"] = channel_type
+    context["actor_id"] = owner_actor_id
+    context["actor_role"] = task.get("owner_role", "user")
+    if task.get("owner_memory_user_id"):
+        context["memory_user_id"] = task.get("owner_memory_user_id")
+    if conversation_id:
+        context["conversation_id"] = conversation_id
+    return True
+
+
+def _resolve_task_profile(task: dict, context: Context):
+    if not task.get("owner_actor_id") and not _legacy_task_owner(task):
+        return None
+    try:
+        from agent.user_profiles import resolve_agent_user_profile
+
+        return resolve_agent_user_profile(context)
+    except Exception as e:
+        logger.error(f"[Scheduler] Task {task.get('id')}: failed to resolve owner profile: {e}")
+        return None
+
+
+def _guard_scheduled_tool(tool, profile):
+    from agent.access_control import GuardedTool, ToolAccessPolicy
+
+    tool_name = getattr(tool, "name", "")
+    if tool_name in {'read', 'write', 'edit', 'bash', 'grep', 'find', 'ls', 'web_fetch', 'send', 'browser'}:
+        merged_config = dict(getattr(tool, "config", None) or {})
+        merged_config["cwd"] = profile.tool_workspace
+        tool.config = merged_config
+        tool.cwd = merged_config["cwd"]
+    return GuardedTool(tool, ToolAccessPolicy(profile))
+
+
 def _remember_delivered_output(
     agent_bridge,
     task: dict,
@@ -176,13 +235,15 @@ def _execute_agent_task(task: dict, agent_bridge):
         
         # Create a unique session_id for this scheduled task to avoid polluting user's conversation
         # Format: scheduler_<receiver>_<task_id> to ensure isolation
-        scheduler_session_id = f"scheduler_{receiver}_{task['id']}"
+        scheduler_session_id = _scheduler_session_id(task, receiver)
         
         # Create context for Agent
         context = Context(ContextType.TEXT, task_description)
         context["receiver"] = receiver
         context["isgroup"] = is_group
         context["session_id"] = scheduler_session_id
+        if not _apply_task_owner_context(task, context, channel_type, scheduler_session_id):
+            return
         
         # Channel-specific setup
         if channel_type == "web":
@@ -269,7 +330,9 @@ def _execute_send_message(task: dict, agent_bridge):
         context = Context(ContextType.TEXT, content)
         context["receiver"] = receiver
         context["isgroup"] = is_group
-        context["session_id"] = receiver
+        context["session_id"] = action.get("notify_session_id") or receiver
+        if not _apply_task_owner_context(task, context, channel_type, context["session_id"]):
+            return
         
         # Channel-specific context setup
         if channel_type == "web":
@@ -358,6 +421,18 @@ def _execute_tool_call(task: dict, agent_bridge):
             logger.error(f"[Scheduler] Task {task['id']}: No receiver specified")
             return
         
+        scheduler_session = _scheduler_session_id(task, receiver)
+        context = Context(ContextType.TEXT, tool_name)
+        context["receiver"] = receiver
+        context["isgroup"] = is_group
+        context["session_id"] = scheduler_session
+        if not _apply_task_owner_context(task, context, channel_type, scheduler_session):
+            return
+        profile = _resolve_task_profile(task, context)
+        if profile is None:
+            logger.error(f"[Scheduler] Task {task['id']}: cannot execute tool without owner profile")
+            return
+
         # Get tool manager and create tool instance
         from agent.tools.tool_manager import ToolManager
         tool_manager = ToolManager()
@@ -367,9 +442,11 @@ def _execute_tool_call(task: dict, agent_bridge):
             logger.error(f"[Scheduler] Task {task['id']}: Tool '{tool_name}' not found")
             return
         
+        guarded_tool = _guard_scheduled_tool(tool, profile)
+
         # Execute tool
         logger.info(f"[Scheduler] Task {task['id']}: Executing tool '{tool_name}' with params {tool_params}")
-        result = tool.execute(tool_params)
+        result = guarded_tool.execute(tool_params)
         
         # Get result content
         if hasattr(result, 'result'):
@@ -382,10 +459,6 @@ def _execute_tool_call(task: dict, agent_bridge):
             content = f"{result_prefix}\n\n{content}"
         
         # Send result as message
-        context = Context(ContextType.TEXT, content)
-        context["receiver"] = receiver
-        context["isgroup"] = is_group
-        context["session_id"] = receiver
         
         # Channel-specific context setup
         if channel_type == "web":
@@ -440,7 +513,7 @@ def _execute_skill_call(task: dict, agent_bridge):
         skill_params = action.get("call_params") or action.get("skill_params", {})
         result_prefix = action.get("result_prefix", "")
         receiver = action.get("receiver")
-        is_group = action.get("isgroup", False)
+        is_group = action.get("is_group", action.get("isgroup", False))
         channel_type = action.get("channel_type", "unknown")
         
         if not skill_name:
@@ -455,7 +528,7 @@ def _execute_skill_call(task: dict, agent_bridge):
         
         # Create a unique session_id for this scheduled task to avoid polluting user's conversation
         # Format: scheduler_<receiver>_<task_id> to ensure isolation
-        scheduler_session_id = f"scheduler_{receiver}_{task['id']}"
+        scheduler_session_id = _scheduler_session_id(task, receiver)
         
         # Build a natural language query for the Agent to execute the skill
         # Format: "Use skill-name to do something with params"
@@ -469,6 +542,8 @@ def _execute_skill_call(task: dict, agent_bridge):
         context["receiver"] = receiver
         context["isgroup"] = is_group
         context["session_id"] = scheduler_session_id
+        if not _apply_task_owner_context(task, context, channel_type, scheduler_session_id):
+            return
         
         # Channel-specific setup
         if channel_type == "web":
@@ -534,6 +609,8 @@ def attach_scheduler_to_tool(tool, context: Context = None):
         tool: SchedulerTool instance
         context: Current context (optional)
     """
+    tool = getattr(tool, "inner", tool)
+
     if _task_store:
         tool.task_store = _task_store
     

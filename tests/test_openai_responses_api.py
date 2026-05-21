@@ -57,6 +57,8 @@ class TestOpenAIResponsesAdapter(unittest.TestCase):
                 }],
                 "tool_choice": "auto",
                 "max_tokens": 123,
+                "prompt_cache_key": "cowwechat:gpt-5.5:web",
+                "prompt_cache_retention": "24h",
             },
             store=False,
             reasoning_effort="xhigh",
@@ -69,6 +71,8 @@ class TestOpenAIResponsesAdapter(unittest.TestCase):
         self.assertEqual(payload["max_output_tokens"], 123)
         self.assertEqual(payload["tools"][0]["type"], "function")
         self.assertEqual(payload["tools"][0]["name"], "lookup")
+        self.assertEqual(payload["prompt_cache_key"], "cowwechat:gpt-5.5:web")
+        self.assertEqual(payload["prompt_cache_retention"], "24h")
         self.assertEqual(payload["input"][0]["content"][0]["type"], "input_text")
         self.assertEqual(payload["input"][0]["content"][1]["type"], "input_image")
         self.assertEqual(payload["input"][1]["type"], "function_call")
@@ -95,6 +99,7 @@ class TestOpenAIResponsesAdapter(unittest.TestCase):
                 "input_tokens": 10,
                 "output_tokens": 5,
                 "total_tokens": 15,
+                "input_tokens_details": {"cached_tokens": 6},
             },
         }
 
@@ -106,6 +111,8 @@ class TestOpenAIResponsesAdapter(unittest.TestCase):
         self.assertEqual(message["tool_calls"][0]["function"]["name"], "lookup")
         self.assertEqual(result["usage"]["prompt_tokens"], 10)
         self.assertEqual(result["usage"]["completion_tokens"], 5)
+        self.assertEqual(result["usage"]["cached_tokens"], 6)
+        self.assertEqual(result["usage"]["input_tokens_details"]["cached_tokens"], 6)
 
     def test_stream_events_convert_to_chat_chunks(self):
         events = [
@@ -132,7 +139,17 @@ class TestOpenAIResponsesAdapter(unittest.TestCase):
                 "call_id": "call_1",
                 "delta": ":\"x\"}",
             },
-            {"type": "response.completed", "response": {"output": []}},
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [],
+                    "usage": {
+                        "input_tokens": 2048,
+                        "output_tokens": 12,
+                        "input_tokens_details": {"cached_tokens": 1024},
+                    },
+                },
+            },
         ]
 
         chunks = list(responses_stream_events_to_chat_chunks(events))
@@ -147,6 +164,8 @@ class TestOpenAIResponsesAdapter(unittest.TestCase):
         self.assertEqual(tool_chunks[1]["function"]["arguments"], "{\"q\"")
         self.assertEqual(tool_chunks[2]["function"]["arguments"], ":\"x\"}")
         self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "tool_calls")
+        self.assertEqual(chunks[-1]["usage"]["cached_tokens"], 1024)
+        self.assertEqual(chunks[-1]["usage"]["cache_hit_rate"], 0.5)
 
     def test_image_generation_helpers_accept_url_and_b64_outputs(self):
         url_result = {"data": [{"url": "https://example.com/image.png"}]}

@@ -16,7 +16,7 @@ const I18N = {
         nav_chat: '对话', nav_manage: '管理', nav_monitor: '监控',
         menu_chat: '对话', menu_config: '配置', menu_skills: '技能',
         menu_memory: '记忆', menu_knowledge: '知识', menu_channels: '通道', menu_tasks: '定时',
-        menu_logs: '日志',
+        menu_logs: '日志', menu_cache_usage: '缓存',
         knowledge_title: '知识库', knowledge_desc: '浏览和探索你的知识库',
         knowledge_tab_docs: '文档', knowledge_tab_graph: '图谱',
         knowledge_loading: '加载知识库中...', knowledge_loading_desc: '知识页面将显示在这里',
@@ -94,6 +94,11 @@ const I18N = {
         tasks_title: '定时任务', tasks_desc: '查看和管理定时任务',
         tasks_coming: '即将推出', tasks_coming_desc: '定时任务管理功能即将在此提供',
         logs_title: '日志', logs_desc: '实时日志输出 (run.log)',
+        cache_title: '缓存命中率', cache_desc: 'Prompt cache token usage',
+        cache_refresh: '刷新', cache_empty: '暂无缓存统计',
+        cache_hit_rate: '命中率', cache_cached_tokens: '缓存 Token',
+        cache_input_tokens: '输入 Token', cache_requests: '请求',
+        cache_recent_calls: '最近调用', cache_by_model: '按模型', cache_details: '明细',
         logs_live: '实时', logs_coming_msg: '日志流即将在此提供。将连接 run.log 实现类似 tail -f 的实时输出。',
         new_chat: '新对话',
         session_history: '历史会话',
@@ -117,7 +122,7 @@ const I18N = {
         nav_chat: 'Chat', nav_manage: 'Management', nav_monitor: 'Monitor',
         menu_chat: 'Chat', menu_config: 'Config', menu_skills: 'Skills',
         menu_memory: 'Memory', menu_knowledge: 'Knowledge', menu_channels: 'Channels', menu_tasks: 'Tasks',
-        menu_logs: 'Logs',
+        menu_logs: 'Logs', menu_cache_usage: 'Cache',
         knowledge_title: 'Knowledge', knowledge_desc: 'Browse and explore your knowledge base',
         knowledge_tab_docs: 'Documents', knowledge_tab_graph: 'Graph',
         knowledge_loading: 'Loading knowledge base...', knowledge_loading_desc: 'Knowledge pages will be displayed here',
@@ -195,6 +200,11 @@ const I18N = {
         tasks_title: 'Scheduled Tasks', tasks_desc: 'View and manage scheduled tasks',
         tasks_coming: 'Coming Soon', tasks_coming_desc: 'Scheduled task management will be available here',
         logs_title: 'Logs', logs_desc: 'Real-time log output (run.log)',
+        cache_title: 'Cache Hit Rate', cache_desc: 'Prompt cache token usage',
+        cache_refresh: 'Refresh', cache_empty: 'No cache telemetry yet',
+        cache_hit_rate: 'Hit Rate', cache_cached_tokens: 'Cached Tokens',
+        cache_input_tokens: 'Input Tokens', cache_requests: 'Requests',
+        cache_recent_calls: 'Recent Calls', cache_by_model: 'By Model', cache_details: 'Details',
         logs_live: 'Live', logs_coming_msg: 'Log streaming will be available here. Connects to run.log for real-time output similar to tail -f.',
         new_chat: 'New Chat',
         session_history: 'History',
@@ -331,6 +341,7 @@ const VIEW_META = {
     knowledge:{ group: 'nav_manage',  page: 'menu_knowledge' },
     channels: { group: 'nav_manage',  page: 'menu_channels' },
     tasks:    { group: 'nav_manage',  page: 'menu_tasks' },
+    'cache-usage': { group: 'nav_monitor', page: 'menu_cache_usage' },
     logs:     { group: 'nav_monitor', page: 'menu_logs' },
 };
 
@@ -4188,6 +4199,173 @@ function loadTasksView() {
 }
 
 // =====================================================================
+// Cache Usage View
+// =====================================================================
+let cacheUsageLoaded = false;
+
+function loadCacheUsageView(force) {
+    const emptyEl = document.getElementById('cache-empty');
+    const dashboardEl = document.getElementById('cache-dashboard');
+    if (!emptyEl || !dashboardEl) return;
+    if (cacheUsageLoaded && !force) {
+        // Refresh anyway when navigating back after a short delay in active use.
+        force = true;
+    }
+
+    fetch('/api/cache-usage?limit=50')
+        .then(r => r.json())
+        .then(data => {
+            if (data.status !== 'success') throw new Error(data.message || 'Failed');
+            const summary = data.summary || {};
+            const recent = data.recent || [];
+            const models = data.models || [];
+
+            if (!recent.length && !summary.requests) {
+                emptyEl.classList.remove('hidden');
+                dashboardEl.classList.add('hidden');
+                cacheUsageLoaded = true;
+                return;
+            }
+
+            emptyEl.classList.add('hidden');
+            dashboardEl.classList.remove('hidden');
+            renderCacheSummary(summary);
+            renderCacheBars(recent.slice(0, 14));
+            renderCacheModels(models);
+            renderCacheTable(recent);
+            cacheUsageLoaded = true;
+        })
+        .catch(err => {
+            emptyEl.classList.remove('hidden');
+            dashboardEl.classList.add('hidden');
+            const p = emptyEl.querySelector('p');
+            if (p) p.textContent = err.message || 'Failed to load cache usage';
+        });
+}
+
+function renderCacheSummary(summary) {
+    const hitRate = Number(summary.cache_hit_rate || 0);
+    setText('cache-rate-value', formatPercent(hitRate));
+    setText('cache-cached-value', formatTokenCount(summary.cached_tokens));
+    setText('cache-input-value', formatTokenCount(summary.prompt_tokens));
+    setText('cache-requests-value', formatTokenCount(summary.requests));
+    setText('cache-cached-sub', `${formatTokenCount(summary.uncached_prompt_tokens)} uncached`);
+    setText('cache-output-sub', `${formatTokenCount(summary.completion_tokens)} output`);
+    setText('cache-hit-sub', `${formatTokenCount(summary.cache_hits)} / ${formatTokenCount(summary.requests)} hits`);
+    const bar = document.getElementById('cache-rate-bar');
+    if (bar) bar.style.width = Math.max(0, Math.min(100, hitRate * 100)).toFixed(1) + '%';
+}
+
+function renderCacheBars(records) {
+    const container = document.getElementById('cache-hit-bars');
+    if (!container) return;
+    if (!records.length) {
+        container.innerHTML = `<p class="text-sm text-slate-400">${escapeHtml(t('cache_empty'))}</p>`;
+        return;
+    }
+    container.innerHTML = records.map(record => {
+        const rate = Number(record.cache_hit_rate || 0);
+        const width = Math.max(0, Math.min(100, rate * 100)).toFixed(1);
+        const dt = record.timestamp ? new Date(record.timestamp) : null;
+        const when = dt && !isNaN(dt.getTime()) ? formatTime(dt) : '--';
+        return `
+            <div>
+                <div class="flex items-center gap-2 text-xs mb-1">
+                    <span class="text-slate-500 dark:text-slate-400 font-mono">${escapeHtml(when)}</span>
+                    <span class="text-slate-400 dark:text-slate-500 truncate">${escapeHtml(record.model || 'unknown')}</span>
+                    <span class="ml-auto text-slate-500 dark:text-slate-400">${formatPercent(rate)}</span>
+                </div>
+                <div class="h-2 rounded-full bg-slate-100 dark:bg-white/10 overflow-hidden">
+                    <div class="h-full rounded-full bg-emerald-500" style="width:${width}%"></div>
+                </div>
+                <div class="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+                    ${formatTokenCount(record.cached_tokens)} / ${formatTokenCount(record.prompt_tokens)}
+                </div>
+            </div>`;
+    }).join('');
+}
+
+function renderCacheModels(models) {
+    const container = document.getElementById('cache-models-table');
+    if (!container) return;
+    if (!models.length) {
+        container.innerHTML = `<p class="text-sm text-slate-400">${escapeHtml(t('cache_empty'))}</p>`;
+        return;
+    }
+    container.innerHTML = models.map(model => {
+        const rate = Number(model.cache_hit_rate || 0);
+        const width = Math.max(0, Math.min(100, rate * 100)).toFixed(1);
+        return `
+            <div>
+                <div class="flex items-center justify-between gap-3 text-xs mb-1">
+                    <span class="font-medium text-slate-700 dark:text-slate-200 truncate">${escapeHtml(model.model || 'unknown')}</span>
+                    <span class="text-slate-500 dark:text-slate-400">${formatPercent(rate)}</span>
+                </div>
+                <div class="h-2 rounded-full bg-slate-100 dark:bg-white/10 overflow-hidden">
+                    <div class="h-full rounded-full bg-sky-500" style="width:${width}%"></div>
+                </div>
+                <div class="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+                    ${formatTokenCount(model.cached_tokens)} cached · ${formatTokenCount(model.prompt_tokens)} input
+                </div>
+            </div>`;
+    }).join('');
+}
+
+function renderCacheTable(records) {
+    const container = document.getElementById('cache-recent-table');
+    if (!container) return;
+    if (!records.length) {
+        container.innerHTML = `<div class="p-4 text-sm text-slate-400">${escapeHtml(t('cache_empty'))}</div>`;
+        return;
+    }
+    const rows = records.map(record => {
+        const dt = record.timestamp ? new Date(record.timestamp) : null;
+        const when = dt && !isNaN(dt.getTime()) ? formatTime(dt) : '--';
+        return `
+            <tr class="border-t border-slate-100 dark:border-white/10">
+                <td class="px-4 py-3 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">${escapeHtml(when)}</td>
+                <td class="px-4 py-3 text-xs text-slate-700 dark:text-slate-200 whitespace-nowrap">${escapeHtml(record.model || 'unknown')}</td>
+                <td class="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">${escapeHtml(record.channel_type || '--')}</td>
+                <td class="px-4 py-3 text-xs text-right font-mono text-slate-700 dark:text-slate-200">${formatTokenCount(record.prompt_tokens)}</td>
+                <td class="px-4 py-3 text-xs text-right font-mono text-emerald-500">${formatTokenCount(record.cached_tokens)}</td>
+                <td class="px-4 py-3 text-xs text-right font-mono text-slate-700 dark:text-slate-200">${formatPercent(record.cache_hit_rate)}</td>
+                <td class="px-4 py-3 text-xs text-slate-400 dark:text-slate-500 whitespace-nowrap">${escapeHtml(record.prompt_cache_retention || '--')}</td>
+            </tr>`;
+    }).join('');
+    container.innerHTML = `
+        <table class="min-w-full">
+            <thead class="bg-slate-50 dark:bg-white/5">
+                <tr>
+                    <th class="px-4 py-2 text-left text-[11px] uppercase text-slate-400 font-medium">Time</th>
+                    <th class="px-4 py-2 text-left text-[11px] uppercase text-slate-400 font-medium">Model</th>
+                    <th class="px-4 py-2 text-left text-[11px] uppercase text-slate-400 font-medium">Channel</th>
+                    <th class="px-4 py-2 text-right text-[11px] uppercase text-slate-400 font-medium">Input</th>
+                    <th class="px-4 py-2 text-right text-[11px] uppercase text-slate-400 font-medium">Cached</th>
+                    <th class="px-4 py-2 text-right text-[11px] uppercase text-slate-400 font-medium">Rate</th>
+                    <th class="px-4 py-2 text-left text-[11px] uppercase text-slate-400 font-medium">Retention</th>
+                </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+        </table>`;
+}
+
+function setText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+
+function formatPercent(value) {
+    return (Number(value || 0) * 100).toFixed(1) + '%';
+}
+
+function formatTokenCount(value) {
+    const n = Number(value || 0);
+    if (n >= 1000000) return (n / 1000000).toFixed(2) + 'M';
+    if (n >= 10000) return (n / 1000).toFixed(1) + 'K';
+    return Math.round(n).toLocaleString();
+}
+
+// =====================================================================
 // Logs View
 // =====================================================================
 let logEventSource = null;
@@ -4292,6 +4470,7 @@ navigateTo = function(viewId) {
     else if (viewId === 'knowledge') loadKnowledgeView();
     else if (viewId === 'channels') loadChannelsView();
     else if (viewId === 'tasks') loadTasksView();
+    else if (viewId === 'cache-usage') loadCacheUsageView();
     else if (viewId === 'logs') startLogStream();
 };
 

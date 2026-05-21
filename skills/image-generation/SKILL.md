@@ -1,117 +1,209 @@
 ---
 name: image-generation
-description: Generate or edit images from text prompts. Use when the user asks to create, draw, design, or edit an image, illustration, photo, icon, poster, or any visual content.
+description: Generate or edit images from text prompts or reference images. Use when the user asks to create, draw, design, or edit an image, illustration, photo, icon, poster, or other visual content.
 metadata:
   cowagent:
-    requires:
-      anyEnv:
-        - OPENAI_API_KEY
-        - GEMINI_API_KEY
-        - ARK_API_KEY
-        - DASHSCOPE_API_KEY
-        - MINIMAX_API_KEY
-        - LINKAI_API_KEY
+    always: true
 ---
 
 # Image Generation
 
-Generate and edit images using AI models. The script automatically picks a backend based on which API keys are configured — **you don't need to specify a model unless the user explicitly names one**.
+## CowAgent Runtime
 
-Supported models (passed via `model` only when the user asks for a specific one):
+When this skill is used inside CowAgent, use the `image_generation_task` tool by
+default. The tool creates a controlled background job and returns immediately;
+the background worker sends the final image back to the original chat after
+generation completes.
 
-- **OpenAI** — `gpt-image-2`, `gpt-image-1`
-- **Gemini Nano Banana** — `nano-banana-2`, `nano-banana-pro`, `nano-banana`
-- **Seedream (Volcengine Ark)** — `seedream-5.0-lite`, `seedream-4.5`
-- **Qwen (DashScope)** — `qwen-image-2.0`, `qwen-image-2.0-pro`
-- **MiniMax** — `image-01`
+Do not run `scripts/generate.py` inside the normal chat turn. Long-running image
+generation must stay out of the ordinary agent loop so the user can keep
+chatting while the image is produced.
 
-## Usage
+For this project, CowAgent uses direct Codex-auth runtime:
 
-Run `scripts/generate.py` with a JSON argument. The path is relative to this skill's `base_dir`.
-
-```bash
-python <base_dir>/scripts/generate.py '<json_args>'
+```json
+"skill": {
+  "image-generation": {
+    "runtime": "codex_auth"
+  }
+}
 ```
 
-**Set bash timeout to at least 600 seconds**, as image generation can take 30–200s per provider, and the script may try multiple providers sequentially.
+At startup, this config is flattened to:
 
-### Parameters
+- `SKILL_IMAGE_GENERATION_RUNTIME=codex_auth`
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `prompt` | string | yes | — | Image description |
-| `image_url` | string / list | no | null | Input image(s) for editing: local file path or URL. Multi-image fusion is supported (pass a list) |
-| `quality` | string | no | auto | `low` / `medium` / `high` (only some backends honour this) |
-| `size` | string | no | auto | `512` / `1K` / `2K` / `3K` / `4K`, or pixel value (`1024x1024`) |
-| `aspect_ratio` | string | no | null | `1:1` / `3:2` / `2:3` / `16:9` / `9:16` / `21:9` (some backends also support extreme ratios like `1:4` / `8:1`) |
+In `codex_auth` runtime, `scripts/generate.py` reads the local Codex auth JSON,
+uses the access token and account id to call the Codex image backend directly,
+and writes the returned image bytes into the job `output_dir`. It does not call
+the Codex CLI, a broker process, `/images/generations`, `/images/edits`, or any
+third-party intermediary API.
 
-**Higher `quality` and larger `size` cost more and run slower.** In normal cases, when the user does not explicitly specify, `low` or `medium` is sufficient. Only use `high` when the user asks for it.
+The default auth location is `$CODEX_HOME/auth.json`, falling back to
+`~/.codex/auth.json`. To override it for a controlled deployment, set
+`CODEX_AUTH_FILE` to an auth JSON path. Never paste tokens into chat or config,
+and never log token values.
 
-### Example — generate
+The background worker is the only CowAgent runtime component that should call:
+
+```text
+C:\Users\RondleLiu\cow\skills\image-generation\scripts\generate.py
+```
+
+Per-user isolation is handled by the runtime:
+
+- Each actor has an independent FIFO queue.
+- The same actor's image jobs run one at a time.
+- Different actors can generate concurrently up to the configured global worker limit.
+- Outputs are written under `~/cow/users/<memory_user_id>/files/image-generation/<job_id>/`.
+- Provider fallback remains disabled unless explicitly configured outside Codex-auth runtime.
+
+## WeChat Image-To-Image Flow
+
+The `image_generation_task` tool accepts `image_url` as either a string or a
+list of strings.
+
+When the user asks to edit an image and the model does not explicitly pass
+`image_url`, the tool extracts local image references from the current WeChat
+message text:
+
+```text
+[图片: C:\path\input.jpg]
+[image: C:\path\input.jpg]
+```
+
+Supported user flows:
+
+- Single image edit: user sends an image, then sends an edit instruction within
+  the channel cache window. CowWechat appends `[图片: path]`, and the tool passes
+  that path to the direct Codex-auth provider.
+- Quoted image edit: user replies to or quotes an image with an edit instruction.
+  The WeChat channel downloads the quoted image and includes `[图片: path]`.
+- Multi-image fusion: user sends several images, then asks to combine them. The
+  tool passes `image_url` as a list.
+
+If a request looks like image-to-image editing but no image reference is found,
+return a direct prompt asking the user to send, reply to, or quote an image
+first.
+
+## Codex Auth Mode
+
+The direct provider sends one streaming request to:
+
+```text
+https://chatgpt.com/backend-api/codex/responses
+```
+
+It uses the logged-in Codex access token as `Authorization: Bearer ...` and the
+stored account id as `ChatGPT-Account-Id`. These values are read at runtime only
+and are never printed in normal success or failure responses.
+
+The script receives job JSON:
+
+```json
+{
+  "prompt": "turn the outfit red, keep everything else unchanged",
+  "image_url": "C:\\path\\input.jpg",
+  "quality": "medium",
+  "size": "1K",
+  "aspect_ratio": "1:1",
+  "output_dir": "C:\\path\\job-output"
+}
+```
+
+For multi-image fusion, `image_url` is an array of paths. Local input images are
+compressed if needed and embedded as `input_image` data URLs for the Codex
+backend.
+
+The script prints stdout JSON:
+
+```json
+{
+  "images": [
+    {"url": "C:\\path\\job-output\\result.png"}
+  ]
+}
+```
+
+It may also return:
+
+```json
+{"error": "human-readable error"}
+```
+
+## Standalone Script Runtime
+
+Run `scripts/generate.py` with a JSON argument:
 
 ```bash
 python <base_dir>/scripts/generate.py '{"prompt": "A corgi astronaut floating in space"}'
 ```
 
-With aspect ratio:
+Image-to-image:
 
 ```bash
-python <base_dir>/scripts/generate.py '{"prompt": "Isometric miniature city of Shanghai at sunset", "size": "2K", "aspect_ratio": "16:9"}'
+python <base_dir>/scripts/generate.py '{"prompt": "Add a Santa hat to the dog", "runtime": "codex_auth", "image_url": "C:\\path\\dog.png"}'
 ```
 
-### Important: Editing vs Generating
-
-When the user asks to **edit, modify, or improve an existing image**, pass the original image via `image_url`. Prefer **local file paths** directly — the script handles file reading internally. Without `image_url`, the script generates a brand-new image instead of editing.
-
-### Example — edit (image-to-image)
+Multi-image fusion:
 
 ```bash
-python <base_dir>/scripts/generate.py '{"prompt": "Add a Santa hat to the dog", "image_url": "/path/to/dog.png"}'
+python <base_dir>/scripts/generate.py '{"prompt": "Combine these characters into a group photo", "runtime": "codex_auth", "image_url": ["C:\\path\\a.png", "C:\\path\\b.png"]}'
 ```
 
-Multi-image fusion — pass a list:
+Parameters:
 
-```bash
-python <base_dir>/scripts/generate.py '{"prompt": "Combine these characters into a group photo", "image_url": ["/path/a.png", "/path/b.png"]}'
-```
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `prompt` | string | yes | - | Image description or edit instruction |
+| `image_url` | string / list | no | null | Input image path(s) or URL(s) for image editing or fusion |
+| `quality` | string | no | auto | `low` / `medium` / `high` |
+| `size` | string | no | auto | `1K`, `2K`, `4K`, or pixel value such as `1024x1024` |
+| `aspect_ratio` | string | no | null | `1:1`, `3:2`, `2:3`, `16:9`, `9:16` |
+| `runtime` | string | no | env | Use `codex_auth` for logged-in Codex credential runtime |
 
-### Output
-
-Prints JSON to stdout:
+On success:
 
 ```json
 {
-  "model": "doubao-seedream-5-0-260128",
+  "model": "gpt-5.5",
   "images": [
-    {"url": "/path/to/output.png"}
+    {"url": "C:\\path\\output.png"}
   ]
 }
 ```
 
-After success, display the image to the user. You can either embed it in markdown (`![description](/path/to/output.png)`) or use the `send` tool.
-
 On error:
 
 ```json
-{
-  "error": "error message"
-}
+{"error": "error message"}
 ```
 
-### Setup
+Do not retry a failed Codex-auth job with the same parameters unless the auth
+state or backend-side error has been fixed.
 
-The script needs **at least one** of these API keys (set via `env_config` or `config.json`):
+## Codex Prompt Shape
 
-`OPENAI_API_KEY` / `GEMINI_API_KEY` / `ARK_API_KEY` / `DASHSCOPE_API_KEY` / `MINIMAX_API_KEY` / `LINKAI_API_KEY`
+Use this structure inside the `prompt` string when it improves output quality:
 
-Each also has an optional `*_API_BASE` for custom endpoints. The script automatically picks the first configured backend and falls back to the next if it fails — no need to specify a model.
+```text
+Use case: <photorealistic-natural | product-mockup | ui-mockup | infographic-diagram | illustration-story | stylized-concept | precise-object-edit | background-extraction>
+Asset type: <where the image will be used>
+Primary request: <user's exact goal>
+Input images: <Image 1 role; Image 2 role> (optional)
+Scene/backdrop: <environment>
+Subject: <main subject>
+Style/medium: <photo, illustration, 3D, etc.>
+Composition/framing: <camera, crop, placement>
+Lighting/mood: <lighting and mood>
+Text (verbatim): "<exact text, if any>"
+Constraints: <must keep / must avoid>
+Avoid: no watermark, no unintended logos, no extra text
+```
 
-### Error Handling
+## Verified Codex Demo Asset
 
-If the script returns an error after trying all configured backends, **do NOT retry with the same parameters** — the failure is almost always a configuration issue (wrong API key, unsupported API base). Tell the user to fix it via `env_config`, then retry.
-
-### Notes
-
-- HTTP timeout is 300s — high-resolution generation can take over 200s.
-- Omit `quality` / `size` to let the model pick automatically (`auto`).
-- Input images for editing are auto-compressed to ≤ 4MB / longest edge ≤ 4096px.
+This project includes `assets/codex-imagegen-demo.png`, created through Codex
+built-in image generation and copied into this skill as a smoke-test artifact
+proving that Codex-mode generation can work without an OpenAI API key in project
+configuration.

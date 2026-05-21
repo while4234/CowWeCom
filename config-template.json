@@ -21,6 +21,12 @@
   "model_reasoning_effort": "",
   "model_context_window": 0,
   "model_auto_compact_token_limit": 0,
+  "enable_prompt_cache_key": true,
+  "prompt_cache_key_prefix": "cowwechat",
+  "prompt_cache_key_granularity": "channel",
+  "prompt_cache_retention": "",
+  "llm_usage_tracking": true,
+  "llm_usage_history_limit": 2000,
   "text_to_image": "dall-e-2",
   "image_create_size": "256x256",
   "image_create_format": "png",
@@ -43,13 +49,27 @@
   "dingtalk_client_secret": "",
   "wecom_bot_id": "",
   "wecom_bot_secret": "",
+  "weixin_instances": {},
   "web_host": "",
   "web_password": "",
   "agent": true,
+  "agent_workspace": "~/cow",
+  "agent_default_role": "user",
+  "agent_admin_users": [],
+  "agent_user_profiles": {},
+  "agent_user_workspace_root": "",
+  "agent_sensitive_roots": [],
+  "agent_sensitive_files": [],
+  "agent_browser_lock_timeout_seconds": 900,
   "agent_max_context_tokens": 50000,
   "agent_max_context_turns": 20,
   "agent_max_steps": 20,
   "enable_thinking": false,
   "reasoning_effort": "high",
-  "knowledge": true
+  "knowledge": true,
+  "skill": {
+    "image-generation": {
+      "runtime": "codex_auth"
+    }
+  }
 }

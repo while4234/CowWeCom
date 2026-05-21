@@ -37,7 +37,12 @@ class MemorySearchTool(BaseTool):
         "required": ["query"]
     }
     
-    def __init__(self, memory_manager, user_id: Optional[str] = None):
+    def __init__(
+        self,
+        memory_manager,
+        user_id: Optional[str] = None,
+        include_shared_memory: bool = True,
+    ):
         """
         Initialize memory search tool
         
@@ -48,6 +53,7 @@ class MemorySearchTool(BaseTool):
         super().__init__()
         self.memory_manager = memory_manager
         self.user_id = user_id
+        self.include_shared_memory = include_shared_memory
 
         from config import conf
         if conf().get("knowledge", True):
@@ -77,22 +83,29 @@ class MemorySearchTool(BaseTool):
             return ToolResult.fail("Error: query parameter is required")
         
         try:
+            search_limit = max_results if self.include_shared_memory else max_results * 5
             # Run async search in sync context
             results = asyncio.run(self.memory_manager.search(
                 query=query,
                 user_id=self.user_id,
-                max_results=max_results,
+                max_results=search_limit,
                 min_score=min_score,
                 include_shared=True
             ))
+            results = self._filter_visible_results(results)[:max_results]
             
             if not results:
                 # Return clear message that no memories exist yet
                 # This prevents infinite retry loops
+                target = (
+                    f"memory/users/{self.user_id}/MEMORY.md"
+                    if self.user_id and not self.include_shared_memory
+                    else "MEMORY.md or memory/YYYY-MM-DD.md files"
+                )
                 return ToolResult.success(
                     f"No memories found for '{query}'. "
                     f"This is normal if no memories have been stored yet. "
-                    f"You can store new memories by writing to MEMORY.md or memory/YYYY-MM-DD.md files."
+                    f"You can store new memories by writing to {target}."
                 )
             
             # Format results
@@ -107,3 +120,16 @@ class MemorySearchTool(BaseTool):
             
         except Exception as e:
             return ToolResult.fail(f"Error searching memory: {str(e)}")
+
+    def _filter_visible_results(self, results):
+        if self.include_shared_memory:
+            return results
+
+        visible = []
+        for result in results:
+            if result.user_id == self.user_id:
+                visible.append(result)
+                continue
+            if result.source == "knowledge" or str(result.path).replace("\\", "/").startswith("knowledge/"):
+                visible.append(result)
+        return visible

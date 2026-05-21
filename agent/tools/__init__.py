@@ -9,6 +9,7 @@ from agent.tools.edit.edit import Edit
 from agent.tools.bash.bash import Bash
 from agent.tools.ls.ls import Ls
 from agent.tools.send.send import Send
+from agent.tools.image_generation.image_generation_task import ImageGenerationTaskTool
 
 # Import memory tools
 from agent.tools.memory.memory_search import MemorySearchTool
@@ -133,6 +134,7 @@ __all__ = [
     'Bash',
     'Ls',
     'Send',
+    'ImageGenerationTaskTool',
     'MemorySearchTool',
     'MemoryGetTool',
     'EnvConfig',
