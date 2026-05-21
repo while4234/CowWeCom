@@ -4201,16 +4201,10 @@ function loadTasksView() {
 // =====================================================================
 // Cache Usage View
 // =====================================================================
-let cacheUsageLoaded = false;
-
 function loadCacheUsageView(force) {
     const emptyEl = document.getElementById('cache-empty');
     const dashboardEl = document.getElementById('cache-dashboard');
     if (!emptyEl || !dashboardEl) return;
-    if (cacheUsageLoaded && !force) {
-        // Refresh anyway when navigating back after a short delay in active use.
-        force = true;
-    }
 
     fetch('/api/cache-usage?limit=50')
         .then(r => r.json())
@@ -4223,7 +4217,6 @@ function loadCacheUsageView(force) {
             if (!recent.length && !summary.requests) {
                 emptyEl.classList.remove('hidden');
                 dashboardEl.classList.add('hidden');
-                cacheUsageLoaded = true;
                 return;
             }
 
@@ -4233,7 +4226,6 @@ function loadCacheUsageView(force) {
             renderCacheBars(recent.slice(0, 14));
             renderCacheModels(models);
             renderCacheTable(recent);
-            cacheUsageLoaded = true;
         })
         .catch(err => {
             emptyEl.classList.remove('hidden');
