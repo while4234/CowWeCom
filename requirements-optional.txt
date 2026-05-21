@@ -20,3 +20,14 @@ pypdf
 python-docx
 openpyxl
 python-pptx
+
+# browser tool
+playwright
+browser-use>=0.1.40
+agentmesh-sdk[full]
+
+# image / QR / HTML analysis helpers
+pyzbar
+opencv-python
+beautifulsoup4
+lxml
