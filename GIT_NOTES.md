@@ -14,11 +14,13 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 - Latest code commit: `cd29392` `fix: preserve private memory isolation in shared scope`
 - GitHub upload target: private repository `while4234/CowWechat`
+- Remote layout: `origin` points to `https://github.com/while4234/CowWechat.git`; `upstream` points to the original `https://github.com/zhayujie/CowAgent.git` and has push disabled.
 - Working tree: expected to contain only this notes update before the docs commit; ignored local runtime files include `config.json`, `.venv/`, `.codex/`, logs, and browser automation snapshots.
 - Validation: high-confidence secret scan over commit-eligible files passed; ignore checks confirmed local secret/config patterns are excluded; `git diff --check` passed. `python -m pytest tests/test_multi_user_isolation.py` passed with 11 tests.
 
 ## Change Log
 
+- `2026-05-22` `51e861b` `docs: document github remote layout`: Documented that Codex/UI pushes should use the user's `origin` remote while the original project is kept as fetch-only `upstream`.
 - `2026-05-22` `cd29392` `fix: preserve private memory isolation in shared scope`: Prevented shared memory access from exposing other users' private memory entries and added isolation tests.
 - `2026-05-22` `40ee608` `chore: include latest web console state`: Captured the final current web console cache-view state before GitHub upload.
 - `2026-05-22` `af5f161` `chore: snapshot current CowWechat workspace`: Captured the current local workspace, including image generation tooling, access control/user isolation helpers, scheduler tests, and GitHub-upload ignore hardening.
