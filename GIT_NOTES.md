@@ -12,17 +12,19 @@ Do not commit API keys, QR login links, credential JSON files, chat logs, or loc
 
 ## Current Baseline
 
-- Latest feature commit: `b6d43bb` `feat: add OpenAI responses wire mode`
-- Working tree: expected to contain only this notes file before the docs commit; local ignored files include runtime config, logs, `.venv`, and `.codex`.
-- Validation: focused Responses adapter tests passed; modified Python files compiled; full test suite passed under `PYTHONUTF8=1`.
+- Latest feature commit: `f44c612` `feat: cover OpenAI multimodal capability config`
+- Working tree: expected to contain only this notes file before the docs commit; local ignored files include runtime config, logs, `.venv`, `.codex`, and generated media under `tmp/`.
+- Validation: focused Responses/voice tests passed; modified Python files compiled; full test suite passed under `PYTHONUTF8=1`.
 
 ## Change Log
 
+- `2026-05-21` `f44c612` `feat: cover OpenAI multimodal capability config`: Added `openai_wire_api` alias, Responses image generation tool fallback, GPT Image base64 handling, configurable OpenAI STT model/timeout, and focused tests.
 - `2026-05-21` `b6d43bb` `feat: add OpenAI responses wire mode`: Added Responses API wire-mode support across OpenAI-compatible chat, streaming, tools, vision, voice gateway handling, config, and focused tests.
 - `2026-05-21` `ac69a90` `deploy: document windows weixin deepseek setup`: Initial local Windows Weixin deployment documentation and safe ignore policy.
 
 ## Rollback Notes
 
-- To roll back the Responses API feature while keeping later docs, inspect `git show b6d43bb` first, then revert with `git revert b6d43bb`.
+- To roll back the multimodal capability follow-up, inspect `git show f44c612` first, then revert with `git revert f44c612`.
+- To roll back the initial Responses API feature while keeping later docs, inspect `git show b6d43bb` first, then revert with `git revert b6d43bb`.
 - Local runtime config is ignored; rolling back code does not change `config.json` or Weixin credentials.
 - The active service can be checked with `PYTHONUTF8=1 .venv\Scripts\python.exe -m cli.cli status`.
