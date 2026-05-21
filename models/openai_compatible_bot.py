@@ -13,6 +13,15 @@ from typing import Optional
 from common.log import logger
 from agent.protocol.message_utils import drop_orphaned_tool_results_openai
 from models.openai.openai_http_client import OpenAIHTTPClient, OpenAIHTTPError
+from models.openai.responses_api_adapter import (
+    build_responses_payload,
+    chat_chunks_to_chat_completion,
+    is_responses_wire_api,
+    normalize_reasoning_effort,
+    normalize_wire_api,
+    responses_response_to_chat_completion,
+    responses_stream_events_to_chat_chunks,
+)
 
 
 class OpenAICompatibleBot:
@@ -102,6 +111,10 @@ class OpenAICompatibleBot:
             # Add max_tokens if specified
             if kwargs.get("max_tokens"):
                 request_params["max_tokens"] = kwargs["max_tokens"]
+
+            reasoning_effort = self._resolve_reasoning_effort(kwargs)
+            if reasoning_effort:
+                request_params["reasoning_effort"] = reasoning_effort
             
             # Add tools if provided
             if tools:
@@ -113,9 +126,9 @@ class OpenAICompatibleBot:
             api_base = api_config.get('api_base')
             
             if stream:
-                return self._handle_stream_response(request_params, api_key, api_base)
+                return self._handle_stream_response(request_params, api_key, api_base, api_config)
             else:
-                return self._handle_sync_response(request_params, api_key, api_base)
+                return self._handle_sync_response(request_params, api_key, api_base, api_config)
                 
         except Exception as e:
             error_msg = str(e)
@@ -145,7 +158,34 @@ class OpenAICompatibleBot:
         proxy = conf().get("proxy") or None
         return OpenAIHTTPClient(proxy=proxy)
 
-    def _handle_sync_response(self, request_params, api_key, api_base):
+    def _get_wire_api(self, api_config=None) -> str:
+        """Return the configured OpenAI wire API for this bot."""
+        from config import conf
+        api_config = api_config or {}
+        return normalize_wire_api(
+            api_config.get("wire_api")
+            or conf().get("open_ai_wire_api")
+            or conf().get("wire_api")
+        )
+
+    def _resolve_response_store(self) -> bool:
+        """Whether Responses API calls should store server-side state."""
+        from config import conf
+        return not bool(conf().get("disable_response_storage", False))
+
+    def _resolve_reasoning_effort(self, kwargs=None) -> Optional[str]:
+        """Resolve reasoning effort from kwargs or project config."""
+        from config import conf
+        kwargs = kwargs or {}
+        effort = kwargs.get("reasoning_effort") or conf().get("model_reasoning_effort")
+        if not effort and conf().get("enable_thinking", False):
+            effort = conf().get("reasoning_effort")
+        return normalize_reasoning_effort(effort)
+
+    def _responses_api_base(self, api_base):
+        return api_base
+
+    def _handle_sync_response(self, request_params, api_key, api_base, api_config=None):
         """Handle synchronous chat-completion via HTTP."""
         params = dict(request_params)
         params.pop("stream", None)
@@ -153,6 +193,25 @@ class OpenAICompatibleBot:
         timeout = params.pop("request_timeout", None) or params.pop("timeout", None)
         try:
             client = self._get_http_client()
+            if is_responses_wire_api(self._get_wire_api(api_config)):
+                responses_payload = build_responses_payload(
+                    params,
+                    store=self._resolve_response_store(),
+                    reasoning_effort=params.get("reasoning_effort"),
+                )
+                events = client.responses(
+                    api_key=api_key,
+                    api_base=self._responses_api_base(api_base),
+                    timeout=timeout,
+                    stream=True,
+                    **responses_payload,
+                )
+                chunks = responses_stream_events_to_chat_chunks(events)
+                return chat_chunks_to_chat_completion(
+                    chunks,
+                    model=responses_payload.get("model"),
+                )
+
             return client.chat_completions(
                 api_key=api_key,
                 api_base=api_base,
@@ -178,7 +237,7 @@ class OpenAICompatibleBot:
                 "status_code": 500,
             }
 
-    def _handle_stream_response(self, request_params, api_key, api_base):
+    def _handle_stream_response(self, request_params, api_key, api_base, api_config=None):
         """Handle streaming chat-completion via HTTP (SSE).
 
         Yields dict chunks in OpenAI's standard streaming shape:
@@ -191,6 +250,23 @@ class OpenAICompatibleBot:
         timeout = params.pop("request_timeout", None) or params.pop("timeout", None)
         try:
             client = self._get_http_client()
+            if is_responses_wire_api(self._get_wire_api(api_config)):
+                responses_payload = build_responses_payload(
+                    params,
+                    store=self._resolve_response_store(),
+                    reasoning_effort=params.get("reasoning_effort"),
+                )
+                events = client.responses(
+                    api_key=api_key,
+                    api_base=self._responses_api_base(api_base),
+                    timeout=timeout,
+                    stream=True,
+                    **responses_payload,
+                )
+                for chunk in responses_stream_events_to_chat_chunks(events):
+                    yield chunk
+                return
+
             stream = client.chat_completions(
                 api_key=api_key,
                 api_base=api_base,
@@ -387,36 +463,49 @@ class OpenAICompatibleBot:
     def call_vision(self, image_url: str, question: str,
                     model: Optional[str] = None,
                     max_tokens: int = 1000) -> dict:
-        """Analyze an image using the OpenAI-compatible /chat/completions endpoint."""
+        """Analyze an image using the configured OpenAI-compatible wire API."""
         try:
             api_config = self.get_api_config()
             vision_model = model or api_config.get("model", "gpt-4o")
             api_key = api_config.get("api_key", "")
             api_base = (api_config.get("api_base") or "https://api.openai.com/v1").rstrip("/")
 
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            }]
             payload = {
                 "model": vision_model,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": question},
-                        {"type": "image_url", "image_url": {"url": image_url}},
-                    ],
-                }],
+                "messages": messages,
+                "max_tokens": max_tokens,
             }
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            }
-            resp = requests.post(
-                f"{api_base}/chat/completions",
-                headers=headers, json=payload, timeout=60,
-            )
-            if resp.status_code != 200:
-                body = resp.text[:500]
-                logger.error(f"[{self.__class__.__name__}] call_vision HTTP {resp.status_code}: {body}")
-                return {"error": True, "message": f"HTTP {resp.status_code}: {body}"}
-            data = resp.json()
+            client = self._get_http_client()
+            if is_responses_wire_api(self._get_wire_api(api_config)):
+                response_payload = build_responses_payload(
+                    payload,
+                    store=self._resolve_response_store(),
+                    reasoning_effort=self._resolve_reasoning_effort(),
+                )
+                events = client.responses(
+                    api_key=api_key,
+                    api_base=self._responses_api_base(api_base),
+                    timeout=60,
+                    stream=True,
+                    **response_payload,
+                )
+                chunks = responses_stream_events_to_chat_chunks(events)
+                data = chat_chunks_to_chat_completion(chunks, model=vision_model)
+            else:
+                data = client.chat_completions(
+                    api_key=api_key,
+                    api_base=api_base,
+                    timeout=60,
+                    stream=False,
+                    **payload,
+                )
             content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             usage = data.get("usage", {})
             return {

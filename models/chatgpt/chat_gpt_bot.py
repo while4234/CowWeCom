@@ -12,6 +12,12 @@ from models.openai.openai_compat import (
     wrap_http_error,
 )
 from models.openai.openai_http_client import OpenAIHTTPClient, OpenAIHTTPError
+from models.openai.responses_api_adapter import (
+    build_responses_payload,
+    chat_chunks_to_chat_completion,
+    is_responses_wire_api,
+    responses_stream_events_to_chat_chunks,
+)
 import requests
 from common import const
 from models.bot import Bot
@@ -78,11 +84,45 @@ class ChatGPTBot(Bot, OpenAIImage, OpenAICompatibleBot):
             'default_top_p': conf().get("top_p", 1.0),
             'default_frequency_penalty': conf().get("frequency_penalty", 0.0),
             'default_presence_penalty': conf().get("presence_penalty", 0.0),
+            'wire_api': conf().get("open_ai_wire_api") or conf().get("wire_api"),
         }
 
     def _get_http_client(self) -> OpenAIHTTPClient:
         """Override the default HTTP client to reuse our pre-configured one."""
         return self._http_client
+
+    def _create_model_response(self, *, messages, api_key=None, api_base=None,
+                               timeout=None, **params):
+        """Call the configured OpenAI wire API and return chat-completion shape."""
+        if is_responses_wire_api(self._get_wire_api(self.get_api_config())):
+            response_payload = build_responses_payload(
+                {
+                    **params,
+                    "messages": messages,
+                },
+                store=self._resolve_response_store(),
+                reasoning_effort=self._resolve_reasoning_effort(),
+            )
+            events = self._http_client.responses(
+                api_key=api_key or None,
+                api_base=self._responses_api_base(api_base or self._api_base),
+                timeout=timeout,
+                stream=True,
+                **response_payload,
+            )
+            chunks = responses_stream_events_to_chat_chunks(events)
+            return chat_chunks_to_chat_completion(
+                chunks,
+                model=response_payload.get("model"),
+            )
+
+        return self._http_client.chat_completions(
+            api_key=api_key or None,
+            api_base=api_base or None,
+            timeout=timeout,
+            messages=messages,
+            **params,
+        )
     
     def reply(self, query, context=None):
         # acquire reply content
@@ -208,7 +248,7 @@ class ChatGPTBot(Bot, OpenAIImage, OpenAICompatibleBot):
             logger.info(f"[CHATGPT] Calling vision API with model: {model}")
             
             # Call OpenAI-compatible API via HTTP
-            response = self._http_client.chat_completions(
+            response = self._create_model_response(
                 api_key=api_key or None,
                 api_base=api_base or None,
                 model=model,
@@ -252,7 +292,7 @@ class ChatGPTBot(Bot, OpenAIImage, OpenAICompatibleBot):
             # - request_timeout / timeout -> per-call timeout
             call_args = dict(args)
             timeout = call_args.pop("request_timeout", None) or call_args.pop("timeout", None)
-            response = self._http_client.chat_completions(
+            response = self._create_model_response(
                 api_key=api_key or None,
                 timeout=timeout,
                 messages=session.messages,

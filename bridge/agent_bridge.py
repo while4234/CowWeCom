@@ -180,8 +180,8 @@ class AgentLLMModel(LLMModel):
                 # Reasoning effort is only meaningful when thinking is on.
                 # Bots that don't understand the kwarg drop it silently.
                 if thinking_enabled:
-                    effort = conf().get("reasoning_effort", "high")
-                    if effort in ("high", "max"):
+                    effort = conf().get("model_reasoning_effort") or conf().get("reasoning_effort", "high")
+                    if effort in ("low", "medium", "high", "xhigh", "max"):
                         kwargs['reasoning_effort'] = effort
 
                 response = self.bot.call_with_tools(**kwargs)
@@ -242,8 +242,8 @@ class AgentLLMModel(LLMModel):
                 # Reasoning effort is only meaningful when thinking is on.
                 # Bots that don't understand the kwarg drop it silently.
                 if thinking_enabled:
-                    effort = conf().get("reasoning_effort", "high")
-                    if effort in ("high", "max"):
+                    effort = conf().get("model_reasoning_effort") or conf().get("reasoning_effort", "high")
+                    if effort in ("low", "medium", "high", "xhigh", "max"):
                         kwargs['reasoning_effort'] = effort
 
                 stream = self.bot.call_with_tools(**kwargs)

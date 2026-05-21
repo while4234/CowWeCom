@@ -157,6 +157,14 @@ class Agent:
         
         :return: Context window size in tokens
         """
+        try:
+            from config import conf
+            configured_window = int(conf().get("model_context_window", 0) or 0)
+            if configured_window > 0:
+                return configured_window
+        except Exception:
+            pass
+
         if self.model and hasattr(self.model, 'model'):
             model_name = self.model.model.lower()
 

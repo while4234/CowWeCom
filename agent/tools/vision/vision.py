@@ -29,6 +29,13 @@ from agent.tools.base_tool import BaseTool, ToolResult
 from common import const
 from common.log import logger
 from config import conf
+from models.openai.openai_http_client import OpenAIHTTPClient
+from models.openai.responses_api_adapter import (
+    build_responses_payload,
+    chat_chunks_to_chat_completion,
+    is_responses_wire_api,
+    responses_stream_events_to_chat_chunks,
+)
 
 DEFAULT_MODEL = const.GPT_41_MINI
 DEFAULT_TIMEOUT = 60
@@ -89,6 +96,7 @@ class VisionProvider:
     model_override: Optional[str] = None
     use_bot: bool = False  # When True, call via bot.call_vision instead of raw HTTP
     fallback_bot: Any = None  # Bot instance for non-main-model providers
+    wire_api: str = "chat_completions"
 
 
 class VisionAPIError(Exception):
@@ -477,11 +485,13 @@ class Vision(BaseTool):
         model_override = preferred_model if (
             preferred_model and preferred_model.lower().startswith(_OPENAI_MODEL_PREFIXES)
         ) else None
+        wire_api = conf().get("open_ai_wire_api") or conf().get("wire_api") or "chat_completions"
         return VisionProvider(
             name="OpenAI",
             api_key=api_key,
-            api_base=self._ensure_v1(api_base),
+            api_base=api_base if is_responses_wire_api(wire_api) else self._ensure_v1(api_base),
             model_override=model_override,
+            wire_api=wire_api,
         )
 
     def _build_linkai_provider(self, preferred_model: Optional[str] = None) -> Optional[VisionProvider]:
@@ -682,23 +692,48 @@ class Vision(BaseTool):
             ],
         }
 
-        headers = {
-            "Authorization": f"Bearer {provider.api_key}",
-            "Content-Type": "application/json",
-            **provider.extra_headers,
-        }
+        if is_responses_wire_api(provider.wire_api):
+            response_payload = build_responses_payload(
+                payload,
+                store=not bool(conf().get("disable_response_storage", False)),
+                reasoning_effort=(
+                    conf().get("model_reasoning_effort")
+                    or (conf().get("reasoning_effort") if conf().get("enable_thinking", False) else None)
+                ),
+            )
+            client = OpenAIHTTPClient(
+                api_key=provider.api_key,
+                api_base=provider.api_base,
+                extra_headers=provider.extra_headers,
+            )
+            try:
+                events = client.responses(
+                    timeout=DEFAULT_TIMEOUT,
+                    stream=True,
+                    **response_payload,
+                )
+            except Exception as e:
+                raise VisionAPIError(str(e))
+            chunks = responses_stream_events_to_chat_chunks(events)
+            data = chat_chunks_to_chat_completion(chunks, model=model)
+        else:
+            headers = {
+                "Authorization": f"Bearer {provider.api_key}",
+                "Content-Type": "application/json",
+                **provider.extra_headers,
+            }
 
-        resp = requests.post(
-            f"{provider.api_base}/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=DEFAULT_TIMEOUT,
-        )
+            resp = requests.post(
+                f"{provider.api_base}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=DEFAULT_TIMEOUT,
+            )
 
-        if resp.status_code != 200:
-            raise VisionAPIError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+            if resp.status_code != 200:
+                raise VisionAPIError(f"HTTP {resp.status_code}: {resp.text[:200]}")
 
-        data = resp.json()
+            data = resp.json()
 
         if "error" in data:
             msg = data["error"].get("message", "Unknown API error")

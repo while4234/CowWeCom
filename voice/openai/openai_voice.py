@@ -21,7 +21,7 @@ class OpenaiVoice(Voice):
         logger.debug("[Openai] voice file name={}".format(voice_file))
         try:
             file = open(voice_file, "rb")
-            api_base = conf().get("open_ai_api_base") or "https://api.openai.com/v1"
+            api_base = (conf().get("open_ai_api_base") or "https://api.openai.com/v1").rstrip("/")
             url = f'{api_base}/audio/transcriptions'
             headers = {
                 'Authorization': 'Bearer ' + conf().get("open_ai_api_key"),
@@ -54,7 +54,7 @@ class OpenaiVoice(Voice):
 
     def textToVoice(self, text):
         try:
-            api_base = conf().get("open_ai_api_base") or "https://api.openai.com/v1"
+            api_base = (conf().get("open_ai_api_base") or "https://api.openai.com/v1").rstrip("/")
             url = f'{api_base}/audio/speech'
             headers = {
                 'Authorization': 'Bearer ' + conf().get("open_ai_api_key"),
@@ -66,6 +66,12 @@ class OpenaiVoice(Voice):
                 'voice': conf().get("tts_voice_id") or "alloy"
             }
             response = requests.post(url, headers=headers, json=data)
+            if response.status_code >= 400:
+                logger.error(
+                    f"[OPENAI] text_to_Voice failed: status={response.status_code}, "
+                    f"resp={response.text[:500]}"
+                )
+                return Reply(ReplyType.ERROR, "閬囧埌浜嗕竴鐐瑰皬闂锛岃绋嶅悗鍐嶉棶鎴戝惂")
             file_name = "tmp/" + datetime.datetime.now().strftime('%Y%m%d%H%M%S') + str(random.randint(0, 1000)) + ".mp3"
             logger.debug(f"[OPENAI] text_to_Voice file_name={file_name}, input={text}")
             with open(file_name, 'wb') as f:

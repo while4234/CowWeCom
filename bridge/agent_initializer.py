@@ -100,7 +100,10 @@ class AgentInitializer:
         # Get cost control parameters
         from config import conf
         max_steps = conf().get("agent_max_steps", 20)
-        max_context_tokens = conf().get("agent_max_context_tokens", 50000)
+        max_context_tokens = (
+            conf().get("model_auto_compact_token_limit", 0)
+            or conf().get("agent_max_context_tokens", 50000)
+        )
         
         # Create agent
         agent = self.agent_bridge.create_agent(

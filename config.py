@@ -15,6 +15,12 @@ available_setting = {
     "open_ai_api_key": "",  # openai api key
     # openai apibase，当use_azure_chatgpt为true时，需要设置对应的api base
     "open_ai_api_base": "https://api.openai.com/v1",
+    "open_ai_wire_api": "chat_completions",  # OpenAI wire API: chat_completions or responses
+    "wire_api": "",  # Alias for Codex-style config; when set to "responses" uses /v1/responses
+    "disable_response_storage": False,  # When using Responses API, set store=false
+    "model_reasoning_effort": "",  # Responses reasoning effort: none/low/medium/high/xhigh
+    "model_context_window": 0,  # Optional explicit model context window
+    "model_auto_compact_token_limit": 0,  # Optional compact limit hint for Agent mode
     "claude_api_base": "https://api.anthropic.com/v1",  # claude api base
     "gemini_api_base": "https://generativelanguage.googleapis.com",  # gemini api base
     "custom_api_key": "",  # custom OpenAI-compatible provider api key (used when bot_type is "custom")
@@ -394,6 +400,8 @@ def load_config():
     _CONFIG_TO_ENV = {
         "open_ai_api_key": "OPENAI_API_KEY",
         "open_ai_api_base": "OPENAI_API_BASE",
+        "open_ai_wire_api": "OPENAI_WIRE_API",
+        "wire_api": "OPENAI_WIRE_API",
         "linkai_api_key": "LINKAI_API_KEY",
         "linkai_api_base": "LINKAI_API_BASE",
         "claude_api_key": "CLAUDE_API_KEY",

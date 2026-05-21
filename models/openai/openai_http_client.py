@@ -165,6 +165,38 @@ class OpenAIHTTPClient:
             stream=False,
         )
 
+    def responses(
+        self,
+        *,
+        api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
+        timeout: Optional[float] = None,
+        proxy: Optional[str] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
+        extra_query: Optional[Dict[str, str]] = None,
+        path: str = "/responses",
+        stream: bool = False,
+        **payload,
+    ):
+        """POST /responses.
+
+        The non-streaming return value is the raw Responses JSON object.
+        Streaming returns parsed SSE events; callers that need chat-completion
+        chunks can adapt those events at the bot layer.
+        """
+        payload["stream"] = stream
+        return self._request(
+            path=path,
+            payload=payload,
+            api_key=api_key,
+            api_base=api_base,
+            timeout=timeout,
+            proxy=proxy,
+            extra_headers=extra_headers,
+            extra_query=extra_query,
+            stream=stream,
+        )
+
     def images_generate(
         self,
         *,
