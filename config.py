@@ -16,6 +16,7 @@ available_setting = {
     # openai apibase，当use_azure_chatgpt为true时，需要设置对应的api base
     "open_ai_api_base": "https://api.openai.com/v1",
     "open_ai_wire_api": "chat_completions",  # OpenAI wire API: chat_completions or responses
+    "openai_wire_api": "",  # Alias for open_ai_wire_api
     "wire_api": "",  # Alias for Codex-style config; when set to "responses" uses /v1/responses
     "disable_response_storage": False,  # When using Responses API, set store=false
     "model_reasoning_effort": "",  # Responses reasoning effort: none/low/medium/high/xhigh
@@ -61,6 +62,8 @@ available_setting = {
     "image_create_prefix": ["画", "看", "找"],  # 开启图片回复的前缀
     "concurrency_in_session": 1,  # 同一会话最多有多少条消息在处理中，大于1可能乱序
     "image_create_size": "256x256",  # 图片大小,可选有 256x256, 512x512, 1024x1024 (dall-e-3默认为1024x1024)
+    "image_create_format": "png",  # OpenAI GPT Image output format: png, jpeg, or webp
+    "image_create_quality": "",  # OpenAI GPT Image quality: auto, low, medium, or high
     "group_chat_exit_group": False,
     # chatgpt会话参数
     "expires_in_seconds": 3600,  # 无操作会话的过期时间
@@ -116,6 +119,7 @@ available_setting = {
     "voice_reply_voice": False,  # 是否使用语音回复语音，需要设置对应语音合成引擎的api key
     "always_reply_voice": False,  # 是否一直使用语音回复
     "voice_to_text": "openai",  # 语音识别引擎，支持openai,baidu,google,azure,xunfei,ali
+    "voice_to_text_model": "whisper-1",
     "text_to_voice": "openai",  # 语音合成引擎，支持openai,baidu,google,azure,xunfei,ali,pytts(offline),elevenlabs,edge(online)
     "text_to_voice_model": "tts-1",
     "tts_voice_id": "alloy",
@@ -401,6 +405,7 @@ def load_config():
         "open_ai_api_key": "OPENAI_API_KEY",
         "open_ai_api_base": "OPENAI_API_BASE",
         "open_ai_wire_api": "OPENAI_WIRE_API",
+        "openai_wire_api": "OPENAI_WIRE_API",
         "wire_api": "OPENAI_WIRE_API",
         "linkai_api_key": "LINKAI_API_KEY",
         "linkai_api_base": "LINKAI_API_BASE",

@@ -485,7 +485,12 @@ class Vision(BaseTool):
         model_override = preferred_model if (
             preferred_model and preferred_model.lower().startswith(_OPENAI_MODEL_PREFIXES)
         ) else None
-        wire_api = conf().get("open_ai_wire_api") or conf().get("wire_api") or "chat_completions"
+        wire_api = (
+            conf().get("open_ai_wire_api")
+            or conf().get("openai_wire_api")
+            or conf().get("wire_api")
+            or "chat_completions"
+        )
         return VisionProvider(
             name="OpenAI",
             api_key=api_key,

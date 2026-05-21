@@ -165,6 +165,7 @@ class OpenAICompatibleBot:
         return normalize_wire_api(
             api_config.get("wire_api")
             or conf().get("open_ai_wire_api")
+            or conf().get("openai_wire_api")
             or conf().get("wire_api")
         )
 

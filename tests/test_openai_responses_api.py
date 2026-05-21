@@ -1,5 +1,10 @@
 import unittest
+import os
 
+from models.openai.open_ai_image import (
+    _extract_image_reference,
+    _extract_responses_image_reference,
+)
 from models.openai.responses_api_adapter import (
     build_responses_payload,
     responses_response_to_chat_completion,
@@ -142,6 +147,47 @@ class TestOpenAIResponsesAdapter(unittest.TestCase):
         self.assertEqual(tool_chunks[1]["function"]["arguments"], "{\"q\"")
         self.assertEqual(tool_chunks[2]["function"]["arguments"], ":\"x\"}")
         self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "tool_calls")
+
+    def test_image_generation_helpers_accept_url_and_b64_outputs(self):
+        url_result = {"data": [{"url": "https://example.com/image.png"}]}
+        self.assertEqual(
+            _extract_image_reference(url_result),
+            "https://example.com/image.png",
+        )
+
+        image_b64 = "aW1hZ2UtYnl0ZXM="
+        image_ref = _extract_image_reference(
+            {"data": [{"b64_json": image_b64}]},
+            output_format="png",
+        )
+        try:
+            self.assertTrue(image_ref.startswith("file://"))
+            self.assertTrue(os.path.exists(image_ref[7:]))
+        finally:
+            if image_ref.startswith("file://") and os.path.exists(image_ref[7:]):
+                os.remove(image_ref[7:])
+
+    def test_responses_image_generation_output_is_extracted(self):
+        image_b64 = "cmVzcG9uc2VzLWltYWdl"
+        event = {
+            "type": "response.completed",
+            "response": {
+                "output": [
+                    {
+                        "type": "image_generation_call",
+                        "result": image_b64,
+                    }
+                ]
+            },
+        }
+
+        image_ref = _extract_responses_image_reference(event)
+        try:
+            self.assertTrue(image_ref.startswith("file://"))
+            self.assertTrue(os.path.exists(image_ref[7:]))
+        finally:
+            if image_ref.startswith("file://") and os.path.exists(image_ref[7:]):
+                os.remove(image_ref[7:])
 
 
 if __name__ == "__main__":
