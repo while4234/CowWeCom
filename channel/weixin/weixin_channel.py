@@ -549,7 +549,32 @@ class WeixinChannel(ChatChannel):
             if wechat_id:
                 context["wechat_id"] = wechat_id
                 context["user_label"] = wechat_id
+            self._remember_social_bridge_user(context, from_user, context_token)
             self.produce(context)
+
+    def _remember_social_bridge_user(self, context: Context, raw_user_id: str, context_token: str) -> None:
+        """Best-effort user directory update for cross-user bridge tools."""
+        try:
+            from agent.social_bridge import get_bridge_store
+            from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile
+
+            profile = resolve_agent_user_profile(context)
+            apply_profile_to_context(context, profile)
+            get_bridge_store().register_user(
+                actor_user_id=profile.actor_id,
+                memory_user_id=profile.memory_user_id,
+                display_name=profile.display_name or context.get("user_label", "") or raw_user_id,
+                metadata={
+                    "channel_type": profile.channel_type,
+                    "wechat_id": wechat_id,
+                    "raw_user_id": raw_user_id,
+                    "receiver": raw_user_id,
+                    "context_token": context_token,
+                    "can_active_send": bool(context_token),
+                },
+            )
+        except Exception as e:
+            logger.debug(f"[Weixin] Social bridge user registration skipped: {e}")
 
     def _resolve_wechat_id(self, raw_user_id: str, context_token: str, raw_msg: dict) -> str:
         """Resolve and remember the real WeChat id for usage/profile display."""
@@ -628,20 +653,35 @@ class WeixinChannel(ChatChannel):
             logger.warning(f"[Weixin] Unsupported reply type: {reply.type}, fallback to text")
             self._send_text(str(reply.content), receiver, context_token)
 
+    def active_send_text(self, receiver: str, text: str, context_token: str = "") -> bool:
+        """Send a text message without an inbound message context."""
+        if not receiver or not text:
+            return False
+
+        token = context_token or self._context_tokens.get(receiver, "")
+        if not token:
+            logger.warning(f"[Weixin] No context_token for active send receiver={receiver}")
+            return False
+
+        if not self._ensure_api():
+            return False
+        return self._send_text(text, receiver, token)
+
     def _get_context_token(self, receiver: str, msg=None) -> str:
         """Get the context_token for a receiver, required for all sends."""
         if msg and hasattr(msg, "context_token") and msg.context_token:
             return msg.context_token
         return self._context_tokens.get(receiver, "")
 
-    def _send_text(self, text: str, receiver: str, context_token: str):
+    def _send_text(self, text: str, receiver: str, context_token: str) -> bool:
         if len(text) <= TEXT_CHUNK_LIMIT:
             try:
                 self.api.send_text(receiver, text, context_token)
                 logger.debug(f"[Weixin] Text sent to {receiver}, len={len(text)}")
             except Exception as e:
                 logger.error(f"[Weixin] Failed to send text: {e}")
-            return
+                return False
+            return True
 
         chunks = self._split_text(text, TEXT_CHUNK_LIMIT)
         for i, chunk in enumerate(chunks):
@@ -650,9 +690,10 @@ class WeixinChannel(ChatChannel):
                 logger.debug(f"[Weixin] Text chunk {i+1}/{len(chunks)} sent to {receiver}, len={len(chunk)}")
             except Exception as e:
                 logger.error(f"[Weixin] Failed to send text chunk {i+1}/{len(chunks)}: {e}")
-                break
+                return False
             if i < len(chunks) - 1:
                 time.sleep(0.5)
+        return True
 
     @staticmethod
     def _split_text(text: str, limit: int) -> list:

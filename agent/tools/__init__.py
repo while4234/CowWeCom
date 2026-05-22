@@ -11,6 +11,12 @@ from agent.tools.ls.ls import Ls
 from agent.tools.send.send import Send
 from agent.tools.image_generation.image_generation_task import ImageGenerationTaskTool
 from agent.tools.code_update.git_code_update import GitCodeUpdateTool
+from agent.tools.social_bridge import (
+    BridgeListUsersTool,
+    BridgePendingMessagesTool,
+    BridgeSendMessageTool,
+    BridgeSetRelationshipTool,
+)
 
 # Import memory tools
 from agent.tools.memory.memory_search import MemorySearchTool
@@ -137,6 +143,10 @@ __all__ = [
     'Send',
     'ImageGenerationTaskTool',
     'GitCodeUpdateTool',
+    'BridgeListUsersTool',
+    'BridgePendingMessagesTool',
+    'BridgeSendMessageTool',
+    'BridgeSetRelationshipTool',
     'MemorySearchTool',
     'MemoryGetTool',
     'EnvConfig',

@@ -104,6 +104,41 @@ class TestMultiWeixinInstances(unittest.TestCase):
                 )],
             )
 
+    def test_active_send_text_uses_cached_context_token(self):
+        sent = []
+
+        class FakeWeixinApi:
+            def send_text(self, receiver, text, context_token):
+                sent.append((receiver, text, context_token))
+
+        channel = WeixinChannel("weixin_user")
+        channel.channel_type = "weixin_user"
+        channel.api = FakeWeixinApi()
+        channel._context_tokens["receiver-id"] = "ctx-token"
+
+        ok = channel.active_send_text("receiver-id", "hello from bridge")
+
+        self.assertTrue(ok)
+        self.assertEqual(sent, [("receiver-id", "hello from bridge", "ctx-token")])
+
+    def test_active_send_text_returns_false_without_context_token(self):
+        channel = WeixinChannel("weixin_user")
+        channel.channel_type = "weixin_user"
+
+        self.assertFalse(channel.active_send_text("receiver-id", "hello from bridge"))
+
+    def test_active_send_text_returns_false_when_api_send_fails(self):
+        class FailingWeixinApi:
+            def send_text(self, receiver, text, context_token):
+                raise RuntimeError("network down")
+
+        channel = WeixinChannel("weixin_user")
+        channel.channel_type = "weixin_user"
+        channel.api = FailingWeixinApi()
+        channel._context_tokens["receiver-id"] = "ctx-token"
+
+        self.assertFalse(channel.active_send_text("receiver-id", "hello from bridge"))
+
     def test_channel_info_includes_named_weixin_identity_and_role(self):
         with tempfile.TemporaryDirectory() as tmp:
             default_cred = Path(tmp) / "admin_credentials.json"

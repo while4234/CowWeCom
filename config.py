@@ -243,6 +243,10 @@ available_setting = {
     "agent_sensitive_roots": [],  # Extra filesystem roots normal users cannot access
     "agent_sensitive_files": [],  # Extra sensitive files normal users cannot access
     "agent_browser_lock_timeout_seconds": 900,  # Browser tool lease timeout for cross-user contention
+    "social_bridge_enabled": True,  # Enable controlled cross-user relationship bridge tools
+    "social_bridge_auto_send": True,  # Proactively send authorized bridge messages when reachable
+    "social_bridge_max_users": 100,  # Maximum bridge directory entries returned to a user
+    "social_bridge_pending_retention_days": 30,  # Retain unsent bridge messages for later retry
     "agent_max_context_tokens": 50000,  # Agent模式下最大上下文tokens
     "agent_max_context_turns": 20,  # Agent模式下最大上下文记忆轮次
     "agent_max_steps": 20,  # Agent模式下单次运行最大决策步数
