@@ -12,6 +12,7 @@ from bridge.bridge import Bridge
 from bridge.context import Context
 from bridge.reply import Reply, ReplyType
 from common import const
+from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common.log import logger
 from common.utils import expand_path
 from config import conf
@@ -406,6 +407,10 @@ class AgentBridge:
         conversation_id = None
         profile = None
         agent = None
+        reply_start = monotonic()
+        get_agent_elapsed = None
+        run_stream_elapsed = None
+        persist_elapsed = None
         try:
             # Extract session_id from context for user isolation
             if context:
@@ -417,7 +422,9 @@ class AgentBridge:
                 conversation_id = session_id
             
             # Get agent for this session (will auto-initialize if needed)
+            get_agent_start = monotonic()
             agent = self.get_agent(session_id=conversation_id, profile=profile)
+            get_agent_elapsed = elapsed(get_agent_start)
             if not agent:
                 return Reply(ReplyType.ERROR, "Failed to initialize super agent")
             
@@ -482,11 +489,13 @@ class AgentBridge:
 
             try:
                 # Use agent's run_stream method with event handler
+                run_stream_start = monotonic()
                 response = agent.run_stream(
                     user_message=query,
                     on_event=event_handler.handle_event,
                     clear_history=clear_history
                 )
+                run_stream_elapsed = elapsed(run_stream_start)
             finally:
                 # Restore original tools
                 if context and context.get("is_scheduled_task"):
@@ -496,6 +505,7 @@ class AgentBridge:
                 event_handler.log_summary()
 
             # Persist new messages generated during this run
+            persist_start = monotonic()
             if conversation_id:
                 channel_type = (context.get("channel_type") or "") if context else ""
                 new_messages = getattr(agent, '_last_run_new_messages', [])
@@ -511,6 +521,17 @@ class AgentBridge:
                             logger.info(f"[AgentBridge] Cleared DB for recovered session: {conversation_id}")
                         except Exception as e:
                             logger.warning(f"[AgentBridge] Failed to clear DB after recovery: {e}")
+            persist_elapsed = elapsed(persist_start)
+            logger.info(
+                "[Latency][AgentBridge] session=%s total=%s get_agent=%s run_stream=%s persist=%s "
+                "response_chars=%s",
+                hash_id(conversation_id or session_id),
+                format_seconds(elapsed(reply_start)),
+                format_seconds(get_agent_elapsed),
+                format_seconds(run_stream_elapsed),
+                format_seconds(persist_elapsed),
+                len(response) if isinstance(response, str) else 0,
+            )
             
             # Post-message hot-reload: detect edits to ~/cow/mcp.json and
             # sync any new/removed MCP tools into the live agent in the
@@ -549,6 +570,14 @@ class AgentBridge:
                         logger.info(f"[AgentBridge] Cleared DB for session after error: {cleanup_session_id}")
                 except Exception as db_err:
                     logger.warning(f"[AgentBridge] Failed to clear DB after error: {db_err}")
+            logger.info(
+                "[Latency][AgentBridge] session=%s total=%s get_agent=%s run_stream=%s persist=%s status=error",
+                hash_id(conversation_id or session_id),
+                format_seconds(elapsed(reply_start)),
+                format_seconds(get_agent_elapsed),
+                format_seconds(run_stream_elapsed),
+                format_seconds(persist_elapsed),
+            )
             return Reply(ReplyType.ERROR, f"Agent error: {str(e)}")
         finally:
             if conversation_id:

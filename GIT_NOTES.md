@@ -12,14 +12,16 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 ## Current Baseline
 
-- Latest code commit: `4ed1edf` `feat: add safe github code update skill`
+- Latest code commit: `PENDING` `feat: add latency telemetry for weixin agent replies`
 - GitHub upload target: private repository `while4234/CowWechat`
 - Remote layout: `origin` points to `https://github.com/while4234/CowWechat.git`; `upstream` points to the original `https://github.com/zhayujie/CowAgent.git` and has push disabled.
-- Working tree: has separate uncommitted prompt-cache telemetry edits that are intentionally not part of the code-update feature commit.
-- Validation: `tests/test_git_code_updater.py` passed; backend `SkillManager` and Web API both show enabled `code-update`; backend `ToolManager` and Web API both show `git_code_update`; non-admin guarded call is denied; high-confidence secret scan and `git diff --check` passed for code-update files.
+- Working tree: contains the current latency telemetry change until the pending commit is created; runtime secrets and chat logs remain ignored.
+- Validation: `.venv\Scripts\python.exe -m py_compile common\latency.py channel\chat_channel.py bridge\agent_bridge.py agent\protocol\agent_stream.py` passed; `.venv\Scripts\python.exe -m pytest tests\test_llm_usage_tracker.py tests\test_multi_user_isolation.py` passed; `git diff --check` passed with Windows CRLF warnings only; service restarted with `.venv\Scripts\python.exe -m cli.cli restart --no-logs` and status shows PID 8168 running `weixin,weixin_user` on `gpt-5.5`.
 
 ## Change Log
 
+- `2026-05-22` `PENDING` `feat: add latency telemetry for weixin agent replies`: Added hashed request latency logs for session queue wait, channel handling, AgentBridge execution, and each LLM stream turn so slow Weixin replies can be attributed to queueing, model latency, cache misses, tools, persistence, or send time.
+- `2026-05-22` `7598c2d` `feat: improve prompt cache telemetry`: Added prompt cache usage visibility and persisted cache hit metrics for the current deployment.
 - `2026-05-22` `4ed1edf` `feat: add safe github code update skill`: Added natural-language `code-update` skill plus guarded `git_code_update` tool for fast-forward-only updates that refuse dirty worktrees and protected config/secret paths.
 - `2026-05-22` `51e861b` `docs: document github remote layout`: Documented that Codex/UI pushes should use the user's `origin` remote while the original project is kept as fetch-only `upstream`.
 - `2026-05-22` `cd29392` `fix: preserve private memory isolation in shared scope`: Prevented shared memory access from exposing other users' private memory entries and added isolation tests.
@@ -34,5 +36,6 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 ## Rollback Notes
 
 - To roll back the GitHub upload snapshot, inspect `git show af5f161` and `git show 40ee608`, then revert in reverse order if needed.
+- To roll back latency telemetry only, revert the pending latency telemetry commit after confirming no runtime-only config files are staged.
 - Local runtime config is ignored; rolling back code does not change `config.json`, `.env*`, Weixin credentials, or local virtual environments.
 - The active service can be checked with `PYTHONUTF8=1 .venv\Scripts\python.exe -m cli.cli status`.

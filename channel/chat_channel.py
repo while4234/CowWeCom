@@ -9,6 +9,7 @@ from bridge.context import *
 from bridge.reply import *
 from channel.channel import Channel
 from common.dequeue import Dequeue
+from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common import memory
 from plugins import *
 
@@ -178,18 +179,44 @@ class ChatChannel(Channel):
     def _handle(self, context: Context):
         if context is None or not context.content:
             return
+        handle_start = monotonic()
+        context["_latency_handle_start_at"] = handle_start
+        generate_elapsed = None
+        decorate_elapsed = None
+        send_elapsed = None
+        reply = None
         logger.debug("[chat_channel] handling context: {}".format(context))
         # reply的构建步骤
+        generate_start = monotonic()
         reply = self._generate_reply(context)
+        generate_elapsed = elapsed(generate_start)
 
         logger.debug("[chat_channel] decorating reply: {}".format(reply))
 
         # reply的包装步骤
         if reply and reply.content:
+            decorate_start = monotonic()
             reply = self._decorate_reply(context, reply)
+            decorate_elapsed = elapsed(decorate_start)
 
             # reply的发送步骤
+            send_start = monotonic()
             self._send_reply(context, reply)
+            send_elapsed = elapsed(send_start)
+        content = getattr(reply, "content", "") if reply else ""
+        logger.info(
+            "[Latency][Handle] session=%s total=%s queue_wait=%s generate=%s decorate=%s send=%s "
+            "ctype=%s reply_type=%s reply_chars=%s",
+            hash_id(context.get("session_id")),
+            format_seconds(elapsed(handle_start)),
+            format_seconds(elapsed(context.get("_latency_enqueued_at"), handle_start)),
+            format_seconds(generate_elapsed),
+            format_seconds(decorate_elapsed),
+            format_seconds(send_elapsed),
+            context.type,
+            getattr(reply, "type", "none") if reply else "none",
+            len(content) if isinstance(content, str) else 0,
+        )
 
     def _generate_reply(self, context: Context, reply: Reply = Reply()) -> Reply:
         e_context = PluginManager().emit_event(
@@ -423,16 +450,31 @@ class ChatChannel(Channel):
 
     def produce(self, context: Context):
         session_id = context["session_id"]
+        enqueued_at = monotonic()
+        context["_latency_enqueued_at"] = enqueued_at
+        if "_latency_received_at" not in context:
+            context["_latency_received_at"] = enqueued_at
         with self.lock:
             if session_id not in self.sessions:
                 self.sessions[session_id] = [
                     Dequeue(),
                     threading.BoundedSemaphore(conf().get("concurrency_in_session", 1)),
                 ]
+            context_queue = self.sessions[session_id][0]
+            pending_before = context_queue.qsize()
+            context["_latency_queue_pending_before"] = pending_before
+            priority = context.type == ContextType.TEXT and context.content.startswith("#")
             if context.type == ContextType.TEXT and context.content.startswith("#"):
                 self.sessions[session_id][0].putleft(context)  # 优先处理管理命令
             else:
                 self.sessions[session_id][0].put(context)
+            logger.info(
+                "[Latency][Queue] enqueue session=%s ctype=%s priority=%s pending_before=%s",
+                hash_id(session_id),
+                context.type,
+                priority,
+                pending_before,
+            )
 
     # 消费者函数，单独线程，用于从消息队列中取出消息并处理
     def consume(self):
@@ -445,6 +487,14 @@ class ChatChannel(Channel):
                 if semaphore.acquire(blocking=False):  # 等线程处理完毕才能删除
                     if not context_queue.empty():
                         context = context_queue.get()
+                        dequeued_at = monotonic()
+                        context["_latency_dequeued_at"] = dequeued_at
+                        logger.info(
+                            "[Latency][Queue] dequeue session=%s queue_wait=%s pending_after=%s",
+                            hash_id(session_id),
+                            format_seconds(elapsed(context.get("_latency_enqueued_at"), dequeued_at)),
+                            context_queue.qsize(),
+                        )
                         logger.debug("[chat_channel] consume context: {}".format(context))
                         future: Future = handler_pool.submit(self._handle, context)
                         future.add_done_callback(self._thread_pool_callback(session_id, context=context))

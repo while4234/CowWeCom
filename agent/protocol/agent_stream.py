@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional, Callable, Tuple
 from agent.protocol.models import LLMRequest, LLMModel
 from agent.protocol.message_utils import sanitize_claude_messages, compress_turn_to_text_only
 from agent.tools.base_tool import BaseTool, ToolResult
+from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common.log import logger
 from common.llm_usage_tracker import normalize_usage
 
@@ -707,11 +708,19 @@ class AgentStreamExecutor:
         gemini_raw_parts = None  # Preserve Gemini thoughtSignature for round-trip
         stop_reason = None  # Track why the stream stopped
         last_usage = None
+        llm_start = monotonic()
+        first_event_at = None
+        first_output_at = None
+        first_visible_text_at = None
+        chunk_count = 0
 
         try:
             stream = self.model.call_stream(request)
 
             for chunk in stream:
+                chunk_count += 1
+                if first_event_at is None:
+                    first_event_at = monotonic()
                 # Check for errors
                 if isinstance(chunk, dict) and chunk.get("error"):
                     # Extract error message from nested structure
@@ -769,6 +778,8 @@ class AgentStreamExecutor:
 
                     reasoning_delta = delta.get("reasoning_content") or ""
                     if reasoning_delta:
+                        if first_output_at is None:
+                            first_output_at = monotonic()
                         full_reasoning += reasoning_delta
                         if self._is_thinking_enabled():
                             self._emit_event("reasoning_update", {"delta": reasoning_delta})
@@ -776,14 +787,20 @@ class AgentStreamExecutor:
                     # Handle text content
                     content_delta = delta.get("content") or ""
                     if content_delta:
+                        if first_output_at is None:
+                            first_output_at = monotonic()
                         # Filter out <think> tags from content
                         filtered_delta = self._filter_think_tags(content_delta)
                         full_content += filtered_delta
                         if filtered_delta:  # Only emit if there's content after filtering
+                            if first_visible_text_at is None:
+                                first_visible_text_at = monotonic()
                             self._emit_event("message_update", {"delta": filtered_delta})
 
                     # Handle tool calls
                     if "tool_calls" in delta and delta["tool_calls"]:
+                        if first_output_at is None:
+                            first_output_at = monotonic()
                         for tc_delta in delta["tool_calls"]:
                             index = tc_delta.get("index", 0)
 
@@ -814,6 +831,21 @@ class AgentStreamExecutor:
         except Exception as e:
             error_str = str(e)
             error_str_lower = error_str.lower()
+            logger.info(
+                "[Latency][LLM] session=%s model=%s status=error elapsed=%s first_event=%s "
+                "first_output=%s first_visible_text=%s messages=%s turns=%s chunks=%s retry=%s error=%s",
+                hash_id(getattr(self.agent, "_current_session_id", None) or getattr(self.model, "session_id", "")),
+                getattr(self.model, "model", ""),
+                format_seconds(elapsed(llm_start)),
+                format_seconds(elapsed(llm_start, first_event_at) if first_event_at is not None else None),
+                format_seconds(elapsed(llm_start, first_output_at) if first_output_at is not None else None),
+                format_seconds(elapsed(llm_start, first_visible_text_at) if first_visible_text_at is not None else None),
+                len(messages),
+                len(turns),
+                chunk_count,
+                retry_count,
+                error_str[:180],
+            )
             
             # Check if error is context overflow (non-retryable, needs session reset)
             # Method 1: Check for special marker (set in stream error handling above)
@@ -952,6 +984,37 @@ class AgentStreamExecutor:
                 "name": tc["name"],
                 "arguments": arguments
             })
+
+        reasoning_tokens = 0
+        cache_hit_rate = 0.0
+        if last_usage:
+            completion_details = last_usage.get("completion_tokens_details") or last_usage.get("output_tokens_details") or {}
+            reasoning_tokens = completion_details.get("reasoning_tokens", 0) or 0
+            cache_hit_rate = float(last_usage.get("cache_hit_rate", 0) or 0) * 100
+        logger.info(
+            "[Latency][LLM] session=%s model=%s status=ok elapsed=%s first_event=%s "
+            "first_output=%s first_visible_text=%s messages=%s turns=%s chunks=%s retry=%s "
+            "prompt=%s cached=%s hit_rate=%.1f%% completion=%s reasoning=%s content_chars=%s "
+            "tool_calls=%s stop=%s",
+            hash_id(getattr(self.agent, "_current_session_id", None) or getattr(self.model, "session_id", "")),
+            getattr(self.model, "model", ""),
+            format_seconds(elapsed(llm_start)),
+            format_seconds(elapsed(llm_start, first_event_at) if first_event_at is not None else None),
+            format_seconds(elapsed(llm_start, first_output_at) if first_output_at is not None else None),
+            format_seconds(elapsed(llm_start, first_visible_text_at) if first_visible_text_at is not None else None),
+            len(messages),
+            len(turns),
+            chunk_count,
+            retry_count,
+            last_usage.get("prompt_tokens", 0) if last_usage else 0,
+            last_usage.get("cached_tokens", 0) if last_usage else 0,
+            cache_hit_rate,
+            last_usage.get("completion_tokens", 0) if last_usage else 0,
+            reasoning_tokens,
+            len(full_content),
+            len(tool_calls),
+            stop_reason,
+        )
 
         # Check for empty response and retry once if enabled
         if retry_on_empty and not full_content and not tool_calls:
