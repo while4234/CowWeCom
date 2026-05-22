@@ -92,7 +92,11 @@ SAFETY:
             if os.path.exists(env_file):
                 try:
                     from dotenv import dotenv_values
-                    dotenv_vars = dotenv_values(env_file)
+                    dotenv_vars = {
+                        str(key): str(value)
+                        for key, value in dotenv_values(env_file).items()
+                        if key and value is not None
+                    }
                     env.update(dotenv_vars)
                     logger.debug(f"[Bash] Loaded {len(dotenv_vars)} variables from {env_file}")
                 except ImportError:
@@ -109,9 +113,11 @@ SAFETY:
             # On Windows, convert $VAR references to %VAR% for cmd.exe
             if self._IS_WIN:
                 env["PYTHONIOENCODING"] = "utf-8"
+                self._prepend_current_python_dir(env)
                 command = self._convert_env_vars_for_windows(command, dotenv_vars)
                 if command and not command.strip().lower().startswith("chcp"):
                     command = f"chcp 65001 >nul 2>&1 && {command}"
+            env = self._normalize_subprocess_env(env)
 
             result = subprocess.run(
                 command,
@@ -293,3 +299,25 @@ SAFETY:
             return m.group(0)
 
         return re.sub(r'\$\{(\w+)\}|\$(\w+)', replace_match, command)
+
+    @staticmethod
+    def _normalize_subprocess_env(env: Dict[str, Any]) -> Dict[str, str]:
+        """Return a subprocess-safe environment containing only string keys/values."""
+        normalized: Dict[str, str] = {}
+        for key, value in env.items():
+            if key is None or value is None:
+                continue
+            normalized[str(key)] = str(value)
+        return normalized
+
+    @staticmethod
+    def _prepend_current_python_dir(env: Dict[str, Any]) -> None:
+        """Make `python` resolve to the interpreter running CowAgent."""
+        python_dir = os.path.dirname(sys.executable)
+        if not python_dir:
+            return
+        current_path = str(env.get("PATH") or env.get("Path") or "")
+        path_key = "PATH" if "PATH" in env else "Path"
+        parts = [p for p in current_path.split(os.pathsep) if p]
+        if not any(os.path.normcase(p) == os.path.normcase(python_dir) for p in parts):
+            env[path_key] = python_dir + (os.pathsep + current_path if current_path else "")

@@ -15,6 +15,7 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 USER_ENV_KEYS = [
     "COW_CURRENT_USER_ID",
@@ -24,6 +25,8 @@ USER_ENV_KEYS = [
     "CURRENT_USER_ID",
     "USER_ID",
 ]
+
+SOURCE_CHOICES = ("auto", "token-tracker", "llm-cache", "both")
 
 
 def now_iso() -> str:
@@ -59,6 +62,11 @@ def get_data_dir(args: argparse.Namespace) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     (path / "users").mkdir(parents=True, exist_ok=True)
     return path.resolve()
+
+
+def get_llm_cache_path(args: argparse.Namespace) -> Path:
+    raw = getattr(args, "llm_cache_file", None) or os.getenv("COW_LLM_CACHE_USAGE_FILE")
+    return (Path(raw).expanduser() if raw else workspace_root() / "data" / "llm_cache_usage.jsonl").resolve()
 
 
 def atomic_write_json(path: Path, obj: object) -> None:
@@ -159,6 +167,80 @@ def load_events(path: Path):
                 continue
 
 
+def load_llm_cache_events(path: Path):
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                yield llm_cache_record_to_event(record)
+
+
+def llm_cache_record_to_event(record: dict) -> dict:
+    input_details = first_dict(
+        record.get("input_tokens_details"),
+        record.get("prompt_tokens_details"),
+    )
+    output_details = first_dict(
+        record.get("output_tokens_details"),
+        record.get("completion_tokens_details"),
+    )
+    prompt_tokens = to_int(record.get("prompt_tokens") or record.get("input_tokens"))
+    completion_tokens = to_int(record.get("completion_tokens") or record.get("output_tokens"))
+    total_tokens = to_int(record.get("total_tokens")) or prompt_tokens + completion_tokens
+    cached_tokens = to_int(record.get("cached_tokens") or input_details.get("cached_tokens"))
+    reasoning_tokens = to_int(
+        record.get("reasoning_tokens")
+        or output_details.get("reasoning_tokens")
+        or output_details.get("reasoning")
+    )
+    event = {
+        "id": record.get("id") or record.get("request_id"),
+        "ts": record.get("timestamp") or record.get("ts"),
+        "user_hash": record.get("user_hash") or record.get("session_hash"),
+        "display_name": record.get("user_label"),
+        "input_tokens": prompt_tokens,
+        "output_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "cached_tokens": cached_tokens,
+        "uncached_prompt_tokens": to_int(record.get("uncached_prompt_tokens")) or max(prompt_tokens - cached_tokens, 0),
+        "cache_creation_tokens": to_int(record.get("cache_creation_tokens")),
+        "reasoning_tokens": reasoning_tokens,
+        "estimated": False,
+        "source": "llm-cache",
+        "model": record.get("model"),
+        "channel": record.get("channel_type") or record.get("channel"),
+        "conversation_id": record.get("session_hash"),
+        "request_id": record.get("request_id"),
+        "meta": {
+            "wire_api": record.get("wire_api"),
+            "prompt_cache_key_hash": record.get("prompt_cache_key_hash"),
+        },
+    }
+    return {k: v for k, v in event.items() if v not in (None, {}, "")}
+
+
+def first_dict(*values) -> dict:
+    for value in values:
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def to_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def update_index(data_dir: Path, uhash: str, args: argparse.Namespace, event: dict) -> None:
     index_path = data_dir / "users" / "index.json"
     index = read_json(index_path, {"users": {}})
@@ -185,15 +267,19 @@ def event_in_range(event: dict, args: argparse.Namespace) -> bool:
         return False
     local_now = datetime.now().astimezone()
 
-    if args.period == "today" and dt.date() != local_now.date():
+    period = getattr(args, "period", "all")
+    from_time = getattr(args, "from_time", None)
+    to_time = getattr(args, "to_time", None)
+
+    if period == "today" and dt.date() != local_now.date():
         return False
-    if args.period == "month" and (dt.year, dt.month) != (local_now.year, local_now.month):
+    if period == "month" and (dt.year, dt.month) != (local_now.year, local_now.month):
         return False
-    if args.from_time and dt < parse_dt(args.from_time):
+    if from_time and dt < parse_dt(from_time):
         return False
-    if args.to_time:
-        end = parse_dt(args.to_time)
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.to_time.strip()):
+    if to_time:
+        end = parse_dt(to_time)
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", to_time.strip()):
             end = end + timedelta(days=1)
         if dt >= end:
             return False
@@ -205,6 +291,10 @@ def summarize_events(events) -> dict:
     input_tokens = 0
     output_tokens = 0
     total_tokens = 0
+    cached_tokens = 0
+    uncached_prompt_tokens = 0
+    cache_creation_tokens = 0
+    reasoning_tokens = 0
     estimated_events = 0
     first_ts = None
     last_ts = None
@@ -216,9 +306,17 @@ def summarize_events(events) -> dict:
         it = int(event.get("input_tokens") or 0)
         ot = int(event.get("output_tokens") or 0)
         tt = int(event.get("total_tokens") or it + ot)
+        ct = int(event.get("cached_tokens") or 0)
+        upt = int(event.get("uncached_prompt_tokens") or max(it - ct, 0))
+        cct = int(event.get("cache_creation_tokens") or 0)
+        rt = int(event.get("reasoning_tokens") or 0)
         input_tokens += it
         output_tokens += ot
         total_tokens += tt
+        cached_tokens += ct
+        uncached_prompt_tokens += upt
+        cache_creation_tokens += cct
+        reasoning_tokens += rt
         if event.get("estimated"):
             estimated_events += 1
         ts = event.get("ts")
@@ -229,22 +327,45 @@ def summarize_events(events) -> dict:
 
         model = str(event.get("model") or "unknown")
         channel = str(event.get("channel") or "unknown")
-        by_model.setdefault(model, {"events": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+        by_model.setdefault(model, {
+            "events": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cached_tokens": 0,
+            "reasoning_tokens": 0,
+        })
         by_model[model]["events"] += 1
         by_model[model]["input_tokens"] += it
         by_model[model]["output_tokens"] += ot
         by_model[model]["total_tokens"] += tt
-        by_channel.setdefault(channel, {"events": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+        by_model[model]["cached_tokens"] += ct
+        by_model[model]["reasoning_tokens"] += rt
+        by_channel.setdefault(channel, {
+            "events": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cached_tokens": 0,
+            "reasoning_tokens": 0,
+        })
         by_channel[channel]["events"] += 1
         by_channel[channel]["input_tokens"] += it
         by_channel[channel]["output_tokens"] += ot
         by_channel[channel]["total_tokens"] += tt
+        by_channel[channel]["cached_tokens"] += ct
+        by_channel[channel]["reasoning_tokens"] += rt
 
     return {
         "events": total_events,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
+        "cached_tokens": cached_tokens,
+        "uncached_prompt_tokens": uncached_prompt_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "cache_hit_rate": (cached_tokens / input_tokens) if input_tokens else 0.0,
         "estimated_events": estimated_events,
         "exact_events": total_events - estimated_events,
         "first_ts": first_ts,
@@ -258,6 +379,19 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--data-dir", help="Override local storage directory. Default: <workspace>/data/token-usage-tracker")
     parser.add_argument("--user-id", help="Stable user identifier. Stored only as SHA-256 short hash.")
     parser.add_argument("--use-default-user", action="store_true", help="Use literal 'default' if no user id is available. Avoid this in multi-user deployments.")
+
+
+def add_read_source_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--source",
+        choices=SOURCE_CHOICES,
+        default="auto",
+        help="Read source: token-tracker JSONL, CowAgent llm_cache_usage JSONL, both, or auto fallback.",
+    )
+    parser.add_argument(
+        "--llm-cache-file",
+        help="Override CowAgent llm_cache_usage.jsonl path. Default: <workspace>/data/llm_cache_usage.jsonl",
+    )
 
 
 def print_json(obj: object) -> None:
@@ -309,45 +443,118 @@ def filtered_events_for_user(data_dir: Path, uhash: str, args: argparse.Namespac
             yield event
 
 
+def selected_source(args: argparse.Namespace) -> str:
+    source = getattr(args, "source", "auto") or "auto"
+    if source not in SOURCE_CHOICES:
+        raise SystemExit(f"Error: invalid source '{source}'.")
+    return source
+
+
+def token_tracker_events(data_dir: Path, args: argparse.Namespace) -> list[dict]:
+    events = []
+    for uhash in iter_user_hashes(data_dir):
+        events.extend(filtered_events_for_user(data_dir, uhash, args))
+    return events
+
+
+def llm_cache_events(args: argparse.Namespace) -> list[dict]:
+    path = get_llm_cache_path(args)
+    return [event for event in (load_llm_cache_events(path) or []) if event_in_range(event, args)]
+
+
+def events_for_summary(data_dir: Path, args: argparse.Namespace) -> tuple[list[dict], str, Optional[str]]:
+    source = selected_source(args)
+    token_events = [] if source == "llm-cache" else token_tracker_events(data_dir, args)
+    cache_events = [] if source == "token-tracker" else llm_cache_events(args)
+    cache_path = str(get_llm_cache_path(args)) if source in ("auto", "llm-cache", "both") else None
+
+    if source == "token-tracker":
+        return token_events, "token-tracker", None
+    if source == "llm-cache":
+        return cache_events, "llm-cache", cache_path
+    if source == "both":
+        return token_events + cache_events, "both", cache_path
+    if token_events:
+        return token_events, "token-tracker", None
+    return cache_events, "llm-cache" if cache_events else "auto", cache_path
+
+
+def events_for_user_from_list(events: list[dict], uhash: str) -> list[dict]:
+    return [event for event in events if str(event.get("user_hash") or "") == uhash]
+
+
+def events_for_user_identifier(events: list[dict], user_id: str) -> tuple[str, list[dict]]:
+    uhash = user_hash(user_id)
+    matched = events_for_user_from_list(events, uhash)
+    if matched:
+        return uhash, matched
+
+    label_matched = [
+        event for event in events
+        if str(event.get("display_name") or "").strip() == str(user_id).strip()
+    ]
+    if label_matched:
+        return str(label_matched[0].get("user_hash") or uhash), label_matched
+    return uhash, []
+
+
+def user_meta_from_events(events: list[dict]) -> dict[str, dict]:
+    meta: dict[str, dict] = {}
+    for event in events:
+        uhash = str(event.get("user_hash") or "")
+        if not uhash:
+            continue
+        item = meta.setdefault(uhash, {"user_hash": uhash})
+        display_name = event.get("display_name")
+        if display_name:
+            item["display_name"] = display_name
+    return meta
+
+
 def cmd_summary(args: argparse.Namespace) -> None:
     data_dir = get_data_dir(args)
     index = read_json(data_dir / "users" / "index.json", {"users": {}})
     users_meta = index.get("users", {}) if isinstance(index, dict) else {}
+    events, source, cache_path = events_for_summary(data_dir, args)
+    event_meta = user_meta_from_events(events)
 
     if args.all:
         result_users = {}
-        combined_events = []
-        for uhash in iter_user_hashes(data_dir):
-            events = list(filtered_events_for_user(data_dir, uhash, args))
+        for uhash in sorted({str(event.get("user_hash") or "") for event in events if event.get("user_hash")}):
+            user_events = events_for_user_from_list(events, uhash)
+            meta = users_meta.get(uhash, {}) or event_meta.get(uhash, {})
             result_users[uhash] = {
                 "user_hash": uhash,
-                "display_name": users_meta.get(uhash, {}).get("display_name"),
-                **summarize_events(events),
+                "display_name": meta.get("display_name"),
+                **summarize_events(user_events),
             }
-            combined_events.extend(events)
         result = {
             "scope": "all-users",
+            "source": source,
             "period": args.period,
             "from_time": args.from_time,
             "to_time": args.to_time,
-            "summary": summarize_events(combined_events),
+            "summary": summarize_events(events),
             "users": result_users,
             "data_dir": str(data_dir),
         }
     else:
         user_id = user_id_from_args(args)
-        uhash = user_hash(user_id)
-        events = list(filtered_events_for_user(data_dir, uhash, args))
+        uhash, user_events = events_for_user_identifier(events, user_id)
+        meta = users_meta.get(uhash, {}) or event_meta.get(uhash, {})
         result = {
             "scope": "single-user",
+            "source": source,
             "user_hash": uhash,
-            "display_name": users_meta.get(uhash, {}).get("display_name"),
+            "display_name": meta.get("display_name"),
             "period": args.period,
             "from_time": args.from_time,
             "to_time": args.to_time,
-            "summary": summarize_events(events),
+            "summary": summarize_events(user_events),
             "data_dir": str(data_dir),
         }
+    if cache_path:
+        result["llm_cache_file"] = cache_path
     print_json(result)
 
 
@@ -355,18 +562,27 @@ def cmd_list_users(args: argparse.Namespace) -> None:
     data_dir = get_data_dir(args)
     index = read_json(data_dir / "users" / "index.json", {"users": {}})
     users_meta = index.get("users", {}) if isinstance(index, dict) else {}
+    events, source, cache_path = events_for_summary(data_dir, args)
+    event_meta = user_meta_from_events(events)
     users = []
-    for uhash in iter_user_hashes(data_dir):
+    user_hashes = sorted({*iter_user_hashes(data_dir), *event_meta.keys()})
+    for uhash in user_hashes:
         meta = users_meta.get(uhash, {}) if isinstance(users_meta, dict) else {}
+        if not meta:
+            meta = event_meta.get(uhash, {})
+        summary = summarize_events(events_for_user_from_list(events, uhash))
         users.append({
             "user_hash": uhash,
             "display_name": meta.get("display_name"),
-            "event_count_indexed": meta.get("event_count"),
-            "total_tokens_indexed": meta.get("total_tokens"),
-            "first_seen": meta.get("first_seen"),
-            "last_seen": meta.get("last_seen"),
+            "event_count_indexed": meta.get("event_count") or summary.get("events"),
+            "total_tokens_indexed": meta.get("total_tokens") or summary.get("total_tokens"),
+            "first_seen": meta.get("first_seen") or summary.get("first_ts"),
+            "last_seen": meta.get("last_seen") or summary.get("last_ts"),
         })
-    print_json({"ok": True, "users": users, "data_dir": str(data_dir)})
+    result = {"ok": True, "source": source, "users": users, "data_dir": str(data_dir)}
+    if cache_path:
+        result["llm_cache_file"] = cache_path
+    print_json(result)
 
 
 def cmd_reset(args: argparse.Namespace) -> None:
@@ -410,21 +626,32 @@ def cmd_export_csv(args: argparse.Namespace) -> None:
     data_dir = get_data_dir(args)
     output = Path(args.output).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
-    hashes = scoped_user_hashes(data_dir, args)
+    events, source, cache_path = events_for_summary(data_dir, args)
+    if args.all:
+        hashes = sorted({str(event.get("user_hash") or "") for event in events if event.get("user_hash")})
+        scoped_events = events
+    else:
+        uhash, user_events = events_for_user_identifier(events, user_id_from_args(args))
+        hashes = [uhash]
+        scoped_events = user_events
     fieldnames = [
         "ts", "user_hash", "input_tokens", "output_tokens", "total_tokens",
+        "cached_tokens", "uncached_prompt_tokens", "reasoning_tokens",
         "estimated", "source", "model", "channel", "conversation_id",
         "message_id", "request_id", "event_id",
     ]
     rows = []
     for uhash in hashes:
-        for event in filtered_events_for_user(data_dir, uhash, args):
+        for event in events_for_user_from_list(scoped_events, uhash):
             rows.append({
                 "ts": event.get("ts"),
                 "user_hash": uhash,
                 "input_tokens": event.get("input_tokens", 0),
                 "output_tokens": event.get("output_tokens", 0),
                 "total_tokens": event.get("total_tokens", 0),
+                "cached_tokens": event.get("cached_tokens", 0),
+                "uncached_prompt_tokens": event.get("uncached_prompt_tokens", 0),
+                "reasoning_tokens": event.get("reasoning_tokens", 0),
                 "estimated": event.get("estimated", False),
                 "source": event.get("source"),
                 "model": event.get("model"),
@@ -438,7 +665,17 @@ def cmd_export_csv(args: argparse.Namespace) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
-    print_json({"ok": True, "action": "export-csv", "output": str(output), "rows": len(rows), "data_dir": str(data_dir)})
+    result = {
+        "ok": True,
+        "action": "export-csv",
+        "source": source,
+        "output": str(output),
+        "rows": len(rows),
+        "data_dir": str(data_dir),
+    }
+    if cache_path:
+        result["llm_cache_file"] = cache_path
+    print_json(result)
 
 
 def cmd_rebuild_index(args: argparse.Namespace) -> None:
@@ -541,6 +778,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     summary = sub.add_parser("summary", help="Summarize usage for one user or all users")
     add_common_args(summary)
+    add_read_source_args(summary)
     summary.add_argument("--all", action="store_true", help="Summarize all local users")
     summary.add_argument("--period", choices=["all", "today", "month"], default="all")
     summary.add_argument("--from-time", dest="from_time", help="Inclusive ISO/date lower bound")
@@ -549,6 +787,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     export_csv = sub.add_parser("export-csv", help="Export token usage events to CSV")
     add_common_args(export_csv)
+    add_read_source_args(export_csv)
     export_csv.add_argument("--all", action="store_true", help="Export all local users")
     export_csv.add_argument("--period", choices=["all", "today", "month"], default="all")
     export_csv.add_argument("--from-time", dest="from_time", help="Inclusive ISO/date lower bound")
@@ -562,6 +801,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_users = sub.add_parser("list-users", help="List locally known user hashes")
     add_common_args(list_users)
+    add_read_source_args(list_users)
     list_users.set_defaults(func=cmd_list_users)
 
     reset = sub.add_parser("reset", help="Delete local usage data for one user or all users")

@@ -22,6 +22,16 @@ Files:
 - `users/<user_hash>.jsonl` — append-only token events for one user.
 - `users/index.json` — local index with `display_name`, counters, first/last seen.
 
+CowAgent also records automatic model usage and prompt-cache telemetry at:
+
+`<workspace>/data/llm_cache_usage.jsonl`
+
+For read commands, the script defaults to `--source auto`: it checks the
+token-tracker event store first and automatically falls back to
+`llm_cache_usage.jsonl` when no explicit token-tracker events exist. Use
+`--source llm-cache` to force the CowAgent runtime log, or `--source both` to
+combine both sources.
+
 Privacy rules:
 
 - Do not store raw user ids in usage files.
@@ -147,6 +157,16 @@ All users:
 python "<base_dir>/scripts/token_usage.py" summary --all
 ```
 
+Force CowAgent's automatic runtime usage log:
+
+```bash
+python "<base_dir>/scripts/token_usage.py" summary --all --source llm-cache
+```
+
+If the user asks for current local token usage and no `users/*.jsonl` files
+exist, use the default auto source or `--source llm-cache`; do not conclude that
+usage is zero until `<workspace>/data/llm_cache_usage.jsonl` has been checked.
+
 List local users:
 
 ```bash
@@ -206,6 +226,10 @@ The script prints JSON. Important fields:
 - `summary.exact_events` — events using provided exact token counts.
 - `summary.by_model` — per-model breakdown.
 - `summary.by_channel` — per-channel breakdown.
+
+When reading CowAgent runtime telemetry, additional fields include
+`cached_tokens`, `uncached_prompt_tokens`, `reasoning_tokens`, and weighted
+`cache_hit_rate`.
 
 ## Integration guidance
 
