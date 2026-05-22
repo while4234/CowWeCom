@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
@@ -20,6 +21,34 @@ ROLE_USER = "user"
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def _common_user_read_roots(shared_workspace: str) -> Tuple[str, ...]:
+    """Default low-risk roots that make attachment/download workflows smooth."""
+    return _as_tuple([
+        os.path.join(shared_workspace, "tmp"),
+        os.path.join(shared_workspace, "downloads"),
+        os.path.join(shared_workspace, "attachments"),
+        tempfile.gettempdir(),
+        "~/Downloads",
+        "~/Desktop",
+    ])
+
+
+def _as_list(value: Any) -> list:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return list(value)
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "y", "on")
+    return bool(value)
 
 
 def safe_actor_slug(value: str) -> str:
@@ -65,6 +94,7 @@ class AgentUserProfile:
     denied_files: Tuple[str, ...] = field(default_factory=tuple)
     can_use_bash: bool = False
     can_use_env_config: bool = False
+    can_delete_files: bool = False
 
     @property
     def is_admin(self) -> bool:
@@ -216,8 +246,8 @@ def resolve_agent_user_profile(context: Any = None) -> AgentUserProfile:
     knowledge_root = os.path.join(shared_workspace, "knowledge")
     skills_root = os.path.join(shared_workspace, "skills")
 
-    extra_read_roots = configured.get("readable_roots") or []
-    extra_write_roots = configured.get("writable_roots") or []
+    extra_read_roots = _as_list(configured.get("readable_roots"))
+    extra_write_roots = _as_list(configured.get("writable_roots"))
     if role == ROLE_ADMIN:
         readable_roots: Tuple[str, ...] = tuple()
         writable_roots: Tuple[str, ...] = tuple()
@@ -225,36 +255,63 @@ def resolve_agent_user_profile(context: Any = None) -> AgentUserProfile:
         denied_files: Tuple[str, ...] = tuple()
         can_use_bash = bool(configured.get("can_use_bash", True))
         can_use_env_config = bool(configured.get("can_use_env_config", True))
+        can_delete_files = True
     else:
+        default_read_roots = (
+            _common_user_read_roots(shared_workspace)
+            if _as_bool(conf().get("agent_normal_user_enable_common_read_roots", True), True)
+            else tuple()
+        )
+        global_read_roots = _as_list(conf().get("agent_normal_user_read_roots", []))
+        global_write_roots = _as_list(conf().get("agent_normal_user_write_roots", []))
+        can_write_knowledge = _as_bool(
+            configured.get(
+                "can_write_knowledge",
+                conf().get("agent_normal_user_can_write_knowledge", True),
+            ),
+            True,
+        )
         readable_roots = _as_tuple([
             tool_workspace,
             private_memory_root,
             knowledge_root,
             skills_root,
+            *default_read_roots,
+            *global_read_roots,
             *extra_read_roots,
         ])
+        default_write_roots = [knowledge_root] if can_write_knowledge else []
         writable_roots = _as_tuple([
             tool_workspace,
             private_memory_root,
+            *default_write_roots,
+            *global_write_roots,
             *extra_write_roots,
         ])
         denied_roots = _as_tuple([
             project_root,
             project_root / ".git",
             "~/.cow",
-            *(conf().get("agent_sensitive_roots", []) or []),
-            *(configured.get("denied_roots") or []),
+            *_as_list(conf().get("agent_sensitive_roots", [])),
+            *_as_list(configured.get("denied_roots")),
         ])
         denied_files = _as_tuple([
             project_root / "config.json",
             project_root / "config-template.json",
             project_root / ".env",
             "~/.cow/.env",
-            *(conf().get("agent_sensitive_files", []) or []),
-            *(configured.get("denied_files") or []),
+            *_as_list(conf().get("agent_sensitive_files", [])),
+            *_as_list(configured.get("denied_files")),
         ])
         can_use_bash = bool(configured.get("can_use_bash", True))
         can_use_env_config = bool(configured.get("can_use_env_config", False))
+        can_delete_files = _as_bool(
+            configured.get(
+                "can_delete_files",
+                conf().get("agent_normal_user_allow_delete_files", False),
+            ),
+            False,
+        )
 
     return AgentUserProfile(
         actor_id=actor_id,
@@ -272,6 +329,7 @@ def resolve_agent_user_profile(context: Any = None) -> AgentUserProfile:
         denied_files=denied_files,
         can_use_bash=can_use_bash,
         can_use_env_config=can_use_env_config,
+        can_delete_files=can_delete_files,
     )
 
 

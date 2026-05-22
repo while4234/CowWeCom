@@ -138,6 +138,34 @@ class TestMultiUserIsolation(unittest.TestCase):
         self.assertEqual(profile.memory_user_id, "normal-memory")
         self.assertEqual(profile.conversation_id, "scheduler_normal_task1")
 
+    @patch("config.conf")
+    def test_normal_user_defaults_can_read_common_attachment_roots_and_write_knowledge(self, mock_conf):
+        with tempfile.TemporaryDirectory() as tmp:
+            mock_conf.return_value.get.side_effect = lambda key, default=None: {
+                "agent_workspace": tmp,
+                "agent_user_profiles": {},
+                "llm_usage_user_labels": {},
+                "agent_admin_users": [],
+                "agent_default_role": "user",
+            }.get(key, default)
+            context = Context(ContextType.TEXT, "hi", {
+                "channel_type": "weixin",
+                "actor_id": "weixin:trusted-user",
+            })
+
+            profile = resolve_agent_user_profile(context)
+
+            common_read_roots = (
+                os.path.join(tmp, "tmp"),
+                os.path.join(tmp, "downloads"),
+                os.path.join(tmp, "attachments"),
+                tempfile.gettempdir(),
+            )
+            for root in common_read_roots:
+                self.assertIn(os.path.abspath(root), profile.readable_roots)
+            self.assertIn(os.path.abspath(os.path.join(tmp, "knowledge")), profile.writable_roots)
+            self.assertFalse(profile.can_delete_files)
+
     def test_memory_search_filters_shared_chat_memory_for_normal_user(self):
         results = [
             SearchResult("MEMORY.md", 1, 2, 0.9, "admin memory", "memory", None),
@@ -278,6 +306,40 @@ class TestMultiUserIsolation(unittest.TestCase):
 
             self.assertEqual(result.status, "success")
 
+    def test_normal_user_can_read_workspace_tmp_download_and_write_knowledge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = make_profile(root=tmp)
+            profile = AgentUserProfile(
+                **{
+                    **profile.__dict__,
+                    "readable_roots": (
+                        *profile.readable_roots,
+                        os.path.join(tmp, "tmp"),
+                        os.path.join(tmp, "downloads"),
+                    ),
+                    "writable_roots": (
+                        *profile.writable_roots,
+                        os.path.join(tmp, "knowledge"),
+                    ),
+                }
+            )
+            read_tool = DummyTool(name="read", cwd=profile.tool_workspace)
+            write_tool = DummyTool(name="write", cwd=profile.tool_workspace)
+
+            tmp_result = GuardedTool(read_tool, ToolAccessPolicy(profile)).execute(
+                {"path": os.path.join(tmp, "tmp", "wx_qr.png")}
+            )
+            download_result = GuardedTool(read_tool, ToolAccessPolicy(profile)).execute(
+                {"path": os.path.join(tmp, "downloads", "invoice.pdf")}
+            )
+            knowledge_result = GuardedTool(write_tool, ToolAccessPolicy(profile)).execute(
+                {"path": os.path.join(tmp, "knowledge", "invoice-notes.md"), "content": "notes"}
+            )
+
+            self.assertEqual(tmp_result.status, "success")
+            self.assertEqual(download_result.status, "success")
+            self.assertEqual(knowledge_result.status, "success")
+
     def test_normal_user_bash_can_run_skill_but_not_sensitive_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             profile = make_profile(root=tmp)
@@ -291,6 +353,28 @@ class TestMultiUserIsolation(unittest.TestCase):
             self.assertEqual(allowed.status, "success")
             self.assertEqual(denied.status, "error")
             self.assertIn("权限", denied.result)
+
+    def test_normal_user_bash_cannot_delete_files_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = make_profile(root=tmp)
+            tool = DummyTool(name="bash", cwd=profile.tool_workspace)
+            guarded = GuardedTool(tool, ToolAccessPolicy(profile))
+
+            denied = guarded.execute({"command": "del downloaded.pdf"})
+
+            self.assertEqual(denied.status, "error")
+            self.assertIn("删除文件", denied.result)
+
+    def test_normal_user_bash_cannot_modify_project_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = make_profile(root=tmp)
+            tool = DummyTool(name="bash", cwd=profile.tool_workspace)
+            guarded = GuardedTool(tool, ToolAccessPolicy(profile))
+
+            denied = guarded.execute({"command": f'echo x > "{os.path.abspath("agent/access_control.py")}"'})
+
+            self.assertEqual(denied.status, "error")
+            self.assertIn("修改项目代码", denied.result)
 
     def test_browser_lease_is_reentrant_and_blocks_other_users(self):
         profile_a = make_profile(conversation_id="conv-a", memory_user_id="user_a")

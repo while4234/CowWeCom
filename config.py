@@ -242,6 +242,11 @@ available_setting = {
     "agent_user_workspace_root": "",  # Normal-user sandbox root; default is <agent_workspace>/users
     "agent_sensitive_roots": [],  # Extra filesystem roots normal users cannot access
     "agent_sensitive_files": [],  # Extra sensitive files normal users cannot access
+    "agent_normal_user_enable_common_read_roots": True,  # Allow normal users to read low-risk attachment/download roots
+    "agent_normal_user_read_roots": [],  # Extra normal-user readable roots, e.g. ["D:/SharedDownloads"]
+    "agent_normal_user_write_roots": [],  # Extra normal-user writable roots, keep narrow
+    "agent_normal_user_can_write_knowledge": True,  # Let trusted normal users add reusable shared knowledge
+    "agent_normal_user_allow_delete_files": False,  # Keep file deletion blocked for normal users by default
     "agent_browser_lock_timeout_seconds": 900,  # Browser tool lease timeout for cross-user contention
     "social_bridge_enabled": True,  # Enable controlled cross-user relationship bridge tools
     "social_bridge_auto_send": True,  # Proactively send authorized bridge messages when reachable

@@ -5,6 +5,7 @@ Tool access control and shared-resource leases for multi-user agent sessions.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, Iterable, Optional, Tuple
@@ -154,6 +155,9 @@ class ToolAccessPolicy:
         if not command:
             return True, ""
 
+        if not self.profile.can_delete_files and self._contains_delete_operation(command):
+            return False, self._deny("普通用户不能通过 bash 删除文件或目录。")
+
         lowered = command.lower()
         sensitive_tokens = (
             ".env",
@@ -164,6 +168,9 @@ class ToolAccessPolicy:
         )
         if any(token in lowered for token in sensitive_tokens):
             return False, self._deny("普通用户不能通过 bash 访问配置、凭据或环境变量文件")
+
+        if self._contains_project_write_operation(command):
+            return False, self._deny("普通用户不能通过 bash 修改项目代码或配置。")
 
         normalized_command = os.path.normcase(command)
         skills_root = os.path.join(self.profile.shared_workspace, "skills")
@@ -176,6 +183,72 @@ class ToolAccessPolicy:
                 return False, self._deny(f"拒绝通过 bash 访问受保护路径: {protected}")
 
         return True, ""
+
+    @staticmethod
+    def _contains_delete_operation(command: str) -> bool:
+        lowered = command.lower()
+        patterns = (
+            r"(^|[&|;\s])rm(\.exe)?\s+",
+            r"(^|[&|;\s])del(\.exe)?\s+",
+            r"(^|[&|;\s])erase(\.exe)?\s+",
+            r"(^|[&|;\s])rd(\.exe)?\s+",
+            r"(^|[&|;\s])rmdir(\.exe)?\s+",
+            r"\bremove-item\b",
+            r"\brm\s+-",
+            r"\bos\.remove\s*\(",
+            r"\bos\.unlink\s*\(",
+            r"\bshutil\.rmtree\s*\(",
+            r"\.unlink\s*\(",
+        )
+        return any(re.search(pattern, lowered) for pattern in patterns)
+
+    def _contains_project_write_operation(self, command: str) -> bool:
+        lowered = command.lower()
+        write_verbs = (
+            ">",
+            ">>",
+            "copy ",
+            "xcopy ",
+            "move ",
+            "ren ",
+            "rename ",
+            "set-content",
+            "add-content",
+            "out-file",
+            "new-item",
+            "write_text",
+            "write_bytes",
+            "open(",
+        )
+        if not any(verb in lowered for verb in write_verbs):
+            return False
+
+        normalized_command = os.path.normcase(command)
+        for denied_root in self.profile.denied_roots:
+            normalized_root = os.path.normcase(os.path.realpath(os.path.abspath(str(denied_root))))
+            if normalized_root and normalized_root in normalized_command:
+                return True
+
+        project_markers = (
+            "agent\\",
+            "agent/",
+            "bridge\\",
+            "bridge/",
+            "channel\\",
+            "channel/",
+            "common\\",
+            "common/",
+            "models\\",
+            "models/",
+            "plugins\\",
+            "plugins/",
+            "tests\\",
+            "tests/",
+            "config.py",
+            "config-template.json",
+            "pyproject.toml",
+        )
+        return any(marker in lowered for marker in project_markers)
 
     def _authorize_paths(self, tool_name: str, tool: BaseTool, args: dict) -> Tuple[bool, str]:
         paths = self._extract_paths(args)

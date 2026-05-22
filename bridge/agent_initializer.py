@@ -557,10 +557,15 @@ class AgentInitializer:
                 f"- actor_id: {profile.actor_id}\n"
                 f"- memory_user_id: {profile.memory_user_id}\n"
                 f"- 可写工作区: {profile.tool_workspace}\n"
+                "- 可读取用户附件和低风险下载目录，包括自己的工作区、共享 tmp/downloads/attachments、"
+                "用户 Downloads/Desktop、共享 knowledge/ 和 skills/。\n"
+                "- 可以帮用户识别图片、下载网页文件、保存到自己的工作区并用 send 发回。"
+                "不要因为文件来自下载或临时目录就拒绝，除非命中受保护路径。\n"
                 f"- 主动写入长期记忆时使用绝对路径: {os.path.join(profile.shared_workspace, 'memory', 'users', profile.memory_user_id, 'MEMORY.md')}\n"
                 f"- 当天记忆写入: {os.path.join(profile.shared_workspace, 'memory', 'users', profile.memory_user_id, '<YYYY-MM-DD>.md')}\n"
                 "- 普通聊天记忆只写入和读取本用户自己的 memory/users/<memory_user_id>/ 目录。\n"
-                "- 共享 knowledge/ 可以读取；项目目录、配置、凭证和其他用户记忆不可访问。"
+                "- 共享 knowledge/ 可以读取并写入通用知识；项目目录、配置、凭证和其他用户记忆不可访问。\n"
+                "- 普通用户默认不能删除文件，也不能修改本项目代码或配置。"
             )
         ))
 
