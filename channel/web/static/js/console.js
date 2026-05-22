@@ -3290,7 +3290,7 @@ function renderActiveChannels() {
 }
 
 function buildWeixinChannelMeta(ch) {
-    const wechatId = ch.display_wechat_id || ch.wechat_id || ch.raw_user_id || '';
+    const wechatId = ch.display_wechat_id || ch.wechat_id || '';
     const role = ch.role === 'admin' ? 'admin' : 'user';
     const roleLabel = role === 'admin'
         ? (currentLang === 'zh' ? '管理员' : 'Admin')
@@ -3300,13 +3300,76 @@ function buildWeixinChannelMeta(ch) {
         : 'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-300 border-slate-100 dark:border-white/10';
     const idLabel = currentLang === 'zh' ? '微信ID' : 'WeChat ID';
     const idText = wechatId || (currentLang === 'zh' ? '待识别' : 'Unknown');
+    const inputLabel = currentLang === 'zh' ? '填写真实微信ID' : 'Real WeChat ID';
+    const saveLabel = currentLang === 'zh' ? '保存' : 'Save';
+    const statusId = `weixin-id-status-${safeDomId(ch.name)}`;
+    const inputId = `weixin-id-input-${safeDomId(ch.name)}`;
+    const saveCall = `saveWeixinIdentity(${escapeHtml(JSON.stringify(ch.name))})`;
+
     return `
         <div class="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
             <span class="px-2 py-1 rounded-md bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-300 border border-slate-100 dark:border-white/10 font-mono">
                 ${idLabel}: ${escapeHtml(idText)}
             </span>
             <span class="px-2 py-1 rounded-md border ${roleClass}">${roleLabel}</span>
+            <div class="flex items-center gap-1.5 min-w-[220px]">
+                <input id="${inputId}" type="text" value="${escapeHtml(wechatId)}"
+                    class="min-w-0 w-36 px-2 py-1 rounded-md border border-slate-200 dark:border-white/10
+                           bg-slate-50 dark:bg-white/5 text-[11px] text-slate-700 dark:text-slate-200
+                           focus:outline-none focus:border-primary-500 font-mono transition-colors"
+                    placeholder="${escapeHtml(inputLabel)}">
+                <button onclick="${saveCall}"
+                    class="px-2 py-1 rounded-md bg-primary-500 hover:bg-primary-600 text-white text-[11px] font-medium
+                           cursor-pointer transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed">
+                    ${saveLabel}
+                </button>
+                <span id="${statusId}" class="text-[11px] text-primary-500 opacity-0 transition-opacity duration-300"></span>
+            </div>
         </div>`;
+}
+
+function showWeixinIdentityStatus(chName, text, isError) {
+    const el = document.getElementById(`weixin-id-status-${safeDomId(chName)}`);
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle('text-red-500', !!isError);
+    el.classList.toggle('text-primary-500', !isError);
+    el.classList.remove('opacity-0');
+    setTimeout(() => el.classList.add('opacity-0'), 2500);
+}
+
+function saveWeixinIdentity(chName) {
+    const input = document.getElementById(`weixin-id-input-${safeDomId(chName)}`);
+    if (!input) return;
+
+    const wechatId = input.value.trim();
+    if (!wechatId) {
+        showWeixinIdentityStatus(chName, currentLang === 'zh' ? '请填写' : 'Required', true);
+        return;
+    }
+
+    input.disabled = true;
+    fetch('/api/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'save', channel: chName, config: { wechat_id: wechatId } })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.status !== 'success') {
+            showWeixinIdentityStatus(chName, currentLang === 'zh' ? '保存失败' : 'Failed', true);
+            return;
+        }
+        const ch = channelsData.find(c => c.name === chName);
+        if (ch) {
+            ch.wechat_id = data.wechat_id || wechatId;
+            ch.display_wechat_id = data.wechat_id || wechatId;
+        }
+        showWeixinIdentityStatus(chName, currentLang === 'zh' ? '已保存' : 'Saved', false);
+        renderActiveChannels();
+    })
+    .catch(() => showWeixinIdentityStatus(chName, currentLang === 'zh' ? '保存失败' : 'Failed', true))
+    .finally(() => { input.disabled = false; });
 }
 
 function buildChannelFieldsHtml(chName, fields) {

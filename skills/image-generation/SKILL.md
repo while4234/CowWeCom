@@ -47,7 +47,7 @@ and never log token values.
 The background worker is the only CowAgent runtime component that should call:
 
 ```text
-C:\Users\RondleLiu\cow\skills\image-generation\scripts\generate.py
+<cow-home>\skills\image-generation\scripts\generate.py
 ```
 
 Per-user isolation is handled by the runtime:
