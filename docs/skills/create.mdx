@@ -20,6 +20,10 @@ CowAgent 内置了 Skill Creator，可以通过自然语言对话快速创建、
 3. 技能保存到工作空间的 `~/cow/skills/` 目录
 4. 后续对话中 Agent 会自动识别并使用该技能
 
+## 开发同步规则
+
+如果是在项目仓库中新增或修复内置技能，请同时更新 `<project_root>/skills/<skill>/` 和已部署的 `~/cow/skills/<skill>/` 副本。工作空间技能优先级更高，会覆盖项目内置技能；只改其中一份会导致本机运行行为或 GitHub 部署行为不一致。发布修复时应提交并推送项目内置技能，且不要把密钥、缓存、快照、`__pycache__` 等本地状态复制进技能目录。
+
 <Frame>
   <img src="https://cdn.link-ai.tech/doc/20260202202247.png" width="800" />
 </Frame>

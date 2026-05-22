@@ -54,6 +54,19 @@ with machine setup notes and any required user-provided keys.
 | `skill-creator` | Create, validate, and package skills. | No API key unless the new skill needs one. |
 | `token-usage-tracker` | Track local per-user token usage. | No API key. |
 
+## Development Sync Rule
+
+When adding or fixing a skill in this project, keep the repository copy and the
+deployed workspace copy synchronized:
+
+1. Edit and validate the builtin skill under `<project_root>/skills/<skill>/`.
+2. If `~/cow/skills/<skill>/` exists, copy the same updated skill directory
+   there, because custom workspace skills override builtin skills at runtime.
+3. Commit the repository copy and push it when publishing a fix, so later users
+   who deploy from GitHub do not receive stale skill behavior.
+4. Never copy local secrets, pycache files, snapshots, or generated runtime
+   state into either skill directory.
+
 ## Skill Structure
 
 ```

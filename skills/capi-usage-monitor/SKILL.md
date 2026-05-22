@@ -76,6 +76,12 @@ Use the default configured key (`OPENAI_API_KEY` in this workspace):
 python "<base_dir>/scripts/capi_usage.py" snapshot --period today
 ```
 
+For `today`, `yesterday`, `month`, or explicit `--start/--end` ranges, the script
+uses `/api/chatgpt/chatlog` as the authoritative source for `usage_summary`.
+The backend `/api/chatgpt/usages` endpoint may return historical aggregate
+buckets even when date filters are supplied, so do not use it for daily totals
+unless debugging the backend itself.
+
 Save a local snapshot:
 
 ```bash
@@ -106,6 +112,12 @@ Include one page of chatlog detail if needed:
 
 ```bash
 python "<base_dir>/scripts/capi_usage.py" snapshot --period today --include-chatlog --page 1 --page-size 10
+```
+
+Inspect backend aggregate buckets only when debugging a dashboard mismatch:
+
+```bash
+python "<base_dir>/scripts/capi_usage.py" snapshot --period today --usage-source usages
 ```
 
 Do not use `--raw` in routine reports unless debugging; it may include backend fields that are not needed for normal replies.
@@ -154,14 +166,22 @@ Important fields:
 - `quota.used` — used quota for current mode.
 - `quota.remaining` — current remaining quota.
 - `quota.progress` — percent used.
-- `quota.daily` — daily quota.
-- `quota.total_mode` — whether this is a total-quota card.
+- `quota.mode` — `daily` for day/month cards that reset by day; `total` for quota cards that spend from a total pool.
+- `quota.daily` — daily quota. If the backend returns `0` for both `vip.day_score` and `day_score`, the script follows the frontend fallback and uses `90` by default. Override with `--default-daily-quota` or `CAPI_USAGE_DEFAULT_DAILY_QUOTA` if the dashboard changes.
+- `quota.total_mode` — legacy boolean form of `quota.mode == "total"`.
 - `quota.expire_at` — expiration timestamp when provided.
-- `usage_summary.total_cost` — usage cost in selected period.
+- `usage_summary.source` — `chatlog` for filtered periods by default; `usages` only when explicitly requested or no date filter is present.
+- `usage_summary.total_cost` — usage cost in selected period from `usage_summary.source`.
 - `usage_summary.by_model` — cost by model.
+
+Quota modes:
+
+- Day/month cards: backend `vip.score` is `0`; use daily quota and `user.day_score_used` for used/remaining. If the backend daily quota is `0`, use the frontend's current fallback of `90`.
+- Total quota cards: backend `vip.score` is positive; use `vip.score` as total and `user.score_used` as used. Do not use `vip.score_used` for the current user total, because it can lag or represent the VIP package row rather than the live account field.
 
 ## Known Dependencies and Limits
 
 - Backend base is currently `https://deepl.micosoft.icu`; override with `CAPI_USAGE_API_BASE` or `--api-base` if the site changes.
 - `OPENAI_API_KEY` is currently known to work as this dashboard's activation/API key.
 - If the backend response schema changes, inspect the frontend bundle again and update parser functions.
+- Keep the project copy under `skills/capi-usage-monitor/` and the deployed custom copy under `~/cow/skills/capi-usage-monitor/` in sync after fixes; the custom copy overrides the builtin skill at runtime.

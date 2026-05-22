@@ -19,6 +19,9 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_API_BASE = "https://deepl.micosoft.icu"
+DEFAULT_DAILY_QUOTA = 90.0
+DEFAULT_CHATLOG_SUMMARY_PAGE_SIZE = 100
+MAX_CHATLOG_SUMMARY_PAGES = 200
 USER_AGENT = "cow-capi-usage-monitor/1.0"
 
 
@@ -79,6 +82,13 @@ def api_key_from_args(args: argparse.Namespace) -> str:
     return key.strip()
 
 
+def to_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def key_hash(api_key: str) -> str:
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
 
@@ -116,6 +126,16 @@ def api_base(args: argparse.Namespace) -> str:
     return (args.api_base or os.getenv("CAPI_USAGE_API_BASE") or DEFAULT_API_BASE).rstrip("/")
 
 
+def default_daily_quota(args: argparse.Namespace | None = None) -> float:
+    arg_value = getattr(args, "default_daily_quota", None) if args is not None else None
+    if arg_value is not None:
+        return to_float(arg_value, DEFAULT_DAILY_QUOTA)
+    env_value = os.getenv("CAPI_USAGE_DEFAULT_DAILY_QUOTA")
+    if env_value:
+        return to_float(env_value, DEFAULT_DAILY_QUOTA)
+    return DEFAULT_DAILY_QUOTA
+
+
 def login(args: argparse.Namespace, api_key: str) -> dict[str, Any]:
     base = api_base(args)
     data = http_json("POST", f"{base}/api/users/card-login", {"card": api_key, "agent": args.agent})
@@ -136,6 +156,26 @@ def parse_dt(value: str | None) -> datetime | None:
     if len(v) == 10 and v[4] == "-" and v[7] == "-":
         return datetime.fromisoformat(v).replace(tzinfo=datetime.now().astimezone().tzinfo)
     dt = datetime.fromisoformat(v)
+    return dt if dt.tzinfo else dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+
+
+def datetime_from_any(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        if timestamp > 1_000_000_000_000:
+            timestamp = timestamp / 1000
+        return datetime.fromtimestamp(timestamp, tz=datetime.now().astimezone().tzinfo)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return datetime_from_any(int(text))
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
     return dt if dt.tzinfo else dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
 
 
@@ -164,7 +204,15 @@ def filters(start: datetime | None, end: datetime | None) -> dict[str, int]:
     return obj
 
 
-def quota_summary(user: dict[str, Any]) -> dict[str, Any]:
+def first_positive_float(*values: object, fallback: float = 0.0) -> float:
+    for value in values:
+        number = to_float(value)
+        if number > 0:
+            return number
+    return fallback
+
+
+def quota_summary(user: dict[str, Any], default_daily: float = DEFAULT_DAILY_QUOTA) -> dict[str, Any]:
     vip = user.get("vip") if isinstance(user.get("vip"), dict) else None
     if not vip:
         return {
@@ -177,10 +225,11 @@ def quota_summary(user: dict[str, Any]) -> dict[str, Any]:
             "expire_at": None,
             "status": status_summary(user),
         }
-    total_mode = float(vip.get("score") or 0) > 0
-    daily = float(vip.get("day_score") or user.get("day_score") or 0)
-    total = float(vip.get("score") or 0) if total_mode else daily
-    used = float(user.get("score_used") or 0) if total_mode else float(user.get("day_score_used") or 0)
+    total_quota = to_float(vip.get("score"))
+    total_mode = total_quota > 0
+    daily = first_positive_float(vip.get("day_score"), user.get("day_score"), fallback=default_daily)
+    total = total_quota if total_mode else daily
+    used = to_float(user.get("score_used") if total_mode else user.get("day_score_used"))
     remaining = max(total - used, 0)
     progress = round((used / total * 100), 1) if total > 0 else 0
     return {
@@ -189,6 +238,7 @@ def quota_summary(user: dict[str, Any]) -> dict[str, Any]:
         "remaining": remaining,
         "progress": progress,
         "daily": daily,
+        "mode": "total" if total_mode else "daily",
         "total_mode": total_mode,
         "expire_at": vip.get("expire_at"),
         "status": status_summary(user),
@@ -199,12 +249,9 @@ def status_summary(user: dict[str, Any]) -> dict[str, Any] | None:
     vip = user.get("vip") if isinstance(user.get("vip"), dict) else None
     if vip:
         expire_at = vip.get("expire_at")
-        if expire_at:
-            try:
-                if datetime.fromisoformat(str(expire_at).replace("Z", "+00:00")).timestamp() < time.time():
-                    return {"label": "已过期", "kind": "expired"}
-            except Exception:
-                pass
+        expire_dt = datetime_from_any(expire_at)
+        if expire_dt and expire_dt.timestamp() < time.time():
+            return {"label": "已过期", "kind": "expired"}
         return None
     score = float(user.get("score") or 0)
     day_score = float(user.get("day_score") or 0)
@@ -228,10 +275,14 @@ def usages(args: argparse.Namespace, token: str, start: datetime | None, end: da
     return []
 
 
+def clamp_page_size(page_size: int) -> int:
+    return min(100, max(1, int(page_size)))
+
+
 def chatlog_page(args: argparse.Namespace, token: str, start: datetime | None, end: datetime | None, page: int, page_size: int) -> dict[str, Any]:
     body = {
         "page": page,
-        "pageSize": page_size,
+        "pageSize": clamp_page_size(page_size),
         "sortBy": args.sort_by,
         "desc": 1 if args.desc else 0,
         **filters(start, end),
@@ -240,15 +291,79 @@ def chatlog_page(args: argparse.Namespace, token: str, start: datetime | None, e
     return data if isinstance(data, dict) else {"list": [], "total": 0, "raw": data}
 
 
-def summarize_usages(items: list[dict[str, Any]]) -> dict[str, Any]:
+def chatlog_items(
+    args: argparse.Namespace,
+    token: str,
+    start: datetime | None,
+    end: datetime | None,
+    page_size: int = DEFAULT_CHATLOG_SUMMARY_PAGE_SIZE,
+    max_pages: int = MAX_CHATLOG_SUMMARY_PAGES,
+) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    total: int | None = None
+    pages = 0
+    complete = False
+    for page in range(1, max_pages + 1):
+        data = chatlog_page(args, token, start, end, page, page_size)
+        page_items = data.get("list") if isinstance(data.get("list"), list) else []
+        if total is None:
+            total_value = data.get("total")
+            total = int(total_value) if isinstance(total_value, int) or str(total_value).isdigit() else None
+        pages = page
+        if not page_items:
+            complete = True
+            break
+        items.extend(page_items)
+        if total is not None and len(items) >= total:
+            complete = True
+            break
+    if total is not None and len(items) > total:
+        items = items[:total]
+    return {"items": items, "total": total if total is not None else len(items), "pages": pages, "complete": complete}
+
+
+def summarize_usage_items(items: list[dict[str, Any]], source: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     by_model: dict[str, float] = {}
     total_cost = 0.0
     for item in items:
         model = str(item.get("model") or "unknown")
-        score = float(item.get("score") or 0)
+        score = to_float(item.get("score"))
         by_model[model] = by_model.get(model, 0.0) + score
         total_cost += score
-    return {"entries": len(items), "total_cost": total_cost, "by_model": by_model}
+    summary = {"source": source, "entries": len(items), "total_cost": total_cost, "by_model": by_model}
+    if extra:
+        summary.update(extra)
+    return summary
+
+
+def usage_summary(args: argparse.Namespace, token: str, start: datetime | None, end: datetime | None) -> tuple[dict[str, Any], int | None]:
+    if not args.include_usage:
+        return summarize_usage_items([], "disabled"), None
+
+    source = args.usage_source
+    if source == "auto":
+        # The backend usages endpoint can return historical buckets even when
+        # create_at filters are supplied. Chatlog rows honor the time window.
+        source = "chatlog" if start or end else "usages"
+
+    if source == "chatlog":
+        chatlog = chatlog_items(
+            args,
+            token,
+            start,
+            end,
+            page_size=args.summary_page_size,
+            max_pages=args.max_summary_pages,
+        )
+        extra = {
+            "chatlog_total": chatlog["total"],
+            "pages": chatlog["pages"],
+            "complete": chatlog["complete"],
+        }
+        return summarize_usage_items(chatlog["items"], "chatlog", extra), chatlog["total"]
+
+    usage_items = usages(args, token, start, end)
+    return summarize_usage_items(usage_items, "usages"), None
 
 
 def snapshot(args: argparse.Namespace) -> dict[str, Any]:
@@ -258,8 +373,11 @@ def snapshot(args: argparse.Namespace) -> dict[str, Any]:
     token = str(login_data["token"])
     user = whoami(args, token)
     start, end = range_from_args(args)
-    usage_items = usages(args, token, start, end) if args.include_usage else []
+    summary, summary_chatlog_total = usage_summary(args, token, start, end)
     chatlog = chatlog_page(args, token, start, end, args.page, args.page_size) if args.include_chatlog else None
+    chatlog_total = summary_chatlog_total
+    if chatlog_total is None and isinstance(chatlog, dict):
+        chatlog_total = chatlog.get("total")
     result = {
         "ok": True,
         "captured_at": now_iso(),
@@ -269,13 +387,13 @@ def snapshot(args: argparse.Namespace) -> dict[str, Any]:
         "key_suffix": key_suffix(api_key),
         "account": safe_account(user.get("account") or login_data.get("account"), api_key),
         "user_id": user.get("id") or user.get("user_id"),
-        "quota": quota_summary(user),
+        "quota": quota_summary(user, default_daily_quota(args)),
         "period": args.period,
         "start": start.isoformat() if start else None,
         "end": end.isoformat() if end else None,
-        "usage_summary": summarize_usages(usage_items),
+        "usage_summary": summary,
         "raw_user": user if args.raw else None,
-        "chatlog_total": chatlog.get("total") if isinstance(chatlog, dict) else None,
+        "chatlog_total": chatlog_total,
     }
     if args.raw and chatlog is not None:
         result["raw_chatlog_page"] = chatlog
@@ -397,6 +515,7 @@ def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--api-key-env", help="Read API key/card from this environment variable name")
     parser.add_argument("--api-base", help=f"Backend API base. Default: {DEFAULT_API_BASE}")
     parser.add_argument("--data-dir", help="Local snapshot directory. Default: <workspace>/data/capi-usage-monitor")
+    parser.add_argument("--default-daily-quota", type=float, default=None, help=f"Daily quota fallback when backend returns 0. Default: {DEFAULT_DAILY_QUOTA}")
     parser.add_argument("--agent", default="main")
 
 
@@ -415,6 +534,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--raw", action="store_true", help="Include raw user/chatlog payloads. Avoid in routine logs.")
     s.add_argument("--include-usage", action="store_true", default=True)
     s.add_argument("--no-usage", dest="include_usage", action="store_false")
+    s.add_argument("--usage-source", choices=["auto", "chatlog", "usages"], default="auto", help="Use chatlog for filtered periods by default; usages is a backend aggregate debug source.")
+    s.add_argument("--summary-page-size", type=int, default=DEFAULT_CHATLOG_SUMMARY_PAGE_SIZE, help="Chatlog page size for period summary.")
+    s.add_argument("--max-summary-pages", type=int, default=MAX_CHATLOG_SUMMARY_PAGES, help="Maximum chatlog pages to read for period summary.")
     s.add_argument("--include-chatlog", action="store_true")
     s.add_argument("--page", type=int, default=1)
     s.add_argument("--page-size", type=int, default=10)

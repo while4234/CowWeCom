@@ -20,6 +20,16 @@ Simply describe the skill you want in a conversation, and the Agent will handle 
 3. Skill is saved to the workspace `~/cow/skills/` directory
 4. Agent will automatically recognize and use the skill in future conversations
 
+## Development Sync Rule
+
+When adding or fixing a builtin skill in the project repository, update both
+`<project_root>/skills/<skill>/` and the deployed `~/cow/skills/<skill>/` copy
+when that workspace copy exists. Workspace skills have higher priority and
+override builtin skills at runtime, so changing only one copy can make local
+behavior and GitHub deployments diverge. Publish fixes by committing and
+pushing the project copy, and never copy secrets, caches, snapshots,
+`__pycache__`, or other local runtime state into a skill directory.
+
 <Frame>
   <img src="https://cdn.link-ai.tech/doc/20260202202247.png" width="800" />
 </Frame>
