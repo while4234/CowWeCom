@@ -23,7 +23,8 @@ class Bash(BaseTool):
     name: str = "bash"
     description: str = f"""Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last {DEFAULT_MAX_LINES} lines or {DEFAULT_MAX_BYTES // 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file.
 {'''
-PLATFORM: Windows (cmd.exe). Do NOT use Unix-only commands like grep, head, tail, sed, awk.
+PLATFORM: Windows (cmd.exe). Do NOT use Unix-only commands like grep, head, tail, sed, awk, or Bash heredocs such as python - <<EOF.
+For complex Python snippets, prefer python -c, a temporary .py script, or an explicit powershell -NoProfile -Command invocation with Windows-compatible quoting.
 ''' if _IS_WIN else ''}
 ENVIRONMENT: All API keys from env_config are auto-injected. Use $VAR_NAME directly.
 
@@ -59,11 +60,12 @@ SAFETY:
     def execute(self, args: Dict[str, Any]) -> ToolResult:
         """
         Execute a bash command
-        
+
         :param args: Dictionary containing the command and optional timeout
         :return: Command output or error
         """
         command = args.get("command", "").strip()
+        original_command = command
         timeout = args.get("timeout", self.default_timeout)
 
         if not command:
@@ -85,7 +87,7 @@ SAFETY:
         try:
             # Prepare environment with .env file variables
             env = os.environ.copy()
-            
+
             # Load environment variables from ~/.cow/.env if it exists
             env_file = expand_path("~/.cow/.env")
             dotenv_vars = {}
@@ -109,7 +111,7 @@ SAFETY:
                 logger.debug(f"[Bash] Process UID: {os.getuid()}")
             else:
                 logger.debug(f"[Bash] Process User: {os.environ.get('USERNAME', os.environ.get('USER', 'unknown'))}")
-            
+
             # On Windows, convert $VAR references to %VAR% for cmd.exe
             if self._IS_WIN:
                 env["PYTHONIOENCODING"] = "utf-8"
@@ -131,11 +133,11 @@ SAFETY:
                 timeout=timeout,
                 env=env,
             )
-            
+
             logger.debug(f"[Bash] Exit code: {result.returncode}")
             logger.debug(f"[Bash] Stdout length: {len(result.stdout)}")
             logger.debug(f"[Bash] Stderr length: {len(result.stderr)}")
-            
+
             # Workaround for exit code 126 with no output
             if result.returncode == 126 and not result.stdout and not result.stderr:
                 logger.warning(f"[Bash] Exit 126 with no output - trying alternative execution method")
@@ -157,7 +159,7 @@ SAFETY:
                             env=env
                         )
                         logger.debug(f"[Bash] Retry exit code: {retry_result.returncode}, stdout: {len(retry_result.stdout)}, stderr: {len(retry_result.stderr)}")
-                        
+
                         # If retry succeeded, use retry result
                         if retry_result.returncode == 0 or retry_result.stdout or retry_result.stderr:
                             result = retry_result
@@ -225,6 +227,7 @@ SAFETY:
             # Check exit code
             if result.returncode != 0:
                 output_text += f"\n\nCommand exited with code {result.returncode}"
+                self._record_reusable_failure(original_command, output, result.returncode)
                 return ToolResult.fail({
                     "output": output_text,
                     "exit_code": result.returncode,
@@ -241,6 +244,17 @@ SAFETY:
             return ToolResult.fail(f"Error: Command timed out after {timeout} seconds")
         except Exception as e:
             return ToolResult.fail(f"Error executing command: {str(e)}")
+
+    def _record_reusable_failure(self, command: str, output: str, exit_code: int) -> None:
+        """Record reusable Windows shell mistakes without changing tool behavior."""
+        if not self._IS_WIN:
+            return
+        try:
+            from common.self_evolution import record_windows_shell_failure
+
+            record_windows_shell_failure(command, output, exit_code=exit_code)
+        except Exception as e:
+            logger.debug(f"[Bash] Self-evolution logging skipped: {e}")
 
     def _get_safety_warning(self, command: str) -> str:
         """

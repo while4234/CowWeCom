@@ -36,6 +36,17 @@ _SECONDARY_ID_KEYS = (
     "ilink_user_id",
     "user_id",
 )
+_NICKNAME_KEYS = (
+    "nickname",
+    "nick_name",
+    "nick",
+    "user_nickname",
+    "from_user_nickname",
+    "sender_nickname",
+    "remark_name",
+    "remark",
+    "display_name",
+)
 
 
 def looks_internal_weixin_id(value: Any) -> bool:
@@ -62,6 +73,13 @@ def extract_real_wechat_id(payload: Any) -> str:
         if found:
             return found
     return ""
+
+
+def extract_wechat_nickname(payload: Any) -> str:
+    """Extract a public nickname from a nested Weixin API payload."""
+    if not isinstance(payload, dict):
+        return ""
+    return _find_text_by_keys(payload, _NICKNAME_KEYS)
 
 
 def remember_wechat_identity(
@@ -170,6 +188,35 @@ def _find_value_by_keys(payload: Dict[str, Any], keys: Iterable[str]) -> str:
             elif isinstance(value, list):
                 stack.extend(item for item in value if isinstance(item, dict))
     return ""
+
+
+def _find_text_by_keys(payload: Dict[str, Any], keys: Iterable[str]) -> str:
+    wanted = {key.lower() for key in keys}
+    stack = [payload]
+    while stack:
+        current = stack.pop()
+        if not isinstance(current, dict):
+            continue
+        for key, value in current.items():
+            lowered = str(key).lower()
+            if lowered in wanted:
+                text = _safe_text(value, max_len=80)
+                if _is_public_nickname(text):
+                    return text
+            if isinstance(value, dict):
+                stack.append(value)
+            elif isinstance(value, list):
+                stack.extend(item for item in value if isinstance(item, dict))
+    return ""
+
+
+def _is_public_nickname(value: str) -> bool:
+    text = _safe_text(value, max_len=80)
+    if not text or looks_internal_weixin_id(text):
+        return False
+    if text.startswith(("http://", "https://")):
+        return False
+    return True
 
 
 def _safe_text(value: Any, max_len: int = 96) -> str:

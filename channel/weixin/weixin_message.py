@@ -10,6 +10,7 @@ import uuid
 from bridge.context import ContextType
 from channel.chat_message import ChatMessage
 from channel.weixin.weixin_api import download_media_from_cdn, CDN_BASE_URL
+from channel.weixin.weixin_identity import extract_wechat_nickname
 from common.log import logger
 from common.utils import expand_path
 from config import conf
@@ -46,13 +47,14 @@ class WeixinMessage(ChatMessage):
         to_user_id = msg.get("to_user_id", "")
 
         self.from_user_id = from_user_id
-        self.from_user_nickname = from_user_id
+        from_user_nickname = extract_wechat_nickname(msg) or from_user_id
+        self.from_user_nickname = from_user_nickname
         self.to_user_id = to_user_id
         self.to_user_nickname = to_user_id
         self.other_user_id = from_user_id
-        self.other_user_nickname = from_user_id
+        self.other_user_nickname = from_user_nickname
         self.actual_user_id = from_user_id
-        self.actual_user_nickname = from_user_id
+        self.actual_user_nickname = from_user_nickname
 
         item_list = msg.get("item_list", [])
 

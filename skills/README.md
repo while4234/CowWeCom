@@ -44,15 +44,26 @@ This repository currently includes the CowWechat skills that were installed on
 the local deployment machine. Each skill directory contains an `INSTALL.md`
 with machine setup notes and any required user-provided keys.
 
-| Skill | Purpose | External key needed |
+| Skill | Purpose | External key/setup needed |
 |---|---|---|
 | `capi-usage-monitor` | Query and snapshot CAPI/Codex quota and usage. | `OPENAI_API_KEY` by default, or a local CAPI key override. |
 | `code-update` | Safely fast-forward CowWechat from GitHub while protecting local state. | No API key; Git credentials stay local. |
+| `cowagent-self-evolution` | Record and reuse local execution lessons such as Windows shell dialect failures without showing them in chat. | No external API key; needs Python. |
+| `docx` | Create, read, edit, and format Word `.docx` documents. | No external API key. |
+| `github` | Perform GitHub repository, fork, PR, release, issue, and comment operations. | `GITHUB_TOKEN`; also needs `git`, `curl`, and `jq`. |
 | `image-generation` | Generate/edit images through background jobs. | Local Codex login, or one configured image provider API key. |
 | `knowledge-wiki` | Maintain a local structured knowledge wiki. | No API key. |
+| `markdown-converter` | Convert PDF, Office, HTML, CSV/JSON/XML, images, audio, archives, YouTube URLs, and EPUBs to Markdown. | No external API key; converter dependencies may be installed locally. |
+| `pdf` | Read, extract, split, merge, rotate, watermark, create, and secure PDF files. | No external API key. |
+| `plugin-12306-ticket` | Query China Railway 12306 tickets, stations, and train route information through local public 12306 endpoints. | No external API key; needs Python network access. |
+| `pptx` | Create, read, edit, and extract content from PowerPoint `.pptx` decks. | No external API key. |
 | `reliable-search` | Search with Serper/Brave provider fallback. | `SERPER_API_KEY` or `BRAVE_API_KEY` supplied by the user. |
 | `skill-creator` | Create, validate, and package skills. | No API key unless the new skill needs one. |
+| `stock-analysis` | Analyze stocks and cryptocurrencies, portfolios, watchlists, dividends, and trend signals. | No external API key; requires `uv`. |
 | `token-usage-tracker` | Track local per-user token usage. | No API key. |
+| `travel-manager` | Plan multi-destination trips, family travel logistics, costs, and itineraries. | No external API key. |
+| `wechat-article-search` | Search WeChat public-account articles and return titles, summaries, dates, sources, and links. | No external API key. |
+| `xlsx` | Create, read, edit, clean, format, chart, and analyze spreadsheet files. | No external API key. |
 
 ## Development Sync Rule
 

@@ -69,7 +69,13 @@ class WeixinApi:
         self.token = token
         self.cdn_base_url = cdn_base_url
 
-    def _post(self, endpoint: str, body: dict, timeout: int = DEFAULT_API_TIMEOUT) -> dict:
+    def _post(
+        self,
+        endpoint: str,
+        body: dict,
+        timeout: int = DEFAULT_API_TIMEOUT,
+        timeout_ok: bool = False,
+    ) -> dict:
         url = _ensure_trailing_slash(self.base_url) + endpoint
         headers = _build_headers(self.token)
         body.setdefault("base_info", {}).setdefault("channel_version", CHANNEL_VERSION)
@@ -79,7 +85,9 @@ class WeixinApi:
             return resp.json()
         except requests.exceptions.Timeout:
             logger.debug(f"[Weixin] API timeout: {endpoint}")
-            return {"ret": 0, "msgs": []}
+            if timeout_ok:
+                return {"ret": 0, "msgs": []}
+            return {"ret": -1, "error": "timeout", "endpoint": endpoint}
         except Exception as e:
             logger.error(f"[Weixin] API error {endpoint}: {e}")
             raise
@@ -89,7 +97,7 @@ class WeixinApi:
     def get_updates(self, get_updates_buf: str = "", timeout: int = DEFAULT_LONG_POLL_TIMEOUT) -> dict:
         return self._post("ilink/bot/getupdates", {
             "get_updates_buf": get_updates_buf,
-        }, timeout=timeout + 5)
+        }, timeout=timeout + 5, timeout_ok=True)
 
     # ── sendMessage ────────────────────────────────────────────────────
 

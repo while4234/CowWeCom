@@ -1311,15 +1311,30 @@ class ChannelsHandler:
         return channel_name == "weixin" or channel_name.startswith("weixin_")
 
     @staticmethod
-    def _get_weixin_login_status(instance_id: str = "weixin") -> str:
+    def _get_channel_manager():
         try:
             import sys
             app_module = sys.modules.get('__main__') or sys.modules.get('app')
-            mgr = getattr(app_module, '_channel_mgr', None) if app_module else None
-            if mgr:
-                ch = mgr.get_channel(instance_id)
-                if ch and hasattr(ch, 'login_status'):
-                    return ch.login_status
+            return getattr(app_module, '_channel_mgr', None) if app_module else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _get_running_weixin_channel(cls, instance_id: str = "weixin"):
+        mgr = cls._get_channel_manager()
+        if not mgr:
+            return None
+        try:
+            return mgr.get_channel(instance_id)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _get_weixin_login_status(instance_id: str = "weixin") -> str:
+        try:
+            ch = ChannelsHandler._get_running_weixin_channel(instance_id)
+            if ch and hasattr(ch, 'login_status'):
+                return ch.login_status
         except Exception:
             pass
         return "unknown"
@@ -1347,6 +1362,9 @@ class ChannelsHandler:
 
     @classmethod
     def _weixin_instance_config(cls, instance_id: str) -> dict:
+        if instance_id == "weixin":
+            value = conf().get("weixin_channel", {}) or {}
+            return value if isinstance(value, dict) else {}
         instances = conf().get("weixin_instances", {}) or {}
         if not isinstance(instances, dict):
             return {}
@@ -1383,6 +1401,11 @@ class ChannelsHandler:
         wechat_id = str(inst_conf.get("wechat_id") or creds.get("wechat_id") or "").strip()
         if not wechat_id:
             wechat_id = extract_real_wechat_id(inst_conf) or extract_real_wechat_id(creds)
+        if not wechat_id:
+            wechat_id = cls._resolve_weixin_identity_from_runtime(instance_id)
+            if wechat_id:
+                creds = cls._read_weixin_credentials(instance_id)
+                raw_user_id = str(inst_conf.get("user_id") or creds.get("user_id") or "").strip()
         display_id = wechat_id or cls._configured_weixin_display_id(instance_id, raw_user_id)
         role = weixin_role_for_identity(
             channel_type=instance_id,
@@ -1397,6 +1420,28 @@ class ChannelsHandler:
             "role": role,
             "credentials_path": cls._weixin_raw_credentials_path(instance_id),
         }
+
+    @classmethod
+    def _resolve_weixin_identity_from_runtime(cls, instance_id: str) -> str:
+        ch = cls._get_running_weixin_channel(instance_id)
+        if ch is None or not hasattr(ch, "_resolve_login_wechat_id_from_credentials"):
+            return ""
+        try:
+            return str(ch._resolve_login_wechat_id_from_credentials() or "").strip()
+        except Exception as e:
+            logger.debug(f"[WebChannel] Failed to resolve runtime Weixin identity for {instance_id}: {e}")
+            return ""
+
+    @classmethod
+    def _apply_weixin_identity_to_runtime(cls, instance_id: str, raw_user_id: str, wechat_id: str) -> None:
+        ch = cls._get_running_weixin_channel(instance_id)
+        if ch is None or not raw_user_id or not wechat_id:
+            return
+        try:
+            if hasattr(ch, "_user_identity_cache"):
+                ch._user_identity_cache[raw_user_id] = wechat_id
+        except Exception as e:
+            logger.debug(f"[WebChannel] Failed to update runtime Weixin identity cache for {instance_id}: {e}")
 
     @staticmethod
     def _configured_weixin_display_id(instance_id: str, raw_user_id: str) -> str:
@@ -1626,7 +1671,15 @@ class ChannelsHandler:
         creds = self._save_weixin_credentials_patch(channel_name, {"wechat_id": wechat_id})
         raw_user_id = str(inst_conf.get("user_id") or creds.get("user_id") or "").strip()
 
-        if channel_name != "weixin":
+        if channel_name == "weixin":
+            channel_conf = dict(conf().get("weixin_channel", {}) or {})
+            channel_conf["wechat_id"] = wechat_id
+            channel_conf.setdefault("role", "admin")
+            if raw_user_id:
+                channel_conf["user_id"] = raw_user_id
+            conf()["weixin_channel"] = channel_conf
+            self._save_config_patch({"weixin_channel": channel_conf})
+        else:
             instances = conf().get("weixin_instances", {}) or {}
             if not isinstance(instances, dict):
                 instances = {}
@@ -1646,6 +1699,9 @@ class ChannelsHandler:
                 raw_user_id=raw_user_id,
                 wechat_id=wechat_id,
             )
+            self._apply_weixin_identity_to_runtime(channel_name, raw_user_id, wechat_id)
+
+        logger.info(f"[WebChannel] Manual WeChat id saved for instance={channel_name}")
 
         return json.dumps({
             "status": "success",
@@ -2025,6 +2081,12 @@ class WeixinQrHandler:
             if wechat_id:
                 credentials["wechat_id"] = wechat_id
             _save_credentials(cred_path, credentials)
+            if user_id and wechat_id:
+                remember_wechat_identity(
+                    channel_type=instance_id,
+                    raw_user_id=user_id,
+                    wechat_id=wechat_id,
+                )
             if instance_id == "weixin":
                 conf()["weixin_token"] = bot_token
                 conf()["weixin_base_url"] = result_base_url

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json
 import re
 import sys
 import types
@@ -191,11 +192,12 @@ class SocialBridgeService:
         target_user_id: str,
         relationship: str,
         notes: str = "",
+        model: Any = None,
     ) -> Dict[str, Any]:
         text = relationship.strip()
         if notes.strip():
             text = f"{text}: {notes.strip()}"
-        target_actor_id = self._resolve_target_actor_id(actor_id, target_user_id)
+        target_actor_id = self._resolve_target_actor_id(actor_id, target_user_id, model=model)
         relation = self.store.set_relationship(actor_id, target_actor_id, text)
         target = self.get_user(target_actor_id)
         return {
@@ -222,7 +224,7 @@ class SocialBridgeService:
         if not str(message or "").strip():
             raise ValueError("message is required")
 
-        target_actor_id = self._resolve_target_actor_id(actor_id, target_user_id)
+        target_actor_id = self._resolve_target_actor_id(actor_id, target_user_id, model=model)
         actor = self.get_user(actor_id)
         target = self.get_user(target_actor_id)
         relationship = self.get_relationship(actor_id, target_actor_id)
@@ -353,7 +355,7 @@ class SocialBridgeService:
             return getter(actor_id, target_user_id)
         return None
 
-    def _resolve_target_actor_id(self, actor_id: str, target_user_id: str) -> str:
+    def _resolve_target_actor_id(self, actor_id: str, target_user_id: str, model: Any = None) -> str:
         target_ref = str(target_user_id or "").strip()
         if not target_ref:
             raise ValueError("target_user_id is required")
@@ -365,20 +367,119 @@ class SocialBridgeService:
             return direct.actor_user_id
 
         max_users = int(conf().get("social_bridge_max_users", 100) or 100)
+        visible_users: List[tuple[BridgeUser, Dict[str, Any]]] = []
         for user in self.store.list_visible_users(actor_id, limit=max_users):
             public_user = self._public_user(user, viewer_actor_id=actor_id)
-            candidates = {
-                public_user.get("bridge_user_id", ""),
-                public_user.get("wechat_id", ""),
-                public_user.get("display_label", ""),
-                public_user.get("relationship_to_viewer", ""),
-            }
-            candidates.update(self._relationship_aliases(public_user.get("relationship_to_viewer", "")))
-            candidates.update(public_user.get("known_names", []))
-            if target_ref in candidates or target_ref.casefold() in {item.casefold() for item in candidates}:
+            visible_users.append((user, public_user))
+            if self._target_ref_matches_public_user(target_ref, public_user):
                 return user.actor_user_id
 
+        model_target = self._resolve_target_actor_id_with_model(target_ref, visible_users, model)
+        if model_target:
+            return model_target
+
         raise ValueError("target_user_id not found")
+
+    @classmethod
+    def _target_ref_matches_public_user(cls, target_ref: str, public_user: Dict[str, Any]) -> bool:
+        candidates = {
+            public_user.get("bridge_user_id", ""),
+            public_user.get("wechat_id", ""),
+            public_user.get("nickname", ""),
+            public_user.get("display_label", ""),
+            public_user.get("relationship_to_viewer", ""),
+        }
+        candidates.update(cls._relationship_aliases(public_user.get("relationship_to_viewer", "")))
+        candidates.update(public_user.get("known_names", []))
+        clean_candidates = {str(item or "").strip() for item in candidates if str(item or "").strip()}
+        target = str(target_ref or "").strip()
+        return target in clean_candidates or target.casefold() in {item.casefold() for item in clean_candidates}
+
+    def _resolve_target_actor_id_with_model(
+        self,
+        target_ref: str,
+        visible_users: List[tuple[BridgeUser, Dict[str, Any]]],
+        model: Any = None,
+    ) -> str:
+        if model is None or not hasattr(model, "call") or not visible_users:
+            return ""
+
+        candidates = []
+        for index, (_, public_user) in enumerate(visible_users, start=1):
+            candidates.append(
+                {
+                    "index": index,
+                    "bridge_user_id": public_user.get("bridge_user_id", ""),
+                    "wechat_id": public_user.get("wechat_id", ""),
+                    "nickname": public_user.get("nickname", ""),
+                    "known_names": public_user.get("known_names", []),
+                    "display_label": public_user.get("display_label", ""),
+                    "relationship": public_user.get("relationship_to_viewer", ""),
+                }
+            )
+
+        try:
+            from agent.protocol.models import LLMRequest
+
+            request = LLMRequest(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            "请根据用户给出的目标称呼，从候选社交桥用户中选出最可能的接收人。\n"
+                            f"目标称呼: {target_ref}\n"
+                            f"候选用户 JSON: {json.dumps(candidates, ensure_ascii=False)}\n\n"
+                            "只输出 JSON，格式为 {\"bridge_user_id\":\"...\"}。"
+                            "如果没有足够把握，输出 {\"bridge_user_id\":\"\"}。"
+                        ),
+                    }
+                ],
+                temperature=0,
+                max_tokens=120,
+                stream=False,
+                system=(
+                    "你只做接收人消歧，不编造新用户。只能从候选用户中选择。"
+                    "可以利用 nickname、known_names、display_label、relationship 里的关系词，"
+                    "例如“我老婆”“我太太”“配偶”可对应 relationship 中的老婆/妻子/配偶。"
+                ),
+            )
+            response = model.call(request)
+            selected_ref = self._extract_model_selected_target_ref(self._extract_response_text(response))
+        except Exception as e:
+            logger.debug(f"[SocialBridge] LLM target resolution failed: {e}")
+            return ""
+
+        if not selected_ref:
+            return ""
+
+        for user, public_user in visible_users:
+            if self._target_ref_matches_public_user(selected_ref, public_user):
+                return user.actor_user_id
+            if selected_ref.isdigit():
+                index = int(selected_ref)
+                if 1 <= index <= len(visible_users):
+                    return visible_users[index - 1][0].actor_user_id
+        return ""
+
+    @staticmethod
+    def _extract_model_selected_target_ref(response_text: str) -> str:
+        text = str(response_text or "").strip()
+        if not text:
+            return ""
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                return str(payload.get("bridge_user_id") or payload.get("target") or payload.get("index") or "").strip()
+        except json.JSONDecodeError:
+            pass
+        match = re.search(r"bridge_[A-Fa-f0-9]{16}", text)
+        if match:
+            return match.group(0)
+        if re.fullmatch(r"\d{1,3}", text):
+            return text
+        if text.casefold() in {"none", "null", "unknown", "no_match", "no match"}:
+            return ""
+        return text.strip('"\'` \t\r\n')
 
     @staticmethod
     def _enabled() -> bool:
@@ -583,13 +684,15 @@ class SocialBridgeService:
         metadata = user.metadata or {}
         wechat_id = self._public_wechat_id(user)
         known_names = self._known_public_names(user, wechat_id)
+        nickname = known_names[0] if known_names else ""
         relationship_text = self._relationship_text(viewer_actor_id, user.actor_user_id) if viewer_actor_id else ""
         return {
             "bridge_user_id": self._public_user_id(user.actor_user_id),
             "wechat_id": wechat_id,
+            "nickname": nickname,
             "known_names": known_names,
             "relationship_to_viewer": relationship_text,
-            "display_label": self._display_label(wechat_id, known_names),
+            "display_label": self._display_label(nickname, wechat_id, known_names),
             "channel_type": metadata.get("channel_type", ""),
             "can_active_send": bool(metadata.get("can_active_send")),
             "last_seen_at": user.updated_at,
@@ -605,8 +708,10 @@ class SocialBridgeService:
         aliases: List[str] = []
         if any(word in text for word in ("老公", "丈夫", "先生", "husband")):
             aliases.extend(["老公", "丈夫", "先生", "husband"])
-        if any(word in text for word in ("老婆", "妻子", "太太", "wife")):
-            aliases.extend(["老婆", "妻子", "太太", "wife"])
+        if any(word in text for word in ("老婆", "妻子", "太太", "媳妇", "wife")):
+            aliases.extend(["老婆", "妻子", "太太", "媳妇", "wife"])
+        if "配偶" in text or "spouse" in text:
+            aliases.extend(["配偶", "spouse", "老公", "丈夫", "老婆", "妻子"])
         if any(word in text for word in ("父亲", "爸爸", "father", "dad")):
             aliases.extend(["父亲", "爸爸", "father", "dad"])
         if any(word in text for word in ("母亲", "妈妈", "mother", "mom")):
@@ -618,6 +723,7 @@ class SocialBridgeService:
         candidates = [
             metadata.get("wechat_id", ""),
             metadata.get("display_wechat_id", ""),
+            self._configured_channel_wechat_id(user),
         ]
         for candidate in candidates:
             text = str(candidate or "").strip()
@@ -625,17 +731,42 @@ class SocialBridgeService:
                 return text
         return ""
 
+    def _configured_channel_wechat_id(self, user: BridgeUser) -> str:
+        metadata = user.metadata or {}
+        channel_type = str(metadata.get("channel_type") or "").strip()
+        raw_user_id = str(metadata.get("raw_user_id") or metadata.get("receiver") or "").strip()
+        if not channel_type or not raw_user_id:
+            return ""
+
+        channel_conf = self._configured_weixin_channel(channel_type)
+        configured_raw_id = str(channel_conf.get("user_id") or "").strip()
+        if not configured_raw_id:
+            return ""
+        actor_id = f"{channel_type}:{configured_raw_id}"
+        if raw_user_id != configured_raw_id and user.actor_user_id != actor_id:
+            return ""
+        return str(channel_conf.get("wechat_id") or "").strip()
+
+    @staticmethod
+    def _configured_weixin_channel(channel_type: str) -> Dict[str, Any]:
+        local_config = conf()
+        if channel_type == "weixin":
+            value = local_config.get("weixin_channel", {}) or {}
+            return value if isinstance(value, dict) else {}
+        instances = local_config.get("weixin_instances", {}) or {}
+        if not isinstance(instances, dict):
+            return {}
+        value = instances.get(channel_type, {}) or {}
+        return value if isinstance(value, dict) else {}
+
     def _known_public_names(self, user: BridgeUser, wechat_id: str) -> List[str]:
         metadata = user.metadata or {}
         names: List[str] = []
-        for key in ("declared_name", "name", "nickname", "public_name", "display_name"):
+        for key in ("nickname", "declared_name", "name", "public_name", "display_name"):
             self._append_public_name(names, metadata.get(key, ""), wechat_id)
-        self._append_public_name(names, user.display_name, wechat_id)
-
-        workspace = get_default_memory_config().get_workspace()
-        identity_excerpt = self._read_user_identity_excerpt(workspace, user, limit=5000)
-        for name in self._extract_declared_names(identity_excerpt):
-            self._append_public_name(names, name, wechat_id)
+        if not names:
+            for name in self._declared_names_from_memory(user):
+                self._append_public_name(names, name, wechat_id)
         return names[:5]
 
     @classmethod
@@ -672,6 +803,53 @@ class SocialBridgeService:
             return False
         return bool(re.search(r"[\w\u4e00-\u9fff]", text))
 
+    def _declared_names_from_memory(self, user: BridgeUser) -> List[str]:
+        names: List[str] = []
+        for path in self._public_user_memory_paths(user.memory_user_id):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            for name in self._extract_user_declared_names(text):
+                if name.casefold() not in {item.casefold() for item in names}:
+                    names.append(name)
+        return names[:5]
+
+    @staticmethod
+    def _public_user_memory_paths(memory_user_id: str) -> List[Path]:
+        safe_id = str(memory_user_id or "").strip()
+        if not safe_id:
+            return []
+        workspace = get_default_memory_config().get_workspace()
+        return [
+            workspace / "users" / safe_id / "files" / "USER.md",
+            workspace / "memory" / "users" / safe_id / "USER.md",
+            workspace / "memory" / "users" / safe_id / "MEMORY.md",
+        ]
+
+    @staticmethod
+    def _extract_user_declared_names(memory_text: str) -> List[str]:
+        names: List[str] = []
+        if not memory_text:
+            return names
+        patterns = [
+            r"(?:用户称呼|用户昵称|用户名字|用户姓名)\s*[:：]\s*[「『\"'“]?([A-Za-z0-9_\-\u4e00-\u9fff]{1,30})",
+            r"(?:用户告知|用户表示|用户说)\s*[:：]?\s*(?:自己)?(?:叫|名叫|称呼为)\s*[「『\"'“]?([A-Za-z0-9_\-\u4e00-\u9fff]{1,30})",
+            r"(?:用户叫|用户自称)\s*[「『\"'“]?([A-Za-z0-9_\-\u4e00-\u9fff]{1,30})",
+            r"(?:我叫|我的名字是|叫我|可以叫我)\s*[「『\"'“]?([A-Za-z0-9_\-\u4e00-\u9fff]{1,30})",
+            r"(?:my name is|call me|i am|i'm)\s+([A-Za-z][A-Za-z0-9_\-]{0,29})",
+        ]
+        for line in memory_text.splitlines():
+            if re.search(r"(助手|Agent|agent|机器人|你叫|助手名字|助手在)", line):
+                if not re.search(r"用户(?:称呼|昵称|名字|姓名)\s*[:：]", line):
+                    continue
+            for pattern in patterns:
+                for match in re.finditer(pattern, line, flags=re.IGNORECASE):
+                    name = SocialBridgeService._normalize_public_name(match.group(1))
+                    if name.casefold() not in {item.casefold() for item in names}:
+                        names.append(name)
+        return names
+
     @staticmethod
     def _extract_declared_names(memory_text: str) -> List[str]:
         if not memory_text:
@@ -690,12 +868,12 @@ class SocialBridgeService:
         return names
 
     @staticmethod
-    def _display_label(wechat_id: str, known_names: List[str]) -> str:
-        left = wechat_id
-        if known_names:
-            names = "/".join(known_names[:2])
-            return f"{left} ({names})" if left else names
-        return left or "未知微信用户"
+    def _display_label(nickname: str, wechat_id: str, known_names: List[str]) -> str:
+        names = "/".join(known_names[:2])
+        public_name = nickname or names
+        if public_name and wechat_id:
+            return f"{public_name} / {wechat_id}"
+        return public_name or wechat_id or "未知微信用户"
 
     def _public_pending(self, item: PendingBridgeMessage) -> Dict[str, Any]:
         return {

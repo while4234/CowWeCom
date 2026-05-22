@@ -3381,6 +3381,7 @@ function saveWeixinIdentity(chName) {
     input.disabled = true;
     fetch('/api/channels', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'save', channel: chName, config: { wechat_id: wechatId } })
     })
@@ -3396,7 +3397,7 @@ function saveWeixinIdentity(chName) {
             ch.display_wechat_id = data.wechat_id || wechatId;
         }
         showWeixinIdentityStatus(chName, currentLang === 'zh' ? '已保存' : 'Saved', false);
-        renderActiveChannels();
+        setTimeout(() => loadChannelsView(), 300);
     })
     .catch(() => showWeixinIdentityStatus(chName, currentLang === 'zh' ? '保存失败' : 'Failed', true))
     .finally(() => { input.disabled = false; });
@@ -4312,18 +4313,45 @@ function connectFeishuAfterRegister(appId, appSecret) {
 // =====================================================================
 // Scheduler View
 // =====================================================================
-let tasksLoaded = false;
+function getTaskSchedule(task) {
+    return task.schedule || {};
+}
+
+function getTaskScheduleType(task) {
+    const schedule = getTaskSchedule(task);
+    return schedule.type || task.type || 'once';
+}
+
+function getTaskRunAt(task) {
+    const schedule = getTaskSchedule(task);
+    return task.next_run_at || schedule.run_at || task.run_at || '';
+}
+
+function isCompletedOnceTask(task, nowMs) {
+    if (getTaskScheduleType(task) !== 'once') return false;
+    if (task.last_run_at) return true;
+
+    const runAt = getTaskRunAt(task);
+    if (!runAt) return false;
+
+    const runAtMs = new Date(runAt).getTime();
+    return !Number.isNaN(runAtMs) && runAtMs <= nowMs;
+}
+
 function loadTasksView() {
-    if (tasksLoaded) return;
     fetch('/api/scheduler').then(r => r.json()).then(data => {
         if (data.status !== 'success') return;
         const emptyEl = document.getElementById('tasks-empty');
         const listEl = document.getElementById('tasks-list');
         const allTasks = data.tasks || [];
-        // Only show active (enabled) tasks
-        const tasks = allTasks.filter(t => t.enabled !== false);
+        const nowMs = Date.now();
+        // Only show active tasks that still have a future run.
+        const tasks = allTasks.filter(t => t.enabled !== false && !isCompletedOnceTask(t, nowMs));
         if (tasks.length === 0) {
             emptyEl.querySelector('p').textContent = currentLang === 'zh' ? '暂无定时任务' : 'No scheduled tasks';
+            emptyEl.classList.remove('hidden');
+            listEl.classList.add('hidden');
+            listEl.innerHTML = '';
             return;
         }
         emptyEl.classList.add('hidden');
@@ -4333,15 +4361,19 @@ function loadTasksView() {
         tasks.forEach(task => {
             const card = document.createElement('div');
             card.className = 'bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-4';
-            const typeLabel = task.type === 'cron'
-                ? `<span class="text-xs font-mono text-slate-400">${escapeHtml(task.cron || '')}</span>`
-                : `<span class="text-xs text-slate-400">${escapeHtml(task.type || 'once')}</span>`;
+            const schedule = getTaskSchedule(task);
+            const scheduleType = getTaskScheduleType(task);
+            const typeLabel = scheduleType === 'cron'
+                ? `<span class="text-xs font-mono text-slate-400">${escapeHtml(schedule.expression || task.cron || '')}</span>`
+                : `<span class="text-xs text-slate-400">${escapeHtml(scheduleType)}</span>`;
             let nextRun = '--';
             if (task.next_run_at) {
                 // next_run_at is an ISO string, not a Unix timestamp
                 const d = new Date(task.next_run_at);
                 if (!isNaN(d.getTime())) nextRun = d.toLocaleString();
             }
+            const action = task.action || {};
+            const description = task.prompt || task.description || action.task_description || action.content || '';
             card.innerHTML = `
                 <div class="flex items-center gap-2 mb-2">
                     <span class="w-2 h-2 rounded-full bg-primary-400"></span>
@@ -4349,13 +4381,12 @@ function loadTasksView() {
                     <div class="flex-1"></div>
                     ${typeLabel}
                 </div>
-                <p class="text-xs text-slate-500 dark:text-slate-400 mb-2 line-clamp-2">${escapeHtml(task.prompt || task.description || '')}</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mb-2 line-clamp-2">${escapeHtml(description)}</p>
                 <div class="flex items-center gap-4 text-xs text-slate-400 dark:text-slate-500">
                     <span><i class="fas fa-clock mr-1"></i>${currentLang === 'zh' ? '下次执行' : 'Next run'}: ${nextRun}</span>
                 </div>`;
             listEl.appendChild(card);
         });
-        tasksLoaded = true;
     }).catch(() => {});
 }
 

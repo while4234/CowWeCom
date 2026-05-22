@@ -22,6 +22,7 @@ from channel.weixin.weixin_api import (
 )
 from channel.weixin.weixin_identity import (
     extract_real_wechat_id,
+    extract_wechat_nickname,
     remember_wechat_identity,
 )
 from channel.weixin.weixin_message import WeixinMessage
@@ -89,6 +90,7 @@ class WeixinChannel(ChatChannel):
         self._poll_thread = None
         self._context_tokens = {}  # user_id -> context_token
         self._user_identity_cache = {}  # raw iLink user_id -> real WeChat id
+        self._user_nickname_cache = {}  # raw iLink user_id -> public nickname
         self._received_msgs = ExpiredDict(60 * 60 * 7.1)
         self._get_updates_buf = ""
         self.login_status = self.LOGIN_STATUS_IDLE
@@ -363,6 +365,12 @@ class WeixinChannel(ChatChannel):
                 if wechat_id:
                     creds["wechat_id"] = wechat_id
                 _save_credentials(self._credentials_path, creds)
+                if user_id and wechat_id:
+                    remember_wechat_identity(
+                        channel_type=self.channel_type,
+                        raw_user_id=user_id,
+                        wechat_id=wechat_id,
+                    )
                 logger.info(f"[Weixin] Credentials saved to {self._credentials_path}")
 
                 return {"token": bot_token, "base_url": result_base_url}
@@ -443,39 +451,21 @@ class WeixinChannel(ChatChannel):
         logger.info("[Weixin] Long-poll loop ended")
 
     def _resolve_login_wechat_id_from_credentials(self) -> str:
-        """Backfill the logged-in account's real WeChat id into credentials."""
-        if not self.api:
-            return ""
-
+        """Load the logged-in account's manually saved WeChat id, if any."""
         creds = _load_credentials(self._credentials_path)
         existing_wechat_id = str(creds.get("wechat_id") or "").strip()
-        if existing_wechat_id:
-            return existing_wechat_id
+        if not existing_wechat_id:
+            return ""
 
         raw_user_id = str(creds.get("user_id") or "").strip()
-        if not raw_user_id:
-            return ""
-
-        try:
-            profile_payload = self.api.get_config(raw_user_id, "")
-            wechat_id = extract_real_wechat_id(profile_payload)
-        except Exception as e:
-            logger.debug(f"[Weixin] Failed to resolve login WeChat id for {self.instance_id}: {e}")
-            return ""
-
-        if not wechat_id:
-            return ""
-
-        creds["wechat_id"] = wechat_id
-        _save_credentials(self._credentials_path, creds)
-        self._user_identity_cache[raw_user_id] = wechat_id
-        remember_wechat_identity(
-            channel_type=self.channel_type,
-            raw_user_id=raw_user_id,
-            wechat_id=wechat_id,
-        )
-        logger.info(f"[Weixin] Login WeChat id resolved for instance={self.instance_id}")
-        return wechat_id
+        if raw_user_id:
+            self._user_identity_cache[raw_user_id] = existing_wechat_id
+            remember_wechat_identity(
+                channel_type=self.channel_type,
+                raw_user_id=raw_user_id,
+                wechat_id=existing_wechat_id,
+            )
+        return existing_wechat_id
 
     def _process_message(self, raw_msg: dict):
         """Parse a single inbound message and produce to the handling queue."""
@@ -494,7 +484,9 @@ class WeixinChannel(ChatChannel):
         if context_token and from_user:
             self._context_tokens[from_user] = context_token
 
-        wechat_id = self._resolve_wechat_id(from_user, context_token, raw_msg)
+        identity = self._resolve_wechat_profile(from_user, context_token, raw_msg)
+        wechat_id = identity.get("wechat_id", "")
+        nickname = identity.get("nickname", "")
 
         cdn_base_url = self.api.cdn_base_url if self.api else CDN_BASE_URL
         try:
@@ -549,7 +541,10 @@ class WeixinChannel(ChatChannel):
             if wechat_id:
                 context["wechat_id"] = wechat_id
                 context["user_label"] = wechat_id
-            self._remember_social_bridge_user(context, from_user, context_token, wechat_id)
+            if nickname:
+                context["display_name"] = nickname
+                context["user_nickname"] = nickname
+            self._remember_social_bridge_user(context, from_user, context_token, wechat_id, nickname)
             self.produce(context)
 
     def _remember_social_bridge_user(
@@ -558,6 +553,7 @@ class WeixinChannel(ChatChannel):
         raw_user_id: str,
         context_token: str,
         wechat_id: str = "",
+        nickname: str = "",
     ) -> None:
         """Best-effort user directory update for cross-user bridge tools."""
         try:
@@ -567,15 +563,19 @@ class WeixinChannel(ChatChannel):
             if wechat_id:
                 context["wechat_id"] = wechat_id
                 context["user_label"] = wechat_id
+            if nickname:
+                context["display_name"] = nickname
+                context["user_nickname"] = nickname
             profile = resolve_agent_user_profile(context)
             apply_profile_to_context(context, profile)
             get_bridge_store().register_user(
                 actor_user_id=profile.actor_id,
                 memory_user_id=profile.memory_user_id,
-                display_name=profile.display_name or context.get("user_label", "") or raw_user_id,
+                display_name=nickname or profile.display_name or context.get("user_label", "") or raw_user_id,
                 metadata={
                     "channel_type": profile.channel_type,
                     "wechat_id": wechat_id,
+                    "nickname": nickname,
                     "raw_user_id": raw_user_id,
                     "receiver": raw_user_id,
                     "context_token": context_token,
@@ -587,17 +587,23 @@ class WeixinChannel(ChatChannel):
 
     def _resolve_wechat_id(self, raw_user_id: str, context_token: str, raw_msg: dict) -> str:
         """Resolve and remember the real WeChat id for usage/profile display."""
-        if not raw_user_id:
-            return ""
-        cached = self._user_identity_cache.get(raw_user_id)
-        if cached:
-            return cached
+        return self._resolve_wechat_profile(raw_user_id, context_token, raw_msg).get("wechat_id", "")
 
-        wechat_id = extract_real_wechat_id(raw_msg)
-        if not wechat_id and self.api and context_token:
+    def _resolve_wechat_profile(self, raw_user_id: str, context_token: str, raw_msg: dict) -> dict:
+        """Resolve public Weixin identity fields for a raw iLink user id."""
+        if not raw_user_id:
+            return {"wechat_id": "", "nickname": ""}
+
+        wechat_id = self._user_identity_cache.get(raw_user_id, "")
+        nickname = self._user_nickname_cache.get(raw_user_id, "")
+
+        wechat_id = wechat_id or extract_real_wechat_id(raw_msg)
+        nickname = nickname or extract_wechat_nickname(raw_msg)
+        if (not wechat_id or not nickname) and self.api and context_token:
             try:
                 profile_payload = self.api.get_config(raw_user_id, context_token)
-                wechat_id = extract_real_wechat_id(profile_payload)
+                wechat_id = wechat_id or extract_real_wechat_id(profile_payload)
+                nickname = nickname or extract_wechat_nickname(profile_payload)
             except Exception as e:
                 logger.debug(f"[Weixin] Failed to resolve real WeChat id for {raw_user_id}: {e}")
 
@@ -609,7 +615,9 @@ class WeixinChannel(ChatChannel):
                 wechat_id=wechat_id,
             ):
                 logger.info(f"[Weixin] Remembered WeChat id mapping for channel={self.channel_type}")
-        return wechat_id
+        if nickname:
+            self._user_nickname_cache[raw_user_id] = nickname
+        return {"wechat_id": wechat_id, "nickname": nickname}
 
     # ── _compose_context ───────────────────────────────────────────────
 
@@ -685,7 +693,13 @@ class WeixinChannel(ChatChannel):
     def _send_text(self, text: str, receiver: str, context_token: str) -> bool:
         if len(text) <= TEXT_CHUNK_LIMIT:
             try:
-                self.api.send_text(receiver, text, context_token)
+                response = self.api.send_text(receiver, text, context_token)
+                if not self._is_send_response_ok(response):
+                    logger.warning(
+                        f"[Weixin] Text send rejected for receiver={receiver}: "
+                        f"{self._summarize_send_response(response)}"
+                    )
+                    return False
                 logger.debug(f"[Weixin] Text sent to {receiver}, len={len(text)}")
             except Exception as e:
                 logger.error(f"[Weixin] Failed to send text: {e}")
@@ -695,7 +709,13 @@ class WeixinChannel(ChatChannel):
         chunks = self._split_text(text, TEXT_CHUNK_LIMIT)
         for i, chunk in enumerate(chunks):
             try:
-                self.api.send_text(receiver, chunk, context_token)
+                response = self.api.send_text(receiver, chunk, context_token)
+                if not self._is_send_response_ok(response):
+                    logger.warning(
+                        f"[Weixin] Text chunk {i+1}/{len(chunks)} rejected for receiver={receiver}: "
+                        f"{self._summarize_send_response(response)}"
+                    )
+                    return False
                 logger.debug(f"[Weixin] Text chunk {i+1}/{len(chunks)} sent to {receiver}, len={len(chunk)}")
             except Exception as e:
                 logger.error(f"[Weixin] Failed to send text chunk {i+1}/{len(chunks)}: {e}")
@@ -703,6 +723,28 @@ class WeixinChannel(ChatChannel):
             if i < len(chunks) - 1:
                 time.sleep(0.5)
         return True
+
+    @staticmethod
+    def _is_send_response_ok(response) -> bool:
+        if response is None:
+            return True
+        if not isinstance(response, dict):
+            return bool(response)
+        ret = response.get("ret")
+        if ret is None:
+            return False
+        try:
+            return int(ret) == 0
+        except (TypeError, ValueError):
+            return str(ret).strip() == "0"
+
+    @staticmethod
+    def _summarize_send_response(response) -> str:
+        if not isinstance(response, dict):
+            return repr(response)
+        keys = ("ret", "errcode", "errmsg", "error", "message", "endpoint")
+        summary = {key: response.get(key) for key in keys if key in response}
+        return repr(summary or {"keys": sorted(response.keys())[:8]})
 
     @staticmethod
     def _split_text(text: str, limit: int) -> list:

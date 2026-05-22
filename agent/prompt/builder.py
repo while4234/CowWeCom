@@ -22,18 +22,18 @@ class ContextFile:
 
 class PromptBuilder:
     """提示词构建器"""
-    
+
     def __init__(self, workspace_dir: str, language: str = "zh"):
         """
         初始化提示词构建器
-        
+
         Args:
             workspace_dir: 工作空间目录
             language: 语言 ("zh" 或 "en")
         """
         self.workspace_dir = workspace_dir
         self.language = language
-    
+
     def build(
         self,
         base_persona: Optional[str] = None,
@@ -47,7 +47,7 @@ class PromptBuilder:
     ) -> str:
         """
         构建完整的系统提示词
-        
+
         Args:
             base_persona: 基础人格描述（会被context_files中的AGENT.md覆盖）
             user_identity: 用户身份信息
@@ -57,7 +57,7 @@ class PromptBuilder:
             memory_manager: 记忆管理器
             runtime_info: 运行时信息
             **kwargs: 其他参数
-            
+
         Returns:
             完整的系统提示词
         """
@@ -89,7 +89,7 @@ def build_agent_system_prompt(
 ) -> str:
     """
     构建Agent系统提示词
-    
+
     顺序说明（按重要性和逻辑关系排列）:
     1. 工具系统 - 核心能力，最先介绍
     2. 技能系统 - 紧跟工具，因为技能需要用 read 工具读取
@@ -99,7 +99,7 @@ def build_agent_system_prompt(
     5. 用户身份 - 用户信息（可选）
     6. 项目上下文 - AGENT.md, USER.md, RULE.md, MEMORY.md, BOOTSTRAP.md
     7. 运行时信息 - 元信息（时间、模型等）
-    
+
     Args:
         workspace_dir: 工作空间目录
         language: 语言 ("zh" 或 "en")
@@ -111,20 +111,23 @@ def build_agent_system_prompt(
         memory_manager: 记忆管理器
         runtime_info: 运行时信息
         **kwargs: 其他参数
-        
+
     Returns:
         完整的系统提示词
     """
     sections = []
-    
+
     # 1. 工具系统（最重要，放在最前面）
     if tools:
         sections.extend(_build_tooling_section(tools, language))
-    
+
+    # 1.5 后台执行经验（不对用户展示）
+    sections.extend(_build_self_evolution_section(language))
+
     # 2. 技能系统（紧跟工具，因为需要用 read 工具）
     if skill_manager:
         sections.extend(_build_skills_section(skill_manager, tools, language))
-    
+
     # 3. 记忆系统（独立的记忆能力）
     if memory_manager:
         sections.extend(_build_memory_section(memory_manager, tools, language))
@@ -132,22 +135,22 @@ def build_agent_system_prompt(
     # 3.5 知识系统（结构化知识库）
     if conf().get("knowledge", True):
         sections.extend(_build_knowledge_section(workspace_dir, language))
-    
+
     # 4. 工作空间（工作环境说明）
     sections.extend(_build_workspace_section(workspace_dir, language))
-    
+
     # 5. 用户身份（如果有）
     if user_identity:
         sections.extend(_build_user_identity_section(user_identity, language))
-    
+
     # 6. 项目上下文文件（AGENT.md, USER.md, RULE.md - 定义人格）
     if context_files:
         sections.extend(_build_context_files_section(context_files, language))
-    
+
     # 7. 运行时信息（元信息，放在最后）
     if runtime_info:
         sections.extend(_build_runtime_section(runtime_info, language))
-    
+
     return "\n".join(sections)
 
 
@@ -223,11 +226,35 @@ def _build_tooling_section(tools: List[Any], language: str) -> List[str]:
     return lines
 
 
+def _build_self_evolution_section(language: str) -> List[str]:
+    """Build compact internal guidance learned from previous execution errors."""
+    try:
+        from common.self_evolution import get_active_prompt_guidance
+
+        guidance = get_active_prompt_guidance()
+    except Exception as e:
+        logger.debug(f"[PromptBuilder] Self-evolution guidance skipped: {e}")
+        return []
+
+    if not guidance:
+        return []
+
+    lines = [
+        "## 后台经验规则（internal）",
+        "",
+        "以下规则来自后台执行经验，只用于避免重复错误。不要主动告诉用户已记录、已学习或已更新后台经验。",
+        "",
+    ]
+    lines.extend(f"- {item}" for item in guidance)
+    lines.append("")
+    return lines
+
+
 def _build_skills_section(skill_manager: Any, tools: Optional[List[Any]], language: str) -> List[str]:
     """构建技能系统section"""
     if not skill_manager:
         return []
-    
+
     # 获取read工具名称
     read_tool_name = "read"
     if tools:
@@ -236,7 +263,7 @@ def _build_skills_section(skill_manager: Any, tools: Optional[List[Any]], langua
             if tool_name.lower() == "read":
                 read_tool_name = tool_name
                 break
-    
+
     lines = [
         "## 🧩 技能系统（mandatory）",
         "",
@@ -252,7 +279,7 @@ def _build_skills_section(skill_manager: Any, tools: Optional[List[Any]], langua
         "",
         "以下是可用技能："
     ]
-    
+
     # 添加技能列表（通过skill_manager获取）
     try:
         skills_prompt = skill_manager.build_skills_prompt()
@@ -266,7 +293,7 @@ def _build_skills_section(skill_manager: Any, tools: Optional[List[Any]], langua
         logger.warning(f"Failed to build skills prompt: {e}")
         import traceback
         logger.debug(f"Skills prompt error traceback: {traceback.format_exc()}")
-    
+
     return lines
 
 
@@ -394,12 +421,12 @@ def _build_user_identity_section(user_identity: Dict[str, str], language: str) -
     """构建用户身份section"""
     if not user_identity:
         return []
-    
+
     lines = [
         "## 👤 用户身份",
         "",
     ]
-    
+
     if user_identity.get("name"):
         lines.append(f"**用户姓名**: {user_identity['name']}")
     if user_identity.get("nickname"):
@@ -408,9 +435,9 @@ def _build_user_identity_section(user_identity: Dict[str, str], language: str) -
         lines.append(f"**时区**: {user_identity['timezone']}")
     if user_identity.get("notes"):
         lines.append(f"**备注**: {user_identity['notes']}")
-    
+
     lines.append("")
-    
+
     return lines
 
 
@@ -466,7 +493,7 @@ def _build_workspace_section(workspace_dir: str, language: str) -> List[str]:
     cloud_website_lines = _build_cloud_website_section(workspace_dir)
     if cloud_website_lines:
         lines.extend(cloud_website_lines)
-    
+
     return lines
 
 
@@ -483,32 +510,32 @@ def _build_context_files_section(context_files: List[ContextFile], language: str
     """构建项目上下文文件section"""
     if not context_files:
         return []
-    
+
     # 检查是否有AGENT.md
     has_agent = any(
         f.path.lower().endswith('agent.md') or 'agent.md' in f.path.lower()
         for f in context_files
     )
-    
+
     lines = [
         "# 📋 项目上下文",
         "",
         "以下项目上下文文件已被加载：",
         "",
     ]
-    
+
     if has_agent:
         lines.append("**`AGENT.md` 是你的灵魂文件** 🪞：严格遵循其中定义的人格、语气和设定，做真实的自己，避免僵硬、模板化的回复。")
         lines.append("当用户通过对话透露了对你性格、风格、职责、能力边界的新期望，你应该主动用 `edit` 更新 AGENT.md 以反映这些演变。")
         lines.append("")
-    
+
     # 添加每个文件的内容
     for file in context_files:
         lines.append(f"## {file.path}")
         lines.append("")
         lines.append(file.content)
         lines.append("")
-    
+
     return lines
 
 
@@ -516,12 +543,12 @@ def _build_runtime_section(runtime_info: Dict[str, Any], language: str) -> List[
     """构建运行时信息section - 支持动态时间"""
     if not runtime_info:
         return []
-    
+
     lines = [
         "## ⚙️ 运行时信息",
         "",
     ]
-    
+
     # Add current time if available.
     # Exact seconds change every request and break prompt-cache prefix reuse.
     stable_runtime = bool(conf().get("prompt_cache_stable_runtime_info", True))
@@ -547,16 +574,16 @@ def _build_runtime_section(runtime_info: Dict[str, Any], language: str) -> List[
         time_str = runtime_info["current_time"]
         weekday = runtime_info.get("weekday", "")
         timezone = runtime_info.get("timezone", "")
-        
+
         time_line = f"当前时间: {time_str}"
         if weekday:
             time_line += f" {weekday}"
         if timezone:
             time_line += f" ({timezone})"
-        
+
         lines.append(time_line)
         lines.append("")
-    
+
     # Add other runtime info
     runtime_parts = []
     # Support dynamic model via callable, fallback to static value
@@ -573,9 +600,9 @@ def _build_runtime_section(runtime_info: Dict[str, Any], language: str) -> List[
     # Only add channel if it's not the default "web"
     if runtime_info.get("channel") and runtime_info.get("channel") != "web":
         runtime_parts.append(f"渠道={runtime_info['channel']}")
-    
+
     if runtime_parts:
         lines.append("运行时: " + " | ".join(runtime_parts))
         lines.append("")
-    
+
     return lines

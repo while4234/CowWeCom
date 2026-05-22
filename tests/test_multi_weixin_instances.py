@@ -5,9 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import requests
+
 from channel import channel_factory
+from channel.weixin.weixin_api import WeixinApi
 from channel.weixin.weixin_channel import WeixinChannel
-from channel.weixin.weixin_identity import extract_real_wechat_id
+from channel.weixin.weixin_identity import extract_real_wechat_id, extract_wechat_nickname
 from channel.web.web_channel import ChannelsHandler
 from channel.web.web_channel import WeixinQrHandler
 from bridge.context import Context, ContextType
@@ -139,6 +142,33 @@ class TestMultiWeixinInstances(unittest.TestCase):
 
         self.assertFalse(channel.active_send_text("receiver-id", "hello from bridge"))
 
+    def test_active_send_text_returns_false_when_api_rejects_send(self):
+        class RejectingWeixinApi:
+            def send_text(self, receiver, text, context_token):
+                return {"ret": 40001, "errmsg": "invalid context token"}
+
+        channel = WeixinChannel("weixin_user")
+        channel.channel_type = "weixin_user"
+        channel.api = RejectingWeixinApi()
+        channel._context_tokens["receiver-id"] = "ctx-token"
+
+        self.assertFalse(channel.active_send_text("receiver-id", "hello from bridge"))
+
+    def test_weixin_api_send_timeout_is_not_success(self):
+        api = WeixinApi()
+        with patch("channel.weixin.weixin_api.requests.post", side_effect=requests.exceptions.Timeout()):
+            result = api.send_text("receiver-id", "hello", "ctx-token")
+
+        self.assertNotEqual(result.get("ret"), 0)
+        self.assertEqual(result.get("error"), "timeout")
+
+    def test_weixin_api_long_poll_timeout_is_successful_empty_poll(self):
+        api = WeixinApi()
+        with patch("channel.weixin.weixin_api.requests.post", side_effect=requests.exceptions.Timeout()):
+            result = api.get_updates(timeout=1)
+
+        self.assertEqual(result, {"ret": 0, "msgs": []})
+
     def test_social_bridge_registration_uses_resolved_wechat_id(self):
         registered = []
 
@@ -165,6 +195,33 @@ class TestMultiWeixinInstances(unittest.TestCase):
         self.assertEqual(registered[0]["display_name"], "alice_wx")
         self.assertEqual(registered[0]["metadata"]["wechat_id"], "alice_wx")
         self.assertEqual(registered[0]["metadata"]["context_token"], "ctx-token")
+
+    def test_social_bridge_registration_uses_resolved_nickname(self):
+        registered = []
+
+        class FakeBridgeStore:
+            def register_user(self, **kwargs):
+                registered.append(kwargs)
+
+        context = Context(ContextType.TEXT, "hello")
+        context["channel_type"] = "weixin_user"
+        context["session_id"] = "raw-user@im.wechat"
+        context["receiver"] = "raw-user@im.wechat"
+        context["msg"] = SimpleNamespace(from_user_id="raw-user@im.wechat")
+        channel = WeixinChannel("weixin_user")
+
+        with patch("agent.social_bridge.get_bridge_store", return_value=FakeBridgeStore()):
+            channel._remember_social_bridge_user(
+                context,
+                "raw-user@im.wechat",
+                "ctx-token",
+                "alice_wx",
+                "Alice",
+            )
+
+        self.assertEqual(registered[0]["display_name"], "Alice")
+        self.assertEqual(registered[0]["metadata"]["wechat_id"], "alice_wx")
+        self.assertEqual(registered[0]["metadata"]["nickname"], "Alice")
 
     def test_channel_info_includes_named_weixin_identity_and_role(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -229,6 +286,36 @@ class TestMultiWeixinInstances(unittest.TestCase):
             self.assertEqual(info["wechat_id"], "")
             self.assertEqual(info["display_wechat_id"], "")
 
+    def test_channel_info_backfills_wechat_id_from_running_channel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cred_path = Path(tmp) / "weixin_credentials.json"
+            cred_path.write_text(
+                json.dumps({
+                    "token": "saved-token",
+                    "base_url": "https://saved.example",
+                    "user_id": "opaque@im.wechat",
+                }),
+                encoding="utf-8",
+            )
+            conf()["weixin_credentials_path"] = str(cred_path)
+
+            class FakeRunningChannel:
+                login_status = "logged_in"
+
+                def _resolve_login_wechat_id_from_credentials(self):
+                    saved = json.loads(cred_path.read_text(encoding="utf-8"))
+                    saved["wechat_id"] = "resolved_wxid"
+                    cred_path.write_text(json.dumps(saved), encoding="utf-8")
+                    return "resolved_wxid"
+
+            with patch.object(ChannelsHandler, "_get_running_weixin_channel", return_value=FakeRunningChannel()):
+                info = ChannelsHandler._build_channel_info("weixin", conf(), {"weixin"})
+
+            self.assertEqual(info["raw_user_id"], "opaque@im.wechat")
+            self.assertEqual(info["wechat_id"], "resolved_wxid")
+            self.assertEqual(info["display_wechat_id"], "resolved_wxid")
+            self.assertEqual(json.loads(cred_path.read_text(encoding="utf-8"))["wechat_id"], "resolved_wxid")
+
     def test_save_weixin_identity_persists_credentials_and_label_mapping(self):
         with tempfile.TemporaryDirectory() as tmp:
             cred_path = Path(tmp) / "weixin_credentials.json"
@@ -242,7 +329,8 @@ class TestMultiWeixinInstances(unittest.TestCase):
             )
             conf()["weixin_credentials_path"] = str(cred_path)
 
-            with patch("channel.weixin.weixin_identity._save_config_patch"):
+            with patch("channel.weixin.weixin_identity._save_config_patch"), \
+                    patch.object(ChannelsHandler, "_save_config_patch"):
                 result = json.loads(ChannelsHandler()._handle_save_weixin_identity(
                     "weixin",
                     {"wechat_id": "y553344388"},
@@ -254,6 +342,8 @@ class TestMultiWeixinInstances(unittest.TestCase):
 
             self.assertEqual(result["status"], "success")
             self.assertEqual(saved["wechat_id"], "y553344388")
+            self.assertEqual(conf()["weixin_channel"]["wechat_id"], "y553344388")
+            self.assertEqual(conf()["weixin_channel"]["user_id"], "opaque@im.wechat")
             self.assertEqual(labels["weixin:opaque@im.wechat"], "y553344388")
             self.assertEqual(labels["opaque@im.wechat"], "y553344388")
             self.assertEqual(profiles["weixin:opaque@im.wechat"]["wechat_id"], "y553344388")
@@ -267,6 +357,18 @@ class TestMultiWeixinInstances(unittest.TestCase):
             "y553344388",
         )
         self.assertEqual(extract_real_wechat_id({"ilink_user_id": "opaque@im.wechat"}), "")
+
+    def test_extract_wechat_nickname_from_nested_payload(self):
+        self.assertEqual(
+            extract_wechat_nickname({
+                "user_info": {
+                    "nickname": "Alice",
+                    "ilink_user_id": "opaque@im.wechat",
+                }
+            }),
+            "Alice",
+        )
+        self.assertEqual(extract_wechat_nickname({"nickname": "opaque@im.wechat"}), "")
 
     def test_weixin_channel_resolves_real_id_from_get_config(self):
         class FakeApi:
@@ -291,11 +393,27 @@ class TestMultiWeixinInstances(unittest.TestCase):
             wechat_id="y553344388",
         )
 
-    def test_weixin_channel_backfills_logged_in_wechat_id_from_credentials(self):
+    def test_weixin_channel_resolves_profile_from_get_config(self):
         class FakeApi:
             def get_config(self, user_id, context_token):
-                return {"profile": {"wechat_id": "y553344388"}}
+                return {"user_info": {"wechat_id": "y553344388", "nickname": "Alice"}}
 
+        channel = WeixinChannel("weixin")
+        channel.channel_type = "weixin"
+        channel.api = FakeApi()
+
+        with patch("channel.weixin.weixin_channel.remember_wechat_identity"):
+            resolved = channel._resolve_wechat_profile(
+                "opaque@im.wechat",
+                "ctx-token",
+                {"from_user_id": "opaque@im.wechat"},
+            )
+
+        self.assertEqual(resolved, {"wechat_id": "y553344388", "nickname": "Alice"})
+        self.assertEqual(channel._user_identity_cache["opaque@im.wechat"], "y553344388")
+        self.assertEqual(channel._user_nickname_cache["opaque@im.wechat"], "Alice")
+
+    def test_weixin_channel_loads_manually_saved_logged_in_wechat_id(self):
         with tempfile.TemporaryDirectory() as tmp:
             cred_path = Path(tmp) / "weixin_credentials.json"
             cred_path.write_text(
@@ -304,6 +422,7 @@ class TestMultiWeixinInstances(unittest.TestCase):
                     "base_url": "https://saved.example",
                     "bot_id": "bot-id",
                     "user_id": "opaque@im.wechat",
+                    "wechat_id": "y553344388",
                 }),
                 encoding="utf-8",
             )
@@ -311,7 +430,6 @@ class TestMultiWeixinInstances(unittest.TestCase):
             channel = WeixinChannel("weixin")
             channel.channel_type = "weixin"
             channel._credentials_path = str(cred_path)
-            channel.api = FakeApi()
 
             with patch("channel.weixin.weixin_channel.remember_wechat_identity") as remember:
                 resolved = channel._resolve_login_wechat_id_from_credentials()
@@ -319,6 +437,7 @@ class TestMultiWeixinInstances(unittest.TestCase):
             saved = json.loads(cred_path.read_text(encoding="utf-8"))
             self.assertEqual(resolved, "y553344388")
             self.assertEqual(saved["wechat_id"], "y553344388")
+            self.assertEqual(channel._user_identity_cache["opaque@im.wechat"], "y553344388")
             remember.assert_called_once_with(
                 channel_type="weixin",
                 raw_user_id="opaque@im.wechat",

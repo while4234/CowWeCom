@@ -212,6 +212,8 @@ class BridgeSetRelationshipTool(SocialBridgeTool):
         }
         if notes:
             kwargs["notes"] = notes
+        if getattr(self, "model", None) is not None:
+            kwargs["model"] = self.model
         return self._call_service(**kwargs)
 
 

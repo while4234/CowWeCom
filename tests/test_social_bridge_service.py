@@ -45,6 +45,7 @@ class TestSocialBridgeService(unittest.TestCase):
             {
                 "channel_type": "weixin",
                 "wechat_id": "rondle_wx",
+                "nickname": "Rondle",
                 "receiver": "raw-a",
                 "context_token": "ctx-a",
                 "can_active_send": True,
@@ -57,6 +58,7 @@ class TestSocialBridgeService(unittest.TestCase):
             {
                 "channel_type": "weixin_user",
                 "wechat_id": "alice_wx",
+                "nickname": "Alice",
                 "receiver": "raw-b",
                 "context_token": "ctx-b",
                 "can_active_send": True,
@@ -87,28 +89,26 @@ class TestSocialBridgeService(unittest.TestCase):
         self.assertEqual(result["users"][0]["bridge_user_id"], service._public_user_id("weixin:b"))
         self.assertNotIn("actor_user_id", result["users"][0])
         self.assertEqual(result["users"][0]["wechat_id"], "alice_wx")
+        self.assertEqual(result["users"][0]["nickname"], "Alice")
         self.assertEqual(result["users"][0]["known_names"], ["Alice"])
-        self.assertEqual(result["users"][0]["display_label"], "alice_wx (Alice)")
+        self.assertEqual(result["users"][0]["display_label"], "Alice / alice_wx")
         self.assertEqual(result["users"][0]["relationship_to_viewer"], "")
         self.assertNotIn("display_name", result["users"][0])
         self.assertEqual(result["users"][0]["channel_type"], "weixin_user")
 
-    def test_list_users_uses_profile_name_when_wechat_id_is_unavailable(self):
+    def test_list_users_uses_registered_nickname_when_wechat_id_is_unavailable(self):
         self.store.register_user(
             "weixin:c",
             "memory_c",
             "raw-user@im.wechat",
             {
                 "channel_type": "weixin_user",
+                "nickname": "小栀",
                 "receiver": "raw-c",
                 "context_token": "ctx-c",
                 "can_active_send": True,
             },
         )
-        memory_dir = self.workspace / "memory" / "users" / "memory_c"
-        memory_dir.mkdir(parents=True, exist_ok=True)
-        (memory_dir / "USER.md").write_text("用户希望被称为「小栀」。\n", encoding="utf-8")
-        (memory_dir / "MEMORY.md").write_text("用户称呼：小栀。\n", encoding="utf-8")
         service = SocialBridgeService(self.store, FakeRouter())
 
         result = service.list_users("weixin:a")
@@ -118,6 +118,34 @@ class TestSocialBridgeService(unittest.TestCase):
         self.assertEqual(user["wechat_id"], "")
         self.assertEqual(user["known_names"], ["小栀"])
         self.assertEqual(user["display_label"], "小栀")
+
+    def test_list_users_does_not_leak_agent_name_from_memory(self):
+        self.store.register_user(
+            "weixin:c",
+            "memory_c",
+            "Haodong",
+            {
+                "channel_type": "weixin_user",
+                "wechat_id": "yuyu_wx",
+                "nickname": "Yuyu",
+                "receiver": "raw-c",
+                "context_token": "ctx-c",
+                "can_active_send": True,
+            },
+        )
+        memory_dir = self.workspace / "memory" / "users" / "memory_c"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        (memory_dir / "USER.md").write_text("call me Haodong\n", encoding="utf-8")
+        service = SocialBridgeService(self.store, FakeRouter())
+
+        result = service.list_users("weixin:a")
+
+        public_id = service._public_user_id("weixin:c")
+        user = next(item for item in result["users"] if item["bridge_user_id"] == public_id)
+        self.assertEqual(user["wechat_id"], "yuyu_wx")
+        self.assertEqual(user["known_names"], ["Yuyu"])
+        self.assertEqual(user["display_label"], "Yuyu / yuyu_wx")
+        self.assertNotIn("Haodong", user["known_names"])
 
     def test_list_users_ignores_identity_template_placeholders(self):
         self.store.register_user(
@@ -142,6 +170,71 @@ class TestSocialBridgeService(unittest.TestCase):
         user = next(item for item in result["users"] if item["bridge_user_id"] == public_id)
         self.assertEqual(user["known_names"], [])
         self.assertEqual(user["display_label"], "未知微信用户")
+
+    def test_list_users_reads_user_declared_name_without_agent_name(self):
+        self.store.register_user(
+            "weixin:c",
+            "memory_c",
+            "raw-user@im.wechat",
+            {
+                "channel_type": "weixin_user",
+                "receiver": "raw-c",
+                "context_token": "ctx-c",
+                "can_active_send": True,
+            },
+        )
+        memory_dir = self.workspace / "memory" / "users" / "memory_c"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        (memory_dir / "MEMORY.md").write_text(
+            "- 用户称呼：玉玉。\n- 助手在与用户对话中的名字：昊东。\n",
+            encoding="utf-8",
+        )
+        service = SocialBridgeService(self.store, FakeRouter())
+
+        result = service.list_users("weixin:a")
+
+        public_id = service._public_user_id("weixin:c")
+        user = next(item for item in result["users"] if item["bridge_user_id"] == public_id)
+        self.assertEqual(user["known_names"], ["玉玉"])
+        self.assertEqual(user["display_label"], "玉玉")
+        self.assertNotIn("昊东", user["known_names"])
+
+    def test_list_users_uses_manual_channel_identity_for_connected_instance(self):
+        self.store.register_user(
+            "weixin_user:raw-user@im.wechat",
+            "memory_c",
+            "raw-user@im.wechat",
+            {
+                "channel_type": "weixin_user",
+                "raw_user_id": "raw-user@im.wechat",
+                "receiver": "raw-user@im.wechat",
+                "context_token": "ctx-c",
+                "can_active_send": True,
+            },
+        )
+        self.config_patch.stop()
+        with patch(
+            "agent.social_bridge.service.conf",
+            return_value={
+                "social_bridge_enabled": True,
+                "social_bridge_auto_send": True,
+                "social_bridge_max_users": 100,
+                "weixin_instances": {
+                    "weixin_user": {
+                        "user_id": "raw-user@im.wechat",
+                        "wechat_id": "Rikoo032700",
+                    },
+                },
+            },
+        ):
+            service = SocialBridgeService(self.store, FakeRouter())
+            result = service.list_users("weixin:a")
+        self.config_patch.start()
+
+        public_id = service._public_user_id("weixin_user:raw-user@im.wechat")
+        user = next(item for item in result["users"] if item["bridge_user_id"] == public_id)
+        self.assertEqual(user["wechat_id"], "Rikoo032700")
+        self.assertEqual(user["display_label"], "Rikoo032700")
 
     def test_send_message_uses_model_rewrite_and_marks_sent(self):
         router = FakeRouter(delivered=True)
@@ -345,6 +438,30 @@ class TestSocialBridgeService(unittest.TestCase):
         self.assertEqual(listed["relationship_to_viewer"], "老公")
         self.assertEqual(listed["relationship"], "老公")
         self.assertTrue(result["delivered"])
+
+    def test_send_message_resolves_wife_and_spouse_aliases(self):
+        router = FakeRouter(delivered=True)
+        service = SocialBridgeService(self.store, router)
+        service.set_relationship("weixin:a", "weixin:b", "老婆 / 配偶")
+
+        by_wife = service.send_message("weixin:a", "老婆", "跟我老婆说一下我爱她。")
+        by_spouse = service.send_message("weixin:a", "配偶", "跟我的配偶说一下我晚点回。")
+
+        self.assertTrue(by_wife["delivered"])
+        self.assertTrue(by_spouse["delivered"])
+
+    def test_send_message_uses_model_fallback_for_unmatched_target_phrase(self):
+        router = FakeRouter(delivered=True)
+        service = SocialBridgeService(self.store, router)
+        target_ref = service.list_users("weixin:a")["users"][0]["bridge_user_id"]
+        model = FakeModel(f'{{"bridge_user_id":"{target_ref}"}}')
+
+        result = service.send_message("weixin:a", "我的爱人", "跟她说我爱她。", model=model)
+
+        self.assertTrue(result["delivered"])
+        self.assertEqual(result["target_bridge_user_id"], target_ref)
+        self.assertGreaterEqual(len(model.requests), 1)
+        self.assertIn("我的爱人", model.requests[0].messages[0]["content"])
 
 
 if __name__ == "__main__":
