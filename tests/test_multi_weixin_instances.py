@@ -146,6 +146,56 @@ class TestMultiWeixinInstances(unittest.TestCase):
             self.assertEqual(user_info["role"], "user")
             self.assertTrue(user_info["active"])
 
+    def test_channel_info_does_not_display_ilink_raw_id_as_wechat_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cred_path = Path(tmp) / "weixin_credentials.json"
+            cred_path.write_text(
+                json.dumps({
+                    "token": "saved-token",
+                    "base_url": "https://saved.example",
+                    "user_id": "opaque@im.wechat",
+                }),
+                encoding="utf-8",
+            )
+            conf()["weixin_credentials_path"] = str(cred_path)
+            conf().pop("agent_user_profiles", None)
+            conf().pop("llm_usage_user_labels", None)
+
+            info = ChannelsHandler._build_channel_info("weixin", conf(), {"weixin"})
+
+            self.assertEqual(info["raw_user_id"], "opaque@im.wechat")
+            self.assertEqual(info["wechat_id"], "")
+            self.assertEqual(info["display_wechat_id"], "")
+
+    def test_save_weixin_identity_persists_credentials_and_label_mapping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cred_path = Path(tmp) / "weixin_credentials.json"
+            cred_path.write_text(
+                json.dumps({
+                    "token": "saved-token",
+                    "base_url": "https://saved.example",
+                    "user_id": "opaque@im.wechat",
+                }),
+                encoding="utf-8",
+            )
+            conf()["weixin_credentials_path"] = str(cred_path)
+
+            with patch("channel.weixin.weixin_identity._save_config_patch"):
+                result = json.loads(ChannelsHandler()._handle_save_weixin_identity(
+                    "weixin",
+                    {"wechat_id": "y553344388"},
+                ))
+
+            saved = json.loads(cred_path.read_text(encoding="utf-8"))
+            labels = conf()["llm_usage_user_labels"]
+            profiles = conf()["agent_user_profiles"]
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(saved["wechat_id"], "y553344388")
+            self.assertEqual(labels["weixin:opaque@im.wechat"], "y553344388")
+            self.assertEqual(labels["opaque@im.wechat"], "y553344388")
+            self.assertEqual(profiles["weixin:opaque@im.wechat"]["wechat_id"], "y553344388")
+
     def test_extract_real_wechat_id_ignores_ilink_raw_id(self):
         self.assertEqual(
             extract_real_wechat_id({

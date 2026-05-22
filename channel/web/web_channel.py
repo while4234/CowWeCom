@@ -24,7 +24,9 @@ from common.singleton import singleton
 from config import conf
 from channel.weixin.weixin_identity import (
     extract_real_wechat_id,
+    is_real_wechat_id,
     looks_internal_weixin_id,
+    remember_wechat_identity,
     weixin_role_for_identity,
 )
 
@@ -1369,7 +1371,7 @@ class ChannelsHandler:
         wechat_id = str(inst_conf.get("wechat_id") or creds.get("wechat_id") or "").strip()
         if not wechat_id:
             wechat_id = extract_real_wechat_id(inst_conf) or extract_real_wechat_id(creds)
-        display_id = wechat_id or ("" if looks_internal_weixin_id(raw_user_id) else raw_user_id)
+        display_id = wechat_id or cls._configured_weixin_display_id(instance_id, raw_user_id)
         role = weixin_role_for_identity(
             channel_type=instance_id,
             raw_user_id=raw_user_id,
@@ -1383,6 +1385,33 @@ class ChannelsHandler:
             "role": role,
             "credentials_path": cls._weixin_raw_credentials_path(instance_id),
         }
+
+    @staticmethod
+    def _configured_weixin_display_id(instance_id: str, raw_user_id: str) -> str:
+        candidates = [candidate for candidate in (
+            f"{instance_id}:{raw_user_id}" if instance_id and raw_user_id else "",
+            raw_user_id,
+        ) if candidate]
+
+        profiles = conf().get("agent_user_profiles", {}) or {}
+        if isinstance(profiles, dict):
+            for candidate in candidates:
+                profile = profiles.get(candidate)
+                if not isinstance(profile, dict):
+                    continue
+                for key in ("wechat_id", "llm_usage_label", "display_name", "name"):
+                    value = str(profile.get(key) or "").strip()
+                    if value and not looks_internal_weixin_id(value):
+                        return value
+
+        labels = conf().get("llm_usage_user_labels", {}) or {}
+        if isinstance(labels, dict):
+            for candidate in candidates:
+                value = str(labels.get(candidate) or "").strip()
+                if value and not looks_internal_weixin_id(value):
+                    return value
+
+        return "" if looks_internal_weixin_id(raw_user_id) else raw_user_id
 
     @staticmethod
     def _mask_secret(value: str) -> str:
@@ -1433,6 +1462,40 @@ class ChannelsHandler:
                 ch_info["login_status"] = cls._get_weixin_login_status(ch_name)
         return ch_info
 
+    @staticmethod
+    def _save_config_patch(patch: dict):
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "config.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8-sig") as f:
+                file_cfg = json.load(f)
+        else:
+            file_cfg = {}
+        file_cfg.update(patch)
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(file_cfg, f, indent=4, ensure_ascii=False)
+
+    @classmethod
+    def _save_weixin_credentials_patch(cls, instance_id: str, patch: dict) -> dict:
+        path = os.path.expanduser(cls._weixin_raw_credentials_path(instance_id))
+        data = {}
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+        data.update(patch)
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+        return data
+
     def GET(self):
         _require_auth()
         web.header('Content-Type', 'application/json; charset=utf-8')
@@ -1478,6 +1541,9 @@ class ChannelsHandler:
             return json.dumps({"status": "error", "message": str(e)})
 
     def _handle_save(self, channel_name: str, updates: dict):
+        if self._is_weixin_instance(channel_name) and "wechat_id" in updates:
+            return self._handle_save_weixin_identity(channel_name, updates)
+
         ch_def = self._channel_def(channel_name)
         valid_keys = {f["key"] for f in ch_def["fields"]}
         secret_keys = {f["key"] for f in ch_def["fields"] if f["type"] == "secret"}
@@ -1537,6 +1603,42 @@ class ChannelsHandler:
             "status": "success",
             "applied": list(applied.keys()),
             "restarted": should_restart,
+        }, ensure_ascii=False)
+
+    def _handle_save_weixin_identity(self, channel_name: str, updates: dict):
+        wechat_id = str(updates.get("wechat_id") or "").strip()
+        if not is_real_wechat_id(wechat_id):
+            return json.dumps({"status": "error", "message": "invalid wechat_id"}, ensure_ascii=False)
+
+        inst_conf = self._weixin_instance_config(channel_name)
+        creds = self._save_weixin_credentials_patch(channel_name, {"wechat_id": wechat_id})
+        raw_user_id = str(inst_conf.get("user_id") or creds.get("user_id") or "").strip()
+
+        if channel_name != "weixin":
+            instances = conf().get("weixin_instances", {}) or {}
+            if not isinstance(instances, dict):
+                instances = {}
+            inst_conf = dict(instances.get(channel_name, {}) or {})
+            inst_conf["wechat_id"] = wechat_id
+            inst_conf.setdefault("credentials_path", self._weixin_raw_credentials_path(channel_name))
+            inst_conf.setdefault("role", "user")
+            if raw_user_id:
+                inst_conf["user_id"] = raw_user_id
+            instances[channel_name] = inst_conf
+            conf()["weixin_instances"] = instances
+            self._save_config_patch({"weixin_instances": instances})
+
+        if raw_user_id:
+            remember_wechat_identity(
+                channel_type=channel_name,
+                raw_user_id=raw_user_id,
+                wechat_id=wechat_id,
+            )
+
+        return json.dumps({
+            "status": "success",
+            "applied": ["wechat_id"],
+            "wechat_id": wechat_id,
         }, ensure_ascii=False)
 
     def _handle_connect(self, channel_name: str, updates: dict):
