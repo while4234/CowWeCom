@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import re
+import sys
 import types
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -85,16 +87,44 @@ class ActiveMessageRouter:
 
     @staticmethod
     def _get_running_channel(channel_type: str):
+        manager = ActiveMessageRouter._get_channel_manager()
+        if manager is None:
+            return None
         try:
-            from app import get_channel_manager
-
-            manager = get_channel_manager()
-            if manager is None:
-                return None
             return manager.get_channel(channel_type)
         except Exception as e:
             logger.debug(f"[SocialBridge] Failed to get channel manager: {e}")
             return None
+
+    @staticmethod
+    def _get_channel_manager():
+        for module_name in ("app", "__main__"):
+            manager = ActiveMessageRouter._get_channel_manager_from_module(module_name)
+            if manager is not None:
+                return manager
+        return None
+
+    @staticmethod
+    def _get_channel_manager_from_module(module_name: str):
+        module = sys.modules.get(module_name)
+        if module is None and module_name == "app":
+            try:
+                module = importlib.import_module(module_name)
+            except Exception as e:
+                logger.debug(f"[SocialBridge] Failed to import app module: {e}")
+                return None
+        if module is None:
+            return None
+
+        getter = getattr(module, "get_channel_manager", None)
+        if callable(getter):
+            try:
+                manager = getter()
+                if manager is not None:
+                    return manager
+            except Exception as e:
+                logger.debug(f"[SocialBridge] Failed to call {module_name}.get_channel_manager: {e}")
+        return getattr(module, "_channel_mgr", None)
 
     @staticmethod
     def _send_text_with_channel_send(channel, receiver: str, text: str, context_token: str) -> bool:
@@ -248,8 +278,8 @@ class SocialBridgeService:
         message = getter(message_id)
         if message is None:
             return {"message_id": message_id, "delivered": False, "reason": "message_not_found"}
-        if message.target_actor_user_id != actor_id:
-            return {"message_id": message_id, "delivered": False, "reason": "not_message_target"}
+        if actor_id not in {message.sender_actor_user_id, message.target_actor_user_id}:
+            return {"message_id": message_id, "delivered": False, "reason": "not_message_participant"}
         if message.status != "pending":
             return {"message_id": message_id, "delivered": False, "reason": f"not_pending:{message.status}"}
 

@@ -75,6 +75,9 @@ CREATE INDEX IF NOT EXISTS idx_bridge_relationships_target
 CREATE INDEX IF NOT EXISTS idx_bridge_messages_target_status
     ON bridge_messages (target_actor_user_id, status, created_at);
 
+CREATE INDEX IF NOT EXISTS idx_bridge_messages_sender_status
+    ON bridge_messages (sender_actor_user_id, status, created_at);
+
 CREATE INDEX IF NOT EXISTS idx_bridge_audit_actor_time
     ON bridge_audit (actor_user_id, created_at);
 """
@@ -439,11 +442,11 @@ class BridgeStore:
                     """
                     SELECT *
                     FROM bridge_messages
-                    WHERE target_actor_user_id = ? AND status = ?
+                    WHERE (target_actor_user_id = ? OR sender_actor_user_id = ?) AND status = ?
                     ORDER BY created_at ASC, message_id ASC
                     LIMIT ?
                     """,
-                    (actor_id, PENDING_STATUS, safe_limit),
+                    (actor_id, actor_id, PENDING_STATUS, safe_limit),
                 ).fetchall()
                 pending = []
                 for row in rows:

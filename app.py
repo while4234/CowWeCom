@@ -13,6 +13,12 @@ from plugins import *
 import threading
 
 
+if __name__ == "__main__":
+    # Keep one canonical app module when launched as `python app.py`.
+    # Runtime helpers import `app` to find the running ChannelManager.
+    sys.modules["app"] = sys.modules[__name__]
+
+
 _channel_mgr = None
 
 

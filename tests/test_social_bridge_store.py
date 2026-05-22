@@ -76,10 +76,13 @@ class TestSocialBridgeStore(unittest.TestCase):
             {"source": "unit-test"},
         )
         pending = self.store.list_pending_for_actor("actor:b")
+        sender_pending = self.store.list_pending_for_actor("actor:a")
 
         self.assertEqual(message.status, PENDING_STATUS)
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0].message.message_id, message.message_id)
+        self.assertEqual(len(sender_pending), 1)
+        self.assertEqual(sender_pending[0].message.message_id, message.message_id)
         self.assertEqual(pending[0].sender.display_name, "Alice")
         self.assertEqual(pending[0].relationship.relation_text, "trusted collaborator")
 
@@ -87,6 +90,7 @@ class TestSocialBridgeStore(unittest.TestCase):
         self.assertEqual(sent.status, SENT_STATUS)
         self.assertEqual(sent.result, {"delivered": True})
         self.assertEqual(self.store.list_pending_for_actor("actor:b"), [])
+        self.assertEqual(self.store.list_pending_for_actor("actor:a"), [])
 
         pending_again = self.store.mark_pending(message.message_id)
         self.assertEqual(pending_again.status, PENDING_STATUS)

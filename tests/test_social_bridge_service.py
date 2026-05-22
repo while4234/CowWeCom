@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -192,6 +193,7 @@ class TestSocialBridgeService(unittest.TestCase):
         self.assertEqual(result["status"], "pending")
         self.assertEqual(len(pending["messages"]), 1)
         self.assertEqual(pending["messages"][0]["from"]["bridge_user_id"], service._public_user_id("weixin:a"))
+        self.assertEqual(len(service.pending_messages("weixin:a")["messages"]), 1)
 
     def test_pending_message_retry_marks_sent_after_router_recovers(self):
         router = FakeRouter(delivered=False)
@@ -208,6 +210,21 @@ class TestSocialBridgeService(unittest.TestCase):
         self.assertEqual(result["retry"]["status"], "sent")
         self.assertEqual(result["messages"], [])
         self.assertEqual(router.sent[-1][1], router.sent[0][1])
+
+    def test_pending_message_retry_allows_sender(self):
+        router = FakeRouter(delivered=False)
+        service = SocialBridgeService(self.store, router)
+        queued = service.send_message("weixin:a", "weixin:b", "稍后见。")
+
+        router.delivered = True
+        result = service.pending_messages(
+            "weixin:a",
+            retry_message_id=queued["message_id"],
+        )
+
+        self.assertTrue(result["retry"]["delivered"])
+        self.assertEqual(result["retry"]["status"], "sent")
+        self.assertEqual(result["messages"], [])
 
     def test_router_uses_running_weixin_channel_active_send(self):
         from agent.social_bridge.service import ActiveMessageRouter
@@ -233,6 +250,27 @@ class TestSocialBridgeService(unittest.TestCase):
 
         self.assertTrue(result["delivered"])
         self.assertEqual(calls, [("raw-b", "hello", "ctx-b")])
+
+    def test_router_finds_channel_manager_from_main_module(self):
+        from agent.social_bridge.service import ActiveMessageRouter
+
+        calls = []
+
+        class FakeChannel:
+            def active_send_text(self, receiver, text, context_token=""):
+                calls.append((receiver, text, context_token))
+                return True
+
+        fake_main = SimpleNamespace(
+            get_channel_manager=lambda: SimpleNamespace(get_channel=lambda channel_type: FakeChannel())
+        )
+        target = self.store.get_user("weixin:b")
+
+        with patch.dict(sys.modules, {"app": SimpleNamespace(get_channel_manager=lambda: None), "__main__": fake_main}):
+            result = ActiveMessageRouter().send_text(target, "hello from main")
+
+        self.assertTrue(result["delivered"])
+        self.assertEqual(calls, [("raw-b", "hello from main", "ctx-b")])
 
     def test_send_message_accepts_public_bridge_user_id(self):
         router = FakeRouter(delivered=True)
