@@ -52,6 +52,8 @@ class ActiveMessageRouter:
 
         channel = self._get_running_channel(channel_type)
         if channel is None:
+            channel = self._create_standalone_channel(channel_type)
+        if channel is None:
             return {
                 "delivered": False,
                 "reason": "channel_not_running",
@@ -94,6 +96,16 @@ class ActiveMessageRouter:
             return manager.get_channel(channel_type)
         except Exception as e:
             logger.debug(f"[SocialBridge] Failed to get channel manager: {e}")
+            return None
+
+    @staticmethod
+    def _create_standalone_channel(channel_type: str):
+        try:
+            from channel.channel_factory import create_channel
+
+            return create_channel(channel_type)
+        except Exception as e:
+            logger.debug(f"[SocialBridge] Failed to create standalone channel '{channel_type}': {e}")
             return None
 
     @staticmethod

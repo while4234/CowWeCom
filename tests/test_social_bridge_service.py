@@ -272,6 +272,28 @@ class TestSocialBridgeService(unittest.TestCase):
         self.assertTrue(result["delivered"])
         self.assertEqual(calls, [("raw-b", "hello from main", "ctx-b")])
 
+    def test_router_falls_back_to_standalone_channel(self):
+        from agent.social_bridge.service import ActiveMessageRouter
+
+        calls = []
+
+        class FakeChannel:
+            def active_send_text(self, receiver, text, context_token=""):
+                calls.append((receiver, text, context_token))
+                return True
+
+        target = self.store.get_user("weixin:b")
+
+        with patch.object(ActiveMessageRouter, "_get_channel_manager", return_value=None), patch.object(
+            ActiveMessageRouter,
+            "_create_standalone_channel",
+            return_value=FakeChannel(),
+        ):
+            result = ActiveMessageRouter().send_text(target, "hello standalone")
+
+        self.assertTrue(result["delivered"])
+        self.assertEqual(calls, [("raw-b", "hello standalone", "ctx-b")])
+
     def test_send_message_accepts_public_bridge_user_id(self):
         router = FakeRouter(delivered=True)
         service = SocialBridgeService(self.store, router)
