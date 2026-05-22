@@ -92,6 +92,56 @@ class TestSocialBridgeService(unittest.TestCase):
         self.assertNotIn("display_name", result["users"][0])
         self.assertEqual(result["users"][0]["channel_type"], "weixin_user")
 
+    def test_list_users_uses_profile_name_when_wechat_id_is_unavailable(self):
+        self.store.register_user(
+            "weixin:c",
+            "memory_c",
+            "raw-user@im.wechat",
+            {
+                "channel_type": "weixin_user",
+                "receiver": "raw-c",
+                "context_token": "ctx-c",
+                "can_active_send": True,
+            },
+        )
+        memory_dir = self.workspace / "memory" / "users" / "memory_c"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        (memory_dir / "USER.md").write_text("用户希望被称为「小栀」。\n", encoding="utf-8")
+        (memory_dir / "MEMORY.md").write_text("用户称呼：小栀。\n", encoding="utf-8")
+        service = SocialBridgeService(self.store, FakeRouter())
+
+        result = service.list_users("weixin:a")
+
+        public_id = service._public_user_id("weixin:c")
+        user = next(item for item in result["users"] if item["bridge_user_id"] == public_id)
+        self.assertEqual(user["wechat_id"], "")
+        self.assertEqual(user["known_names"], ["小栀"])
+        self.assertEqual(user["display_label"], "小栀")
+
+    def test_list_users_ignores_identity_template_placeholders(self):
+        self.store.register_user(
+            "weixin:c",
+            "memory_c",
+            "raw-user@im.wechat",
+            {
+                "channel_type": "weixin_user",
+                "receiver": "raw-c",
+                "context_token": "ctx-c",
+                "can_active_send": True,
+            },
+        )
+        memory_dir = self.workspace / "memory" / "users" / "memory_c"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        (memory_dir / "USER.md").write_text("- **称呼**: *(用户希望被如何称呼)*\n", encoding="utf-8")
+        service = SocialBridgeService(self.store, FakeRouter())
+
+        result = service.list_users("weixin:a")
+
+        public_id = service._public_user_id("weixin:c")
+        user = next(item for item in result["users"] if item["bridge_user_id"] == public_id)
+        self.assertEqual(user["known_names"], [])
+        self.assertEqual(user["display_label"], "未知微信用户")
+
     def test_send_message_uses_model_rewrite_and_marks_sent(self):
         router = FakeRouter(delivered=True)
         model = FakeModel("这是 A 授权我转述给你的：他想认真道歉，也希望你们能好好聊聊。")

@@ -443,6 +443,17 @@ class SocialBridgeService:
         return SocialBridgeService._read_file_tail(path, limit)
 
     @staticmethod
+    def _read_user_identity_excerpt(workspace: Path, user: Optional[BridgeUser], limit: int = 5000) -> str:
+        if user is None:
+            return ""
+
+        user_dir = workspace / "memory" / "users" / user.memory_user_id
+        profile = SocialBridgeService._read_file_tail(user_dir / "USER.md", limit)
+        remaining = max(0, limit - len(profile))
+        memory = SocialBridgeService._read_file_tail(user_dir / "MEMORY.md", remaining) if remaining else ""
+        return "\n".join(part for part in (profile, memory) if part)
+
+    @staticmethod
     def _read_pair_memory_excerpt(workspace: Path, relationship: Any, limit: int = 1600) -> str:
         pair_id = getattr(relationship, "pair_id", "") if relationship is not None else ""
         if not pair_id:
@@ -579,18 +590,22 @@ class SocialBridgeService:
         self._append_public_name(names, user.display_name, wechat_id)
 
         workspace = get_default_memory_config().get_workspace()
-        memory_excerpt = self._read_user_memory_excerpt(workspace, user, limit=5000)
-        for name in self._extract_declared_names(memory_excerpt):
+        identity_excerpt = self._read_user_identity_excerpt(workspace, user, limit=5000)
+        for name in self._extract_declared_names(identity_excerpt):
             self._append_public_name(names, name, wechat_id)
         return names[:5]
 
     @classmethod
     def _append_public_name(cls, names: List[str], value: Any, wechat_id: str) -> None:
-        name = str(value or "").strip()
+        name = cls._normalize_public_name(value)
         if not cls._looks_like_public_name(name, wechat_id):
             return
         if name.casefold() not in {item.casefold() for item in names}:
             names.append(name)
+
+    @staticmethod
+    def _normalize_public_name(value: Any) -> str:
+        return str(value or "").strip(" \t\r\n，。,.：:;；'\"“”「」『』（）()[]【】")
 
     @staticmethod
     def _looks_like_public_wechat_id(value: str) -> bool:
@@ -603,8 +618,10 @@ class SocialBridgeService:
 
     @staticmethod
     def _looks_like_public_name(value: str, wechat_id: str) -> bool:
-        text = str(value or "").strip(" \t\r\n，。,.：:;；'\"")
+        text = SocialBridgeService._normalize_public_name(value)
         if not text or text == wechat_id:
+            return False
+        if text in {"未填写", "待填写", "可选", "在首次对话时询问", "用户希望被如何称呼"}:
             return False
         if "@im.wechat" in text or "://" in text or len(text) > 40:
             return False
@@ -617,13 +634,14 @@ class SocialBridgeService:
         if not memory_text:
             return []
         patterns = [
-            r"(?:我叫|我的名字是|我的名字叫|名字就是|叫我|可以叫我)\s*([A-Za-z0-9_\-\u4e00-\u9fff]{1,30})",
+            r"(?:我叫|我的名字是|我的名字叫|名字就是|叫我|可以叫我)\s*[「“\"']?([A-Za-z0-9_\-\u4e00-\u9fff]{1,30})",
+            r"(?:用户希望被称为|用户希望称呼为|用户称呼为|用户称呼|称呼|昵称|姓名|名字)\s*(?:是|为|叫|就是|:|：)?\s*[「“\"']?([A-Za-z0-9_\-\u4e00-\u9fff]{1,30})",
             r"(?:my name is|call me|i am|i'm)\s+([A-Za-z][A-Za-z0-9_\-]{0,29})",
         ]
         names: List[str] = []
         for pattern in patterns:
             for match in re.finditer(pattern, memory_text, flags=re.IGNORECASE):
-                name = match.group(1).strip()
+                name = SocialBridgeService._normalize_public_name(match.group(1))
                 if name.casefold() not in {item.casefold() for item in names}:
                     names.append(name)
         return names
