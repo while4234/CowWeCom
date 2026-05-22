@@ -159,8 +159,9 @@ class Edit(BaseTool):
                 "first_changed_line": diff_result['first_changed_line']
             }
             
-            # Notify memory manager if file is in memory directory
-            if self.memory_manager and "memory/" in path:
+            # Notify memory manager if file is in memory or knowledge directory
+            normalized_path = path.replace("\\", "/")
+            if self.memory_manager and ("memory/" in normalized_path or "knowledge/" in normalized_path):
                 try:
                     self.memory_manager.mark_dirty()
                 except Exception as e:

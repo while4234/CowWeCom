@@ -1,0 +1,172 @@
+---
+title: 后端知识库服务部署
+description: 可选启用的 CowAgent 后端知识库服务、依赖安装、Docker overlay 和关闭方案
+---
+
+后端知识库服务是可选能力。默认配置为关闭，缺少可选依赖时不会影响原有 `knowledge/` Markdown 知识库、记忆、通道和 Agent 主流程。
+
+## 本机源码部署
+
+在依赖完整的机器上安装额外依赖：
+
+```bash
+pip install -r requirements-knowledge.txt
+```
+
+启用配置示例：
+
+```json
+{
+  "knowledge_backend": {
+    "enabled": true,
+    "admin_api_enabled": true,
+    "provider_api_enabled": false,
+    "data_dir": "./knowledge_backend",
+    "sqlite_path": "./knowledge_backend/indexes/kb.sqlite",
+    "ingest": {
+      "allowed_extensions": [".pdf", ".docx", ".txt", ".md"],
+      "allowed_import_roots": [],
+      "max_file_size_mb": 500
+    },
+    "vector_store": {
+      "provider": "sqlite",
+      "url": "http://127.0.0.1:6333",
+      "collection": "cowagent_knowledge",
+      "required": false
+    },
+    "security": {
+      "require_web_auth": true,
+      "provider_api_token_env": "KNOWLEDGE_PROVIDER_TOKEN",
+      "disable_admin_api_when_web_password_empty": true
+    }
+  }
+}
+```
+
+如果通过 Web 管理接口暴露后台知识库，建议设置 `web_password`。本地调试且只监听 `127.0.0.1` 时，可以将 `disable_admin_api_when_web_password_empty` 改为 `false`。
+
+`./knowledge_backend` 是推荐的可迁移布局：`indexes/kb.sqlite` 保存索引和实体图，`originals/` 保存导入文档副本，`manifest.json` 记录可读清单。整项目目录迁移到另一台机器时，只要保留这个目录，就不需要重新解析已经入库的协议文档。
+
+也可以用脚本构建本项目内知识库：
+
+```bash
+python scripts/build_knowledge_backend.py /path/to/spec.pdf --kb-id axi4_stream --title "AMBA 4 AXI4-Stream Protocol Specification v1.0"
+```
+
+## Docker 部署
+
+默认 `docker/docker-compose.yml` 只保留关闭状态，不会启动 Qdrant。启用知识库服务时使用 overlay：
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.knowledge.yml up -d --build
+```
+
+该 overlay 会使用 `INSTALL_KNOWLEDGE_BACKEND=true` 构建镜像，并启动 `qdrant` 服务。不开启知识库时只运行主 compose：
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+```
+
+## 环境变量开关
+
+常用开关如下，环境变量优先级高于 `config.json`：
+
+| 变量 | 说明 |
+| --- | --- |
+| `KNOWLEDGE_BACKEND_ENABLED` | 总开关，设为 `False` 可完全关闭后端知识库 |
+| `KNOWLEDGE_BACKEND_ADMIN_API_ENABLED` | Web 管理 API 开关 |
+| `KNOWLEDGE_BACKEND_PROVIDER_API_ENABLED` | 外部 Provider API 开关 |
+| `KNOWLEDGE_BACKEND_VECTOR_PROVIDER` | `sqlite` 或 `qdrant` |
+| `KNOWLEDGE_BACKEND_QDRANT_URL` | Qdrant 地址 |
+| `KNOWLEDGE_BACKEND_ALLOWED_IMPORT_ROOTS` | 允许后台按路径导入的目录白名单，逗号分隔；默认空表示禁止 path import |
+| `KNOWLEDGE_BACKEND_MAX_FILE_SIZE_MB` | 上传/导入文件大小限制 |
+| `KNOWLEDGE_PROVIDER_TOKEN` | Provider API Bearer Token |
+
+## 管理 API
+
+管理 API 面向 Web 控制台和受信任管理员，默认挂载在 `/api/knowledge/admin`，兼容短路径 `/api/kb/admin`。启用条件：
+
+- `knowledge_backend.enabled=true`
+- `knowledge_backend.admin_api_enabled=true`
+- 默认还需要已配置 `web_password`，除非显式关闭 `security.disable_admin_api_when_web_password_empty`
+- 默认复用 Web 登录态校验，可通过 `security.require_web_auth=false` 仅用于本机调试
+
+常用接口：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/knowledge/admin/status` | 查看后端启用状态和当前向量后端 |
+| `GET` | `/api/knowledge/admin/dependencies` | 查看可选依赖、SQLite FTS5 和文档类型支持情况 |
+| `GET` | `/api/knowledge/admin/documents` | 列出已入库文档 |
+| `GET`/`POST` | `/api/knowledge/admin/search` | 关键词/全文检索，参数为 `query`、可选 `limit` |
+| `GET`/`POST` | `/api/knowledge/admin/query` | 返回带引用的抽取式回答 |
+| `POST` | `/api/knowledge/admin/upload` | 上传文件并入库，支持 `.pdf`、`.docx`、`.txt`、`.md` |
+| `POST` | `/api/knowledge/admin/ingest` | 从服务器路径导入；路径必须位于 `allowed_import_roots` |
+| `GET` | `/api/knowledge/admin/jobs/<job_id>` | 查询导入任务状态 |
+
+`allowed_import_roots` 默认为空，表示禁止按服务器路径导入。生产环境建议优先使用上传接口，只有确有需要时才为后台导入配置最小目录白名单。
+
+## Provider API
+
+Provider API 面向外部检索编排器或其他 Agent，默认关闭。启用后路径为 `/api/knowledge/provider`，兼容 `/api/kb/provider` 和 `/api/knowledge/v1`，所有请求都需要 `Authorization: Bearer <token>`。令牌值从 `security.provider_api_token_env` 指定的环境变量读取，默认变量名为 `KNOWLEDGE_PROVIDER_TOKEN`；文档和配置中不要写入真实令牌。
+
+常用接口：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/knowledge/provider/capabilities` | 返回 provider id、版本、支持方法和后端状态 |
+| `POST` | `/api/knowledge/provider/search` | 返回检索结果，支持 `query`、`limit`/`top_k`、`trace_id` |
+| `POST` | `/api/knowledge/provider/query` | 返回回答和 citations，保留 `trace_id` |
+| `POST` | `/api/knowledge/provider/entities/resolve` | 根据别名表解析实体，返回 canonical name、alias、confidence 和 traversal 信息 |
+| `GET` | `/api/knowledge/provider/graph/neighbors` | 返回实体邻居图，支持 `entity_id`、`term`、`max_hops`、`trace_id` |
+| `POST` | `/api/knowledge/provider/verify` | 基于 source span 做轻量来源验证，返回 `supported`/`insufficient` 和证据片段 |
+
+## 来源验证
+
+当前后端以 SQLite 中保存的文档元数据、内容 hash、页码范围、source span 和片段作为可追溯证据。`query` 返回的 citations 包含 `document_id`、`title`、`source_path`、`page_start`、`page_end`、`snippet` 和 `source_span_ids`，调用方应把这些引用随回答一起展示。
+
+`retrieval.source_verification` 默认为 `auto`。Provider 的 `/verify` 会先使用候选 span，再退回到本地检索命中的 span，根据 claim 关键词覆盖度给出 `supported` 或 `insufficient`。它适合作为自动降权和可追溯提示，不应替代人工或上层强一致审计。
+
+## 联邦检索防护
+
+联邦检索配置用于限制跨 provider 扩散：
+
+```json
+{
+  "knowledge_backend": {
+    "retrieval": {
+      "enable_federated": true,
+      "max_federated_hops": 2,
+      "source_verification": "auto"
+    }
+  }
+}
+```
+
+建议保持较小的 `max_federated_hops`，并在外部编排器中传递 `trace_id`、去重已访问 provider、限制 fan-out 和超时。无法通过 citation 验证的结果应降权或标记为未验证，避免把跨源检索结果直接写回本地知识库。
+
+## Qdrant 与 SQLite fallback
+
+`vector_store.provider` 可设为 `sqlite` 或 `qdrant`。当前实现始终以 SQLite 保存权威文档元数据和全文索引；配置 `qdrant` 时，如果 `qdrant-client` 不可用且 `vector_store.required=false`，服务会记录告警并回退到 SQLite FTS，不阻断主流程。
+
+如果部署要求必须使用 Qdrant，将 `vector_store.required=true`。同时建议在关键环境把 `knowledge_backend.fail_open=false`，让缺少必需向量依赖时显式失败，而不是静默降级。
+
+## 关闭方案
+
+在不支持可选依赖的机器上，保持以下任一配置即可：
+
+```json
+{
+  "knowledge_backend": {
+    "enabled": false
+  }
+}
+```
+
+或：
+
+```bash
+KNOWLEDGE_BACKEND_ENABLED=False
+```
+
+关闭后，后台路由会返回 disabled 状态，自动检索不会注入后端知识库内容，原有文件知识库和其他功能继续按原逻辑运行。

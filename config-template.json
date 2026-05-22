@@ -31,6 +31,10 @@
   "prompt_cache_stable_runtime_info": true,
   "runtime_time_in_user_message": true,
   "knowledge_index_in_system_prompt": false,
+  "knowledge_auto_retrieval": false,
+  "knowledge_auto_retrieval_max_results": 5,
+  "knowledge_auto_retrieval_min_score": 0.1,
+  "knowledge_auto_retrieval_max_chars": 4000,
   "text_to_image": "dall-e-2",
   "image_create_size": "256x256",
   "image_create_format": "png",
@@ -80,6 +84,56 @@
   "enable_thinking": false,
   "reasoning_effort": "high",
   "knowledge": true,
+  "knowledge_backend": {
+    "enabled": false,
+    "mode": "backend_subsystem",
+    "fail_open": true,
+    "admin_api_enabled": true,
+    "provider_api_enabled": false,
+    "data_dir": "./knowledge_backend",
+    "sqlite_path": "./knowledge_backend/indexes/kb.sqlite",
+    "workspace_root": ".",
+    "default_kb_id": "kb_default",
+    "ingest": {
+      "auto_build_after_upload": true,
+      "allowed_extensions": [".pdf", ".docx", ".txt", ".md"],
+      "allowed_import_roots": [],
+      "max_file_size_mb": 500,
+      "preserve_original": true,
+      "ocr_enabled": false
+    },
+    "llm_builder": {
+      "enabled": true,
+      "use_current_model": true,
+      "fallback_model": "",
+      "batch_chunks": 8,
+      "require_source_spans": true,
+      "min_relation_confidence": 0.7
+    },
+    "retrieval": {
+      "auto_inject": true,
+      "hybrid": true,
+      "keyword_top_k": 80,
+      "vector_top_k": 80,
+      "rerank_top_k": 30,
+      "final_top_k": 10,
+      "enable_federated": true,
+      "max_federated_hops": 2,
+      "source_verification": "auto"
+    },
+    "vector_store": {
+      "provider": "sqlite",
+      "url": "http://127.0.0.1:6333",
+      "collection": "cowagent_knowledge",
+      "required": false
+    },
+    "security": {
+      "require_web_auth": true,
+      "provider_api_token_env": "KNOWLEDGE_PROVIDER_TOKEN",
+      "disable_admin_api_when_web_password_empty": true,
+      "log_full_text": false
+    }
+  },
   "skill": {
     "image-generation": {
       "runtime": "codex_auth"

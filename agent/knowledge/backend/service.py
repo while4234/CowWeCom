@@ -1,0 +1,1312 @@
+"""Service facade for the optional local knowledge backend."""
+
+from __future__ import annotations
+
+import uuid
+import os
+import hashlib
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Mapping, Optional
+
+from common.log import logger
+
+from .extractors import (
+    ExtractionError,
+    MissingDependencyError,
+    UnsupportedDocumentError,
+    dependency_status,
+    extract_document,
+)
+from .builders import HeuristicKnowledgeBuilder
+from .models import Citation, KnowledgeBase, KnowledgeChunk, KnowledgeDocument, QueryResult
+from .storage import (
+    KnowledgeStorage,
+    compute_file_hash,
+    stable_chunk_id,
+    stable_document_id,
+    stable_version_id,
+)
+
+
+DEFAULT_DB_NAME = "knowledge_backend.sqlite3"
+FALSE_VALUES = {"", "0", "false", "off", "disabled", "no", "n"}
+TRUE_VALUES = {"1", "true", "on", "enabled", "yes", "y"}
+
+
+class MissingProviderTokenError(RuntimeError):
+    """Raised when an enabled provider needs a token but none is configured."""
+
+
+@dataclass(frozen=True)
+class VectorStoreConfig:
+    provider: str = "sqlite"
+    url: str = ""
+    collection: str = "cowagent_knowledge"
+    required: bool = False
+
+
+@dataclass(frozen=True)
+class IngestConfig:
+    allowed_extensions: List[str] = field(default_factory=lambda: [".pdf", ".docx", ".txt", ".md"])
+    allowed_import_roots: List[Path] = field(default_factory=list)
+    max_file_size_mb: int = 500
+
+
+@dataclass(frozen=True)
+class KnowledgeBackendConfig:
+    enabled: bool = False
+    admin_api_enabled: bool = True
+    provider_api_enabled: bool = False
+    sqlite_path: Path = Path(DEFAULT_DB_NAME)
+    workspace_root: Path = Path(".")
+    data_dir: Path = Path("knowledge_backend")
+    default_kb_id: str = "kb_default"
+    fail_open: bool = True
+    vector_store: VectorStoreConfig = field(default_factory=VectorStoreConfig)
+    ingest: IngestConfig = field(default_factory=IngestConfig)
+    retrieval: Dict[str, Any] = field(default_factory=dict)
+    security: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def vector_provider(self) -> str:
+        return self.vector_store.provider
+
+    @property
+    def backend(self) -> str:
+        return self.vector_store.provider
+
+    @property
+    def path(self) -> Path:
+        return self.sqlite_path
+
+    @classmethod
+    def from_env(cls) -> "KnowledgeBackendConfig":
+        mapping: Dict[str, Any] = {
+            "enabled": parse_knowledge_backend_enabled(os.environ.get("KNOWLEDGE_BACKEND_ENABLED")),
+            "admin_api_enabled": parse_knowledge_backend_enabled(
+                os.environ.get("KNOWLEDGE_BACKEND_ADMIN_API_ENABLED", "true")
+            ),
+            "provider_api_enabled": parse_knowledge_backend_enabled(
+                os.environ.get("KNOWLEDGE_BACKEND_PROVIDER_API_ENABLED")
+            ),
+            "fail_open": parse_knowledge_backend_enabled(os.environ.get("KNOWLEDGE_BACKEND_FAIL_OPEN", "true")),
+            "data_dir": os.environ.get("KNOWLEDGE_BACKEND_DATA_DIR") or "knowledge_backend",
+            "sqlite_path": os.environ.get("KNOWLEDGE_BACKEND_SQLITE_PATH") or DEFAULT_DB_NAME,
+            "ingest": {
+                "allowed_extensions": _csv(os.environ.get("KNOWLEDGE_BACKEND_ALLOWED_EXTENSIONS"))
+                or [".pdf", ".docx", ".txt", ".md"],
+                "allowed_import_roots": _csv(os.environ.get("KNOWLEDGE_BACKEND_ALLOWED_IMPORT_ROOTS")),
+                "max_file_size_mb": int(os.environ.get("KNOWLEDGE_BACKEND_MAX_FILE_SIZE_MB") or 500),
+            },
+            "vector_store": {
+                "provider": os.environ.get("KNOWLEDGE_BACKEND_VECTOR_PROVIDER") or "sqlite",
+                "url": os.environ.get("KNOWLEDGE_BACKEND_QDRANT_URL") or "",
+                "collection": os.environ.get("KNOWLEDGE_BACKEND_QDRANT_COLLECTION") or "cowagent_knowledge",
+                "required": parse_knowledge_backend_enabled(os.environ.get("KNOWLEDGE_BACKEND_VECTOR_REQUIRED")),
+            },
+            "security": {
+                "provider_api_token_env": os.environ.get("KNOWLEDGE_BACKEND_PROVIDER_TOKEN_ENV")
+                or "KNOWLEDGE_PROVIDER_TOKEN",
+                "disable_admin_api_when_web_password_empty": parse_knowledge_backend_enabled(
+                    os.environ.get("KNOWLEDGE_BACKEND_DISABLE_ADMIN_WHEN_NO_PASSWORD", "true")
+                ),
+            },
+        }
+        return cls.from_mapping(mapping)
+
+    @classmethod
+    def from_project_config(cls) -> "KnowledgeBackendConfig":
+        from common.utils import expand_path
+        from config import conf
+
+        raw = conf().get("knowledge_backend", {}) or {}
+        if not isinstance(raw, Mapping):
+            raw = {}
+        merged = dict(raw)
+        merged.setdefault("workspace_root", conf().get("agent_workspace", "~/cow"))
+        if "data_dir" in merged:
+            merged["data_dir"] = expand_path(str(merged["data_dir"]))
+        if "sqlite_path" in merged:
+            merged["sqlite_path"] = expand_path(str(merged["sqlite_path"]))
+        return cls.from_mapping(merged)
+
+    @classmethod
+    def from_mapping(cls, mapping: Mapping[str, Any]) -> "KnowledgeBackendConfig":
+        vector_raw = _mapping(mapping.get("vector_store", {}))
+        ingest_raw = _mapping(mapping.get("ingest", {}))
+        retrieval_raw = _mapping(mapping.get("retrieval", {}))
+        security_raw = _mapping(mapping.get("security", {}))
+        provider = str(
+            mapping.get("vector_provider")
+            or mapping.get("backend")
+            or vector_raw.get("provider")
+            or "sqlite"
+        ).lower()
+        sqlite_path = Path(str(mapping.get("sqlite_path") or mapping.get("path") or DEFAULT_DB_NAME)).expanduser()
+        workspace_root = Path(str(mapping.get("workspace_root") or ".")).expanduser()
+        data_dir = Path(str(mapping.get("data_dir") or workspace_root / "knowledge_backend")).expanduser()
+        allowed = ingest_raw.get("allowed_extensions") or [".pdf", ".docx", ".txt", ".md"]
+        allowed_import_roots = ingest_raw.get("allowed_import_roots") or []
+        return cls(
+            enabled=parse_knowledge_backend_enabled(mapping.get("enabled")),
+            admin_api_enabled=parse_knowledge_backend_enabled(mapping.get("admin_api_enabled", True)),
+            provider_api_enabled=parse_knowledge_backend_enabled(mapping.get("provider_api_enabled")),
+            sqlite_path=sqlite_path,
+            workspace_root=workspace_root,
+            data_dir=data_dir,
+            default_kb_id=str(mapping.get("default_kb_id") or "kb_default"),
+            fail_open=parse_knowledge_backend_enabled(mapping.get("fail_open", True)),
+            vector_store=VectorStoreConfig(
+                provider=provider,
+                url=str(vector_raw.get("url") or ""),
+                collection=str(vector_raw.get("collection") or "cowagent_knowledge"),
+                required=parse_knowledge_backend_enabled(vector_raw.get("required")),
+            ),
+            ingest=IngestConfig(
+                allowed_extensions=[_normalize_suffix(ext) for ext in allowed],
+                allowed_import_roots=[Path(str(root)).expanduser() for root in allowed_import_roots],
+                max_file_size_mb=int(ingest_raw.get("max_file_size_mb") or 500),
+            ),
+            retrieval=dict(retrieval_raw),
+            security=dict(security_raw),
+        )
+
+
+@dataclass(frozen=True)
+class BackendStatus:
+    enabled: bool
+    backend: str
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class IngestPathResult:
+    files_indexed: int = 0
+    files_skipped: int = 0
+    jobs: List[Dict[str, Any]] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+
+class DisabledKnowledgeBackend:
+    def __init__(self, backend: str = "disabled", reason: str = "local knowledge backend is disabled"):
+        self._status = BackendStatus(enabled=False, backend=backend, reason=reason)
+
+    def status(self) -> BackendStatus:
+        return self._status
+
+    def ingest_path(self, path: Path) -> IngestPathResult:
+        return IngestPathResult()
+
+    def search(self, query: str, limit: int = 5) -> List[Any]:
+        return []
+
+    def query(self, query: str, limit: int = 5) -> Dict[str, Any]:
+        return {"answer": self._status.reason, "citations": []}
+
+    def list_documents(self) -> List[Dict[str, Any]]:
+        return []
+
+    def job_status(self, job_id: str) -> Dict[str, Any]:
+        return {"status": "disabled", "job": None, "message": self._status.reason}
+
+    def ingest_upload_bytes(self, filename: str, content: bytes, title: Optional[str] = None) -> Dict[str, Any]:
+        return {"status": "disabled", "message": self._status.reason}
+
+
+class KnowledgeBackendService:
+    """Testable local backend service built on SQLite keyword search."""
+
+    def __init__(self, config: KnowledgeBackendConfig):
+        self.config = config
+        self._backend = LocalKnowledgeBackend(
+            workspace_root=str(config.workspace_root),
+            db_path=str(config.sqlite_path),
+            enabled=config.enabled,
+            default_kb_id=config.default_kb_id,
+        )
+
+    def status(self) -> BackendStatus:
+        return BackendStatus(enabled=self.config.enabled, backend=self.config.vector_store.provider)
+
+    def ingest_path(self, path: Path) -> IngestPathResult:
+        if not self.config.enabled:
+            return IngestPathResult()
+        source_path = Path(path)
+        files = self._iter_ingestable_files(source_path)
+        indexed = 0
+        skipped = 0
+        jobs: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        for file_path in files:
+            result = self._backend.ingest_upload(str(file_path))
+            jobs.append(result.get("job", {}))
+            if result.get("status") == "succeeded":
+                indexed += 1
+            else:
+                skipped += 1
+                error = result.get("job", {}).get("error") if isinstance(result.get("job"), dict) else ""
+                if error:
+                    errors.append(str(error))
+        if source_path.is_dir():
+            skipped += self._count_skipped_files(source_path)
+        elif source_path.is_file() and not self._is_allowed(source_path):
+            skipped += 1
+        return IngestPathResult(files_indexed=indexed, files_skipped=skipped, jobs=jobs, errors=errors)
+
+    def search(
+        self,
+        query: str,
+        limit: int = 5,
+        kb_ids: Optional[Iterable[str]] = None,
+        visited_kb_ids: Optional[Iterable[str]] = None,
+        trace_id: str = "",
+    ) -> List[Any]:
+        if not self.config.enabled:
+            return []
+        payload = self._backend.search(
+            query,
+            limit=limit,
+            kb_ids=kb_ids,
+            visited_kb_ids=visited_kb_ids,
+            trace_id=trace_id,
+        )
+        return payload.get("hits", []) if isinstance(payload, dict) else []
+
+    def query(
+        self,
+        query: str,
+        limit: int = 5,
+        kb_ids: Optional[Iterable[str]] = None,
+        visited_kb_ids: Optional[Iterable[str]] = None,
+        trace_id: str = "",
+    ) -> Dict[str, Any]:
+        if not self.config.enabled:
+            return {"answer": "Knowledge backend is disabled.", "citations": []}
+        return self._backend.query(
+            query,
+            limit=limit,
+            kb_ids=kb_ids,
+            visited_kb_ids=visited_kb_ids,
+            trace_id=trace_id,
+        )
+
+    def list_documents(self) -> List[Dict[str, Any]]:
+        if not self.config.enabled:
+            return []
+        storage = self._backend._get_storage()
+        return [
+            {
+                "id": document.id,
+                "title": document.title,
+                "source_path": document.source_path,
+                "mime_type": document.mime_type,
+                "size": document.size,
+                "content_hash": document.content_hash,
+                "status": document.status,
+                "kb_id": document.kb_id,
+                "doc_type": document.doc_type,
+                "version_id": document.version_id,
+                "metadata": document.metadata,
+            }
+            for document in storage.list_documents()
+        ]
+
+    def list_knowledge_bases(self) -> List[Dict[str, Any]]:
+        if not self.config.enabled:
+            return []
+        return [kb.to_dict() for kb in self._backend._get_storage().list_knowledge_bases()]
+
+    def build_knowledge_graph(self, mode: str = "heuristic") -> Dict[str, Any]:
+        """Return the currently persisted entity graph.
+
+        Ingestion builds the graph incrementally. This method exposes that
+        state for tests, admin APIs and diagnostics without re-parsing files.
+        """
+
+        if not self.config.enabled:
+            return {"entities": [], "relations": []}
+        storage = self._backend._get_storage()
+        entities = [_entity_payload(entity) for entity in storage.list_entities()]
+        relations = [_relation_payload(relation) for relation in storage.list_relations()]
+        return {"mode": mode, "entities": entities, "relations": relations}
+
+    def build_graph(self, mode: str = "heuristic") -> Dict[str, Any]:
+        return self.build_knowledge_graph(mode=mode)
+
+    def resolve_entities(
+        self,
+        terms: Iterable[str],
+        kb_ids: Optional[Iterable[str]] = None,
+        visited_kb_ids: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        if not self.config.enabled:
+            return {"entities": [], "visited_kb_ids": list(visited_kb_ids or [])}
+        return self._backend.resolve_entities(terms, kb_ids=kb_ids, visited_kb_ids=visited_kb_ids)
+
+    def resolve_entity(self, terms: Iterable[str], **kwargs: Any) -> Dict[str, Any]:
+        return self.resolve_entities(terms, **kwargs)
+
+    def graph_neighbors(
+        self,
+        entity_id: str = "",
+        term: str = "",
+        kb_id: str = "",
+        max_hops: int = 1,
+        visited_kb_ids: Optional[Iterable[str]] = None,
+        trace_id: str = "",
+    ) -> Dict[str, Any]:
+        if not self.config.enabled:
+            return {"nodes": [], "links": [], "trace_id": trace_id, "visited_kb_ids": list(visited_kb_ids or [])}
+        return self._backend.graph_neighbors(
+            entity_id=entity_id,
+            term=term,
+            kb_id=kb_id,
+            max_hops=max_hops,
+            visited_kb_ids=visited_kb_ids,
+            trace_id=trace_id,
+        )
+
+    def verify_source(
+        self,
+        claim: str,
+        candidate_span_ids: Optional[Iterable[str]] = None,
+        visited_kb_ids: Optional[Iterable[str]] = None,
+        trace_id: str = "",
+    ) -> Dict[str, Any]:
+        if not self.config.enabled:
+            return {
+                "status": "insufficient",
+                "supported": False,
+                "claim": claim,
+                "evidence": [],
+                "trace_id": trace_id,
+                "visited_kb_ids": list(visited_kb_ids or []),
+            }
+        return self._backend.verify_source(
+            claim=claim,
+            candidate_span_ids=candidate_span_ids,
+            visited_kb_ids=visited_kb_ids,
+            trace_id=trace_id,
+        )
+
+    def job_status(self, job_id: str) -> Dict[str, Any]:
+        if not self.config.enabled:
+            return {"status": "disabled", "job": None}
+        return self._backend.job_status(job_id)
+
+    def close(self) -> None:
+        self._backend.close()
+
+    def __enter__(self) -> "KnowledgeBackendService":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def ingest_upload_bytes(self, filename: str, content: bytes, title: Optional[str] = None) -> Dict[str, Any]:
+        if not self.config.enabled:
+            return {"status": "disabled", "message": "local knowledge backend is disabled"}
+        safe_name = _safe_filename(filename)
+        if not self._is_extension_allowed(Path(safe_name)):
+            return {"status": "failed", "message": f"unsupported document type: {Path(safe_name).suffix}"}
+        if not self._is_size_allowed(len(content)):
+            return {
+                "status": "failed",
+                "message": f"file exceeds {self.config.ingest.max_file_size_mb} MB limit",
+            }
+        upload_dir = self.config.data_dir / "originals"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(content).hexdigest()[:16]
+        target = upload_dir / f"{digest}_{safe_name}"
+        target.write_bytes(content)
+        return self._backend.ingest_upload(str(target), title=title)
+
+    def _iter_ingestable_files(self, path: Path) -> List[Path]:
+        if path.is_file():
+            return [path] if self._is_allowed(path) else []
+        if not path.is_dir():
+            return []
+        return [candidate for candidate in sorted(path.rglob("*")) if candidate.is_file() and self._is_allowed(candidate)]
+
+    def _count_skipped_files(self, path: Path) -> int:
+        if not path.is_dir():
+            return 0
+        return sum(1 for candidate in path.rglob("*") if candidate.is_file() and not self._is_allowed(candidate))
+
+    def _is_allowed(self, path: Path) -> bool:
+        return self._is_extension_allowed(path) and self._is_size_allowed(path.stat().st_size)
+
+    def _is_extension_allowed(self, path: Path) -> bool:
+        return path.suffix.lower() in set(self.config.ingest.allowed_extensions)
+
+    def _is_size_allowed(self, size_bytes: int) -> bool:
+        max_size = max(0, int(self.config.ingest.max_file_size_mb or 0)) * 1024 * 1024
+        return max_size <= 0 or int(size_bytes) <= max_size
+
+
+def parse_knowledge_backend_enabled(raw: Any) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return False
+    value = str(raw).strip().lower()
+    if value in TRUE_VALUES:
+        return True
+    if value in FALSE_VALUES:
+        return False
+    return False
+
+
+def require_provider_token(provider: str, token: Optional[str], env_var: str) -> str:
+    value = token or os.environ.get(env_var)
+    if value:
+        return value
+    raise MissingProviderTokenError(f"{provider} provider token is required; set {env_var}")
+
+
+def build_knowledge_backend(config: KnowledgeBackendConfig):
+    if not config.enabled:
+        return DisabledKnowledgeBackend(config.vector_store.provider)
+    if config.vector_store.provider == "qdrant":
+        try:
+            import qdrant_client  # noqa: F401
+        except Exception as exc:
+            if config.vector_store.required:
+                if not config.fail_open:
+                    raise
+                return DisabledKnowledgeBackend("qdrant", f"qdrant client unavailable: {exc}")
+            logger.warning("[KnowledgeBackend] qdrant client unavailable, falling back to SQLite FTS: %s", exc)
+            return KnowledgeBackendService(config)
+        # The first implementation keeps authoritative metadata/search in SQLite.
+        # qdrant-client presence means the deployment can add vector indexing
+        # without making startup depend on a live Qdrant server.
+        return KnowledgeBackendService(config)
+    return KnowledgeBackendService(config)
+
+
+def get_backend_service() -> Any:
+    return build_knowledge_backend(KnowledgeBackendConfig.from_project_config())
+
+
+def get_provider_bearer_token() -> str:
+    config = KnowledgeBackendConfig.from_project_config()
+    token_env = config.security.get("provider_api_token_env") or "KNOWLEDGE_PROVIDER_TOKEN"
+    return os.environ.get(str(token_env), "")
+
+
+def verify_provider_bearer_token(token: str) -> bool:
+    expected = get_provider_bearer_token()
+    if not expected:
+        return False
+    import hmac
+
+    return hmac.compare_digest(str(token), expected)
+
+
+def dispatch_admin_request(method: str, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    config = KnowledgeBackendConfig.from_project_config()
+    disabled_reason = _admin_api_disabled_reason(config)
+    if disabled_reason:
+        return {"status": "disabled", "message": disabled_reason}
+    service = build_knowledge_backend(config)
+    method = method.upper()
+    path = _clean_route_path(path)
+    payload = payload or {}
+
+    if method == "GET" and path in ("", "status"):
+        return _jsonable_status(service.status())
+    if method == "GET" and path in ("dependencies", "health"):
+        backend = getattr(service, "_backend", None)
+        if backend is not None:
+            return backend.dependency_check()
+        return _jsonable_status(service.status())
+    if method == "GET" and path in ("docs", "documents"):
+        return {"status": "success", "documents": _call_or_default(service, "list_documents", [])}
+    if method == "GET" and path in ("kbs", "knowledge-bases", "knowledge_bases"):
+        return {"status": "success", "knowledge_bases": _call_or_default(service, "list_knowledge_bases", [])}
+    if method in ("GET", "POST") and path in ("graph", "knowledge-graph"):
+        return {"status": "success", **_to_jsonable(service.build_knowledge_graph())}
+    if method in ("GET", "POST") and path.endswith("/graph"):
+        kb_id = path.split("/", 1)[0] if "/" in path else ""
+        return {"status": "success", **_to_jsonable(service.graph_neighbors(kb_id=kb_id, max_hops=2))}
+    if method in ("GET", "POST") and path in ("entities/resolve", "entity/resolve"):
+        terms = payload.get("terms") or payload.get("term") or []
+        if isinstance(terms, str):
+            terms = [terms]
+        return {"status": "success", **_to_jsonable(service.resolve_entities(terms))}
+    if method in ("GET", "POST") and path == "search":
+        query = _payload_query(payload)
+        return {"status": "success", "results": _to_jsonable(service.search(query, limit=_payload_limit(payload)))}
+    if method in ("GET", "POST") and path == "query":
+        query = _payload_query(payload)
+        return {"status": "success", **_to_jsonable(service.query(query, limit=_payload_limit(payload)))}
+    if method == "POST" and path in ("upload", "docs/upload"):
+        return _handle_upload_payload(service, payload)
+    if method == "POST" and path in ("ingest", "rebuild", "docs/import-folder"):
+        source_path = payload.get("path") or payload.get("file_path")
+        if not source_path:
+            return {"status": "error", "message": "path is required"}
+        if not _is_import_path_allowed(Path(source_path), config):
+            return {
+                "status": "error",
+                "message": "path import is disabled or outside knowledge_backend.ingest.allowed_import_roots",
+            }
+        return {"status": "success", **_to_jsonable(service.ingest_path(Path(source_path)))}
+    if path.startswith("jobs/"):
+        job_id = path.split("/", 1)[1]
+        return _to_jsonable(service.job_status(job_id))
+    return {"status": "error", "message": f"unsupported knowledge admin route: {method} {path}"}
+
+
+def dispatch_provider_request(method: str, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    config = KnowledgeBackendConfig.from_project_config()
+    if not config.provider_api_enabled:
+        return {"status": "disabled", "message": "knowledge provider API is disabled"}
+    service = build_knowledge_backend(config)
+    method = method.upper()
+    path = _clean_route_path(path)
+    payload = payload or {}
+    trace_id = str(payload.get("trace_id") or "")
+    visited_kb_ids = [str(item) for item in (payload.get("visited_kb_ids") or [])]
+    max_hops = int(payload.get("max_hops") or 1)
+    if max_hops < 0:
+        return {"status": "error", "message": "max_hops must be non-negative", "trace_id": trace_id}
+    if "cowagent-local-kb" in [str(item) for item in (payload.get("visited_provider_ids") or [])]:
+        return {
+            "status": "ok",
+            "results": [],
+            "trace_id": trace_id,
+            "visited_kb_ids": visited_kb_ids,
+            "recursion_prevented": True,
+        }
+
+    if method == "GET" and path in ("", "capabilities"):
+        status = _jsonable_status(service.status())
+        return {
+            "provider_id": "cowagent-local-kb",
+            "version": "1.0",
+            "supported_methods": ["search", "query", "resolve_entity", "graph_neighbors", "verify_source"],
+            "auth_required": True,
+            "status": status,
+            "knowledge_bases": _to_jsonable(_call_or_default(service, "list_knowledge_bases", [])),
+        }
+    if method == "POST" and path == "search":
+        query = _payload_query(payload)
+        return {
+            "results": _to_jsonable(
+                service.search(
+                    query,
+                    limit=_payload_limit(payload),
+                    kb_ids=payload.get("kb_ids"),
+                    visited_kb_ids=visited_kb_ids,
+                    trace_id=trace_id,
+                )
+            ),
+            "trace_id": trace_id,
+            "visited_kb_ids": visited_kb_ids,
+        }
+    if method == "POST" and path == "query":
+        query = _payload_query(payload)
+        result = _to_jsonable(
+            service.query(
+                query,
+                limit=_payload_limit(payload),
+                kb_ids=payload.get("kb_ids"),
+                visited_kb_ids=visited_kb_ids,
+                trace_id=trace_id,
+            )
+        )
+        result["trace_id"] = trace_id
+        result["visited_kb_ids"] = visited_kb_ids
+        return result
+    if method == "POST" and path in ("entities/resolve", "entity/resolve"):
+        terms = payload.get("terms") or []
+        if isinstance(terms, str):
+            terms = [terms]
+        result = _to_jsonable(
+            service.resolve_entities(
+                terms,
+                kb_ids=payload.get("kb_ids"),
+                visited_kb_ids=visited_kb_ids,
+            )
+        )
+        result["trace_id"] = trace_id
+        return result
+    if method == "GET" and path.startswith("graph/neighbors"):
+        return _to_jsonable(
+            service.graph_neighbors(
+                entity_id=str(payload.get("entity_id") or ""),
+                term=str(payload.get("term") or ""),
+                kb_id=str(payload.get("kb_id") or ""),
+                max_hops=max_hops,
+                visited_kb_ids=visited_kb_ids,
+                trace_id=trace_id,
+            )
+        )
+    if method == "POST" and path == "verify":
+        return _to_jsonable(
+            service.verify_source(
+                claim=str(payload.get("claim") or payload.get("query") or ""),
+                candidate_span_ids=payload.get("candidate_span_ids"),
+                visited_kb_ids=visited_kb_ids,
+                trace_id=trace_id,
+            )
+        )
+    return {"status": "error", "message": f"unsupported knowledge provider route: {method} {path}"}
+
+
+def _handle_upload_payload(service: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
+    files = payload.get("files") or []
+    fields = payload.get("fields") or {}
+    if files:
+        results = []
+        for file_info in files:
+            results.append(
+                service.ingest_upload_bytes(
+                    filename=file_info.get("filename") or "upload.bin",
+                    content=file_info.get("content") or b"",
+                    title=fields.get("title") or fields.get("name"),
+                )
+            )
+        return {"status": "success", "uploads": _to_jsonable(results)}
+
+    source_path = payload.get("path") or payload.get("file_path")
+    if source_path:
+        config = getattr(service, "config", None) or KnowledgeBackendConfig.from_project_config()
+        if not _is_import_path_allowed(Path(source_path), config):
+            return {
+                "status": "error",
+                "message": "path import is disabled or outside knowledge_backend.ingest.allowed_import_roots",
+            }
+        return {"status": "success", **_to_jsonable(service.ingest_path(Path(source_path)))}
+    return {"status": "error", "message": "No files uploaded"}
+
+
+def _admin_api_disabled_reason(config: KnowledgeBackendConfig) -> str:
+    if not config.admin_api_enabled:
+        return "knowledge admin API is disabled"
+    disable_without_password = parse_knowledge_backend_enabled(
+        config.security.get("disable_admin_api_when_web_password_empty", True)
+    )
+    if not disable_without_password:
+        return ""
+    try:
+        from config import conf
+
+        if not conf().get("web_password", ""):
+            return "knowledge admin API requires web_password when exposed through Web"
+    except Exception:
+        return "knowledge admin API could not validate web_password"
+    return ""
+
+
+def _is_import_path_allowed(path: Path, config: KnowledgeBackendConfig) -> bool:
+    roots = list(config.ingest.allowed_import_roots)
+    if not roots:
+        return False
+    try:
+        resolved_path = Path(path).expanduser().resolve()
+    except Exception:
+        return False
+    for root in roots:
+        try:
+            resolved_root = Path(root).expanduser().resolve()
+        except Exception:
+            continue
+        if resolved_path == resolved_root or resolved_root in resolved_path.parents:
+            return True
+    return False
+
+
+def _payload_query(payload: Dict[str, Any]) -> str:
+    return str(payload.get("query") or payload.get("question") or "")
+
+
+def _payload_limit(payload: Dict[str, Any]) -> int:
+    return int(payload.get("limit") or payload.get("top_k") or 5)
+
+
+def _clean_route_path(path: str) -> str:
+    return (path or "").strip("/")
+
+
+def _call_or_default(target: Any, name: str, default: Any) -> Any:
+    method = getattr(target, name, None)
+    if not callable(method):
+        return default
+    return method()
+
+
+def _jsonable_status(status: Any) -> Dict[str, Any]:
+    return _to_jsonable(status)
+
+
+def _to_jsonable(value: Any) -> Any:
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        return value.to_dict()
+    if hasattr(value, "__dataclass_fields__"):
+        from dataclasses import asdict
+
+        return asdict(value)
+    if isinstance(value, list):
+        return [_to_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _to_jsonable(item) for key, item in value.items()}
+    return value
+
+
+def _safe_filename(filename: str) -> str:
+    name = Path(filename or "upload.bin").name
+    safe = "".join(ch for ch in name if ch.isalnum() or ch in (" ", ".", "-", "_")).strip()
+    return safe or "upload.bin"
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _normalize_suffix(value: Any) -> str:
+    suffix = str(value).strip().lower()
+    if not suffix:
+        return suffix
+    return suffix if suffix.startswith(".") else f".{suffix}"
+
+
+def _csv(value: Optional[str]) -> List[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _entity_payload(entity: Any) -> Dict[str, Any]:
+    data = _to_jsonable(entity)
+    status = "verified" if data.get("defining_doc_id") else "candidate"
+    data.update(
+        {
+            "name": data.get("canonical_name", ""),
+            "status": status,
+        }
+    )
+    return data
+
+
+def _relation_payload(relation: Any) -> Dict[str, Any]:
+    data = _to_jsonable(relation)
+    status = data.get("status") or "candidate"
+    if status == "active":
+        status = "verified"
+    data.update(
+        {
+            "source": data.get("subject", "") or data.get("subject_entity_id", ""),
+            "target": data.get("object", "") or data.get("object_entity_id", ""),
+            "source_id": data.get("subject_entity_id", ""),
+            "target_id": data.get("object_entity_id", ""),
+            "status": status,
+        }
+    )
+    return data
+
+
+def _display_canonical_name(entity: Any, requested_term: str) -> str:
+    canonical = getattr(entity, "canonical_name", "") or ""
+    aliases = list(getattr(entity, "aliases", []) or [])
+    if requested_term and requested_term.upper() == requested_term and len(requested_term) <= 6:
+        expanded = [alias for alias in aliases if len(alias) > len(requested_term) and " " in alias]
+        if expanded:
+            return expanded[0]
+    return canonical
+
+
+def _claim_terms(text: str) -> List[str]:
+    stopwords = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "called",
+        "does",
+        "for",
+        "how",
+        "is",
+        "of",
+        "or",
+        "the",
+        "to",
+        "uses",
+        "what",
+        "with",
+    }
+    import re
+
+    terms = [term for term in re.findall(r"[A-Za-z][A-Za-z0-9_]{1,}", text or "") if term.lower() not in stopwords]
+    cjk_terms = re.findall(r"[\u4e00-\u9fff]{2,}", text or "")
+    return _unique_strings([*terms, *cjk_terms])
+
+
+def _section_path(text: str) -> str:
+    import re
+
+    for line in (text or "").splitlines():
+        match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _unique_strings(values: Iterable[Any]) -> List[str]:
+    result = []
+    seen = set()
+    for value in values:
+        text = str(value or "").strip()
+        key = text.lower()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _portable_source_path(path: Path, workspace_root: Path) -> str:
+    try:
+        return Path(path).resolve().relative_to(Path(workspace_root).resolve()).as_posix()
+    except Exception:
+        return str(Path(path).resolve())
+
+
+class LocalKnowledgeBackend:
+    """Optional local document-ingestion and search backend."""
+
+    def __init__(
+        self,
+        workspace_root: str,
+        db_path: Optional[str] = None,
+        enabled: bool = True,
+        default_kb_id: str = "kb_default",
+        chunk_chars: int = 1800,
+        overlap_chars: int = 200,
+    ):
+        self.workspace_root = Path(workspace_root).expanduser().resolve()
+        self.enabled = bool(enabled)
+        self.default_kb_id = default_kb_id or "kb_default"
+        self.chunk_chars = max(500, int(chunk_chars))
+        self.overlap_chars = max(0, min(int(overlap_chars), self.chunk_chars // 2))
+        self.db_path = Path(db_path).expanduser().resolve() if db_path else self.workspace_root / "knowledge" / ".backend" / DEFAULT_DB_NAME
+        self._storage: Optional[KnowledgeStorage] = None
+        self._builder = HeuristicKnowledgeBuilder()
+
+    def dependency_check(self) -> Dict[str, Any]:
+        """Return backend capability status without raising on optional deps."""
+
+        statuses = dependency_status()
+        sqlite_status = statuses.get("sqlite3")
+        fts5_available = False
+        if self.enabled and sqlite_status and sqlite_status.available:
+            try:
+                storage = self._get_storage()
+                fts5_available = bool(storage.fts5_available)
+            except Exception as exc:
+                statuses["sqlite3"] = type(sqlite_status)(
+                    name="sqlite3",
+                    available=False,
+                    detail=str(exc),
+                )
+
+        return {
+            "enabled": self.enabled,
+            "dependencies": {name: status.to_dict() for name, status in statuses.items()},
+            "fts5": {"available": fts5_available, "detail": "SQLite FTS5 keyword search"},
+            "supported_types": [".pdf", ".docx", ".txt", ".md", ".markdown"],
+        }
+
+    def ingest_upload(self, file_path: str, title: Optional[str] = None) -> Dict[str, Any]:
+        """Ingest an uploaded document synchronously and return job status."""
+
+        if not self.enabled:
+            return self._disabled_response("ingest")
+
+        source = Path(file_path).expanduser().resolve()
+        storage = self._get_storage()
+        stored_source_path = _portable_source_path(source, self.workspace_root)
+        job = storage.create_job(uuid.uuid4().hex, stored_source_path)
+        try:
+            if not source.is_file():
+                job = storage.update_job(job.id, "failed", error=f"file not found: {source}")
+                return {"status": "failed", "job": job.to_dict()}
+
+            extracted = extract_document(source)
+            content_hash = compute_file_hash(source)
+            document_id = stable_document_id(str(source), content_hash)
+            version_id = stable_version_id(document_id, content_hash)
+            chunks = self._build_chunks(document_id, extracted.pages, kb_id=self.default_kb_id, version_id=version_id)
+            document = KnowledgeDocument(
+                id=document_id,
+                title=title or extracted.title,
+                source_path=stored_source_path,
+                mime_type=extracted.mime_type,
+                size=source.stat().st_size,
+                content_hash=content_hash,
+                status="ready",
+                kb_id=self.default_kb_id,
+                version_id=version_id,
+                metadata=extracted.metadata,
+            )
+            build = self._builder.build(document, chunks)
+            storage.save_document(
+                document,
+                build.chunks,
+                source_spans=build.source_spans,
+                entities=build.entities,
+                relations=build.relations,
+            )
+            message = f"ingested {len(build.chunks)} chunks"
+            job = storage.update_job(job.id, "succeeded", message=message, document_id=document_id)
+            return {
+                "status": "succeeded",
+                "job": job.to_dict(),
+                "document": {
+                    "id": document_id,
+                    "title": document.title,
+                    "kb_id": document.kb_id,
+                    "version_id": version_id,
+                    "chunks": len(build.chunks),
+                    "source_spans": len(build.source_spans),
+                    "entities": len(build.entities),
+                    "relations": len(build.relations),
+                    "missing_prerequisites": build.missing_prerequisites,
+                },
+            }
+        except MissingDependencyError as exc:
+            job = storage.update_job(job.id, "failed", error=str(exc))
+            return {"status": "failed", "job": job.to_dict(), "missing_dependency": True}
+        except UnsupportedDocumentError as exc:
+            job = storage.update_job(job.id, "failed", error=str(exc))
+            return {"status": "failed", "job": job.to_dict()}
+        except ExtractionError as exc:
+            job = storage.update_job(job.id, "failed", error=str(exc))
+            return {"status": "failed", "job": job.to_dict()}
+        except Exception as exc:
+            logger.error(f"[LocalKnowledgeBackend] ingestion failed: {exc}", exc_info=True)
+            job = storage.update_job(job.id, "failed", error=str(exc))
+            return {"status": "failed", "job": job.to_dict()}
+
+    def job_status(self, job_id: str) -> Dict[str, Any]:
+        if not self.enabled:
+            return self._disabled_response("job_status")
+        job = self._get_storage().get_job(job_id)
+        if not job:
+            return {"status": "not_found", "job": None}
+        return {"status": job.status, "job": job.to_dict()}
+
+    def search(
+        self,
+        query: str,
+        limit: int = 5,
+        kb_ids: Optional[Iterable[str]] = None,
+        visited_kb_ids: Optional[Iterable[str]] = None,
+        trace_id: str = "",
+    ) -> Dict[str, Any]:
+        if not self.enabled:
+            return self._disabled_response("search")
+        expanded_query = self._expand_query_aliases(query)
+        hits = self._get_storage().search(expanded_query, limit=max(1, int(limit or 5)))
+        if kb_ids:
+            kb_set = {str(kb_id) for kb_id in kb_ids}
+            hits = [hit for hit in hits if hit.kb_id in kb_set]
+        return {
+            "status": "ok",
+            "hits": [hit.to_dict() for hit in hits],
+            "trace_id": trace_id,
+            "visited_kb_ids": list(visited_kb_ids or []),
+        }
+
+    def query(
+        self,
+        question: str,
+        limit: int = 5,
+        kb_ids: Optional[Iterable[str]] = None,
+        visited_kb_ids: Optional[Iterable[str]] = None,
+        trace_id: str = "",
+    ) -> Dict[str, Any]:
+        """Return a simple extractive answer with citations."""
+
+        if not self.enabled:
+            return self._disabled_response("query")
+        expanded_query = self._expand_query_aliases(question)
+        hits = self._get_storage().search(expanded_query, limit=max(1, int(limit or 5)))
+        if kb_ids:
+            kb_set = {str(kb_id) for kb_id in kb_ids}
+            hits = [hit for hit in hits if hit.kb_id in kb_set]
+        if not hits:
+            return QueryResult(
+                answer="No relevant local knowledge found.",
+                citations=[],
+                trace_id=trace_id,
+            ).to_dict()
+
+        citations = [
+            Citation(
+                index=index,
+                document_id=hit.document_id,
+                title=hit.title,
+                source_path=hit.source_path,
+                page_start=hit.page_start,
+                page_end=hit.page_end,
+                snippet=hit.snippet,
+                kb_id=hit.kb_id,
+                source_span_ids=hit.source_span_ids,
+            )
+            for index, hit in enumerate(hits, start=1)
+        ]
+        answer = self._compose_answer(citations)
+        entities = sorted({entity for hit in hits for entity in hit.entities})
+        confidence = max((hit.score for hit in hits), default=0.0)
+        return QueryResult(
+            answer=answer,
+            citations=citations,
+            entities=entities,
+            confidence=confidence,
+            trace_id=trace_id,
+        ).to_dict()
+
+    def resolve_entities(
+        self,
+        terms: Iterable[str],
+        kb_ids: Optional[Iterable[str]] = None,
+        visited_kb_ids: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        storage = self._get_storage()
+        visited = list(visited_kb_ids or kb_ids or [])
+        allowed_kbs = {str(kb_id) for kb_id in (kb_ids or []) if kb_id}
+        entities = []
+        for term in terms or []:
+            entity = storage.resolve_entity(str(term))
+            if entity and allowed_kbs and entity.defining_kb_id and entity.defining_kb_id not in allowed_kbs:
+                entity = None
+            if entity:
+                canonical_name = _display_canonical_name(entity, str(term))
+                entities.append(
+                    {
+                        "term": str(term),
+                        "resolved": True,
+                        "entity_id": entity.id,
+                        "canonical_name": canonical_name,
+                        "kb_id": entity.defining_kb_id,
+                        "aliases": entity.aliases,
+                        "confidence": entity.confidence,
+                        "visited_kb_ids": visited,
+                    }
+                )
+            else:
+                entities.append({"term": str(term), "resolved": False, "visited_kb_ids": visited})
+        return {"entities": entities, "visited_kb_ids": visited}
+
+    def graph_neighbors(
+        self,
+        entity_id: str = "",
+        term: str = "",
+        kb_id: str = "",
+        max_hops: int = 1,
+        visited_kb_ids: Optional[Iterable[str]] = None,
+        trace_id: str = "",
+    ) -> Dict[str, Any]:
+        storage = self._get_storage()
+        max_hops = max(1, int(max_hops or 1))
+        start = storage.resolve_entity(term or entity_id)
+        if start is None:
+            return {"nodes": [], "links": [], "trace_id": trace_id, "visited_kb_ids": list(visited_kb_ids or [])}
+
+        nodes: Dict[str, Dict[str, Any]] = {start.id: _entity_payload(start)}
+        links: Dict[str, Dict[str, Any]] = {}
+        frontier = {start.id}
+        visited_entities = set()
+        for hop in range(1, max_hops + 1):
+            next_frontier = set()
+            for current_id in frontier:
+                if current_id in visited_entities:
+                    continue
+                visited_entities.add(current_id)
+                for relation in storage.list_relations(entity_id=current_id, kb_id=kb_id):
+                    links[relation.id] = {**_relation_payload(relation), "hop": hop}
+                    for related_id in (relation.subject_entity_id, relation.object_entity_id):
+                        if related_id not in nodes:
+                            related = storage.list_entities([relation.subject if related_id == relation.subject_entity_id else relation.object])
+                            if related:
+                                nodes[related_id] = _entity_payload(related[0])
+                        if related_id not in visited_entities:
+                            next_frontier.add(related_id)
+            frontier = next_frontier
+        return {
+            "nodes": list(nodes.values()),
+            "links": list(links.values()),
+            "trace_id": trace_id,
+            "visited_kb_ids": list(visited_kb_ids or []),
+        }
+
+    def verify_source(
+        self,
+        claim: str,
+        candidate_span_ids: Optional[Iterable[str]] = None,
+        visited_kb_ids: Optional[Iterable[str]] = None,
+        trace_id: str = "",
+    ) -> Dict[str, Any]:
+        storage = self._get_storage()
+        span_ids = [span_id for span_id in (candidate_span_ids or []) if span_id]
+        spans = storage.get_source_spans(span_ids) if span_ids else []
+        if not spans:
+            hits = storage.search(self._expand_query_aliases(claim), limit=3)
+            spans = storage.get_source_spans(span_id for hit in hits for span_id in hit.source_span_ids)
+
+        claim_terms = _claim_terms(claim)
+        evidence_text = " ".join(span.text for span in spans).lower()
+        matched = [term for term in claim_terms if term.lower() in evidence_text]
+        coverage = len(matched) / max(1, len(claim_terms))
+        status = "supported" if spans and coverage >= 0.5 else "insufficient"
+        return {
+            "status": status,
+            "supported": status == "supported",
+            "claim": claim,
+            "confidence": round(coverage, 3),
+            "matched_terms": matched,
+            "evidence": [span.to_dict() for span in spans],
+            "trace_id": trace_id,
+            "visited_kb_ids": list(visited_kb_ids or []),
+        }
+
+    def stats(self) -> Dict[str, Any]:
+        if not self.enabled:
+            return self._disabled_response("stats")
+        try:
+            return {"status": "ok", **self._get_storage().health()}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    def close(self) -> None:
+        """Close the SQLite connection if it has been opened."""
+
+        if self._storage is not None:
+            self._storage.close()
+            self._storage = None
+
+    def __enter__(self) -> "LocalKnowledgeBackend":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def dispatch(self, action: str, payload: Optional[dict] = None) -> Dict[str, Any]:
+        """Protocol-friendly action dispatcher."""
+
+        payload = payload or {}
+        try:
+            if action in ("dependencies", "dependency_check"):
+                return {"action": action, "code": 200, "message": "success", "payload": self.dependency_check()}
+            if action in ("ingest", "upload"):
+                file_path = payload.get("path") or payload.get("file_path")
+                if not file_path:
+                    return {"action": action, "code": 400, "message": "path is required", "payload": None}
+                return {"action": action, "code": 200, "message": "success", "payload": self.ingest_upload(file_path, payload.get("title"))}
+            if action in ("job", "job_status"):
+                job_id = payload.get("job_id") or payload.get("id")
+                if not job_id:
+                    return {"action": action, "code": 400, "message": "job_id is required", "payload": None}
+                return {"action": action, "code": 200, "message": "success", "payload": self.job_status(job_id)}
+            if action == "search":
+                return {"action": action, "code": 200, "message": "success", "payload": self.search(payload.get("query", ""), payload.get("limit", 5))}
+            if action == "query":
+                return {"action": action, "code": 200, "message": "success", "payload": self.query(payload.get("query", "") or payload.get("question", ""), payload.get("limit", 5))}
+            if action == "stats":
+                return {"action": action, "code": 200, "message": "success", "payload": self.stats()}
+            return {"action": action, "code": 400, "message": f"unknown action: {action}", "payload": None}
+        except Exception as exc:
+            logger.error(f"[LocalKnowledgeBackend] dispatch error: action={action}, error={exc}", exc_info=True)
+            return {"action": action, "code": 500, "message": str(exc), "payload": None}
+
+    def _get_storage(self) -> KnowledgeStorage:
+        if self._storage is None:
+            self._storage = KnowledgeStorage(self.db_path)
+        return self._storage
+
+    def _build_chunks(
+        self,
+        document_id: str,
+        pages: List[Any],
+        kb_id: str = "kb_default",
+        version_id: str = "",
+    ) -> List[KnowledgeChunk]:
+        chunks: List[KnowledgeChunk] = []
+        ordinal = 0
+        for page in pages:
+            section_path = _section_path(page.text)
+            for text in self._split_text(page.text):
+                if not text.strip():
+                    continue
+                ordinal += 1
+                chunks.append(
+                    KnowledgeChunk(
+                        id=stable_chunk_id(document_id, ordinal, text),
+                        document_id=document_id,
+                        ordinal=ordinal,
+                        page_start=page.page,
+                        page_end=page.page,
+                        text=text,
+                        kb_id=kb_id,
+                        version_id=version_id,
+                        section_path=section_path,
+                        clause_title=section_path.split("/")[-1] if section_path else "",
+                    )
+                )
+        return chunks
+
+    def _expand_query_aliases(self, query: str) -> str:
+        query = str(query or "")
+        storage = self._get_storage()
+        additions: List[str] = []
+        for term in _claim_terms(query):
+            entity = storage.resolve_entity(term)
+            if entity:
+                additions.extend([entity.canonical_name, *entity.aliases])
+        if not additions:
+            return query
+        return " ".join([query, *_unique_strings(additions)])
+
+    def _split_text(self, text: str) -> List[str]:
+        text = (text or "").strip()
+        if not text:
+            return []
+        if len(text) <= self.chunk_chars:
+            return [text]
+        chunks: List[str] = []
+        start = 0
+        while start < len(text):
+            end = min(len(text), start + self.chunk_chars)
+            chunks.append(text[start:end].strip())
+            if end == len(text):
+                break
+            start = max(end - self.overlap_chars, start + 1)
+        return chunks
+
+    @staticmethod
+    def _compose_answer(citations: List[Citation]) -> str:
+        lines = ["Relevant local knowledge:"]
+        for citation in citations:
+            page = f"p. {citation.page_start}" if citation.page_start == citation.page_end else f"pp. {citation.page_start}-{citation.page_end}"
+            lines.append(f"[{citation.index}] {citation.title} ({page}): {citation.snippet}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _disabled_response(action: str) -> Dict[str, Any]:
+        return {"status": "disabled", "action": action, "message": "local knowledge backend is disabled"}

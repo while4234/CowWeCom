@@ -317,7 +317,7 @@ class AgentStreamExecutor:
         self._raise_if_cancelled()
         
         thinking_enabled = self._is_thinking_enabled()
-        self._request_runtime_context = self._build_runtime_context_text()
+        self._request_runtime_context = self._build_request_context_text(user_message)
         thinking_label = " | 💭 thinking" if thinking_enabled else ""
         logger.info(f"🤖 {self.model.model}{thinking_label} | 👤 {user_message}")        
         
@@ -1749,6 +1749,13 @@ class AgentStreamExecutor:
         self._prepend_runtime_context(messages, runtime_context)
         return messages
 
+    def _build_request_context_text(self, user_message: str) -> str:
+        parts = [
+            self._build_runtime_context_text(),
+            self._build_knowledge_context_text(user_message),
+        ]
+        return "\n\n".join(part for part in parts if part)
+
     def _build_runtime_context_text(self) -> str:
         try:
             from config import conf
@@ -1766,6 +1773,108 @@ class AgentStreamExecutor:
         except Exception as e:
             logger.debug(f"[PromptCache] Failed to build runtime context: {e}")
             return ""
+
+    def _build_knowledge_context_text(self, user_message: str) -> str:
+        try:
+            from config import conf
+
+            backend_conf = conf().get("knowledge_backend", {}) or {}
+            backend_enabled = bool(backend_conf.get("enabled", False)) if isinstance(backend_conf, dict) else False
+            retrieval_conf = backend_conf.get("retrieval", {}) if isinstance(backend_conf, dict) else {}
+            backend_auto = bool(retrieval_conf.get("auto_inject", True)) if isinstance(retrieval_conf, dict) else True
+
+            if backend_enabled and backend_auto:
+                hits = self._retrieve_backend_knowledge(user_message, backend_conf)
+            elif conf().get("knowledge_auto_retrieval", False):
+                hits = self._retrieve_markdown_knowledge(user_message)
+            else:
+                return ""
+
+            return self._format_retrieved_knowledge(hits)
+        except Exception as e:
+            logger.debug(f"[KnowledgeRetrieval] Auto retrieval skipped: {e}")
+            return ""
+
+    def _retrieve_backend_knowledge(self, user_message: str, backend_conf: dict) -> List[Dict[str, Any]]:
+        from agent.knowledge.backend import get_backend_service
+
+        retrieval_conf = backend_conf.get("retrieval", {}) if isinstance(backend_conf, dict) else {}
+        limit = int(retrieval_conf.get("final_top_k") or 5)
+        service = get_backend_service()
+        results = service.search(user_message, limit=limit)
+        return [self._knowledge_hit_to_dict(hit) for hit in results]
+
+    def _retrieve_markdown_knowledge(self, user_message: str) -> List[Dict[str, Any]]:
+        memory_manager = getattr(self.agent, "memory_manager", None)
+        if memory_manager is None:
+            return []
+        from config import conf
+        import asyncio
+
+        max_results = int(conf().get("knowledge_auto_retrieval_max_results", 5) or 5)
+        min_score = float(conf().get("knowledge_auto_retrieval_min_score", 0.1) or 0.1)
+        user_id = getattr(self.agent, "_current_user_id", None)
+        results = asyncio.run(
+            memory_manager.search(
+                query=user_message,
+                user_id=user_id,
+                max_results=max_results * 3,
+                min_score=min_score,
+                include_shared=True,
+            )
+        )
+        hits = []
+        for result in results:
+            path = str(getattr(result, "path", "") or "")
+            source = str(getattr(result, "source", "") or "")
+            if source != "knowledge" and not path.replace("\\", "/").startswith("knowledge/"):
+                continue
+            hits.append(self._knowledge_hit_to_dict(result))
+            if len(hits) >= max_results:
+                break
+        return hits
+
+    def _knowledge_hit_to_dict(self, hit: Any) -> Dict[str, Any]:
+        if isinstance(hit, dict):
+            return hit
+        return {
+            "title": getattr(hit, "title", None) or getattr(hit, "path", "") or "knowledge",
+            "source_path": getattr(hit, "source_path", None) or getattr(hit, "path", ""),
+            "page_start": getattr(hit, "page_start", None),
+            "page_end": getattr(hit, "page_end", None),
+            "score": getattr(hit, "score", None),
+            "snippet": getattr(hit, "snippet", None) or getattr(hit, "text", ""),
+        }
+
+    def _format_retrieved_knowledge(self, hits: List[Dict[str, Any]]) -> str:
+        if not hits:
+            return ""
+        try:
+            from config import conf
+            max_chars = int(conf().get("knowledge_auto_retrieval_max_chars", 4000) or 4000)
+        except Exception:
+            max_chars = 4000
+
+        lines = [
+            "[Retrieved knowledge for this request only. Use these snippets as grounded evidence when relevant; do not treat them as complete proof if they do not support the claim.]",
+        ]
+        for index, hit in enumerate(hits, start=1):
+            title = hit.get("title") or hit.get("source_path") or hit.get("path") or "knowledge"
+            source = hit.get("source_path") or hit.get("path") or ""
+            page_start = hit.get("page_start")
+            page_end = hit.get("page_end")
+            page = ""
+            if page_start:
+                page = f", page {page_start}" if not page_end or page_end == page_start else f", pages {page_start}-{page_end}"
+            score = hit.get("score")
+            score_text = f", score {float(score):.3f}" if isinstance(score, (int, float)) else ""
+            snippet = " ".join(str(hit.get("snippet") or hit.get("text") or "").split())
+            lines.append(f"[{index}] {title}{page}{score_text}\nSource: {source}\nSnippet: {snippet}")
+
+        text = "\n\n".join(lines)
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 32].rstrip() + "\n\n[Retrieved knowledge truncated.]"
 
     def _copy_messages_for_request(self) -> List[Dict[str, Any]]:
         copied = []

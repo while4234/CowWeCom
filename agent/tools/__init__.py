@@ -11,6 +11,7 @@ from agent.tools.ls.ls import Ls
 from agent.tools.send.send import Send
 from agent.tools.image_generation.image_generation_task import ImageGenerationTaskTool
 from agent.tools.code_update.git_code_update import GitCodeUpdateTool
+from agent.tools.knowledge_query import KnowledgeQueryTool
 from agent.tools.social_bridge import (
     BridgeListUsersTool,
     BridgePendingMessagesTool,
@@ -143,6 +144,7 @@ __all__ = [
     'Send',
     'ImageGenerationTaskTool',
     'GitCodeUpdateTool',
+    'KnowledgeQueryTool',
     'BridgeListUsersTool',
     'BridgePendingMessagesTool',
     'BridgeSendMessageTool',

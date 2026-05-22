@@ -8,6 +8,82 @@ import pickle
 
 from common.log import logger
 
+
+_DEFAULT_KNOWLEDGE_BACKEND_CONFIG = {
+    "enabled": False,
+    "mode": "backend_subsystem",
+    "fail_open": True,
+    "admin_api_enabled": True,
+    "provider_api_enabled": False,
+    "data_dir": "./knowledge_backend",
+    "sqlite_path": "./knowledge_backend/indexes/kb.sqlite",
+    "workspace_root": ".",
+    "default_kb_id": "kb_default",
+    "ingest": {
+        "auto_build_after_upload": True,
+        "allowed_extensions": [".pdf", ".docx", ".txt", ".md"],
+        "allowed_import_roots": [],
+        "max_file_size_mb": 500,
+        "preserve_original": True,
+        "ocr_enabled": False,
+    },
+    "llm_builder": {
+        "enabled": True,
+        "use_current_model": True,
+        "fallback_model": "",
+        "batch_chunks": 8,
+        "require_source_spans": True,
+        "min_relation_confidence": 0.70,
+    },
+    "retrieval": {
+        "auto_inject": True,
+        "hybrid": True,
+        "keyword_top_k": 80,
+        "vector_top_k": 80,
+        "rerank_top_k": 30,
+        "final_top_k": 10,
+        "enable_federated": True,
+        "max_federated_hops": 2,
+        "source_verification": "auto",
+    },
+    "vector_store": {
+        "provider": "sqlite",
+        "url": "http://127.0.0.1:6333",
+        "collection": "cowagent_knowledge",
+        "required": False,
+    },
+    "security": {
+        "require_web_auth": True,
+        "provider_api_token_env": "KNOWLEDGE_PROVIDER_TOKEN",
+        "disable_admin_api_when_web_password_empty": True,
+        "log_full_text": False,
+    },
+}
+
+
+_KNOWLEDGE_BACKEND_ENV_MAP = {
+    "KNOWLEDGE_BACKEND_ENABLED": ("enabled", "bool"),
+    "KNOWLEDGE_BACKEND_FAIL_OPEN": ("fail_open", "bool"),
+    "KNOWLEDGE_BACKEND_ADMIN_API_ENABLED": ("admin_api_enabled", "bool"),
+    "KNOWLEDGE_BACKEND_PROVIDER_API_ENABLED": ("provider_api_enabled", "bool"),
+    "KNOWLEDGE_BACKEND_DATA_DIR": ("data_dir", "str"),
+    "KNOWLEDGE_BACKEND_SQLITE_PATH": ("sqlite_path", "str"),
+    "KNOWLEDGE_BACKEND_WORKSPACE_ROOT": ("workspace_root", "str"),
+    "KNOWLEDGE_BACKEND_DEFAULT_KB_ID": ("default_kb_id", "str"),
+    "KNOWLEDGE_BACKEND_AUTO_BUILD": ("ingest.auto_build_after_upload", "bool"),
+    "KNOWLEDGE_BACKEND_ALLOWED_EXTENSIONS": ("ingest.allowed_extensions", "csv"),
+    "KNOWLEDGE_BACKEND_ALLOWED_IMPORT_ROOTS": ("ingest.allowed_import_roots", "csv"),
+    "KNOWLEDGE_BACKEND_MAX_FILE_SIZE_MB": ("ingest.max_file_size_mb", "int"),
+    "KNOWLEDGE_BACKEND_LLM_BUILDER_ENABLED": ("llm_builder.enabled", "bool"),
+    "KNOWLEDGE_BACKEND_AUTO_INJECT": ("retrieval.auto_inject", "bool"),
+    "KNOWLEDGE_BACKEND_VECTOR_PROVIDER": ("vector_store.provider", "str"),
+    "KNOWLEDGE_BACKEND_QDRANT_URL": ("vector_store.url", "str"),
+    "KNOWLEDGE_BACKEND_QDRANT_COLLECTION": ("vector_store.collection", "str"),
+    "KNOWLEDGE_BACKEND_VECTOR_REQUIRED": ("vector_store.required", "bool"),
+    "KNOWLEDGE_BACKEND_PROVIDER_TOKEN_ENV": ("security.provider_api_token_env", "str"),
+    "KNOWLEDGE_BACKEND_DISABLE_ADMIN_WHEN_NO_PASSWORD": ("security.disable_admin_api_when_web_password_empty", "bool"),
+}
+
 # 将所有可用的配置项写在字典里, 请使用小写字母
 # 此处的配置值无实际意义，程序不会读取此处的配置，仅用于提示格式，请将配置加入到config.json中
 available_setting = {
@@ -32,6 +108,10 @@ available_setting = {
     "prompt_cache_stable_runtime_info": True,  # Keep volatile runtime time out of the reusable prompt prefix
     "runtime_time_in_user_message": True,  # Add exact current time only to the active user request
     "knowledge_index_in_system_prompt": False,  # Keep changing knowledge index out of the stable prompt prefix
+    "knowledge_auto_retrieval": False,  # Auto-inject local Markdown knowledge search results into the current request
+    "knowledge_auto_retrieval_max_results": 5,
+    "knowledge_auto_retrieval_min_score": 0.1,
+    "knowledge_auto_retrieval_max_chars": 4000,
     "claude_api_base": "https://api.anthropic.com/v1",  # claude api base
     "gemini_api_base": "https://generativelanguage.googleapis.com",  # gemini api base
     "custom_api_key": "",  # custom OpenAI-compatible provider api key (used when bot_type is "custom")
@@ -258,6 +338,7 @@ available_setting = {
     "enable_thinking": False,  # Enable deep-thinking mode for thinking-capable models
     "reasoning_effort": "high",  # Reasoning depth under thinking mode: "high" or "max"
     "knowledge": True,  # 是否开启知识库功能
+    "knowledge_backend": copy.deepcopy(_DEFAULT_KNOWLEDGE_BACKEND_CONFIG),
     "skill": {
         "image-generation": {
             "runtime": "codex_auth",
@@ -330,7 +411,7 @@ config = Config()
 
 def _is_sensitive_config_key(key):
     key = str(key).lower()
-    sensitive_markers = ("key", "secret", "password", "token", "cookie")
+    sensitive_markers = ("key", "secret", "password", "token", "cookie", "credential", "bearer")
     return any(marker in key for marker in sensitive_markers)
 
 
@@ -349,19 +430,81 @@ def drag_sensitive(config):
         if isinstance(config, str):
             conf_dict: dict = json.loads(config)
             conf_dict_copy = copy.deepcopy(conf_dict)
-            for key in conf_dict_copy:
-                conf_dict_copy[key] = _mask_sensitive_value(key, conf_dict_copy[key])
+            conf_dict_copy = _mask_sensitive_tree(conf_dict_copy)
             return json.dumps(conf_dict_copy, indent=4)
 
         elif isinstance(config, dict):
             config_copy = copy.deepcopy(config)
-            for key in config:
-                config_copy[key] = _mask_sensitive_value(key, config_copy[key])
-            return config_copy
+            return _mask_sensitive_tree(config_copy)
     except Exception as e:
         logger.exception(e)
         return config
     return config
+
+
+def _mask_sensitive_tree(value, parent_key=""):
+    if isinstance(value, dict):
+        return {key: _mask_sensitive_tree(child, key) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_mask_sensitive_tree(item, parent_key) for item in value]
+    return _mask_sensitive_value(parent_key, value)
+
+
+def _deep_merge_dict(defaults, overrides):
+    merged = copy.deepcopy(defaults)
+    if not isinstance(overrides, dict):
+        return merged
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _parse_bool_env(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _parse_knowledge_backend_env(value, value_type):
+    if value_type == "bool":
+        return _parse_bool_env(value)
+    if value_type == "int":
+        return int(value)
+    if value_type == "csv":
+        return [item.strip() for item in str(value).split(",") if item.strip()]
+    return value
+
+
+def _set_nested_config_value(target, dotted_path, value):
+    current = target
+    parts = dotted_path.split(".")
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    current[parts[-1]] = value
+
+
+def _normalize_knowledge_backend_config():
+    raw = config.get("knowledge_backend", {})
+    normalized = _deep_merge_dict(_DEFAULT_KNOWLEDGE_BACKEND_CONFIG, raw)
+
+    for env_key, (path, value_type) in _KNOWLEDGE_BACKEND_ENV_MAP.items():
+        if env_key not in os.environ:
+            continue
+        try:
+            value = _parse_knowledge_backend_env(os.environ[env_key], value_type)
+            _set_nested_config_value(normalized, path, value)
+            logger.info("[INIT] override knowledge_backend by environ args: {}".format(env_key))
+        except Exception as e:
+            logger.warning("[INIT] invalid {} ignored: {}".format(env_key, e))
+
+    config["knowledge_backend"] = normalized
 
 
 def load_config():
@@ -405,6 +548,8 @@ def load_config():
                     config[name] = True
                 else:
                     config[name] = value
+
+    _normalize_knowledge_backend_config()
 
     if config.get("debug", False):
         logger.setLevel(logging.DEBUG)
@@ -451,6 +596,10 @@ def load_config():
         "prompt_cache_stable_runtime_info": "PROMPT_CACHE_STABLE_RUNTIME_INFO",
         "runtime_time_in_user_message": "RUNTIME_TIME_IN_USER_MESSAGE",
         "knowledge_index_in_system_prompt": "KNOWLEDGE_INDEX_IN_SYSTEM_PROMPT",
+        "knowledge_auto_retrieval": "KNOWLEDGE_AUTO_RETRIEVAL",
+        "knowledge_auto_retrieval_max_results": "KNOWLEDGE_AUTO_RETRIEVAL_MAX_RESULTS",
+        "knowledge_auto_retrieval_min_score": "KNOWLEDGE_AUTO_RETRIEVAL_MIN_SCORE",
+        "knowledge_auto_retrieval_max_chars": "KNOWLEDGE_AUTO_RETRIEVAL_MAX_CHARS",
         "linkai_api_key": "LINKAI_API_KEY",
         "linkai_api_base": "LINKAI_API_BASE",
         "claude_api_key": "CLAUDE_API_KEY",

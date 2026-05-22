@@ -71,8 +71,9 @@ class Write(BaseTool):
             # Get bytes written
             bytes_written = len(content.encode('utf-8'))
             
-            # Auto-sync to memory database if this is a memory file
-            if self.memory_manager and 'memory/' in path:
+            # Auto-sync to memory database if this is a memory or knowledge file
+            normalized_path = path.replace("\\", "/")
+            if self.memory_manager and ("memory/" in normalized_path or "knowledge/" in normalized_path):
                 self.memory_manager.mark_dirty()
             
             result = {

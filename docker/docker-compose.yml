@@ -44,5 +44,9 @@ services:
       AGENT_MAX_CONTEXT_TOKENS: 50000
       AGENT_MAX_CONTEXT_TURNS: 20
       AGENT_MAX_STEPS: 20
+      KNOWLEDGE_BACKEND_ENABLED: 'False'
+      KNOWLEDGE_BACKEND_QDRANT_URL: 'http://qdrant:6333'
+      KNOWLEDGE_BACKEND_PROVIDER_API_ENABLED: 'False'
+      KNOWLEDGE_PROVIDER_TOKEN: ''
     volumes:
       - ./cow:/home/agent/cow

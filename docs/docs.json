@@ -170,7 +170,8 @@
               {
                 "group": "知识库",
                 "pages": [
-                  "knowledge/index"
+                  "knowledge/index",
+                  "knowledge/backend-service"
                 ]
               }
             ]

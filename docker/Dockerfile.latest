@@ -6,6 +6,8 @@ ARG TZ='Asia/Shanghai'
 ARG CHATGPT_ON_WECHAT_VER
 # Set to "false" to skip Playwright/Chromium and produce a smaller image
 ARG INSTALL_BROWSER=true
+# Set to "true" to install backend knowledge-base optional dependencies
+ARG INSTALL_KNOWLEDGE_BACKEND=false
 # Set to "true" to use China mirrors for apt / pip / playwright (faster in CN)
 ARG USE_CN_MIRROR=false
 
@@ -28,6 +30,9 @@ RUN apt-get update \
     && /usr/local/bin/python -m pip install --no-cache --upgrade pip \
     && pip install --no-cache -r requirements.txt \
     && pip install --no-cache -r requirements-optional.txt \
+    && if [ "$INSTALL_KNOWLEDGE_BACKEND" = "true" ]; then \
+        pip install --no-cache -r requirements-knowledge.txt; \
+    fi \
     && pip install --no-cache -e . \
     && if [ "$INSTALL_BROWSER" = "true" ]; then \
         apt-get install -y --no-install-recommends fonts-wqy-zenhei \

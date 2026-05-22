@@ -744,6 +744,18 @@ class WebChannel(ChatChannel):
             os.makedirs(static_dir)
             logger.debug(f"[WebChannel] Created static directory: {static_dir}")
 
+        kb_backend_routes = ()
+        try:
+            from channel.web import kb_backend_routes as kb_routes
+            globals().update({
+                "KnowledgeBackendAdminHandler": kb_routes.KnowledgeBackendAdminHandler,
+                "KnowledgeBackendAdminUploadHandler": kb_routes.KnowledgeBackendAdminUploadHandler,
+                "KnowledgeBackendProviderHandler": kb_routes.KnowledgeBackendProviderHandler,
+            })
+            kb_backend_routes = kb_routes.kb_backend_routes
+        except Exception as e:
+            logger.warning(f"[WebChannel] Knowledge backend routes not loaded: {e}")
+
         urls = (
             '/', 'RootHandler',
             '/auth/login', 'AuthLoginHandler',
@@ -777,7 +789,7 @@ class WebChannel(ChatChannel):
             '/api/logs', 'LogsHandler',
             '/api/version', 'VersionHandler',
             '/assets/(.*)', 'AssetsHandler',
-        )
+        ) + kb_backend_routes
         app = web.application(urls, globals(), autoreload=False)
 
         # 完全禁用web.py的HTTP日志输出
