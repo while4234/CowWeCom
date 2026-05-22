@@ -97,6 +97,15 @@ Do NOT create auxiliary documentation files:
 
 Install target directory: `<workspace>/skills/<name>/` (the `<workspace>` is from the "工作空间" section).
 
+### CowWechat Repository Sync Rule
+
+When creating or updating a skill for this CowWechat project, the final skill must exist in both places:
+
+1. Deployed workspace copy: `<workspace>/skills/<name>/` (normally `$HOME/cow/skills/<name>/`)
+2. Repository copy: `<project-root>/skills/<name>/`
+
+Edit and validate the repository copy first when working inside `D:\CowWechat`, then copy the full skill directory to the deployed workspace copy. Commit and push the repository copy when publishing the skill so GitHub stays in sync with the running Agent. Never copy secrets, `.env`, config files, pycache, logs, generated snapshots, or runtime state into either skill directory.
+
 ### Step 1 — Obtain skill content
 
 | Source | Action |
@@ -215,7 +224,7 @@ The script:
 
 After initialization, customize the SKILL.md and add resources as needed. If you used `--examples`, replace or delete placeholder files.
 
-**Important**: Always create skills in workspace skills directory (`<workspace>/skills`), NOT in project directory. Check the "工作空间" section for the actual workspace path.
+**Important**: For a generic workspace, create skills in workspace skills directory (`<workspace>/skills`). For this CowWechat repository, also keep the matching project copy under `<project-root>/skills/<name>/` and sync both copies before the task is complete.
 
 ### Step 4: Edit the Skill
 

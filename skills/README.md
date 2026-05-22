@@ -58,6 +58,7 @@ with machine setup notes and any required user-provided keys.
 | `plugin-12306-ticket` | Query China Railway 12306 tickets, stations, and train route information through local public 12306 endpoints. | No external API key; needs Python network access. |
 | `pptx` | Create, read, edit, and extract content from PowerPoint `.pptx` decks. | No external API key. |
 | `reliable-search` | Search with Serper/Brave provider fallback. | `SERPER_API_KEY` or `BRAVE_API_KEY` supplied by the user. |
+| `safe-github-upload` | Commit and push CowWechat code to GitHub while respecting `.gitignore`, avoiding secrets/runtime state, validating staged files, and syncing skill copies. | GitHub credentials configured locally; no key is stored in the skill. |
 | `skill-creator` | Create, validate, and package skills. | No API key unless the new skill needs one. |
 | `stock-analysis` | Analyze stocks and cryptocurrencies, portfolios, watchlists, dividends, and trend signals. | No external API key; requires `uv`. |
 | `token-usage-tracker` | Track local per-user token usage. | No API key. |
@@ -68,7 +69,8 @@ with machine setup notes and any required user-provided keys.
 ## Development Sync Rule
 
 When adding or fixing a skill in this project, keep the repository copy and the
-deployed workspace copy synchronized:
+deployed workspace copy synchronized. This rule is mandatory for Agent-created
+skills and skills edited from WeChat commands:
 
 1. Edit and validate the builtin skill under `<project_root>/skills/<skill>/`.
 2. If `~/cow/skills/<skill>/` exists, copy the same updated skill directory
