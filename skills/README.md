@@ -38,6 +38,22 @@ List all available remote skills:
 
 > In terminal, replace `/skill` with `cow skill`.
 
+## Included Local Skills
+
+This repository currently includes the CowWechat skills that were installed on
+the local deployment machine. Each skill directory contains an `INSTALL.md`
+with machine setup notes and any required user-provided keys.
+
+| Skill | Purpose | External key needed |
+|---|---|---|
+| `capi-usage-monitor` | Query and snapshot CAPI/Codex quota and usage. | `OPENAI_API_KEY` by default, or a local CAPI key override. |
+| `code-update` | Safely fast-forward CowWechat from GitHub while protecting local state. | No API key; Git credentials stay local. |
+| `image-generation` | Generate/edit images through background jobs. | Local Codex login, or one configured image provider API key. |
+| `knowledge-wiki` | Maintain a local structured knowledge wiki. | No API key. |
+| `reliable-search` | Search with Serper/Brave provider fallback. | `SERPER_API_KEY` or `BRAVE_API_KEY` supplied by the user. |
+| `skill-creator` | Create, validate, and package skills. | No API key unless the new skill needs one. |
+| `token-usage-tracker` | Track local per-user token usage. | No API key. |
+
 ## Skill Structure
 
 ```
