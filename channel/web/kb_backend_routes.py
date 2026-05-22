@@ -353,6 +353,8 @@ def _invoke_dispatch(dispatcher: Any, method: str, path: str, payload: Dict[str,
 
 
 def _handle_backend_error(exc: Exception) -> str:
+    if isinstance(exc, web.HTTPError):
+        raise exc
     if isinstance(exc, BackendRouteError):
         return _json_error(str(exc), status=exc.status)
     status = getattr(exc, "http_status", None) or getattr(exc, "status", None) or "500 Internal Server Error"

@@ -223,6 +223,18 @@ class KnowledgeStorage:
         rows = self.conn.execute("SELECT * FROM documents ORDER BY updated_at DESC, title ASC").fetchall()
         return [_row_to_document(row) for row in rows]
 
+    def list_chunks(self, document_id: str = "") -> List[KnowledgeChunk]:
+        params: List[Any] = []
+        where = ""
+        if document_id:
+            where = "WHERE document_id = ?"
+            params.append(document_id)
+        rows = self.conn.execute(
+            f"SELECT * FROM chunks {where} ORDER BY document_id ASC, ordinal ASC",
+            params,
+        ).fetchall()
+        return [_row_to_chunk(row) for row in rows]
+
     def ensure_knowledge_base(self, kb: KnowledgeBase) -> None:
         now = _now()
         self.conn.execute(
@@ -851,6 +863,24 @@ def _row_to_hit(row: sqlite3.Row, score: float) -> SearchHit:
         section_path=row["section_path"] or "",
         source_span_ids=_loads(row["source_span_ids"]),
         entities=_loads(row["entities"]),
+    )
+
+
+def _row_to_chunk(row: sqlite3.Row) -> KnowledgeChunk:
+    return KnowledgeChunk(
+        id=row["id"],
+        document_id=row["document_id"],
+        ordinal=int(row["ordinal"]),
+        page_start=int(row["page_start"]),
+        page_end=int(row["page_end"]),
+        text=row["text"] or "",
+        kb_id=row["kb_id"] or "kb_default",
+        version_id=row["version_id"] or "",
+        section_path=row["section_path"] or "",
+        clause_title=row["clause_title"] or "",
+        source_span_ids=_loads(row["source_span_ids"]),
+        entities=_loads(row["entities"]),
+        metadata=_loads(row["metadata"]),
     )
 
 

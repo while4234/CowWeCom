@@ -23,6 +23,17 @@ const I18N = {
         knowledge_select_hint: '选择一个文档查看', knowledge_empty_hint: '暂无知识页面',
         knowledge_empty_guide: '在对话中发送文档、链接或主题给 Agent，它会自动整理到你的知识库中。',
         knowledge_go_chat: '开始对话',
+        knowledge_backend_title: '协议后端知识库',
+        knowledge_backend_desc: '上传协议后自动构建检索索引，并导出到下方文档库。',
+        knowledge_backend_upload: '上传协议',
+        knowledge_backend_llm: '生成学习文档',
+        knowledge_backend_export: '刷新文档库',
+        knowledge_backend_empty: '暂无后端协议文档',
+        knowledge_backend_uploading: '正在上传并构建知识库...',
+        knowledge_backend_llm_running: '正在用 LLM 生成可追溯学习文档...',
+        knowledge_backend_exporting: '正在刷新文档库...',
+        knowledge_backend_ready: '已启用',
+        knowledge_backend_disabled: '未启用',
         welcome_subtitle: '我可以帮你解答问题、管理计算机、创造和执行技能，并通过<br>长期记忆和知识库不断成长',
         example_sys_title: '系统管理', example_sys_text: '查看工作空间里有哪些文件',
         example_task_title: '定时任务', example_task_text: '1分钟后提醒我检查服务器',
@@ -129,6 +140,17 @@ const I18N = {
         knowledge_select_hint: 'Select a document to view', knowledge_empty_hint: 'No knowledge pages yet',
         knowledge_empty_guide: 'Send documents, links or topics to the agent in chat, and it will automatically organize them into your knowledge base.',
         knowledge_go_chat: 'Start a conversation',
+        knowledge_backend_title: 'Protocol Backend Knowledge',
+        knowledge_backend_desc: 'Upload a protocol to build the retrieval index and export readable docs below.',
+        knowledge_backend_upload: 'Upload protocol',
+        knowledge_backend_llm: 'Generate study doc',
+        knowledge_backend_export: 'Refresh docs',
+        knowledge_backend_empty: 'No backend protocol documents yet',
+        knowledge_backend_uploading: 'Uploading and building knowledge base...',
+        knowledge_backend_llm_running: 'Generating a source-grounded LLM study document...',
+        knowledge_backend_exporting: 'Refreshing document library...',
+        knowledge_backend_ready: 'Enabled',
+        knowledge_backend_disabled: 'Disabled',
         welcome_subtitle: 'I can help you answer questions, manage your computer, create and execute skills, and keep growing through <br> long-term memory and a personal knowledge base.',
         example_sys_title: 'System', example_sys_text: 'Show me the files in the workspace',
         example_task_title: 'Scheduler', example_task_text: 'Remind me to check the server in 5 minutes',
@@ -2439,6 +2461,14 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+function escapeAttr(str) {
+    return escapeHtml(str).replace(/"/g, '&quot;');
+}
+
+function escapeJs(str) {
+    return String(str || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '');
+}
+
 function ChannelsHandler_maskSecret(val) {
     if (!val || val.length <= 8) return val;
     return val.slice(0, 4) + '*'.repeat(val.length - 8) + val.slice(-4);
@@ -4638,12 +4668,167 @@ let _knowledgeTreeData = [];
 let _knowledgeRootFiles = [];
 let _knowledgeCurrentFile = null;
 let _knowledgeGraphLoaded = false;
+let _knowledgeBackendDocuments = [];
+
+function loadKnowledgeBackendPanel() {
+    const docsEl = document.getElementById('knowledge-backend-docs');
+    const summaryEl = document.getElementById('knowledge-backend-summary');
+    const statusEl = document.getElementById('knowledge-backend-status');
+    const messageEl = document.getElementById('knowledge-backend-message');
+    if (!docsEl || !summaryEl || !statusEl) return;
+
+    docsEl.innerHTML = '<div class="text-xs text-slate-400"><i class="fas fa-spinner fa-spin mr-2"></i>Loading backend documents...</div>';
+    summaryEl.innerHTML = '';
+    if (messageEl) messageEl.textContent = '';
+
+    Promise.all([
+        fetch('/api/knowledge/admin/status').then(_knowledgeBackendJson),
+        fetch('/api/knowledge/admin/documents').then(_knowledgeBackendJson),
+    ]).then(([statusData, docsData]) => {
+        const enabled = statusData && statusData.enabled === true;
+        statusEl.textContent = enabled ? t('knowledge_backend_ready') : t('knowledge_backend_disabled');
+        statusEl.className = enabled
+            ? 'text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-300'
+            : 'text-[11px] px-2 py-0.5 rounded-full bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400';
+
+        if (docsData && docsData.status === 'disabled') {
+            docsEl.innerHTML = `<div class="text-xs text-slate-500 dark:text-slate-400">${escapeHtml(docsData.message || t('knowledge_backend_disabled'))}</div>`;
+            return;
+        }
+
+        _knowledgeBackendDocuments = (docsData && docsData.documents) || [];
+        renderKnowledgeBackendDocuments(_knowledgeBackendDocuments);
+        renderKnowledgeBackendSummary(statusData, _knowledgeBackendDocuments);
+    }).catch(err => {
+        statusEl.textContent = t('knowledge_backend_disabled');
+        docsEl.innerHTML = `<div class="text-xs text-red-500">${escapeHtml(err.message || 'Failed to load backend documents')}</div>`;
+    });
+}
+
+function _knowledgeBackendJson(resp) {
+    return resp.json().then(data => {
+        if (!resp.ok && data && data.message) throw new Error(data.message);
+        return data;
+    });
+}
+
+function renderKnowledgeBackendDocuments(documents) {
+    const docsEl = document.getElementById('knowledge-backend-docs');
+    if (!docsEl) return;
+    if (!documents.length) {
+        docsEl.innerHTML = `<div class="text-xs text-slate-500 dark:text-slate-400">${t('knowledge_backend_empty')}</div>`;
+        return;
+    }
+    docsEl.innerHTML = documents.map(doc => {
+        const path = (doc.document_library_path || '').replace(/^knowledge\//, '');
+        const openBtn = path
+            ? `<button type="button" onclick="navigateTo('knowledge'); setTimeout(() => openKnowledgeFile('${escapeAttr(escapeJs(path))}', '${escapeAttr(escapeJs(doc.title || doc.id))}'), 100)"
+                       class="knowledge-backend-doc-action"><i class="fas fa-arrow-up-right-from-square"></i></button>`
+            : '';
+        return `
+            <div class="knowledge-backend-doc">
+                <div class="min-w-0">
+                    <div class="knowledge-backend-doc-title">${escapeHtml(doc.title || doc.id || 'document')}</div>
+                    <div class="knowledge-backend-doc-meta">
+                        <span>${escapeHtml(doc.kb_id || 'kb_default')}</span>
+                        <span>${escapeHtml(doc.doc_type || 'document')}</span>
+                        <span>${escapeHtml(doc.status || '')}</span>
+                        <span class="truncate">${escapeHtml(doc.source_path || '')}</span>
+                    </div>
+                </div>
+                ${openBtn}
+            </div>
+        `;
+    }).join('');
+}
+
+function renderKnowledgeBackendSummary(statusData, documents) {
+    const summaryEl = document.getElementById('knowledge-backend-summary');
+    if (!summaryEl) return;
+    const kbs = [...new Set(documents.map(doc => doc.kb_id || 'kb_default'))];
+    summaryEl.innerHTML = `
+        <div class="knowledge-backend-stat"><span>Backend</span><strong>${escapeHtml((statusData && statusData.backend) || 'unknown')}</strong></div>
+        <div class="knowledge-backend-stat"><span>Documents</span><strong>${documents.length}</strong></div>
+        <div class="knowledge-backend-stat"><span>Knowledge bases</span><strong>${kbs.length}</strong></div>
+    `;
+}
+
+function uploadKnowledgeBackendFile(fileList) {
+    const files = Array.from(fileList || []);
+    const input = document.getElementById('knowledge-backend-file');
+    if (!files.length) return;
+    const messageEl = document.getElementById('knowledge-backend-message');
+    if (messageEl) messageEl.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>${t('knowledge_backend_uploading')}`;
+    const formData = new FormData();
+    files.forEach(file => formData.append('file', file, file.name));
+    fetch('/api/knowledge/admin/upload', { method: 'POST', body: formData })
+        .then(_knowledgeBackendJson)
+        .then(data => {
+            if (messageEl) messageEl.textContent = _knowledgeBackendUploadMessage(data);
+            if (input) input.value = '';
+            loadKnowledgeBackendPanel();
+            loadKnowledgeView();
+        })
+        .catch(err => {
+            if (messageEl) messageEl.textContent = err.message || 'Upload failed';
+            if (input) input.value = '';
+        });
+}
+
+function _knowledgeBackendUploadMessage(data) {
+    const uploads = (data && data.uploads) || [];
+    const succeeded = uploads.filter(item => item.status === 'succeeded').length;
+    const failed = uploads.length - succeeded;
+    if (!uploads.length) return data.message || 'Upload finished';
+    return failed ? `${succeeded} succeeded, ${failed} failed` : `${succeeded} document(s) indexed and exported`;
+}
+
+function exportKnowledgeBackendLibrary() {
+    const messageEl = document.getElementById('knowledge-backend-message');
+    if (messageEl) messageEl.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>${t('knowledge_backend_exporting')}`;
+    fetch('/api/knowledge/admin/export', { method: 'POST' })
+        .then(_knowledgeBackendJson)
+        .then(data => {
+            if (messageEl) messageEl.textContent = `${data.documents_exported || 0} document(s) exported`;
+            loadKnowledgeView();
+        })
+        .catch(err => {
+            if (messageEl) messageEl.textContent = err.message || 'Export failed';
+        });
+}
+
+function generateKnowledgeBackendStudy() {
+    const messageEl = document.getElementById('knowledge-backend-message');
+    const sourceDoc = (_knowledgeBackendDocuments || []).find(doc => (doc.doc_type || 'document') !== 'llm_study');
+    if (messageEl) messageEl.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>${t('knowledge_backend_llm_running')}`;
+    fetch('/api/knowledge/admin/llm-study', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ document_id: sourceDoc ? sourceDoc.id : '' })
+    })
+        .then(_knowledgeBackendJson)
+        .then(data => {
+            if (messageEl) {
+                const validation = data.validation || {};
+                const refs = validation.source_span_ref_count || 0;
+                messageEl.textContent = data.status === 'success'
+                    ? `LLM study document generated with ${refs} validated source span refs`
+                    : (data.message || 'LLM study generation failed');
+            }
+            loadKnowledgeBackendPanel();
+            loadKnowledgeView();
+        })
+        .catch(err => {
+            if (messageEl) messageEl.textContent = err.message || 'LLM study generation failed';
+        });
+}
 
 function loadKnowledgeView() {
     // Reset to docs tab
     switchKnowledgeTab('docs');
     _knowledgeGraphLoaded = false;
     _knowledgeCurrentFile = null;
+    loadKnowledgeBackendPanel();
 
     fetch('/api/knowledge/list').then(r => r.json()).then(data => {
         if (data.status !== 'success') return;

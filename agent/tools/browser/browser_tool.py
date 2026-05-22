@@ -21,6 +21,7 @@ from typing import Dict, Any, Optional
 
 from agent.tools.base_tool import BaseTool, ToolResult
 from agent.tools.browser.browser_service import BrowserService
+from agent.tools.send.send import Send
 from common.log import logger
 
 
@@ -33,7 +34,8 @@ class BrowserTool(BaseTool):
         "Actions: navigate, snapshot, click, fill, select, scroll, screenshot, wait, back, forward, "
         "get_text, press, evaluate.\n\n"
         "Workflow: navigate (auto-includes snapshot with element refs) → click/fill/select by ref → snapshot to verify.\n\n"
-        "Use snapshot as the primary way to read pages. Use screenshot + send to show key results to the user. "
+        "Use snapshot as the primary way to read pages. Click automatically captures browser downloads "
+        "and returns them as files to send when possible. Use screenshot + send to show key results to the user. "
         "For login/CAPTCHA/authorization etc., screenshot and ask the user for help. "
         "Login state is persisted across sessions (cookies / localStorage are kept in a "
         "user profile directory), so once the user logs in to a site, the agent can keep "
@@ -168,9 +170,20 @@ class BrowserTool(BaseTool):
         ref = args.get("ref")
         selector = args.get("selector")
         timeout = args.get("timeout", 5000)
-        result = self._get_service().click(ref=ref, selector=selector, timeout=timeout)
+        result = self._get_service().click(ref=ref, selector=selector, timeout=timeout, cwd=self.cwd)
         if "error" in result:
             return ToolResult.fail(result["error"])
+        if result.get("download"):
+            download = result["download"]
+            message = "\u5df2\u4e0b\u8f7d\u6587\u4ef6\uff0c\u6b63\u5728\u53d1\u9001\u3002"
+            if str(download.get("file_name", "")).lower().endswith(".pdf"):
+                message = "\u5df2\u4e0b\u8f7d PDF\uff0c\u6b63\u5728\u53d1\u9001\u6587\u4ef6\u3002"
+            return Send({"cwd": self.cwd}).execute({
+                "path": download["path"],
+                "message": message,
+            })
+        if result.get("download_error"):
+            return ToolResult.fail(result["download_error"])
         return ToolResult.success(f"Clicked successfully. Use 'snapshot' to see updated page.")
 
     def _do_fill(self, args: Dict[str, Any]) -> ToolResult:

@@ -99,6 +99,7 @@
       "allowed_extensions": [".pdf", ".docx", ".txt", ".md"],
       "allowed_import_roots": [],
       "max_file_size_mb": 500,
+      "document_library_root": "~/cow",
       "preserve_original": true,
       "ocr_enabled": false
     },
@@ -107,6 +108,10 @@
       "use_current_model": true,
       "fallback_model": "",
       "batch_chunks": 8,
+      "max_chunks": 80,
+      "max_output_tokens": 6000,
+      "auto_generate_study_doc": false,
+      "index_generated_document": true,
       "require_source_spans": true,
       "min_relation_confidence": 0.7
     },

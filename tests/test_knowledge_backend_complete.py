@@ -17,7 +17,11 @@ def _config(tmp_path, **overrides):
         "workspace_root": str(tmp_path),
         "data_dir": str(tmp_path / "backend-data"),
         "default_kb_id": "kb_default",
-        "ingest": {"allowed_extensions": [".txt", ".md"], "max_file_size_mb": 5},
+        "ingest": {
+            "allowed_extensions": [".txt", ".md"],
+            "max_file_size_mb": 5,
+            "document_library_root": str(tmp_path),
+        },
         "vector_store": {"provider": "sqlite", "required": False},
         "security": {"disable_admin_api_when_web_password_empty": False},
     }
@@ -249,3 +253,32 @@ def test_admin_path_import_is_whitelist_gated_through_public_dispatch(monkeypatc
     assert allowed["status"] == "success"
     assert allowed["files_indexed"] == 1
     assert service.search("allowed import", limit=5)
+
+
+def test_admin_upload_exports_markdown_document_library(monkeypatch, tmp_path):
+    config = _config(tmp_path, ingest={"allowed_extensions": [".md"]})
+    service = KnowledgeBackendService(config)
+    monkeypatch.setattr(KnowledgeBackendConfig, "from_project_config", classmethod(lambda cls: config))
+    monkeypatch.setattr("agent.knowledge.backend.service.build_knowledge_backend", lambda _: service)
+
+    response = dispatch_admin_request(
+        "POST",
+        "upload",
+        {
+            "fields": {"title": "AXI Upload"},
+            "files": [
+                {
+                    "filename": "axi-upload.md",
+                    "content": b"# AXI Upload\n\nTVALID and TREADY create a handshake.",
+                }
+            ],
+        },
+    )
+
+    assert response["status"] == "success"
+    upload = response["uploads"][0]
+    assert upload["status"] == "succeeded"
+    assert upload["document_library"]["documents_exported"] == 1
+    exported = tmp_path / upload["document_library"]["documents"][0]["path"]
+    assert exported.is_file()
+    assert "TVALID and TREADY" in exported.read_text(encoding="utf-8")

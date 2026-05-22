@@ -2255,7 +2255,108 @@ class FeishuRegisterHandler:
 def _get_workspace_root():
     """Resolve the agent workspace directory."""
     from common.utils import expand_path
-    return expand_path(conf().get("agent_workspace", "~/cow"))
+    return expand_path(conf().get("agent_workspace") or "~/cow")
+
+
+def _get_project_root():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def _get_knowledge_roots():
+    """Return knowledge roots visible in the Web console."""
+
+    from common.utils import expand_path
+
+    roots = []
+    for root in (_get_workspace_root(),):
+        root = os.path.abspath(expand_path(root))
+        if root not in roots:
+            roots.append(root)
+    try:
+        from agent.knowledge.backend import KnowledgeBackendConfig
+
+        backend_config = KnowledgeBackendConfig.from_project_config()
+        document_root = backend_config.ingest.document_library_root
+        if document_root:
+            backend_root = os.path.abspath(expand_path(str(document_root)))
+            if backend_root not in roots:
+                roots.append(backend_root)
+    except Exception:
+        pass
+    return roots
+
+
+def _merge_knowledge_list_results(results):
+    merged = {
+        "root_files": [],
+        "tree": [],
+        "stats": {"pages": 0, "size": 0},
+        "enabled": conf().get("knowledge", True),
+    }
+    root_seen = set()
+    tree_by_dir = {}
+    for result in results:
+        stats = result.get("stats", {}) or {}
+        merged["stats"]["pages"] += int(stats.get("pages") or 0)
+        merged["stats"]["size"] += int(stats.get("size") or 0)
+        for file_info in result.get("root_files", []) or []:
+            key = file_info.get("name")
+            if key and key not in root_seen:
+                root_seen.add(key)
+                merged["root_files"].append(file_info)
+        for group in result.get("tree", []) or []:
+            _merge_knowledge_group(tree_by_dir, group)
+    merged["tree"] = list(tree_by_dir.values())
+    return merged
+
+
+def _merge_knowledge_group(group_map, group):
+    name = group.get("dir")
+    if not name:
+        return
+    target = group_map.setdefault(name, {"dir": name, "files": [], "children": []})
+    seen_files = {item.get("name") for item in target["files"]}
+    for file_info in group.get("files", []) or []:
+        if file_info.get("name") not in seen_files:
+            target["files"].append(file_info)
+            seen_files.add(file_info.get("name"))
+    child_map = {child.get("dir"): child for child in target["children"]}
+    for child in group.get("children", []) or []:
+        _merge_knowledge_group(child_map, child)
+    target["children"] = list(child_map.values())
+
+
+def _read_knowledge_file_from_roots(rel_path):
+    from agent.knowledge.service import KnowledgeService
+
+    errors = []
+    for root in _get_knowledge_roots():
+        svc = KnowledgeService(root)
+        try:
+            return svc.read_file(rel_path)
+        except FileNotFoundError as exc:
+            errors.append(exc)
+            continue
+    if errors:
+        raise errors[-1]
+    raise FileNotFoundError(f"file not found: {rel_path}")
+
+
+def _merge_knowledge_graphs(graphs):
+    nodes = {}
+    links = []
+    seen_links = set()
+    for graph in graphs:
+        for node in graph.get("nodes", []) or []:
+            node_id = node.get("id")
+            if node_id and node_id not in nodes:
+                nodes[node_id] = node
+        for link in graph.get("links", []) or []:
+            key = (link.get("source"), link.get("target"))
+            if key[0] and key[1] and key not in seen_links:
+                seen_links.add(key)
+                links.append(link)
+    return {"nodes": list(nodes.values()), "links": links}
 
 
 class ToolsHandler:
@@ -2643,8 +2744,11 @@ class KnowledgeListHandler:
         web.header('Content-Type', 'application/json; charset=utf-8')
         try:
             from agent.knowledge.service import KnowledgeService
-            svc = KnowledgeService(_get_workspace_root())
-            result = svc.list_tree()
+            results = []
+            for root in _get_knowledge_roots():
+                svc = KnowledgeService(root)
+                results.append(svc.list_tree())
+            result = _merge_knowledge_list_results(results)
             return json.dumps({"status": "success", **result}, ensure_ascii=False)
         except Exception as e:
             logger.error(f"[WebChannel] Knowledge list error: {e}")
@@ -2656,10 +2760,8 @@ class KnowledgeReadHandler:
         _require_auth()
         web.header('Content-Type', 'application/json; charset=utf-8')
         try:
-            from agent.knowledge.service import KnowledgeService
             params = web.input(path='')
-            svc = KnowledgeService(_get_workspace_root())
-            result = svc.read_file(params.path)
+            result = _read_knowledge_file_from_roots(params.path)
             return json.dumps({"status": "success", **result}, ensure_ascii=False)
         except (ValueError, FileNotFoundError) as e:
             return json.dumps({"status": "error", "message": str(e)})
@@ -2674,8 +2776,11 @@ class KnowledgeGraphHandler:
         web.header('Content-Type', 'application/json; charset=utf-8')
         try:
             from agent.knowledge.service import KnowledgeService
-            svc = KnowledgeService(_get_workspace_root())
-            return json.dumps(svc.build_graph(), ensure_ascii=False)
+            graphs = []
+            for root in _get_knowledge_roots():
+                svc = KnowledgeService(root)
+                graphs.append(svc.build_graph())
+            return json.dumps(_merge_knowledge_graphs(graphs), ensure_ascii=False)
         except Exception as e:
             logger.error(f"[WebChannel] Knowledge graph error: {e}")
             return json.dumps({"nodes": [], "links": []})

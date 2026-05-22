@@ -8,6 +8,7 @@ period of inactivity to free resources.
 """
 
 import os
+import re
 import sys
 import uuid
 import queue
@@ -19,12 +20,33 @@ from common.utils import expand_path
 
 
 _DEFAULT_USER_DATA_DIR = "~/.cow/browser_profile"
+_DEFAULT_BROWSER_DOWNLOADS_DIR = "~/.cow/browser_downloads"
+_DOWNLOAD_WAIT_HINTS = (
+    "download",
+    "export",
+    "pdf",
+    "ofd",
+    "xml",
+    "xlsx",
+    "csv",
+    "\u4e0b\u8f7d",
+    "\u5bfc\u51fa",
+    "\u53d1\u7968",
+)
 
 try:
-    from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, Playwright
+    from playwright.sync_api import (
+        sync_playwright,
+        Browser,
+        BrowserContext,
+        Page,
+        Playwright,
+        TimeoutError as PlaywrightTimeoutError,
+    )
     _HAS_PLAYWRIGHT = True
 except ImportError:
     _HAS_PLAYWRIGHT = False
+    PlaywrightTimeoutError = TimeoutError
 
 
 # ---------------------------------------------------------------------------
@@ -466,10 +488,12 @@ class BrowserService:
         self._browser = self._playwright.chromium.launch(
             headless=self._headless,
             args=launch_args,
+            downloads_path=self._get_browser_downloads_dir(),
         )
         self._context = self._browser.new_context(
             viewport=viewport,
             user_agent=user_agent,
+            accept_downloads=True,
         )
         self._page = self._context.new_page()
         self._wire_close_listeners()
@@ -488,6 +512,8 @@ class BrowserService:
                 args=launch_args,
                 viewport=viewport,
                 user_agent=user_agent,
+                accept_downloads=True,
+                downloads_path=self._get_browser_downloads_dir(),
             )
         except Exception as e:
             # Profile is locked when another Chromium instance already holds it.
@@ -527,7 +553,7 @@ class BrowserService:
         if contexts:
             self._context = contexts[0]
         else:
-            self._context = self._browser.new_context(viewport=viewport)
+            self._context = self._browser.new_context(viewport=viewport, accept_downloads=True)
 
         pages = self._context.pages
         self._page = pages[0] if pages else self._context.new_page()
@@ -734,33 +760,135 @@ class BrowserService:
         logger.info(f"[Browser] Screenshot saved: {filepath}")
         return filepath
 
-    def click(self, ref: Optional[int] = None, selector: Optional[str] = None,
-              timeout: int = 5000) -> Dict[str, Any]:
-        return self._submit(self._do_click, ref, selector, timeout)
+    def click(
+        self,
+        ref: Optional[int] = None,
+        selector: Optional[str] = None,
+        timeout: int = 5000,
+        cwd: str = "",
+    ) -> Dict[str, Any]:
+        return self._submit(self._do_click, ref, selector, timeout, cwd)
 
-    def _do_click(self, ref, selector, timeout) -> Dict[str, Any]:
+    def _do_click(self, ref, selector, timeout, cwd) -> Dict[str, Any]:
         page = self._page
         try:
             if ref is not None:
-                result = page.evaluate(f"""
-                    () => {{
-                        const el = window.__cowRefMap && window.__cowRefMap[{ref}];
-                        if (!el) return {{ error: "ref {ref} not found. Run snapshot first." }};
-                        el.click();
-                        return {{ clicked: true, tag: el.tagName.toLowerCase() }};
-                    }}
-                """)
-                if result.get("error"):
-                    return result
-                page.wait_for_timeout(500)
-                return result
+                metadata = self._get_ref_click_metadata(page, ref)
+                if metadata.get("error"):
+                    return metadata
+
+                def click_ref():
+                    return page.evaluate("""
+                        (ref) => {
+                            const el = window.__cowRefMap && window.__cowRefMap[ref];
+                            if (!el) return { error: `ref ${ref} not found. Run snapshot first.` };
+                            el.click();
+                            return { clicked: true, tag: el.tagName.toLowerCase() };
+                        }
+                    """, ref)
+
+                return self._click_and_capture_download(page, click_ref, metadata, timeout, cwd)
             elif selector:
-                page.click(selector, timeout=timeout)
-                return {"clicked": True, "selector": selector}
+                metadata = self._get_selector_click_metadata(page, selector)
+
+                def click_selector():
+                    page.click(selector, timeout=timeout)
+                    return {"clicked": True, "selector": selector}
+
+                return self._click_and_capture_download(page, click_selector, metadata, timeout, cwd)
             else:
                 return {"error": "Provide either ref (from snapshot) or selector"}
         except Exception as e:
             return {"error": f"Click failed: {e}"}
+
+    def _get_ref_click_metadata(self, page, ref: int) -> Dict[str, Any]:
+        return page.evaluate("""
+            (ref) => {
+                const el = window.__cowRefMap && window.__cowRefMap[ref];
+                if (!el) return { error: `ref ${ref} not found. Run snapshot first.` };
+                return {
+                    tag: el.tagName.toLowerCase(),
+                    text: (el.innerText || el.textContent || "").trim(),
+                    href: el.href || el.getAttribute("href") || "",
+                    download: el.getAttribute("download") || "",
+                    ariaLabel: el.getAttribute("aria-label") || "",
+                    title: el.getAttribute("title") || ""
+                };
+            }
+        """, ref)
+
+    def _get_selector_click_metadata(self, page, selector: str) -> Dict[str, Any]:
+        try:
+            return page.eval_on_selector(selector, """
+                (el) => ({
+                    tag: el.tagName.toLowerCase(),
+                    text: (el.innerText || el.textContent || "").trim(),
+                    href: el.href || el.getAttribute("href") || "",
+                    download: el.getAttribute("download") || "",
+                    ariaLabel: el.getAttribute("aria-label") || "",
+                    title: el.getAttribute("title") || ""
+                })
+            """) or {}
+        except Exception:
+            return {}
+
+    def _click_and_capture_download(
+        self,
+        page,
+        click_action: Callable[[], Dict[str, Any]],
+        metadata: Dict[str, Any],
+        timeout: int,
+        cwd: str,
+    ) -> Dict[str, Any]:
+        result: Dict[str, Any] = {}
+        wait_timeout = self._download_wait_timeout_ms(metadata, timeout)
+
+        try:
+            with page.expect_download(timeout=wait_timeout) as download_info:
+                result = click_action()
+            if result.get("error"):
+                return result
+            download = download_info.value
+        except PlaywrightTimeoutError:
+            page.wait_for_timeout(500)
+            return result or {"clicked": True}
+
+        saved = self._save_download(download, cwd)
+        if saved.get("error"):
+            result["download_error"] = saved["error"]
+        else:
+            result["download"] = saved
+        return result
+
+    def _download_wait_timeout_ms(self, metadata: Dict[str, Any], click_timeout: int) -> int:
+        if self._looks_like_download(metadata):
+            return max(5000, int(click_timeout or 5000))
+        return min(max(int(click_timeout or 5000), 500), 1000)
+
+    def _looks_like_download(self, metadata: Dict[str, Any]) -> bool:
+        haystack = " ".join(
+            str(metadata.get(key, ""))
+            for key in ("text", "href", "download", "ariaLabel", "title")
+        ).lower()
+        return any(hint in haystack for hint in _DOWNLOAD_WAIT_HINTS)
+
+    def _save_download(self, download, cwd: str) -> Dict[str, Any]:
+        failure = download.failure()
+        if failure:
+            return {"error": f"Download failed: {failure}"}
+
+        save_dir = self._get_download_dir(cwd)
+        filename = self._safe_download_filename(download.suggested_filename)
+        filepath = self._unique_download_path(save_dir, filename)
+        download.save_as(filepath)
+        logger.info(f"[Browser] Download saved: {filepath}")
+        return {
+            "path": filepath,
+            "file_name": os.path.basename(filepath),
+            "suggested_filename": filename,
+            "url": download.url,
+            "size": os.path.getsize(filepath),
+        }
 
     def fill(self, text: str, ref: Optional[int] = None,
              selector: Optional[str] = None, timeout: int = 5000) -> Dict[str, Any]:
@@ -945,3 +1073,38 @@ class BrowserService:
         os.makedirs(d, exist_ok=True)
         self._screenshot_dir = d
         return d
+
+    def _get_browser_downloads_dir(self) -> str:
+        configured = (
+            self._config.get("downloads_path")
+            or self._config.get("download_dir")
+            or _DEFAULT_BROWSER_DOWNLOADS_DIR
+        )
+        d = expand_path(str(configured))
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _get_download_dir(self, cwd: str = "") -> str:
+        base = cwd or os.getcwd()
+        d = os.path.join(base, "downloads")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _safe_download_filename(self, filename: Optional[str]) -> str:
+        name = os.path.basename(filename or "")
+        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .")
+        if not name:
+            name = f"download_{uuid.uuid4().hex[:8]}"
+        return name[:180]
+
+    def _unique_download_path(self, directory: str, filename: str) -> str:
+        filepath = os.path.join(directory, filename)
+        if not os.path.exists(filepath):
+            return filepath
+
+        stem, ext = os.path.splitext(filename)
+        for _ in range(100):
+            candidate = os.path.join(directory, f"{stem}_{uuid.uuid4().hex[:8]}{ext}")
+            if not os.path.exists(candidate):
+                return candidate
+        return os.path.join(directory, f"{uuid.uuid4().hex}_{filename}")
