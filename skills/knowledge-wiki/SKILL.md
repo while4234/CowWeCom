@@ -91,6 +91,7 @@ Append-only, newest at bottom:
 - **Update, don't duplicate**: if a page exists, update it
 - **Cross-reference**: every page should link to related pages; keep the knowledge graph connected
 - **Index is mandatory**: always update `knowledge/index.md` after any change
+- **Privacy boundary**: do not store ordinary chat users, private names, family or intimate relationships, disputes, social-bridge reachability, Bridge IDs, channel names, or cross-user relayed messages in `knowledge/`. Store those in user memory or relation memory unless the user explicitly asks for a knowledge document.
 - **Be concise**: capture essence, not copy entire sources
 - **Full paths in replies**: when referencing knowledge files in conversation replies, use the full path from workspace root (e.g. `[Title](knowledge/<category>/<slug>.md)`), not relative paths. Relative paths are only for cross-references inside knowledge pages themselves.
 - **Cite sources**: when answering based on knowledge pages, include links to the relevant pages so the user can explore further.

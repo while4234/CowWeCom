@@ -8,6 +8,7 @@ from typing import Dict, Any
 from pathlib import Path
 
 from agent.tools.base_tool import BaseTool, ToolResult
+from agent.tools.knowledge_guard import validate_knowledge_write
 from common.utils import expand_path
 
 
@@ -49,6 +50,10 @@ class Write(BaseTool):
         
         if not path:
             return ToolResult.fail("Error: path parameter is required")
+
+        ok, error = validate_knowledge_write(path, content)
+        if not ok:
+            return ToolResult.fail(error)
         
         # Resolve path
         absolute_path = self._resolve_path(path)

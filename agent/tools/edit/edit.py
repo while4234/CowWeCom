@@ -7,6 +7,7 @@ import os
 from typing import Dict, Any
 
 from agent.tools.base_tool import BaseTool, ToolResult
+from agent.tools.knowledge_guard import validate_knowledge_write
 from common.utils import expand_path
 from agent.tools.utils.diff import (
     strip_bom,
@@ -62,6 +63,10 @@ class Edit(BaseTool):
         
         if not path:
             return ToolResult.fail("Error: path parameter is required")
+
+        ok, error = validate_knowledge_write(path, new_text)
+        if not ok:
+            return ToolResult.fail(error)
         
         # Resolve path
         absolute_path = self._resolve_path(path)

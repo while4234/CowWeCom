@@ -350,8 +350,14 @@ def _build_knowledge_section(workspace_dir: str, language: str) -> List[str]:
         "",
         "1. **用户分享了文章/链接/文档** → 阅读理解后，在同一轮回复中将要点写入 `knowledge/sources/<slug>.md`",
         "2. **深度讨论产生了结论/方案** → 整理为 `knowledge/analysis/<slug>.md`",
-        "3. **对话涉及重要实体**（人物/公司/项目）→ 创建或更新 `knowledge/entities/<name>.md`",
+        "3. **对话涉及重要公开实体**（公司/项目/公开人物/作品/地点等）→ 创建或更新 `knowledge/entities/<name>.md`",
         "4. **讨论了技术概念/方法论** → 整理为 `knowledge/concepts/<topic>.md`",
+        "",
+        "### 知识库边界",
+        "",
+        "不要把普通微信用户、私人称呼、家庭/亲密关系、吵架矛盾、桥接可达状态、Bridge ID、微信渠道、"
+        "跨用户转述内容写入 `knowledge/`。这些属于个人记忆或关系记忆，只能写入 `USER.md`、`MEMORY.md`、"
+        "`memory/YYYY-MM-DD.md` 或关系记忆；除非用户明确要求整理为知识库文档。",
         "",
         "每次写入知识页面后，**必须同步更新** `knowledge/index.md` 添加一行索引。",
         "详细的页面格式和操作规范，请读取技能 `knowledge-wiki` 的 SKILL.md。",

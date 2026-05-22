@@ -145,7 +145,7 @@ class TestSocialBridgeService(unittest.TestCase):
 
     def test_send_message_uses_model_rewrite_and_marks_sent(self):
         router = FakeRouter(delivered=True)
-        model = FakeModel("这是 A 授权我转述给你的：他想认真道歉，也希望你们能好好聊聊。")
+        model = FakeModel("他让我带句话：他是真的想认真道歉，也希望你们能好好聊聊。")
         service = SocialBridgeService(self.store, router)
         service.set_relationship("weixin:a", "weixin:b", "夫妻", "最近因为晚归吵过架")
         actor_memory = self.workspace / "memory" / "users" / "memory_a" / "MEMORY.md"
@@ -169,9 +169,11 @@ class TestSocialBridgeService(unittest.TestCase):
         self.assertIn("A 最近反复提到想认真道歉", model.requests[0].messages[0]["content"])
         self.assertIn("B 更希望被温和地理解", model.requests[0].messages[0]["content"])
         self.assertIn("最近因为晚归吵过架", model.requests[0].messages[0]["content"])
+        self.assertIn("朋友", model.requests[0].system)
+        self.assertIn("避免使用“授权我转述”", model.requests[0].system)
         self.assertEqual(self.store.list_pending_for_actor("weixin:b"), [])
 
-    def test_send_message_falls_back_without_model_and_keeps_privacy_boundary(self):
+    def test_send_message_falls_back_without_model_with_natural_boundary(self):
         router = FakeRouter(delivered=True)
         service = SocialBridgeService(self.store, router)
 
@@ -179,8 +181,26 @@ class TestSocialBridgeService(unittest.TestCase):
 
         sent_text = router.sent[0][1]
         self.assertTrue(result["delivered"])
-        self.assertIn("明确授权我转述", sent_text)
+        self.assertIn("我帮对方带句话", sent_text)
+        self.assertNotIn("授权我转述", sent_text)
+        self.assertNotIn("隐私记忆", sent_text)
         self.assertIn("请告诉 B 我会按时到。", sent_text)
+
+    def test_send_message_supports_non_apology_messages(self):
+        router = FakeRouter(delivered=True)
+        model = FakeModel("他想问你今晚想不想吃火锅；如果你累了，也可以改天。")
+        service = SocialBridgeService(self.store, router)
+
+        result = service.send_message(
+            "weixin:a",
+            "weixin:b",
+            "问问她今晚想不想吃火锅，如果累了就改天。",
+            model=model,
+        )
+
+        self.assertTrue(result["delivered"])
+        self.assertEqual(router.sent[0][1], model.text)
+        self.assertIn("问问她今晚想不想吃火锅", model.requests[0].messages[0]["content"])
 
     def test_send_message_becomes_pending_when_target_unreachable(self):
         router = FakeRouter(delivered=False)

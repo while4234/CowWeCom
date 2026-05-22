@@ -405,8 +405,7 @@ class SocialBridgeService:
         if generated:
             return generated
         return (
-            "我收到了一条对方明确授权我转述给你的消息。我会只转达这次授权的内容，"
-            "不会透露对方未授权的私人记忆。\n\n"
+            "我帮对方带句话，尽量只说这次他想让我带到的部分，不替他多解释。\n\n"
             f"{text}"
         )
 
@@ -432,27 +431,29 @@ class SocialBridgeService:
                     {
                         "role": "user",
                         "content": (
-                            "请把下面这段已由发送方明确授权转述的内容，改写成发给接收方的一段自然消息。\n"
+                            "请把下面这段发送方明确让我带给接收方的内容，改写成发给接收方的一段自然消息。\n"
                             f"发送方公开代号: {SocialBridgeService._public_user_id(actor_id)}\n"
                             f"接收方公开代号: {SocialBridgeService._public_user_id(target_user_id)}\n"
                             f"双方关系档案（仅可作为措辞参考）: {relationship_text or '未记录'}\n"
-                            f"发送方私有记忆摘要（仅供理解授权内容，不得外泄）: {safe_context.get('actor_private', '未检索到')}\n"
+                            f"发送方私有记忆摘要（仅供理解这次要带的话，不得外泄）: {safe_context.get('actor_private', '未检索到')}\n"
                             f"接收方私有记忆摘要（仅供理解接收视角，不得提及来源）: {safe_context.get('target_private', '未检索到')}\n"
-                            f"关系记忆（双方共同/授权上下文）: {safe_context.get('pair_memory', '未检索到')}\n"
-                            f"授权内容: {message}\n\n"
-                            "输出只包含最终要发送给接收方的正文。"
+                            f"关系记忆（双方共同/已允许进入关系上下文）: {safe_context.get('pair_memory', '未检索到')}\n"
+                            f"要带的话: {message}\n\n"
+                            "输出只包含最终要发送给接收方的正文。正文要像一个懂双方关系的朋友在帮忙递话，"
+                            "温和、具体、有人味；不要像公告、客服、法律声明或工具回执。"
                         ),
                     }
                 ],
-                temperature=0.4,
+                temperature=0.55,
                 max_tokens=700,
                 stream=False,
                 system=(
-                    "你是一个谨慎的跨用户沟通桥梁。只能使用发送方本次明确授权转述的内容，"
-                    "关系记忆中双方共同参与或授权进入关系上下文的信息，以及接收方自己的视角来调整措辞。"
+                    "你是一个温柔、聪明、懂分寸的朋友式沟通桥梁。只能使用发送方这次明确让你带的话，"
+                    "关系记忆中双方共同参与或已允许进入关系上下文的信息，以及接收方自己的视角来调整措辞。"
                     "发送方/接收方私有记忆只能用于理解语气和避免误伤，不得添加成正文事实，不得泄露任何一方"
-                    "私下和 Agent 说过的话，也不得声称你读取了记忆。正文里要保留边界："
-                    "这是对方授权你代为转述/协助沟通的信息。"
+                    "私下和 Agent 说过的话，也不得声称你读取了记忆。不要假装自己就是发送方；"
+                    "可以自然地说“他让我带句话”“我想帮你们把这句话说柔和一点”。"
+                    "避免使用“授权我转述”“明确授权”“隐私记忆”“边界”等生硬术语。"
                 ),
             )
             response = model.call(request)
