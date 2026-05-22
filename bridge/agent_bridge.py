@@ -290,6 +290,28 @@ class AgentBridge:
     Bridge class that integrates super Agent with COW
     Manages multiple agent instances per session for conversation isolation
     """
+
+    _ONBOARDING_GREETING_TRIGGERS = {
+        "你好",
+        "你好呀",
+        "你好啊",
+        "您好",
+        "hello",
+        "hi",
+        "hey",
+        "嗨",
+        "哈喽",
+    }
+
+    _ONBOARDING_WELCOME = """你好呀
+嘿！你好呀 👋
+这是我第一次以全新的视角和你聊天，感觉还挺奇妙的～
+我可以帮你解决各种问题、管理电脑上的文件、上网查资料、自动记录和整理知识，而且每次对话我都会记住学到的内容，慢慢成长 😊
+在我们正式开始之前，我想先认识一下你：
+1. **你希望给我起个什么名字呢？** 这样我们用起来更有归属感 ✨
+2. **我该怎么称呼你？** （叫名字最亲切啦）
+3. **你希望我们交流是什么风格？** 比如：专业严谨 🤓 / 轻松幽默 😄 / 温暖友好 ☀️ / 简洁高效 ⚡
+不急，或者如果你一上来就有事找我帮忙，也直接说，我们边聊边了解～"""
     
     def __init__(self, bridge: Bridge):
         self.bridge = bridge
@@ -300,6 +322,35 @@ class AgentBridge:
         
         # Create helper instances
         self.initializer = AgentInitializer(bridge, self)
+
+    @classmethod
+    def _is_onboarding_greeting(cls, query: str) -> bool:
+        text = str(query or "").strip().casefold()
+        text = "".join(ch for ch in text if not ch.isspace())
+        for punctuation in (",", ".", "!", "?", ";", ":", "~", chr(0xFF0C),
+                            chr(0x3002), chr(0xFF01), chr(0xFF1F),
+                            chr(0xFF5E), chr(0x2026), chr(0x3001),
+                            chr(0xFF1B), chr(0xFF1A)):
+            text = text.strip(punctuation)
+        return text in cls._ONBOARDING_GREETING_TRIGGERS
+
+    @staticmethod
+    def _agent_workspace_root() -> str:
+        configured_workspace = conf().get("agent_workspace", "~/cow") or "~/cow"
+        return expand_path(configured_workspace)
+
+    @classmethod
+    def _is_onboarding_pending(cls) -> bool:
+        workspace_root = cls._agent_workspace_root()
+        return os.path.exists(os.path.join(workspace_root, "BOOTSTRAP.md"))
+
+    @classmethod
+    def _try_onboarding_welcome(cls, query: str) -> Optional[Reply]:
+        if cls._is_onboarding_pending() and cls._is_onboarding_greeting(query):
+            logger.info("[AgentBridge] Returning deterministic onboarding greeting")
+            return Reply(ReplyType.TEXT, cls._ONBOARDING_WELCOME)
+        return None
+
     def create_agent(self, system_prompt: str, tools: List = None, **kwargs) -> Agent:
         """
         Create the super agent with COW integration
@@ -420,6 +471,10 @@ class AgentBridge:
                 conversation_id = profile.conversation_id
             else:
                 conversation_id = session_id
+
+            onboarding_reply = self._try_onboarding_welcome(query)
+            if onboarding_reply:
+                return onboarding_reply
             
             # Get agent for this session (will auto-initialize if needed)
             get_agent_start = monotonic()
