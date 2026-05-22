@@ -12,14 +12,15 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 ## Current Baseline
 
-- Latest code commit: `4ed1edf` `feat: add safe github code update skill`
+- Latest code commit in this local round: `fix: make weixin onboarding greeting deterministic`
 - GitHub upload target: private repository `while4234/CowWechat`
-- Remote layout: `origin` points to `https://github.com/while4234/CowWechat.git`; `upstream` points to the original `https://github.com/zhayujie/CowAgent.git` and has push disabled.
-- Working tree: has separate uncommitted prompt-cache telemetry edits that are intentionally not part of the code-update feature commit.
-- Validation: `tests/test_git_code_updater.py` passed; backend `SkillManager` and Web API both show enabled `code-update`; backend `ToolManager` and Web API both show `git_code_update`; non-admin guarded call is denied; high-confidence secret scan and `git diff --check` passed for code-update files.
+- Remote layout in this workspace: `github` points to `https://github.com/while4234/CowWechat.git`; `origin` points to the original `https://github.com/zhayujie/CowAgent.git`.
+- Working tree: clean after each completed development round; runtime state is ignored.
+- Validation: focused onboarding welcome tests and syntax compile passed for the deterministic Weixin onboarding greeting fix.
 
 ## Change Log
 
+- `2026-05-22` `fix: make weixin onboarding greeting deterministic`: Added a narrow pre-model onboarding greeting path so a clean workspace with `BOOTSTRAP.md` returns the full first-run welcome for pure greeting messages.
 - `2026-05-22` `4ed1edf` `feat: add safe github code update skill`: Added natural-language `code-update` skill plus guarded `git_code_update` tool for fast-forward-only updates that refuse dirty worktrees and protected config/secret paths.
 - `2026-05-22` `51e861b` `docs: document github remote layout`: Documented that Codex/UI pushes should use the user's `origin` remote while the original project is kept as fetch-only `upstream`.
 - `2026-05-22` `cd29392` `fix: preserve private memory isolation in shared scope`: Prevented shared memory access from exposing other users' private memory entries and added isolation tests.
