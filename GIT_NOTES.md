@@ -12,14 +12,16 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 ## Current Baseline
 
-- Latest code commit: `3d39398` `feat: add latency telemetry for weixin replies`
+- Latest code commit: `852e909` `feat: add wechat quick progress lane`
 - GitHub upload target: private repository `while4234/CowWechat`
 - Remote layout: `origin` points to `https://github.com/while4234/CowWechat.git`; `upstream` points to the original `https://github.com/zhayujie/CowAgent.git` and has push disabled.
-- Working tree: clean after the latency telemetry commit; runtime secrets and chat logs remain ignored.
-- Validation: `.venv\Scripts\python.exe -m py_compile common\latency.py channel\chat_channel.py bridge\agent_bridge.py agent\protocol\agent_stream.py` passed; `.venv\Scripts\python.exe -m pytest tests\test_llm_usage_tracker.py tests\test_multi_user_isolation.py` passed; `git diff --check` passed with Windows CRLF warnings only; service restarted with `.venv\Scripts\python.exe -m cli.cli restart --no-logs` and status shows PID 8168 running `weixin,weixin_user` on `gpt-5.5`.
+- Working tree: clean after the `/q` fast-lane implementation commit and this notes update; runtime secrets and chat logs remain ignored.
+- Validation: `.venv\Scripts\python.exe -m py_compile common\agent_task_runtime.py channel\chat_channel.py bridge\agent_event_handler.py bridge\agent_bridge.py agent\protocol\agent.py agent\protocol\agent_stream.py tests\test_fast_lane_progress.py` passed; `.venv\Scripts\python.exe -m pytest` passed with 137 tests; `git diff --check` passed with Windows CRLF warnings only; service restarted with `PYTHONUTF8=1 .venv\Scripts\python.exe -m cli.cli restart --no-logs` and status shows CowAgent running on `weixin,weixin_user` with `gpt-5.5`.
 
 ## Change Log
 
+- `2026-05-22` `852e909` `feat: add wechat quick progress lane`: Added `/q` progress and quick-reply fast lanes, `/状态`/`/取消`/`/跳过` local controls, per-session progress snapshots, cooperative Agent cancellation, and fast-lane unit tests.
+- `2026-05-22` `3fc82be` `docs: update latency telemetry notes`: Updated local handoff and Git notes after latency telemetry validation.
 - `2026-05-22` `3d39398` `feat: add latency telemetry for weixin replies`: Added hashed request latency logs for session queue wait, channel handling, AgentBridge execution, and each LLM stream turn so slow Weixin replies can be attributed to queueing, model latency, cache misses, tools, persistence, or send time.
 - `2026-05-22` `7598c2d` `feat: improve prompt cache telemetry`: Added prompt cache usage visibility and persisted cache hit metrics for the current deployment.
 - `2026-05-22` `4ed1edf` `feat: add safe github code update skill`: Added natural-language `code-update` skill plus guarded `git_code_update` tool for fast-forward-only updates that refuse dirty worktrees and protected config/secret paths.
@@ -37,5 +39,6 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 - To roll back the GitHub upload snapshot, inspect `git show af5f161` and `git show 40ee608`, then revert in reverse order if needed.
 - To roll back latency telemetry only, revert `3d39398` after confirming no runtime-only config files are staged.
+- To roll back the `/q` fast-lane behavior only, revert `852e909` after confirming no runtime-only config files are staged.
 - Local runtime config is ignored; rolling back code does not change `config.json`, `.env*`, Weixin credentials, or local virtual environments.
 - The active service can be checked with `PYTHONUTF8=1 .venv\Scripts\python.exe -m cli.cli status`.
