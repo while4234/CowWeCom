@@ -2,13 +2,14 @@ import os
 import re
 import threading
 import time
+import uuid
 from asyncio import CancelledError
 from concurrent.futures import Future, ThreadPoolExecutor
 
 from bridge.context import *
 from bridge.reply import *
 from channel.channel import Channel
-from common.dequeue import Dequeue
+from common.agent_task_runtime import SessionRuntime, TaskPolicy
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common import memory
 from plugins import *
@@ -19,6 +20,8 @@ except Exception as e:
     pass
 
 handler_pool = ThreadPoolExecutor(max_workers=8)  # 处理消息的线程池
+control_pool = ThreadPoolExecutor(max_workers=4)  # 本地控制命令线程池
+quick_reply_pool = ThreadPoolExecutor(max_workers=4)  # /q 快答线程池
 
 
 # 抽象类, 它包含了与消息通道无关的通用处理逻辑
@@ -39,6 +42,191 @@ class ChatChannel(Channel):
         _thread = threading.Thread(target=self.consume)
         _thread.setDaemon(True)
         _thread.start()
+
+    def _get_or_create_runtime(self, session_id) -> SessionRuntime:
+        with self.lock:
+            runtime = self.sessions.get(session_id)
+            if runtime is None:
+                runtime = SessionRuntime(conf().get("concurrency_in_session", 1))
+                self.sessions[session_id] = runtime
+            return runtime
+
+    @staticmethod
+    def _is_control_command(content: str, command: str) -> bool:
+        if content == command:
+            return True
+        return content.startswith(command + " ")
+
+    def _classify_fast_lane(self, context: Context, runtime: SessionRuntime):
+        if context.type != ContextType.TEXT:
+            return TaskPolicy.NORMAL, {}
+
+        content = (context.content or "").strip()
+        if self._is_control_command(content, "/状态"):
+            return TaskPolicy.CONTROL_PROGRESS, {"include_eta_note": False}
+        if self._is_control_command(content, "/取消"):
+            return TaskPolicy.CONTROL_CANCEL, {}
+        if self._is_control_command(content, "/跳过"):
+            return TaskPolicy.CONTROL_SKIP, {}
+
+        query = self._extract_quick_query(content)
+        if query is None:
+            return TaskPolicy.NORMAL, {}
+        if not query:
+            if runtime.has_running():
+                return TaskPolicy.CONTROL_PROGRESS, {"include_eta_note": False}
+            return TaskPolicy.QUICK_REPLY, {"query": "", "help": True}
+        if self._is_progress_query(query):
+            return TaskPolicy.CONTROL_PROGRESS, {
+                "include_eta_note": self._is_eta_query(query),
+            }
+        if self._quick_reply_requires_normal_agent(query):
+            return TaskPolicy.QUICK_REPLY, {"query": query, "refuse": True}
+        return TaskPolicy.QUICK_REPLY, {"query": query}
+
+    @staticmethod
+    def _extract_quick_query(content: str):
+        if content == "/q":
+            return ""
+        if content.startswith("/q "):
+            return content[3:].strip()
+        if content.startswith("/q\t"):
+            return content[3:].strip()
+        if content.startswith("/q:") or content.startswith("/q："):
+            return content[3:].strip()
+        if content.startswith("/q") and len(content) > 2:
+            suffix = content[2:]
+            if suffix[0] not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/-":
+                return suffix.strip(" \t:：")
+        return None
+
+    @staticmethod
+    def _is_progress_query(query: str) -> bool:
+        normalized = query.strip().lower()
+        compact = re.sub(r"[\s?？!！。,.，、]+", "", normalized)
+        if compact in {"status", "progress"}:
+            return True
+        return any(
+            keyword in compact
+            for keyword in (
+                "进展",
+                "状态",
+                "到哪",
+                "做到哪",
+                "现在怎么样",
+                "现在怎样",
+                "怎么样了",
+                "还要多久",
+                "多久完成",
+            )
+        )
+
+    @staticmethod
+    def _is_eta_query(query: str) -> bool:
+        compact = re.sub(r"\s+", "", query.lower())
+        return any(keyword in compact for keyword in ("还要多久", "多久完成", "eta"))
+
+    @staticmethod
+    def _quick_reply_requires_normal_agent(query: str) -> bool:
+        lowered = query.lower()
+        patterns = (
+            "查看", "读取", "修改", "编辑", "删除", "写入", "创建文件",
+            "项目", "仓库", "代码库", "目录", "文件", "运行命令", "执行命令",
+            "终端", "联网", "搜索", "查天气", "天气", "价格", "股价",
+            "新闻", "最新", "生成图片", "画图", "图片", "继续", "刚才",
+            "上面", "当前任务", "长任务", "上下文", "总结当前",
+            "read file", "write file", "edit file", "delete file", "project",
+            "repo", "run command", "shell", "terminal", "web search", "search",
+            "weather", "price", "stock", "news", "latest", "generate image",
+            "continue", "context",
+        )
+        return any(pattern in lowered for pattern in patterns)
+
+    def _send_plain_text(self, context: Context, text: str):
+        reply = Reply(ReplyType.TEXT, text)
+        reply = self._decorate_reply(context, reply)
+        self._send_reply(context, reply)
+
+    def _handle_control_progress(self, context: Context, runtime: SessionRuntime, include_eta_note: bool = False):
+        self._send_plain_text(context, runtime.status_text(include_eta_note=include_eta_note))
+
+    def _handle_control_cancel(self, context: Context, runtime: SessionRuntime):
+        running_cancelled = runtime.cancel_running()
+        pending_cleared = runtime.clear_pending()
+        self.cancel_session(context.get("session_id"), clear_pending=False)
+        if running_cancelled:
+            text = "已收到取消请求，当前任务会在下一次可取消点停止。"
+        else:
+            text = "当前没有运行中的任务。"
+        if pending_cleared:
+            text += f"\n已清空排队消息 {pending_cleared} 条。"
+        self._send_plain_text(context, text)
+
+    def _handle_control_skip(self, context: Context, runtime: SessionRuntime):
+        pending_cleared = runtime.clear_pending()
+        text = f"已清空排队消息 {pending_cleared} 条。" if pending_cleared else "当前没有排队消息。"
+        self._send_plain_text(context, text)
+
+    def _handle_quick_reply(self, context: Context, query: str, help: bool = False, refuse: bool = False):
+        if help:
+            self._send_plain_text(
+                context,
+                "/q 用法：\n"
+                "/q 进展：查看当前长任务进展。\n"
+                "/q 只回复 pong：快速单轮回复，不读取普通 Agent 历史。\n"
+                "需要工具、文件、联网或当前上下文的请求，请直接发送普通消息。",
+            )
+            return
+        if refuse:
+            self._send_plain_text(
+                context,
+                "这个请求需要普通 Agent 或当前任务上下文处理，请去掉 /q 后重新发送。",
+            )
+            return
+
+        quick_start = monotonic()
+        generate_elapsed = None
+        send_elapsed = None
+        quick_session_id = f"quick-{hash_id(context.get('session_id'))}-{uuid.uuid4().hex[:8]}"
+        quick_context = Context(ContextType.TEXT, query)
+        quick_context.kwargs = dict(context.kwargs)
+        quick_context["session_id"] = quick_session_id
+        quick_context["conversation_id"] = quick_session_id
+        quick_context["quick_reply"] = True
+
+        try:
+            from bridge.bridge import Bridge
+
+            bridge = Bridge()
+            generate_start = monotonic()
+            reply = bridge.fetch_reply_content(query, quick_context)
+            generate_elapsed = elapsed(generate_start)
+            if not reply or not reply.content:
+                reply = Reply(ReplyType.ERROR, "快答暂时没有生成回复。")
+
+            send_start = monotonic()
+            reply = self._decorate_reply(context, reply)
+            self._send_reply(context, reply)
+            send_elapsed = elapsed(send_start)
+
+            try:
+                bot = bridge.get_bot("chat")
+                if hasattr(bot, "sessions"):
+                    bot.sessions.clear_session(quick_session_id)
+            except Exception as e:
+                logger.debug(f"[FastLane] Failed to clear quick session: {e}")
+        except Exception as e:
+            logger.error(f"[FastLane] quick reply failed: {e}", exc_info=True)
+            self._send_plain_text(context, "快答失败，请去掉 /q 后重新发送。")
+        finally:
+            logger.info(
+                "[Latency][Quick] session=%s total=%s generate=%s send=%s query_chars=%s",
+                hash_id(context.get("session_id")),
+                format_seconds(elapsed(quick_start)),
+                format_seconds(generate_elapsed),
+                format_seconds(send_elapsed),
+                len(query or ""),
+            )
 
     # 根据消息构造context，消息内容相关的触发项写在这里
     def _compose_context(self, ctype: ContextType, content, **kwargs):
@@ -185,38 +373,49 @@ class ChatChannel(Channel):
         decorate_elapsed = None
         send_elapsed = None
         reply = None
+        runtime = context.get("_session_runtime")
+        final_phase = "done"
         logger.debug("[chat_channel] handling context: {}".format(context))
-        # reply的构建步骤
-        generate_start = monotonic()
-        reply = self._generate_reply(context)
-        generate_elapsed = elapsed(generate_start)
+        try:
+            # reply的构建步骤
+            generate_start = monotonic()
+            reply = self._generate_reply(context)
+            generate_elapsed = elapsed(generate_start)
 
-        logger.debug("[chat_channel] decorating reply: {}".format(reply))
+            logger.debug("[chat_channel] decorating reply: {}".format(reply))
 
-        # reply的包装步骤
-        if reply and reply.content:
-            decorate_start = monotonic()
-            reply = self._decorate_reply(context, reply)
-            decorate_elapsed = elapsed(decorate_start)
+            # reply的包装步骤
+            if reply and reply.content:
+                decorate_start = monotonic()
+                reply = self._decorate_reply(context, reply)
+                decorate_elapsed = elapsed(decorate_start)
 
-            # reply的发送步骤
-            send_start = monotonic()
-            self._send_reply(context, reply)
-            send_elapsed = elapsed(send_start)
-        content = getattr(reply, "content", "") if reply else ""
-        logger.info(
-            "[Latency][Handle] session=%s total=%s queue_wait=%s generate=%s decorate=%s send=%s "
-            "ctype=%s reply_type=%s reply_chars=%s",
-            hash_id(context.get("session_id")),
-            format_seconds(elapsed(handle_start)),
-            format_seconds(elapsed(context.get("_latency_enqueued_at"), handle_start)),
-            format_seconds(generate_elapsed),
-            format_seconds(decorate_elapsed),
-            format_seconds(send_elapsed),
-            context.type,
-            getattr(reply, "type", "none") if reply else "none",
-            len(content) if isinstance(content, str) else 0,
-        )
+                # reply的发送步骤
+                send_start = monotonic()
+                self._send_reply(context, reply)
+                send_elapsed = elapsed(send_start)
+        except Exception as e:
+            final_phase = "error"
+            if runtime:
+                runtime.update_progress("error", {"error": str(e)})
+            raise
+        finally:
+            if runtime:
+                runtime.finish_task(final_phase)
+            content = getattr(reply, "content", "") if reply else ""
+            logger.info(
+                "[Latency][Handle] session=%s total=%s queue_wait=%s generate=%s decorate=%s send=%s "
+                "ctype=%s reply_type=%s reply_chars=%s",
+                hash_id(context.get("session_id")),
+                format_seconds(elapsed(handle_start)),
+                format_seconds(elapsed(context.get("_latency_enqueued_at"), handle_start)),
+                format_seconds(generate_elapsed),
+                format_seconds(decorate_elapsed),
+                format_seconds(send_elapsed),
+                context.type,
+                getattr(reply, "type", "none") if reply else "none",
+                len(content) if isinstance(content, str) else 0,
+            )
 
     def _generate_reply(self, context: Context, reply: Reply = Reply()) -> Reply:
         e_context = PluginManager().emit_event(
@@ -444,7 +643,9 @@ class ChatChannel(Channel):
             except Exception as e:
                 logger.exception("Worker raise exception: {}".format(e))
             with self.lock:
-                self.sessions[session_id][1].release()
+                runtime = self.sessions.get(session_id)
+                if runtime:
+                    runtime.semaphore.release()
 
         return func
 
@@ -454,26 +655,54 @@ class ChatChannel(Channel):
         context["_latency_enqueued_at"] = enqueued_at
         if "_latency_received_at" not in context:
             context["_latency_received_at"] = enqueued_at
+        runtime = self._get_or_create_runtime(session_id)
+        policy, payload = self._classify_fast_lane(context, runtime)
+
+        if policy == TaskPolicy.CONTROL_PROGRESS:
+            control_pool.submit(
+                self._handle_control_progress,
+                context,
+                runtime,
+                payload.get("include_eta_note", False),
+            )
+            logger.info("[Latency][FastLane] control=progress session=%s", hash_id(session_id))
+            return
+        if policy == TaskPolicy.CONTROL_CANCEL:
+            control_pool.submit(self._handle_control_cancel, context, runtime)
+            logger.info("[Latency][FastLane] control=cancel session=%s", hash_id(session_id))
+            return
+        if policy == TaskPolicy.CONTROL_SKIP:
+            control_pool.submit(self._handle_control_skip, context, runtime)
+            logger.info("[Latency][FastLane] control=skip session=%s", hash_id(session_id))
+            return
+        if policy == TaskPolicy.QUICK_REPLY:
+            quick_reply_pool.submit(self._handle_quick_reply, context, **payload)
+            logger.info("[Latency][FastLane] control=quick session=%s", hash_id(session_id))
+            return
+
         with self.lock:
-            if session_id not in self.sessions:
-                self.sessions[session_id] = [
-                    Dequeue(),
-                    threading.BoundedSemaphore(conf().get("concurrency_in_session", 1)),
-                ]
-            context_queue = self.sessions[session_id][0]
-            pending_before = context_queue.qsize()
+            if self.sessions.get(session_id) is not runtime:
+                self.sessions[session_id] = runtime
+            pending_before = runtime.queue.qsize()
             context["_latency_queue_pending_before"] = pending_before
             priority = context.type == ContextType.TEXT and context.content.startswith("#")
-            if context.type == ContextType.TEXT and context.content.startswith("#"):
-                self.sessions[session_id][0].putleft(context)  # 优先处理管理命令
+            if priority:
+                runtime.queue.putleft(context)  # 优先处理管理命令
             else:
-                self.sessions[session_id][0].put(context)
+                runtime.queue.put(context)
             logger.info(
                 "[Latency][Queue] enqueue session=%s ctype=%s priority=%s pending_before=%s",
                 hash_id(session_id),
                 context.type,
                 priority,
                 pending_before,
+            )
+
+        if runtime.should_send_queue_notice():
+            control_pool.submit(
+                self._send_plain_text,
+                context,
+                "上一条还在处理，已排队。发送 /状态 查看进展，/取消 取消当前任务，/q 可快速问一句。",
             )
 
     # 消费者函数，单独线程，用于从消息队列中取出消息并处理
@@ -483,17 +712,25 @@ class ChatChannel(Channel):
                 session_ids = list(self.sessions.keys())
             for session_id in session_ids:
                 with self.lock:
-                    context_queue, semaphore = self.sessions[session_id]
-                if semaphore.acquire(blocking=False):  # 等线程处理完毕才能删除
-                    if not context_queue.empty():
-                        context = context_queue.get()
+                    runtime = self.sessions.get(session_id)
+                if not runtime:
+                    continue
+                if runtime.semaphore.acquire(blocking=False):  # 等线程处理完毕才能删除
+                    if not runtime.queue.empty():
+                        context = runtime.queue.get()
                         dequeued_at = monotonic()
                         context["_latency_dequeued_at"] = dequeued_at
+                        token = runtime.start_task(
+                            context.content,
+                            max_turns=conf().get("agent_max_steps", 0),
+                        )
+                        context["_session_runtime"] = runtime
+                        context["_cancellation_token"] = token
                         logger.info(
                             "[Latency][Queue] dequeue session=%s queue_wait=%s pending_after=%s",
                             hash_id(session_id),
                             format_seconds(elapsed(context.get("_latency_enqueued_at"), dequeued_at)),
-                            context_queue.qsize(),
+                            runtime.queue.qsize(),
                         )
                         logger.debug("[chat_channel] consume context: {}".format(context))
                         future: Future = handler_pool.submit(self._handle, context)
@@ -502,35 +739,39 @@ class ChatChannel(Channel):
                             if session_id not in self.futures:
                                 self.futures[session_id] = []
                             self.futures[session_id].append(future)
-                    elif semaphore._initial_value == semaphore._value + 1:  # 除了当前，没有任务再申请到信号量，说明所有任务都处理完毕
-                        with self.lock:
-                            self.futures[session_id] = [t for t in self.futures[session_id] if not t.done()]
-                            assert len(self.futures[session_id]) == 0, "thread pool error"
-                            del self.sessions[session_id]
                     else:
-                        semaphore.release()
+                        runtime.semaphore.release()
+                        with self.lock:
+                            active_futures = [t for t in self.futures.get(session_id, []) if not t.done()]
+                            self.futures[session_id] = active_futures
+                            if not runtime.has_running() and runtime.queue.empty() and not active_futures:
+                                del self.sessions[session_id]
+                                del self.futures[session_id]
             time.sleep(0.2)
 
     # 取消session_id对应的所有任务，只能取消排队的消息和已提交线程池但未执行的任务
-    def cancel_session(self, session_id):
+    def cancel_session(self, session_id, clear_pending: bool = True):
         with self.lock:
             if session_id in self.sessions:
-                for future in self.futures[session_id]:
+                for future in self.futures.get(session_id, []):
                     future.cancel()
-                cnt = self.sessions[session_id][0].qsize()
-                if cnt > 0:
-                    logger.info("Cancel {} messages in session {}".format(cnt, session_id))
-                self.sessions[session_id][0] = Dequeue()
+                runtime = self.sessions[session_id]
+                runtime.cancel_running()
+                if clear_pending:
+                    cnt = runtime.clear_pending()
+                    if cnt > 0:
+                        logger.info("Cancel %s queued messages in session %s", cnt, hash_id(session_id))
 
     def cancel_all_session(self):
         with self.lock:
             for session_id in self.sessions:
-                for future in self.futures[session_id]:
+                for future in self.futures.get(session_id, []):
                     future.cancel()
-                cnt = self.sessions[session_id][0].qsize()
+                runtime = self.sessions[session_id]
+                runtime.cancel_running()
+                cnt = runtime.clear_pending()
                 if cnt > 0:
-                    logger.info("Cancel {} messages in session {}".format(cnt, session_id))
-                self.sessions[session_id][0] = Dequeue()
+                    logger.info("Cancel %s queued messages in session %s", cnt, hash_id(session_id))
 
 
 def check_prefix(content, prefix_list):

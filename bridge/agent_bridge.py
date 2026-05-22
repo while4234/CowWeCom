@@ -430,6 +430,7 @@ class AgentBridge:
             
             # Create event handler for logging and channel communication
             event_handler = AgentEventHandler(context=context, original_callback=on_event)
+            cancellation_token = context.get("_cancellation_token") if context else None
             
             # Filter tools based on context
             original_tools = agent.tools
@@ -493,7 +494,8 @@ class AgentBridge:
                 response = agent.run_stream(
                     user_message=query,
                     on_event=event_handler.handle_event,
-                    clear_history=clear_history
+                    clear_history=clear_history,
+                    cancellation_token=cancellation_token,
                 )
                 run_stream_elapsed = elapsed(run_stream_start)
             finally:

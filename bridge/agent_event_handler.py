@@ -25,6 +25,7 @@ class AgentEventHandler:
         self.channel = None
         if context:
             self.channel = context.kwargs.get("channel") if hasattr(context, "kwargs") else None
+        self.progress_runtime = context.get("_session_runtime") if context else None
         
         self.current_content = ""
         self.turn_number = 0
@@ -38,6 +39,12 @@ class AgentEventHandler:
         """
         event_type = event.get("type")
         data = event.get("data", {})
+
+        if self.progress_runtime:
+            try:
+                self.progress_runtime.update_progress(event_type, data)
+            except Exception as e:
+                logger.debug(f"[AgentEventHandler] Failed to update progress: {e}")
         
         # Dispatch to specific handlers
         if event_type == "turn_start":

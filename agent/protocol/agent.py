@@ -8,6 +8,7 @@ from agent.protocol.models import LLMRequest, LLMModel
 from agent.protocol.agent_stream import AgentStreamExecutor
 from agent.protocol.result import AgentAction, AgentActionType, ToolResult, AgentResult
 from agent.tools.base_tool import BaseTool, ToolStage
+from common.agent_task_runtime import TaskCancelled
 
 
 class Agent:
@@ -373,7 +374,13 @@ class Agent:
 
         return action
 
-    def run_stream(self, user_message: str, on_event=None, clear_history: bool = False, skill_filter=None) -> str:
+    def run_stream(
+            self,
+            user_message: str,
+            on_event=None,
+            clear_history: bool = False,
+            skill_filter=None,
+            cancellation_token=None) -> str:
         """
         Execute single agent task with streaming (based on tool-call)
 
@@ -432,12 +439,18 @@ class Agent:
             max_turns=self.max_steps,
             on_event=on_event,
             messages=messages_copy,  # Pass copied message history
-            max_context_turns=max_context_turns
+            max_context_turns=max_context_turns,
+            cancellation_token=cancellation_token
         )
 
         # Execute
         try:
             response = executor.run_stream(user_message)
+        except TaskCancelled:
+            self.stream_executor = executor
+            self._last_run_new_messages = []
+            logger.info("[Agent] Current run cancelled by user request")
+            return "当前任务已取消。"
         except Exception:
             # If executor cleared its messages (context overflow / message format error),
             # sync that back to the Agent's own message list so the next request

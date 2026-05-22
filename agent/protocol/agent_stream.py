@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional, Callable, Tuple
 from agent.protocol.models import LLMRequest, LLMModel
 from agent.protocol.message_utils import sanitize_claude_messages, compress_turn_to_text_only
 from agent.tools.base_tool import BaseTool, ToolResult
+from common.agent_task_runtime import TaskCancelled
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common.log import logger
 from common.llm_usage_tracker import normalize_usage
@@ -66,7 +67,8 @@ class AgentStreamExecutor:
             max_turns: int = 50,
             on_event: Optional[Callable] = None,
             messages: Optional[List[Dict]] = None,
-            max_context_turns: int = 30
+            max_context_turns: int = 30,
+            cancellation_token=None
     ):
         """
         Initialize stream executor
@@ -89,6 +91,7 @@ class AgentStreamExecutor:
         self.max_turns = max_turns
         self.on_event = on_event
         self.max_context_turns = max_context_turns
+        self.cancellation_token = cancellation_token
 
         # Message history - use provided messages or create new list
         self.messages = messages if messages is not None else []
@@ -110,6 +113,19 @@ class AgentStreamExecutor:
                 })
             except Exception as e:
                 logger.error(f"Event callback error: {e}")
+
+    def _raise_if_cancelled(self):
+        if self.cancellation_token and self.cancellation_token.is_cancelled():
+            reason = self.cancellation_token.reason or "user_cancelled"
+            self._emit_event("cancelled", {"reason": reason})
+            raise TaskCancelled(reason)
+
+    def _sleep_with_cancel(self, seconds: float):
+        deadline = monotonic() + max(0.0, seconds)
+        while monotonic() < deadline:
+            self._raise_if_cancelled()
+            time.sleep(min(0.5, max(0.0, deadline - monotonic())))
+        self._raise_if_cancelled()
     
     def _is_thinking_enabled(self) -> bool:
         """Whether deep-thinking mode is on at the model layer.
@@ -298,6 +314,7 @@ class AgentStreamExecutor:
             Final response text
         """
         # Log user message with model info
+        self._raise_if_cancelled()
         
         thinking_enabled = self._is_thinking_enabled()
         self._request_runtime_context = self._build_runtime_context_text()
@@ -332,12 +349,14 @@ class AgentStreamExecutor:
 
         try:
             while turn < self.max_turns:
+                self._raise_if_cancelled()
                 turn += 1
                 logger.info(f"[Agent] 第 {turn} 轮")
                 self._emit_event("turn_start", {"turn": turn})
 
                 # Call LLM (enable retry_on_empty for better reliability)
                 assistant_msg, tool_calls = self._call_llm_stream(retry_on_empty=True)
+                self._raise_if_cancelled()
                 final_response = assistant_msg
 
                 # No tool calls, end loop
@@ -364,7 +383,9 @@ class AgentStreamExecutor:
                             })
                             
                             # 再调用一次 LLM
+                            self._raise_if_cancelled()
                             assistant_msg, tool_calls = self._call_llm_stream(retry_on_empty=False)
+                            self._raise_if_cancelled()
                             final_response = assistant_msg
                             
                             # Remove the injected prompt from history so it doesn't
@@ -436,6 +457,7 @@ class AgentStreamExecutor:
                 try:
                     executed_tool_results = {}
                     for tool_call in tool_calls:
+                        self._raise_if_cancelled()
                         fingerprint = self._tool_call_fingerprint(tool_call)
                         if fingerprint in executed_tool_results:
                             result = self._reuse_duplicate_tool_result(
@@ -444,6 +466,7 @@ class AgentStreamExecutor:
                             )
                         else:
                             result = self._execute_tool(tool_call)
+                            self._raise_if_cancelled()
                             executed_tool_results[fingerprint] = {
                                 "tool_call": tool_call,
                                 "result": result,
@@ -608,7 +631,9 @@ class AgentStreamExecutor:
                 
                 # Call LLM one more time to get summary (without retry to avoid loops)
                 try:
+                    self._raise_if_cancelled()
                     summary_response, summary_tools = self._call_llm_stream(retry_on_empty=False)
+                    self._raise_if_cancelled()
                     if summary_response:
                         final_response = summary_response
                         logger.info(f"💭 Summary: {summary_response[:150]}{'...' if len(summary_response) > 150 else ''}")
@@ -618,6 +643,8 @@ class AgentStreamExecutor:
                             f"我已经执行了{turn}个决策步骤，达到了单次运行的步数上限。"
                             "任务可能还未完全完成，建议你将任务拆分成更小的步骤，或者换一种方式描述需求。"
                         )
+                except TaskCancelled:
+                    raise
                 except Exception as e:
                     logger.warning(f"Failed to get summary from LLM: {e}")
                     final_response = (
@@ -633,6 +660,10 @@ class AgentStreamExecutor:
                         self.messages.pop(prompt_insert_idx)
                         logger.debug("[Agent] Removed injected max-steps prompt from message history")
 
+        except TaskCancelled as e:
+            logger.info(f"[Agent] Task cancelled: {e}")
+            self._emit_event("cancelled", {"reason": str(e)})
+            raise
         except Exception as e:
             logger.error(f"❌ Agent执行错误: {e}")
             self._emit_event("error", {"error": str(e)})
@@ -659,6 +690,7 @@ class AgentStreamExecutor:
         Returns:
             (response_text, tool_calls)
         """
+        self._raise_if_cancelled()
         # Validate and fix message history (e.g. orphaned tool_result blocks).
         # Context trimming is done once in run_stream() before the loop starts,
         # NOT here — trimming mid-execution would strip the current run's
@@ -715,9 +747,11 @@ class AgentStreamExecutor:
         chunk_count = 0
 
         try:
+            self._raise_if_cancelled()
             stream = self.model.call_stream(request)
 
             for chunk in stream:
+                self._raise_if_cancelled()
                 chunk_count += 1
                 if first_event_at is None:
                     first_event_at = monotonic()
@@ -828,6 +862,22 @@ class AgentStreamExecutor:
                     elif isinstance(choice, dict) and choice.get("_gemini_raw_parts"):
                         gemini_raw_parts = choice["_gemini_raw_parts"]
 
+        except TaskCancelled as e:
+            logger.info(
+                "[Latency][LLM] session=%s model=%s status=cancelled elapsed=%s first_event=%s "
+                "first_output=%s first_visible_text=%s messages=%s turns=%s chunks=%s retry=%s",
+                hash_id(getattr(self.agent, "_current_session_id", None) or getattr(self.model, "session_id", "")),
+                getattr(self.model, "model", ""),
+                format_seconds(elapsed(llm_start)),
+                format_seconds(elapsed(llm_start, first_event_at) if first_event_at is not None else None),
+                format_seconds(elapsed(llm_start, first_output_at) if first_output_at is not None else None),
+                format_seconds(elapsed(llm_start, first_visible_text_at) if first_visible_text_at is not None else None),
+                len(messages),
+                len(turns),
+                chunk_count,
+                retry_count,
+            )
+            raise
         except Exception as e:
             error_str = str(e)
             error_str_lower = error_str.lower()
@@ -932,7 +982,7 @@ class AgentStreamExecutor:
                 
                 logger.warning(f"⚠️ LLM API error (attempt {retry_count + 1}/{max_retries}): {e}")
                 logger.info(f"Retrying in {wait_time}s...")
-                time.sleep(wait_time)
+                self._sleep_with_cancel(wait_time)
                 return self._call_llm_stream(
                     retry_on_empty=retry_on_empty, 
                     retry_count=retry_count + 1,
@@ -1092,6 +1142,7 @@ class AgentStreamExecutor:
         Returns:
             Tool execution result
         """
+        self._raise_if_cancelled()
         tool_name = tool_call["name"]
         tool_id = tool_call["id"]
         arguments = tool_call["arguments"]
@@ -1149,6 +1200,7 @@ class AgentStreamExecutor:
             start_time = time.time()
             result: ToolResult = tool.execute_tool(arguments)
             execution_time = time.time() - start_time
+            self._raise_if_cancelled()
 
             result_dict = {
                 "status": result.status,
