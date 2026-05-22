@@ -179,7 +179,13 @@ def resolve_agent_user_profile(context: Any = None) -> AgentUserProfile:
         raw_user_id = _resolve_raw_user_id(context)
         actor_id = f"{channel_type}:{raw_user_id}"
     configured = _configured_profile(actor_id, raw_user_id)
-    display_name = _configured_display_name(actor_id, raw_user_id, configured)
+    display_name = str(
+        _get_context_value(context, "user_label")
+        or _get_context_value(context, "wechat_id")
+        or _get_context_value(context, "display_name")
+        or _configured_display_name(actor_id, raw_user_id, configured)
+        or ""
+    )
     explicit_role = _get_context_value(context, "actor_role")
     role = _normalise_role(explicit_role) if explicit_role else _configured_role(actor_id, raw_user_id, configured)
 
@@ -277,3 +283,5 @@ def apply_profile_to_context(context: Any, profile: AgentUserProfile) -> None:
     context["conversation_id"] = profile.conversation_id
     context["memory_user_id"] = profile.memory_user_id
     context["tool_workspace"] = profile.tool_workspace
+    if profile.display_name:
+        context["user_label"] = profile.display_name

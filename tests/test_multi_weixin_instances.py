@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from channel import channel_factory
 from channel.weixin.weixin_channel import WeixinChannel
+from channel.weixin.weixin_identity import extract_real_wechat_id
+from channel.web.web_channel import ChannelsHandler
 from channel.web.web_channel import WeixinQrHandler
 from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
@@ -100,6 +102,115 @@ class TestMultiWeixinInstances(unittest.TestCase):
                     "saved-token",
                     "https://cdn.example",
                 )],
+            )
+
+    def test_channel_info_includes_named_weixin_identity_and_role(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            default_cred = Path(tmp) / "admin_credentials.json"
+            user_cred = Path(tmp) / "user_credentials.json"
+            default_cred.write_text(
+                json.dumps({
+                    "token": "admin-token",
+                    "base_url": "https://saved.example",
+                    "user_id": "raw-admin@im.wechat",
+                    "wechat_id": "admin_wxid",
+                }),
+                encoding="utf-8",
+            )
+            user_cred.write_text(
+                json.dumps({
+                    "token": "user-token",
+                    "base_url": "https://saved.example",
+                    "user_id": "raw-user@im.wechat",
+                    "wechat_id": "member_wxid",
+                }),
+                encoding="utf-8",
+            )
+            conf()["channel_type"] = "weixin,weixin_user"
+            conf()["weixin_credentials_path"] = str(default_cred)
+            conf()["weixin_instances"] = {
+                "weixin_user": {
+                    "credentials_path": str(user_cred),
+                    "role": "user",
+                }
+            }
+            conf()["agent_admin_users"] = ["weixin:raw-admin@im.wechat"]
+
+            active = ChannelsHandler._active_channel_set()
+            admin_info = ChannelsHandler._build_channel_info("weixin", conf(), active)
+            user_info = ChannelsHandler._build_channel_info("weixin_user", conf(), active)
+
+            self.assertEqual(admin_info["wechat_id"], "admin_wxid")
+            self.assertEqual(admin_info["role"], "admin")
+            self.assertEqual(user_info["wechat_id"], "member_wxid")
+            self.assertEqual(user_info["role"], "user")
+            self.assertTrue(user_info["active"])
+
+    def test_extract_real_wechat_id_ignores_ilink_raw_id(self):
+        self.assertEqual(
+            extract_real_wechat_id({
+                "ilink_user_id": "opaque@im.wechat",
+                "user_info": {"wechat_id": "y553344388"},
+            }),
+            "y553344388",
+        )
+        self.assertEqual(extract_real_wechat_id({"ilink_user_id": "opaque@im.wechat"}), "")
+
+    def test_weixin_channel_resolves_real_id_from_get_config(self):
+        class FakeApi:
+            def get_config(self, user_id, context_token):
+                return {"user_info": {"wechat_id": "y553344388"}}
+
+        channel = WeixinChannel("weixin")
+        channel.channel_type = "weixin"
+        channel.api = FakeApi()
+
+        with patch("channel.weixin.weixin_channel.remember_wechat_identity") as remember:
+            resolved = channel._resolve_wechat_id(
+                "opaque@im.wechat",
+                "ctx-token",
+                {"from_user_id": "opaque@im.wechat"},
+            )
+
+        self.assertEqual(resolved, "y553344388")
+        remember.assert_called_once_with(
+            channel_type="weixin",
+            raw_user_id="opaque@im.wechat",
+            wechat_id="y553344388",
+        )
+
+    def test_weixin_channel_backfills_logged_in_wechat_id_from_credentials(self):
+        class FakeApi:
+            def get_config(self, user_id, context_token):
+                return {"profile": {"wechat_id": "y553344388"}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cred_path = Path(tmp) / "weixin_credentials.json"
+            cred_path.write_text(
+                json.dumps({
+                    "token": "saved-token",
+                    "base_url": "https://saved.example",
+                    "bot_id": "bot-id",
+                    "user_id": "opaque@im.wechat",
+                }),
+                encoding="utf-8",
+            )
+
+            channel = WeixinChannel("weixin")
+            channel.channel_type = "weixin"
+            channel._credentials_path = str(cred_path)
+            channel.api = FakeApi()
+
+            with patch("channel.weixin.weixin_channel.remember_wechat_identity") as remember:
+                resolved = channel._resolve_login_wechat_id_from_credentials()
+
+            saved = json.loads(cred_path.read_text(encoding="utf-8"))
+            self.assertEqual(resolved, "y553344388")
+            self.assertEqual(saved["wechat_id"], "y553344388")
+            remember.assert_called_once_with(
+                channel_type="weixin",
+                raw_user_id="opaque@im.wechat",
+                wechat_id="y553344388",
             )
 
 

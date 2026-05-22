@@ -3154,6 +3154,18 @@ function showConfirmDialog({ title, message, okText, cancelText, onConfirm }) {
 // =====================================================================
 let channelsData = [];
 
+function isWeixinChannelName(name) {
+    return name === 'weixin' || String(name || '').startsWith('weixin_');
+}
+
+function makeWeixinInstanceId() {
+    return 'weixin_' + Date.now().toString(36);
+}
+
+function safeDomId(value) {
+    return String(value || '').replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
 function loadChannelsView() {
     const container = document.getElementById('channels-content');
     container.innerHTML = `<div class="flex items-center gap-2 py-8 justify-center text-slate-400 dark:text-slate-500 text-sm">
@@ -3193,12 +3205,13 @@ function renderActiveChannels() {
         const label = (typeof ch.label === 'object') ? (ch.label[currentLang] || ch.label.en) : ch.label;
         const card = document.createElement('div');
         card.className = 'bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-6';
-        card.id = `channel-card-${ch.name}`;
+        card.id = `channel-card-${safeDomId(ch.name)}`;
 
         const fieldsHtml = buildChannelFieldsHtml(ch.name, ch.fields || []);
         const hasFields = (ch.fields || []).length > 0;
 
-        const weixinWaiting = ch.name === 'weixin' && ch.login_status && ch.login_status !== 'logged_in';
+        const isWeixin = isWeixinChannelName(ch.name);
+        const weixinWaiting = isWeixin && ch.login_status && ch.login_status !== 'logged_in';
         const wecomNeedsCreds = ch.name === 'wecom_bot' && !_wecomBotHasCreds(ch);
         // 飞书 active 卡片渲染带 Tab 的 panel：手动填写 + 扫码重建（覆盖现有配置）
         const isFeishu = ch.name === 'feishu';
@@ -3215,6 +3228,8 @@ function renderActiveChannels() {
             statusDot = 'bg-primary-400';
             statusText = `<span class="text-xs text-primary-500">${t('channels_connected')}</span>`;
         }
+        const weixinMetaHtml = isWeixin ? buildWeixinChannelMeta(ch) : '';
+        const activeQrId = `weixin-active-qr-${safeDomId(ch.name)}`;
 
         card.innerHTML = `
             <div class="flex items-center gap-4${hasFields || weixinWaiting || wecomNeedsCreds || isFeishu ? ' mb-5' : ''}">
@@ -3228,6 +3243,7 @@ function renderActiveChannels() {
                         ${statusText}
                     </div>
                     <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">${escapeHtml(ch.name)}</p>
+                    ${weixinMetaHtml}
                 </div>
                 <button onclick="disconnectChannel('${ch.name}')"
                     class="px-3 py-1.5 rounded-lg text-xs font-medium
@@ -3237,8 +3253,8 @@ function renderActiveChannels() {
                     ${t('channels_disconnect')}
                 </button>
             </div>
-            ${weixinWaiting ? `<div id="weixin-active-qr" class="flex flex-col items-center py-2">
-                <button onclick="showWeixinActiveQr()"
+            ${weixinWaiting ? `<div id="${activeQrId}" class="flex flex-col items-center py-2">
+                <button onclick="showWeixinActiveQr('${ch.name}')"
                     class="px-4 py-2 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium
                            cursor-pointer transition-colors duration-150">
                     ${t('weixin_scan_title')}
@@ -3271,6 +3287,26 @@ function renderActiveChannels() {
             startWeixinActiveStatusPoll();
         }
     });
+}
+
+function buildWeixinChannelMeta(ch) {
+    const wechatId = ch.display_wechat_id || ch.wechat_id || ch.raw_user_id || '';
+    const role = ch.role === 'admin' ? 'admin' : 'user';
+    const roleLabel = role === 'admin'
+        ? (currentLang === 'zh' ? '管理员' : 'Admin')
+        : (currentLang === 'zh' ? '普通成员' : 'Member');
+    const roleClass = role === 'admin'
+        ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-300 border-amber-100 dark:border-amber-800/40'
+        : 'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-300 border-slate-100 dark:border-white/10';
+    const idLabel = currentLang === 'zh' ? '微信ID' : 'WeChat ID';
+    const idText = wechatId || (currentLang === 'zh' ? '待识别' : 'Unknown');
+    return `
+        <div class="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+            <span class="px-2 py-1 rounded-md bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-300 border border-slate-100 dark:border-white/10 font-mono">
+                ${idLabel}: ${escapeHtml(idText)}
+            </span>
+            <span class="px-2 py-1 rounded-md border ${roleClass}">${roleLabel}</span>
+        </div>`;
 }
 
 function buildChannelFieldsHtml(chName, fields) {
@@ -3334,7 +3370,7 @@ function showChannelStatus(chName, msgKey, isError) {
 }
 
 function saveChannelConfig(chName) {
-    const card = document.getElementById(`channel-card-${chName}`);
+    const card = document.getElementById(`channel-card-${safeDomId(chName)}`);
     if (!card) return;
 
     const updates = {};
@@ -3399,7 +3435,19 @@ function disconnectChannel(chName) {
 function openAddChannelPanel() {
     const panel = document.getElementById('channels-add-panel');
     const activeNames = new Set(channelsData.filter(c => c.active).map(c => c.name));
-    const available = channelsData.filter(c => !activeNames.has(c.name));
+    const available = channelsData.filter(c => !activeNames.has(c.name) && !String(c.name || '').startsWith('weixin_'));
+    const baseWeixin = channelsData.find(c => c.name === 'weixin');
+    if (baseWeixin && activeNames.has('weixin')) {
+        available.unshift({
+            ...baseWeixin,
+            name: '__new_weixin__',
+            label: {
+                zh: '新增微信用户',
+                en: 'Add WeChat User'
+            },
+            active: false,
+        });
+    }
 
     const content = document.getElementById('channels-content');
     if (activeNames.size === 0 && content) content.classList.add('hidden');
@@ -3481,13 +3529,14 @@ function onAddChannelSelect(chName) {
         return;
     }
 
-    if (chName === 'weixin') {
+    if (chName === 'weixin' || chName === '__new_weixin__' || isWeixinChannelName(chName)) {
+        const instanceId = chName === '__new_weixin__' ? makeWeixinInstanceId() : chName;
         actions.classList.add('hidden');
         fieldsContainer.innerHTML = `
             <div id="weixin-qr-panel" class="flex flex-col items-center py-4">
                 <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">${t('weixin_scan_loading')}</p>
             </div>`;
-        startWeixinQrLogin();
+        startWeixinQrLogin(instanceId);
         return;
     }
 
@@ -3565,6 +3614,7 @@ function submitAddChannel() {
 // =====================================================================
 let _weixinQrPollTimer = null;
 let _weixinStatusPollTimer = null;
+let _weixinQrInstance = 'weixin';
 
 function stopWeixinStatusPoll() {
     if (_weixinStatusPollTimer) {
@@ -3578,29 +3628,40 @@ function startWeixinActiveStatusPoll() {
     _weixinStatusPollTimer = setTimeout(() => {
         fetch('/api/channels').then(r => r.json()).then(data => {
             if (data.status !== 'success') return;
-            const wx = (data.channels || []).find(c => c.name === 'weixin');
-            if (!wx || !wx.active) return;
-            if (wx.login_status === 'logged_in') {
+            const remoteChannels = data.channels || [];
+            const waiting = remoteChannels.filter(c =>
+                isWeixinChannelName(c.name) && c.active && c.login_status && c.login_status !== 'logged_in'
+            );
+            if (waiting.length === 0) {
                 channelsData = data.channels;
                 renderActiveChannels();
             } else {
-                const ch = channelsData.find(c => c.name === 'weixin');
-                if (ch) ch.login_status = wx.login_status;
+                waiting.forEach(wx => {
+                    const ch = channelsData.find(c => c.name === wx.name);
+                    if (ch) {
+                        ch.login_status = wx.login_status;
+                        ch.wechat_id = wx.wechat_id;
+                        ch.raw_user_id = wx.raw_user_id;
+                        ch.display_wechat_id = wx.display_wechat_id;
+                        ch.role = wx.role;
+                    }
+                });
                 startWeixinActiveStatusPoll();
             }
         }).catch(() => { startWeixinActiveStatusPoll(); });
     }, 3000);
 }
 
-function showWeixinActiveQr() {
-    const container = document.getElementById('weixin-active-qr');
+function showWeixinActiveQr(instance) {
+    const instanceId = instance || 'weixin';
+    const container = document.getElementById(`weixin-active-qr-${safeDomId(instanceId)}`);
     if (!container) return;
     container.innerHTML = `
         <div id="weixin-qr-panel" class="flex flex-col items-center py-2">
             <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">${t('weixin_scan_loading')}</p>
         </div>`;
     stopWeixinStatusPoll();
-    startWeixinQrLogin();
+    startWeixinQrLogin(instanceId);
 }
 
 function stopWeixinQrPoll() {
@@ -3610,9 +3671,10 @@ function stopWeixinQrPoll() {
     }
 }
 
-function startWeixinQrLogin() {
+function startWeixinQrLogin(instance) {
     stopWeixinQrPoll();
-    fetch('/api/weixin/qrlogin')
+    _weixinQrInstance = instance || 'weixin';
+    fetch(`/api/weixin/qrlogin?instance=${encodeURIComponent(_weixinQrInstance)}`)
         .then(r => r.json())
         .then(data => {
             const panel = document.getElementById('weixin-qr-panel');
@@ -3625,7 +3687,7 @@ function startWeixinQrLogin() {
             if (data.source === 'channel') {
                 startWeixinActiveStatusPoll();
             } else {
-                pollWeixinQrStatus();
+                pollWeixinQrStatus(data.instance || _weixinQrInstance);
             }
         })
         .catch(() => {
@@ -3663,12 +3725,13 @@ function renderWeixinQr(qrcodeUrl, status) {
         </div>`;
 }
 
-function pollWeixinQrStatus() {
+function pollWeixinQrStatus(instance) {
+    const instanceId = instance || _weixinQrInstance || 'weixin';
     _weixinQrPollTimer = setTimeout(() => {
         fetch('/api/weixin/qrlogin', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'poll' })
+            body: JSON.stringify({ action: 'poll', instance: instanceId })
         })
         .then(r => r.json())
         .then(data => {
@@ -3690,30 +3753,35 @@ function pollWeixinQrStatus() {
                         </div>
                         <p class="text-sm font-medium text-primary-600 dark:text-primary-400">${t('weixin_scan_success')}</p>
                     </div>`;
-                connectWeixinAfterQr();
+                connectWeixinAfterQr(data.instance || instanceId);
             } else if (qrStatus === 'expired' && (data.qr_image || data.qrcode_url)) {
                 renderWeixinQr(data.qr_image || data.qrcode_url, 'waiting');
-                pollWeixinQrStatus();
+                pollWeixinQrStatus(data.instance || instanceId);
             } else if (qrStatus === 'scaned') {
                 const img = panel.querySelector('img');
                 const currentSrc = img ? img.src : '';
                 renderWeixinQr(currentSrc, 'scanned');
-                pollWeixinQrStatus();
+                pollWeixinQrStatus(data.instance || instanceId);
             } else {
-                pollWeixinQrStatus();
+                pollWeixinQrStatus(data.instance || instanceId);
             }
         })
         .catch(() => {
-            pollWeixinQrStatus();
+            pollWeixinQrStatus(instanceId);
         });
     }, 2000);
 }
 
-function connectWeixinAfterQr() {
+function connectWeixinAfterQr(instance) {
+    const instanceId = instance || 'weixin';
+    if (instanceId !== 'weixin') {
+        setTimeout(() => loadChannelsView(), 1500);
+        return;
+    }
     fetch('/api/channels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'connect', channel: 'weixin', config: {} })
+        body: JSON.stringify({ action: 'connect', channel: instanceId, config: {} })
     })
     .then(r => r.json())
     .then(data => {

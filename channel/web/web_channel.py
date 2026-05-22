@@ -22,6 +22,11 @@ from common import const
 from common.log import logger
 from common.singleton import singleton
 from config import conf
+from channel.weixin.weixin_identity import (
+    extract_real_wechat_id,
+    looks_internal_weixin_id,
+    weixin_role_for_identity,
+)
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
@@ -1287,18 +1292,97 @@ class ChannelsHandler:
     ])
 
     @staticmethod
-    def _get_weixin_login_status() -> str:
+    def _is_weixin_instance(channel_name: str) -> bool:
+        channel_name = str(channel_name or "")
+        return channel_name == "weixin" or channel_name.startswith("weixin_")
+
+    @staticmethod
+    def _get_weixin_login_status(instance_id: str = "weixin") -> str:
         try:
             import sys
             app_module = sys.modules.get('__main__') or sys.modules.get('app')
             mgr = getattr(app_module, '_channel_mgr', None) if app_module else None
             if mgr:
-                ch = mgr.get_channel("weixin")
+                ch = mgr.get_channel(instance_id)
                 if ch and hasattr(ch, 'login_status'):
                     return ch.login_status
         except Exception:
             pass
         return "unknown"
+
+    @classmethod
+    def _channel_def(cls, channel_name: str) -> dict:
+        if channel_name in cls.CHANNEL_DEFS:
+            return cls.CHANNEL_DEFS[channel_name]
+        if cls._is_weixin_instance(channel_name):
+            return cls.CHANNEL_DEFS["weixin"]
+        return {}
+
+    @classmethod
+    def _weixin_instance_names(cls) -> list:
+        names = {"weixin"}
+        for channel_name in cls._active_channel_set():
+            if cls._is_weixin_instance(channel_name):
+                names.add(channel_name)
+        instances = conf().get("weixin_instances", {}) or {}
+        if isinstance(instances, dict):
+            for instance_id in instances:
+                if cls._is_weixin_instance(instance_id):
+                    names.add(instance_id)
+        return sorted(names, key=lambda name: (name != "weixin", name))
+
+    @classmethod
+    def _weixin_instance_config(cls, instance_id: str) -> dict:
+        instances = conf().get("weixin_instances", {}) or {}
+        if not isinstance(instances, dict):
+            return {}
+        value = instances.get(instance_id, {}) or {}
+        return value if isinstance(value, dict) else {}
+
+    @classmethod
+    def _weixin_raw_credentials_path(cls, instance_id: str) -> str:
+        if instance_id == "weixin":
+            return conf().get("weixin_credentials_path", "~/.weixin_cow_credentials.json")
+        inst_conf = cls._weixin_instance_config(instance_id)
+        if inst_conf.get("credentials_path"):
+            return inst_conf["credentials_path"]
+        suffix = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in instance_id)
+        return f"~/.weixin_cow_credentials_{suffix}.json"
+
+    @classmethod
+    def _read_weixin_credentials(cls, instance_id: str) -> dict:
+        path = os.path.expanduser(cls._weixin_raw_credentials_path(instance_id))
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.debug(f"[WebChannel] Failed to read Weixin credentials for {instance_id}: {e}")
+        return {}
+
+    @classmethod
+    def _weixin_identity(cls, instance_id: str) -> dict:
+        inst_conf = cls._weixin_instance_config(instance_id)
+        creds = cls._read_weixin_credentials(instance_id)
+        raw_user_id = str(inst_conf.get("user_id") or creds.get("user_id") or "").strip()
+        wechat_id = str(inst_conf.get("wechat_id") or creds.get("wechat_id") or "").strip()
+        if not wechat_id:
+            wechat_id = extract_real_wechat_id(inst_conf) or extract_real_wechat_id(creds)
+        display_id = wechat_id or ("" if looks_internal_weixin_id(raw_user_id) else raw_user_id)
+        role = weixin_role_for_identity(
+            channel_type=instance_id,
+            raw_user_id=raw_user_id,
+            wechat_id=wechat_id,
+            configured_role=inst_conf.get("role", ""),
+        )
+        return {
+            "raw_user_id": raw_user_id,
+            "wechat_id": wechat_id,
+            "display_wechat_id": display_id,
+            "role": role,
+            "credentials_path": cls._weixin_raw_credentials_path(instance_id),
+        }
 
     @staticmethod
     def _mask_secret(value: str) -> str:
@@ -1318,6 +1402,37 @@ class ChannelsHandler:
     def _active_channel_set(cls) -> set:
         return set(cls._parse_channel_list(conf().get("channel_type", "")))
 
+    @classmethod
+    def _build_channel_info(cls, ch_name: str, local_config: dict, active_channels: set) -> dict:
+        ch_def = cls._channel_def(ch_name)
+        fields_out = []
+        for f in ch_def["fields"]:
+            raw_val = local_config.get(f["key"], f.get("default", ""))
+            if f["type"] == "secret" and raw_val:
+                display_val = cls._mask_secret(str(raw_val))
+            else:
+                display_val = raw_val
+            fields_out.append({
+                "key": f["key"],
+                "label": f["label"],
+                "type": f["type"],
+                "value": display_val,
+                "default": f.get("default", ""),
+            })
+        ch_info = {
+            "name": ch_name,
+            "label": ch_def["label"],
+            "icon": ch_def["icon"],
+            "color": ch_def["color"],
+            "active": ch_name in active_channels,
+            "fields": fields_out,
+        }
+        if cls._is_weixin_instance(ch_name):
+            ch_info.update(cls._weixin_identity(ch_name))
+            if ch_name in active_channels:
+                ch_info["login_status"] = cls._get_weixin_login_status(ch_name)
+        return ch_info
+
     def GET(self):
         _require_auth()
         web.header('Content-Type', 'application/json; charset=utf-8')
@@ -1325,32 +1440,12 @@ class ChannelsHandler:
             local_config = conf()
             active_channels = self._active_channel_set()
             channels = []
+            for instance_id in self._weixin_instance_names():
+                channels.append(self._build_channel_info(instance_id, local_config, active_channels))
             for ch_name, ch_def in self.CHANNEL_DEFS.items():
-                fields_out = []
-                for f in ch_def["fields"]:
-                    raw_val = local_config.get(f["key"], f.get("default", ""))
-                    if f["type"] == "secret" and raw_val:
-                        display_val = self._mask_secret(str(raw_val))
-                    else:
-                        display_val = raw_val
-                    fields_out.append({
-                        "key": f["key"],
-                        "label": f["label"],
-                        "type": f["type"],
-                        "value": display_val,
-                        "default": f.get("default", ""),
-                    })
-                ch_info = {
-                    "name": ch_name,
-                    "label": ch_def["label"],
-                    "icon": ch_def["icon"],
-                    "color": ch_def["color"],
-                    "active": ch_name in active_channels,
-                    "fields": fields_out,
-                }
-                if ch_name == "weixin" and ch_name in active_channels:
-                    ch_info["login_status"] = self._get_weixin_login_status()
-                channels.append(ch_info)
+                if ch_name == "weixin":
+                    continue
+                channels.append(self._build_channel_info(ch_name, local_config, active_channels))
             return json.dumps({"status": "success", "channels": channels}, ensure_ascii=False)
         except Exception as e:
             logger.error(f"[WebChannel] Channels API error: {e}")
@@ -1367,7 +1462,7 @@ class ChannelsHandler:
             if not action or not channel_name:
                 return json.dumps({"status": "error", "message": "action and channel required"})
 
-            if channel_name not in self.CHANNEL_DEFS:
+            if channel_name not in self.CHANNEL_DEFS and not self._is_weixin_instance(channel_name):
                 return json.dumps({"status": "error", "message": f"unknown channel: {channel_name}"})
 
             if action == "save":
@@ -1383,7 +1478,7 @@ class ChannelsHandler:
             return json.dumps({"status": "error", "message": str(e)})
 
     def _handle_save(self, channel_name: str, updates: dict):
-        ch_def = self.CHANNEL_DEFS[channel_name]
+        ch_def = self._channel_def(channel_name)
         valid_keys = {f["key"] for f in ch_def["fields"]}
         secret_keys = {f["key"] for f in ch_def["fields"] if f["type"] == "secret"}
 
@@ -1446,7 +1541,7 @@ class ChannelsHandler:
 
     def _handle_connect(self, channel_name: str, updates: dict):
         """Save config fields, add channel to channel_type, and start it."""
-        ch_def = self.CHANNEL_DEFS[channel_name]
+        ch_def = self._channel_def(channel_name)
         valid_keys = {f["key"] for f in ch_def["fields"]}
         secret_keys = {f["key"] for f in ch_def["fields"] if f["type"] == "secret"}
 
@@ -1477,6 +1572,17 @@ class ChannelsHandler:
             existing.append(channel_name)
         new_channel_type = ",".join(existing)
         local_config["channel_type"] = new_channel_type
+
+        if self._is_weixin_instance(channel_name) and channel_name != "weixin":
+            instances = local_config.get("weixin_instances", {}) or {}
+            if not isinstance(instances, dict):
+                instances = {}
+            inst_conf = dict(instances.get(channel_name, {}) or {})
+            inst_conf.setdefault("credentials_path", self._weixin_raw_credentials_path(channel_name))
+            inst_conf.setdefault("role", "user")
+            instances[channel_name] = inst_conf
+            local_config["weixin_instances"] = instances
+            applied["weixin_instances"] = instances
 
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__)))), "config.json")
@@ -1789,18 +1895,22 @@ class WeixinQrHandler:
             bot_id = status_resp.get("ilink_bot_id", "")
             result_base_url = status_resp.get("baseurl", base_url)
             user_id = status_resp.get("ilink_user_id", "")
+            wechat_id = extract_real_wechat_id(status_resp)
 
             if not bot_token or not bot_id:
                 return json.dumps({"status": "error", "message": "Login confirmed but missing token"})
 
             cred_path = self._credentials_path(instance_id)
             from channel.weixin.weixin_channel import _save_credentials
-            _save_credentials(cred_path, {
+            credentials = {
                 "token": bot_token,
                 "base_url": result_base_url,
                 "bot_id": bot_id,
                 "user_id": user_id,
-            })
+            }
+            if wechat_id:
+                credentials["wechat_id"] = wechat_id
+            _save_credentials(cred_path, credentials)
             if instance_id == "weixin":
                 conf()["weixin_token"] = bot_token
                 conf()["weixin_base_url"] = result_base_url
@@ -1811,6 +1921,10 @@ class WeixinQrHandler:
                 inst_conf = dict(instances.get(instance_id, {}) or {})
                 inst_conf["credentials_path"] = self._raw_credentials_path(instance_id)
                 inst_conf["base_url"] = result_base_url
+                inst_conf.setdefault("role", "user")
+                inst_conf["user_id"] = user_id
+                if wechat_id:
+                    inst_conf["wechat_id"] = wechat_id
                 instances[instance_id] = inst_conf
                 conf()["weixin_instances"] = instances
 

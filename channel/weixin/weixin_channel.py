@@ -20,6 +20,10 @@ from channel.weixin.weixin_api import (
     WeixinApi, upload_media_to_cdn,
     DEFAULT_BASE_URL, CDN_BASE_URL,
 )
+from channel.weixin.weixin_identity import (
+    extract_real_wechat_id,
+    remember_wechat_identity,
+)
 from channel.weixin.weixin_message import WeixinMessage
 from common.expired_dict import ExpiredDict
 from common.log import logger
@@ -84,6 +88,7 @@ class WeixinChannel(ChatChannel):
         self._stop_event = threading.Event()
         self._poll_thread = None
         self._context_tokens = {}  # user_id -> context_token
+        self._user_identity_cache = {}  # raw iLink user_id -> real WeChat id
         self._received_msgs = ExpiredDict(60 * 60 * 7.1)
         self._get_updates_buf = ""
         self.login_status = self.LOGIN_STATUS_IDLE
@@ -134,6 +139,7 @@ class WeixinChannel(ChatChannel):
 
         self.api = WeixinApi(base_url=base_url, token=token, cdn_base_url=cdn_base_url)
         self.login_status = self.LOGIN_STATUS_OK
+        self._resolve_login_wechat_id_from_credentials()
         logger.info(f"[Weixin] Reinitialized send API for instance={self.instance_id} from saved credentials")
         return True
 
@@ -163,6 +169,7 @@ class WeixinChannel(ChatChannel):
 
         self.api = WeixinApi(base_url=base_url, token=token, cdn_base_url=cdn_base_url)
         self.login_status = self.LOGIN_STATUS_OK
+        self._resolve_login_wechat_id_from_credentials()
 
         logger.info(f"[Weixin] 微信通道已启动，凭证保存在 {self._credentials_path}，"
                      f"如需重新扫码登录请删除该文件后重启")
@@ -211,6 +218,7 @@ class WeixinChannel(ChatChannel):
             cdn_base_url=self.api.cdn_base_url if self.api else CDN_BASE_URL,
         )
         self.login_status = self.LOGIN_STATUS_OK
+        self._resolve_login_wechat_id_from_credentials()
         self._context_tokens.clear()
         return True
 
@@ -335,6 +343,7 @@ class WeixinChannel(ChatChannel):
                 bot_id = status_resp.get("ilink_bot_id", "")
                 result_base_url = status_resp.get("baseurl", base_url)
                 user_id = status_resp.get("ilink_user_id", "")
+                wechat_id = extract_real_wechat_id(status_resp)
 
                 if not bot_token or not bot_id:
                     logger.error("[Weixin] Login confirmed but missing token/bot_id")
@@ -351,6 +360,8 @@ class WeixinChannel(ChatChannel):
                     "bot_id": bot_id,
                     "user_id": user_id,
                 }
+                if wechat_id:
+                    creds["wechat_id"] = wechat_id
                 _save_credentials(self._credentials_path, creds)
                 logger.info(f"[Weixin] Credentials saved to {self._credentials_path}")
 
@@ -431,6 +442,41 @@ class WeixinChannel(ChatChannel):
 
         logger.info("[Weixin] Long-poll loop ended")
 
+    def _resolve_login_wechat_id_from_credentials(self) -> str:
+        """Backfill the logged-in account's real WeChat id into credentials."""
+        if not self.api:
+            return ""
+
+        creds = _load_credentials(self._credentials_path)
+        existing_wechat_id = str(creds.get("wechat_id") or "").strip()
+        if existing_wechat_id:
+            return existing_wechat_id
+
+        raw_user_id = str(creds.get("user_id") or "").strip()
+        if not raw_user_id:
+            return ""
+
+        try:
+            profile_payload = self.api.get_config(raw_user_id, "")
+            wechat_id = extract_real_wechat_id(profile_payload)
+        except Exception as e:
+            logger.debug(f"[Weixin] Failed to resolve login WeChat id for {self.instance_id}: {e}")
+            return ""
+
+        if not wechat_id:
+            return ""
+
+        creds["wechat_id"] = wechat_id
+        _save_credentials(self._credentials_path, creds)
+        self._user_identity_cache[raw_user_id] = wechat_id
+        remember_wechat_identity(
+            channel_type=self.channel_type,
+            raw_user_id=raw_user_id,
+            wechat_id=wechat_id,
+        )
+        logger.info(f"[Weixin] Login WeChat id resolved for instance={self.instance_id}")
+        return wechat_id
+
     def _process_message(self, raw_msg: dict):
         """Parse a single inbound message and produce to the handling queue."""
         msg_type = raw_msg.get("message_type", 0)
@@ -447,6 +493,8 @@ class WeixinChannel(ChatChannel):
 
         if context_token and from_user:
             self._context_tokens[from_user] = context_token
+
+        wechat_id = self._resolve_wechat_id(from_user, context_token, raw_msg)
 
         cdn_base_url = self.api.cdn_base_url if self.api else CDN_BASE_URL
         try:
@@ -498,7 +546,36 @@ class WeixinChannel(ChatChannel):
             no_need_at=True,
         )
         if context:
+            if wechat_id:
+                context["wechat_id"] = wechat_id
+                context["user_label"] = wechat_id
             self.produce(context)
+
+    def _resolve_wechat_id(self, raw_user_id: str, context_token: str, raw_msg: dict) -> str:
+        """Resolve and remember the real WeChat id for usage/profile display."""
+        if not raw_user_id:
+            return ""
+        cached = self._user_identity_cache.get(raw_user_id)
+        if cached:
+            return cached
+
+        wechat_id = extract_real_wechat_id(raw_msg)
+        if not wechat_id and self.api and context_token:
+            try:
+                profile_payload = self.api.get_config(raw_user_id, context_token)
+                wechat_id = extract_real_wechat_id(profile_payload)
+            except Exception as e:
+                logger.debug(f"[Weixin] Failed to resolve real WeChat id for {raw_user_id}: {e}")
+
+        if wechat_id:
+            self._user_identity_cache[raw_user_id] = wechat_id
+            if remember_wechat_identity(
+                channel_type=self.channel_type,
+                raw_user_id=raw_user_id,
+                wechat_id=wechat_id,
+            ):
+                logger.info(f"[Weixin] Remembered WeChat id mapping for channel={self.channel_type}")
+        return wechat_id
 
     # ── _compose_context ───────────────────────────────────────────────
 
