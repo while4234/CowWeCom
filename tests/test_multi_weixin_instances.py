@@ -139,6 +139,33 @@ class TestMultiWeixinInstances(unittest.TestCase):
 
         self.assertFalse(channel.active_send_text("receiver-id", "hello from bridge"))
 
+    def test_social_bridge_registration_uses_resolved_wechat_id(self):
+        registered = []
+
+        class FakeBridgeStore:
+            def register_user(self, **kwargs):
+                registered.append(kwargs)
+
+        context = Context(ContextType.TEXT, "hello")
+        context["channel_type"] = "weixin_user"
+        context["session_id"] = "raw-user@im.wechat"
+        context["receiver"] = "raw-user@im.wechat"
+        context["msg"] = SimpleNamespace(from_user_id="raw-user@im.wechat")
+        channel = WeixinChannel("weixin_user")
+
+        with patch("agent.social_bridge.get_bridge_store", return_value=FakeBridgeStore()):
+            channel._remember_social_bridge_user(
+                context,
+                "raw-user@im.wechat",
+                "ctx-token",
+                "alice_wx",
+            )
+
+        self.assertEqual(registered[0]["actor_user_id"], "weixin_user:raw-user@im.wechat")
+        self.assertEqual(registered[0]["display_name"], "alice_wx")
+        self.assertEqual(registered[0]["metadata"]["wechat_id"], "alice_wx")
+        self.assertEqual(registered[0]["metadata"]["context_token"], "ctx-token")
+
     def test_channel_info_includes_named_weixin_identity_and_role(self):
         with tempfile.TemporaryDirectory() as tmp:
             default_cred = Path(tmp) / "admin_credentials.json"

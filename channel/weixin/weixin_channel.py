@@ -549,15 +549,24 @@ class WeixinChannel(ChatChannel):
             if wechat_id:
                 context["wechat_id"] = wechat_id
                 context["user_label"] = wechat_id
-            self._remember_social_bridge_user(context, from_user, context_token)
+            self._remember_social_bridge_user(context, from_user, context_token, wechat_id)
             self.produce(context)
 
-    def _remember_social_bridge_user(self, context: Context, raw_user_id: str, context_token: str) -> None:
+    def _remember_social_bridge_user(
+        self,
+        context: Context,
+        raw_user_id: str,
+        context_token: str,
+        wechat_id: str = "",
+    ) -> None:
         """Best-effort user directory update for cross-user bridge tools."""
         try:
             from agent.social_bridge import get_bridge_store
             from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile
 
+            if wechat_id:
+                context["wechat_id"] = wechat_id
+                context["user_label"] = wechat_id
             profile = resolve_agent_user_profile(context)
             apply_profile_to_context(context, profile)
             get_bridge_store().register_user(
