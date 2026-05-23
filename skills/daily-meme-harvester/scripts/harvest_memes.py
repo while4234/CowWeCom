@@ -24,8 +24,6 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 PROVIDER_ALIASES = {
-    "twitter": "x",
-    "tweet": "x",
     "xhs": "xiaohongshu",
     "小红书": "xiaohongshu",
     "red": "xiaohongshu",
@@ -34,8 +32,8 @@ DEFAULT_CONFIG_PATH = "~/.cow-meme-harvester/config.json"
 DEFAULT_CONFIG: Dict[str, Any] = {
     "output_dir": "~/cow/memes",
     "timezone": "Asia/Shanghai",
-    "providers": ["weibo", "x"],
-    "max_total": 50,
+    "providers": ["weibo"],
+    "max_total": 3,
     "max_per_provider": 30,
     "dedupe_days": 90,
     "skip_sensitive": True,
@@ -51,23 +49,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "endpoint_hotsearch": "https://weibo.com/ajax/side/hotSearch",
         "cookie_env": "WEIBO_COOKIE",
     },
-    "x": {
-        "enabled": True,
-        "woeid": 1,
-        "bearer_token_env": "X_BEARER_TOKEN",
-        "base_queries": [
-            '(meme OR memes OR "reaction image" OR "funny image" OR shitpost) has:images -is:retweet lang:en min_likes:500',
-            '(meme OR memes OR "reaction image") has:images -is:retweet min_reposts:50',
-        ],
-        "include_trends": True,
-        "max_trends": 20,
-    },
     "xiaohongshu": {
         "enabled": False,
         "cookie_env": "XHS_COOKIE",
         "search_keywords": ["梗图", "表情包", "搞笑图", "meme"],
         "request_interval_seconds": 2,
         "endpoint_search": "https://www.xiaohongshu.com/search_result",
+        "disable_proxy": True,
+        "request_timeout_seconds": 45,
+        "use_requests": True,
     },
     "reddit": {
         "enabled": False,
@@ -145,7 +135,7 @@ def ensure_config_file(config_path: Path) -> None:
 def load_config(config_path: Path) -> Dict[str, Any]:
     ensure_config_file(config_path)
     try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Invalid config JSON: {config_path}: {exc}") from exc
     if not isinstance(raw, dict):
@@ -262,11 +252,17 @@ def http_get_text(
     params: Optional[Dict[str, Any]] = None,
     headers: Optional[Dict[str, str]] = None,
     timeout: int = 20,
+    disable_proxy: bool = False,
 ) -> Tuple[str, Dict[str, str]]:
     response_url = build_url(url, params)
     request = urllib.request.Request(response_url, headers=headers or {})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({})) if disable_proxy else None
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        if opener:
+            response_context = opener.open(request, timeout=timeout)
+        else:
+            response_context = urllib.request.urlopen(request, timeout=timeout)
+        with response_context as response:
             body = response.read()
             charset = response.headers.get_content_charset() or "utf-8"
             return body.decode(charset, errors="replace"), normalize_headers(response.headers)
@@ -274,6 +270,39 @@ def http_get_text(
         raise FetchError(f"HTTP {exc.code} for {url}", status=exc.code, headers=normalize_headers(exc.headers)) from exc
     except urllib.error.URLError as exc:
         raise FetchError(f"Network error for {url}: {exc.reason}") from exc
+
+
+def http_get_text_requests(
+    url: str,
+    params: Optional[Dict[str, Any]] = None,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: int = 20,
+    disable_proxy: bool = False,
+) -> Tuple[str, Dict[str, str]]:
+    try:
+        import requests
+    except ImportError as exc:
+        raise FetchError("requests is not installed") from exc
+
+    session = requests.Session()
+    session.trust_env = not disable_proxy
+    try:
+        response = session.get(
+            url,
+            params=params,
+            headers=headers or {},
+            timeout=timeout,
+            allow_redirects=True,
+        )
+    except requests.RequestException as exc:
+        raise FetchError(f"Network error for {url}: {exc}") from exc
+    if response.status_code >= 400:
+        raise FetchError(
+            f"HTTP {response.status_code} for {url}",
+            status=response.status_code,
+            headers=normalize_headers(response.headers),
+        )
+    return response.text, normalize_headers(response.headers)
 
 
 def http_get_bytes(
@@ -498,168 +527,6 @@ def collect_weibo(config: Dict[str, Any]) -> List[MemeCandidate]:
     return candidates
 
 
-def x_auth_headers(config: Dict[str, Any]) -> Optional[Dict[str, str]]:
-    x_config = config.get("x", {})
-    token = config.get("_env", os.environ).get(x_config.get("bearer_token_env", "X_BEARER_TOKEN"))
-    if not token:
-        return None
-    return {
-        "Authorization": f"Bearer {token}",
-        "User-Agent": config.get("user_agent", DEFAULT_CONFIG["user_agent"]),
-    }
-
-
-def fetch_x_trends(config: Dict[str, Any]) -> List[str]:
-    headers = x_auth_headers(config)
-    if not headers:
-        add_warning(config, "X_BEARER_TOKEN not set; skip x provider")
-        mark_provider_skipped(config, "x")
-        return []
-    x_config = config.get("x", {})
-    url = f"https://api.x.com/2/trends/by/woeid/{x_config.get('woeid', 1)}"
-    try:
-        payload, _headers = http_get_json(url, headers=headers)
-    except FetchError as exc:
-        if exc.status == 429:
-            reset = exc.headers.get("x-rate-limit-reset")
-            add_warning(config, f"x trends rate limited; reset={reset or 'unknown'}")
-            config["_x_rate_limited"] = True
-        else:
-            add_warning(config, f"x trends failed: {exc}")
-        mark_provider_failed(config, "x")
-        return []
-    trends = payload.get("data") or []
-    names = []
-    for trend in trends:
-        if isinstance(trend, dict):
-            name = trend.get("trend_name") or trend.get("name")
-            if name:
-                names.append(str(name))
-    return names[: int(x_config.get("max_trends", 20))]
-
-
-def parse_x_recent_response(
-    payload: Dict[str, Any],
-    query: str,
-    download_videos: bool = False,
-    skip_sensitive: bool = True,
-) -> List[MemeCandidate]:
-    includes = payload.get("includes") if isinstance(payload.get("includes"), dict) else {}
-    media_by_key = {
-        media.get("media_key"): media
-        for media in includes.get("media", [])
-        if isinstance(media, dict) and media.get("media_key")
-    }
-    users_by_id = {
-        user.get("id"): user for user in includes.get("users", []) if isinstance(user, dict) and user.get("id")
-    }
-    candidates: List[MemeCandidate] = []
-    for tweet in payload.get("data") or []:
-        if not isinstance(tweet, dict):
-            continue
-        possibly_sensitive = bool(tweet.get("possibly_sensitive"))
-        if skip_sensitive and possibly_sensitive:
-            continue
-        tweet_id = str(tweet.get("id") or "")
-        if not tweet_id:
-            continue
-        user = users_by_id.get(tweet.get("author_id"), {})
-        username = user.get("username")
-        source_url = f"https://x.com/{username}/status/{tweet_id}" if username else f"https://x.com/i/web/status/{tweet_id}"
-        metrics = tweet.get("public_metrics") if isinstance(tweet.get("public_metrics"), dict) else {}
-        score = (
-            as_float(metrics.get("like_count"))
-            + as_float(metrics.get("repost_count")) * 4
-            + as_float(metrics.get("reply_count")) * 2
-            + as_float(metrics.get("quote_count")) * 3
-            + as_float(metrics.get("impression_count")) / 1000
-        )
-        media_keys = extract_nested(tweet, ["attachments", "media_keys"]) or []
-        for media_key in media_keys:
-            media = media_by_key.get(media_key)
-            if not media:
-                continue
-            media_type = media.get("type")
-            image_url = media.get("url")
-            if media_type != "photo":
-                if not download_videos or media_type not in {"animated_gif", "video"}:
-                    continue
-                image_url = media.get("preview_image_url")
-            if not image_url:
-                continue
-            candidates.append(
-                MemeCandidate(
-                    provider="x",
-                    source_id=f"{tweet_id}:{media_key}",
-                    source_url=source_url,
-                    image_url=str(image_url),
-                    title=strip_html(tweet.get("text")),
-                    author=user.get("name") or username,
-                    created_at=tweet.get("created_at"),
-                    score=score,
-                    metrics=dict(metrics),
-                    possibly_sensitive=possibly_sensitive,
-                    extra={"query": query, "media_key": media_key, "alt_text": media.get("alt_text")},
-                )
-            )
-    return candidates
-
-
-def search_x_recent(query: str, config: Dict[str, Any]) -> List[MemeCandidate]:
-    headers = x_auth_headers(config)
-    if not headers:
-        add_warning(config, "X_BEARER_TOKEN not set; skip x provider")
-        mark_provider_skipped(config, "x")
-        return []
-    params = {
-        "query": query,
-        "max_results": 100,
-        "tweet.fields": "created_at,public_metrics,lang,possibly_sensitive,author_id",
-        "expansions": "attachments.media_keys,author_id",
-        "media.fields": "media_key,type,url,preview_image_url,width,height,alt_text",
-        "user.fields": "username,name",
-    }
-    try:
-        payload, _headers = http_get_json("https://api.x.com/2/tweets/search/recent", params=params, headers=headers)
-    except FetchError as exc:
-        if exc.status == 429:
-            reset = exc.headers.get("x-rate-limit-reset")
-            add_warning(config, f"x recent search rate limited; reset={reset or 'unknown'}")
-            config["_x_rate_limited"] = True
-        else:
-            add_warning(config, f"x recent search failed for query {query!r}: {exc}")
-        mark_provider_failed(config, "x")
-        return []
-    return parse_x_recent_response(
-        payload,
-        query=query,
-        download_videos=bool(config.get("download_videos", False)),
-        skip_sensitive=bool(config.get("skip_sensitive", True)),
-    )
-
-
-def collect_x(config: Dict[str, Any]) -> List[MemeCandidate]:
-    if not x_auth_headers(config):
-        add_warning(config, "X_BEARER_TOKEN not set; skip x provider")
-        mark_provider_skipped(config, "x")
-        return []
-    x_config = config.get("x", {})
-    queries = list(x_config.get("base_queries") or [])
-    if x_config.get("include_trends", True):
-        for trend in fetch_x_trends(config):
-            quoted = trend.replace('"', '\\"')
-            queries.append(f'("{quoted}" meme OR memes OR "reaction image") has:images -is:retweet min_likes:200')
-    candidates: List[MemeCandidate] = []
-    limit = int(config.get("max_per_provider", 30)) * 2
-    for query in queries:
-        if config.get("_x_rate_limited"):
-            break
-        candidates.extend(search_x_recent(query, config))
-        if len(candidates) >= limit:
-            break
-    return candidates
-
-
 def unescape_url(value: str) -> str:
     url = value.replace("\\u002F", "/").replace("\\/", "/").replace("&amp;", "&")
     return html.unescape(url)
@@ -718,7 +585,22 @@ def collect_xiaohongshu(config: Dict[str, Any]) -> List[MemeCandidate]:
         params = {"keyword": keyword, "source": "web_search_result_notes"}
         source_url = build_url(endpoint, params)
         try:
-            html_text, _headers = http_get_text(endpoint, params=params, headers=headers)
+            if xhs_config.get("use_requests", True):
+                html_text, _headers = http_get_text_requests(
+                    endpoint,
+                    params=params,
+                    headers=headers,
+                    timeout=int(xhs_config.get("request_timeout_seconds", 45)),
+                    disable_proxy=bool(xhs_config.get("disable_proxy", True)),
+                )
+            else:
+                html_text, _headers = http_get_text(
+                    endpoint,
+                    params=params,
+                    headers=headers,
+                    timeout=int(xhs_config.get("request_timeout_seconds", 20)),
+                    disable_proxy=bool(xhs_config.get("disable_proxy", False)),
+                )
         except FetchError as exc:
             if exc.status in {401, 403, 429}:
                 add_warning(config, f"xiaohongshu search skipped for {keyword}: HTTP {exc.status}; login cookie may be required")
@@ -994,7 +876,6 @@ def planned_filename(candidate: MemeCandidate, rank: int) -> str:
 def collect_candidates(config: Dict[str, Any]) -> List[MemeCandidate]:
     collectors = {
         "weibo": collect_weibo,
-        "x": collect_x,
         "xiaohongshu": collect_xiaohongshu,
         "reddit": collect_reddit,
     }
@@ -1145,7 +1026,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Fetch, rank, deduplicate, and download daily meme images.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--providers", default=None, help="Comma-separated providers; default comes from config (weibo,x).")
+    parser.add_argument("--providers", default=None, help="Comma-separated providers; default comes from config (weibo).")
     parser.add_argument("--out", default=None, help="Output directory.")
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="Config JSON path.")
     parser.add_argument("--max-total", type=int, default=None, help="Maximum images to download.")

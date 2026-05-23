@@ -26,62 +26,6 @@ class DailyMemeHarvesterTest(unittest.TestCase):
     def setUp(self):
         self.module = load_harvester_module()
 
-    def test_x_recent_response_parses_media_users_scores_and_skips_sensitive(self):
-        payload = {
-            "data": [
-                {
-                    "id": "100",
-                    "text": "high score meme",
-                    "author_id": "u1",
-                    "possibly_sensitive": False,
-                    "created_at": "2026-05-23T01:00:00Z",
-                    "public_metrics": {
-                        "like_count": 100,
-                        "repost_count": 10,
-                        "reply_count": 5,
-                        "quote_count": 3,
-                        "impression_count": 2000,
-                    },
-                    "attachments": {"media_keys": ["m1"]},
-                },
-                {
-                    "id": "101",
-                    "text": "sensitive meme",
-                    "author_id": "u1",
-                    "possibly_sensitive": True,
-                    "public_metrics": {"like_count": 1000},
-                    "attachments": {"media_keys": ["m2"]},
-                },
-                {
-                    "id": "102",
-                    "text": "low score meme",
-                    "author_id": "u2",
-                    "possibly_sensitive": False,
-                    "public_metrics": {"like_count": 5},
-                    "attachments": {"media_keys": ["m3"]},
-                },
-            ],
-            "includes": {
-                "media": [
-                    {"media_key": "m1", "type": "photo", "url": "https://pbs.twimg.com/media/one.jpg"},
-                    {"media_key": "m2", "type": "photo", "url": "https://pbs.twimg.com/media/two.jpg"},
-                    {"media_key": "m3", "type": "photo", "url": "https://pbs.twimg.com/media/three.jpg"},
-                ],
-                "users": [
-                    {"id": "u1", "username": "alice", "name": "Alice"},
-                    {"id": "u2", "username": "bob", "name": "Bob"},
-                ],
-            },
-        }
-
-        candidates = self.module.parse_x_recent_response(payload, query="meme")
-        filtered, skipped = self.module.filter_candidates(candidates, {"skip_sensitive": True, "block_keywords": []})
-
-        self.assertEqual(skipped, 0)
-        self.assertEqual([candidate.source_id for candidate in filtered], ["100:m1", "102:m3"])
-        self.assertEqual(filtered[0].source_url, "https://x.com/alice/status/100")
-        self.assertEqual(filtered[0].score, 100 + 10 * 4 + 5 * 2 + 3 * 3 + 2000 / 1000)
-
     def test_weibo_hotsearch_parses_terms_and_scores_by_rank(self):
         payload = {
             "data": {
@@ -197,10 +141,10 @@ class DailyMemeHarvesterTest(unittest.TestCase):
         image_bytes = b"fake-jpeg-bytes"
         expected_sha = hashlib.sha256(image_bytes).hexdigest()
         candidate = self.module.MemeCandidate(
-            provider="x",
-            source_id="100:m1",
-            source_url="https://x.com/alice/status/100",
-            image_url="https://pbs.twimg.com/media/one.jpg",
+            provider="weibo",
+            source_id="100:1",
+            source_url="https://weibo.com/100/ABC",
+            image_url="https://wx1.sinaimg.cn/large/one.jpg",
             title="hello meme",
             author="Alice",
             score=123,
@@ -238,9 +182,9 @@ class DailyMemeHarvesterTest(unittest.TestCase):
 
     def test_download_candidate_rejects_non_image_content_type_without_image_extension(self):
         candidate = self.module.MemeCandidate(
-            provider="x",
-            source_id="100:m1",
-            source_url="https://x.com/alice/status/100",
+            provider="weibo",
+            source_id="100:1",
+            source_url="https://weibo.com/100/ABC",
             image_url="https://cdn.example.com/file.bin",
             title="not image",
         )
@@ -262,19 +206,18 @@ class DailyMemeHarvesterTest(unittest.TestCase):
                         downloaded_at="2026-05-23T09:00:00+08:00",
                     )
 
-    def test_cli_skips_x_without_token_and_outputs_valid_json(self):
+    def test_cli_skips_unknown_provider_and_outputs_valid_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
             out_dir = Path(tmp) / "out"
             env = os.environ.copy()
-            env.pop("X_BEARER_TOKEN", None)
             env["PYTHONUTF8"] = "1"
             result = subprocess.run(
                 [
                     sys.executable,
                     str(SCRIPT),
                     "--providers",
-                    "x",
+                    "unknown",
                     "--dry-run",
                     "--json",
                     "--config",
@@ -293,7 +236,7 @@ class DailyMemeHarvesterTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             summary = json.loads(result.stdout)
             self.assertTrue(summary["dry_run"])
-            self.assertIn("X_BEARER_TOKEN not set; skip x provider", summary["warnings"])
+            self.assertIn("unknown provider skipped: unknown", summary["warnings"])
 
     def test_out_argument_has_priority_over_env_and_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -301,7 +244,7 @@ class DailyMemeHarvesterTest(unittest.TestCase):
             config_path.write_text(json.dumps({"output_dir": str(Path(tmp) / "config-out")}), encoding="utf-8")
             args = Namespace(
                 config=str(config_path),
-                providers="x",
+                providers="weibo",
                 max_total=None,
                 max_per_provider=None,
                 since_hours=None,
@@ -314,6 +257,54 @@ class DailyMemeHarvesterTest(unittest.TestCase):
             config = self.module.build_config(args, env={"MEME_OUTPUT_DIR": str(Path(tmp) / "env-out")})
 
             self.assertEqual(Path(config["output_dir"]), (Path(tmp) / "cli-out").resolve())
+
+    def test_config_loader_accepts_utf8_bom_from_powershell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text('{"output_dir": "C:/memes"}', encoding="utf-8-sig")
+
+            config = self.module.load_config(config_path)
+
+            self.assertEqual(config["output_dir"], "C:/memes")
+
+    def test_xiaohongshu_requests_fetch_disables_proxy_trust_env(self):
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+            text = "ok"
+            headers = {"content-type": "text/html"}
+
+        class FakeSession:
+            def __init__(self):
+                self.trust_env = True
+
+            def get(self, url, params=None, headers=None, timeout=20, allow_redirects=True):
+                calls.append(
+                    {
+                        "url": url,
+                        "params": params,
+                        "headers": headers,
+                        "timeout": timeout,
+                        "allow_redirects": allow_redirects,
+                        "trust_env": self.trust_env,
+                    }
+                )
+                return FakeResponse()
+
+        with patch("requests.Session", return_value=FakeSession()):
+            text, headers = self.module.http_get_text_requests(
+                "https://www.xiaohongshu.com/search_result",
+                params={"keyword": "meme"},
+                headers={"User-Agent": "test"},
+                timeout=45,
+                disable_proxy=True,
+            )
+
+        self.assertEqual(text, "ok")
+        self.assertEqual(headers["content-type"], "text/html")
+        self.assertEqual(calls[0]["trust_env"], False)
+        self.assertEqual(calls[0]["timeout"], 45)
 
 
 if __name__ == "__main__":
