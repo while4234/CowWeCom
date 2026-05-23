@@ -1,0 +1,17 @@
+{
+    "siteUrl": "https://video.a2e.ai/",
+    "timezone": "Asia/Shanghai",
+    "defaultRetryEveryMinutes": 30,
+    "automations": {},
+    "accounts": {
+        "example": {
+            "displayName": "Example",
+            "email": "user@example.com",
+            "chromeProfileDirectory": "Default",
+            "order": 1,
+            "nextCheckInAfter": null,
+            "lastKnownCoins": null,
+            "lastResult": "Configure a local state/a2e-checkin.json from this example before running."
+        }
+    }
+}

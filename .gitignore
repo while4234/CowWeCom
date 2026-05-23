@@ -68,3 +68,4 @@ dist/
 build/
 *.egg-info/
 .cow.pid
+skills/a2e-daily-checkin/state/a2e-checkin.json
