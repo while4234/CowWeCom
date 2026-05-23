@@ -28,6 +28,20 @@ class A2EDailyCheckinSkillTest(unittest.TestCase):
         self.assertIn("a2e_checkin.ps1", content)
         self.assertIn("video.a2e.ai", prompt)
 
+    def test_helper_auto_closes_after_verified_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = SkillManager(custom_dir=str(Path(tmp) / "skills"))
+            entry = manager.get_skill("a2e-daily-checkin")
+            skill_content = Path(entry.skill.file_path).read_text(encoding="utf-8")
+            script_content = (
+                Path(entry.skill.file_path).parent / "scripts" / "a2e_checkin.ps1"
+            ).read_text(encoding="utf-8")
+
+        self.assertIn("-KeepOpen", skill_content)
+        self.assertIn("[switch]$KeepOpen", script_content)
+        self.assertIn("$autoCloseAfterVerifiedClaim", script_content)
+        self.assertIn("Close-ChromeWindow $openedWindow", script_content)
+
 
 if __name__ == "__main__":
     unittest.main()

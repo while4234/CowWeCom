@@ -26,7 +26,7 @@ metadata:
 
 ## Native Chrome Helper
 
-Use the bundled PowerShell helper from this skill's base directory. It verifies the Chrome profile email, opens or focuses the correct profile, navigates to A2E, clicks the visible daily reward claim button when requested, verifies success through the A2E API when possible, and updates state after verified success.
+Use the bundled PowerShell helper from this skill's base directory. It verifies the Chrome profile email, opens or focuses the correct profile, navigates to A2E, clicks the visible daily reward claim button when requested, verifies success through the A2E API when possible, updates state after verified success, and closes the helper-opened browser window after a verified claim unless `-KeepOpen` is passed.
 
 Open the due account page without claiming:
 
@@ -37,8 +37,10 @@ powershell -ExecutionPolicy Bypass -File "<base_dir>\scripts\a2e_checkin.ps1" -A
 Run a verified unattended claim for due accounts:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "<base_dir>\scripts\a2e_checkin.ps1" -Account all -DueOnly -ClickClaim -VerifyClaim -AutoUpdateState -Screenshot -CloseAfter
+powershell -ExecutionPolicy Bypass -File "<base_dir>\scripts\a2e_checkin.ps1" -Account all -DueOnly -ClickClaim -VerifyClaim -AutoUpdateState -Screenshot
 ```
+
+Use `-KeepOpen` only when you intentionally want to inspect the browser after a verified claim. Use `-CloseAfter` for non-claim flows such as `-OpenOnly` when you want the page opened, captured, and then closed. Failed or unverified claim attempts keep the browser open for manual inspection.
 
 Check one account status through the local Chrome profile's A2E session:
 
@@ -64,7 +66,7 @@ powershell -ExecutionPolicy Bypass -File "<base_dir>\scripts\a2e_checkin.ps1" -A
 2. If `DueOnly` is appropriate, skip accounts that are not eligible yet.
 3. Open the matching Chrome profile and A2E page with `-OpenOnly` when the user only asks to open the page.
 4. Click only the visible site reward claim button when the user asks to sign in or claim, using `-ClickClaim`.
-5. Prefer `-VerifyClaim -AutoUpdateState` so state changes only after the API confirms the check-in or the account is already checked in today.
+5. Prefer `-VerifyClaim -AutoUpdateState` so state changes only after the API confirms the check-in or the account is already checked in today. After verified success, let the helper close its temporary browser window automatically unless the user asked to keep it open.
 6. Treat these as successful check-in evidence:
    - The API reports today's successful check-in.
    - The coin count increases by 60.

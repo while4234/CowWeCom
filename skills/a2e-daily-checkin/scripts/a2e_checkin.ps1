@@ -11,6 +11,7 @@ param(
   [switch]$VerifyClaim,
   [switch]$AutoUpdateState,
   [switch]$CloseAfter,
+  [switch]$KeepOpen,
 
   [string]$NextCheckInAfter,
   [int]$LastKnownCoins,
@@ -374,9 +375,10 @@ function Open-A2EAccount($State, [string]$Name) {
 
   Start-Process -FilePath $chrome -ArgumentList $arguments | Out-Null
   Start-Sleep -Seconds 5
-  Resolve-ProfilePickerIfNeeded $State $config $Name
+  Resolve-ProfilePickerIfNeeded $State $config $Name | Out-Null
   Click-ProbableA2ETab
   Navigate-FocusedChromeToUrl $targetUrl
+  Focus-A2EChromeWindow
 }
 
 function Focus-A2EChromeWindow {
@@ -405,8 +407,20 @@ function Focus-A2EChromeWindow {
   $window
 }
 
-function Close-FocusedChromeWindow {
-  $window = Focus-A2EChromeWindow
+function Close-ChromeWindow($Window) {
+  if ($Window) {
+    Ensure-Win32Types
+    $Window.Refresh()
+    [A2E.Win32]::ShowWindow($Window.MainWindowHandle, 9) | Out-Null
+    Start-Sleep -Milliseconds 150
+    [A2E.Win32]::SetForegroundWindow($Window.MainWindowHandle) | Out-Null
+    [A2E.Win32]::BringWindowToTop($Window.MainWindowHandle) | Out-Null
+    Start-Sleep -Milliseconds 250
+  } else {
+    $Window = Focus-A2EChromeWindow
+  }
+
+  $window = $Window
   $title = $window.MainWindowTitle
   $handle = $window.MainWindowHandle
   $closed = $window.CloseMainWindow()
@@ -424,6 +438,10 @@ function Close-FocusedChromeWindow {
     Handle = $handle
     WindowTitle = $title
   }
+}
+
+function Close-FocusedChromeWindow {
+  Close-ChromeWindow $null
 }
 
 function Navigate-FocusedChromeToUrl([string]$TargetUrl) {
@@ -665,7 +683,7 @@ if (-not $selectedAccounts -or $selectedAccounts.Count -eq 0) {
 
 $results = @()
 foreach ($entry in $selectedAccounts) {
-  Open-A2EAccount $state $entry.Name
+  $openedWindow = Open-A2EAccount $state $entry.Name
   Focus-A2EChromeWindow | Out-Null
 
   $clickResult = $null
@@ -689,17 +707,25 @@ foreach ($entry in $selectedAccounts) {
   }
 
   $closeResult = $null
-  if ($CloseAfter) {
+  $autoCloseAfterVerifiedClaim = $ClickClaim -and $claimVerification -and $claimVerification.Verified -and -not $KeepOpen
+  $shouldCloseBrowser = ($CloseAfter -or $autoCloseAfterVerifiedClaim) -and -not $KeepOpen
+  if ($shouldCloseBrowser) {
     $verifiedClaim = $claimVerification -and $claimVerification.Verified
     $safeToClose = $OpenOnly -or (-not $ClickClaim) -or $verifiedClaim
     if ($safeToClose) {
-      $closeResult = Close-FocusedChromeWindow
+      $closeResult = Close-ChromeWindow $openedWindow
     } else {
       $closeResult = [pscustomobject]@{
         Requested = $true
         Skipped = $true
         Reason = "Claim was clicked but not API-verified; leaving the browser open for manual inspection."
       }
+    }
+  } elseif ($KeepOpen -and ($CloseAfter -or ($ClickClaim -and $claimVerification -and $claimVerification.Verified))) {
+    $closeResult = [pscustomobject]@{
+      Requested = $false
+      Skipped = $true
+      Reason = "-KeepOpen was passed; leaving the browser open after the check-in flow."
     }
   }
 
