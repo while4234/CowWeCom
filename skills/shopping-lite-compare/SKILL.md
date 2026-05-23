@@ -1,6 +1,6 @@
 ---
 name: shopping-lite-compare
-description: Read-only Chinese e-commerce comparison skill for 比价, 淘宝, 天猫, 京东, 抖音, 抖音商城, 哪里买便宜, 查券, 网购推荐, 全网比价, 同款比价, 价格对比, and similar shopping price research requests. Use only when the user explicitly asks for online shopping comparison; never use for takeout or food recommendation.
+description: Read-only Chinese e-commerce comparison skill for 比价, 淘宝, 天猫, 京东, 拼多多, 抖音, 抖音商城, 哪里买便宜, 查券, 网购推荐, 全网比价, 同款比价, 价格对比, 商品链接, 购买链接, and similar shopping price research requests. Use only when the user explicitly asks for online shopping comparison; never use for takeout or food recommendation.
 ---
 
 # Shopping Lite Compare
@@ -12,15 +12,16 @@ Use this skill for read-only e-commerce price comparison. The core auxiliary ski
 Allowed:
 
 - Search and compare product prices when the user explicitly asks for price comparison, coupons, where to buy cheaper, or platform-specific shopping research.
-- Use platforms returned by the auxiliary skill, especially Taobao/Tmall, JD, Douyin, and all-platform search when no platform is specified.
+- Use platforms returned by the auxiliary skill, especially Taobao/Tmall, JD, Pinduoduo, Douyin, and all-platform search when no platform is specified.
 - Output non-sensitive product information returned by the auxiliary skill, such as platform, product title, displayed price, coupon or discount information, shop/sales/review-like fields when available, and a recommendation reason.
+- When the user explicitly asks for 商品链接, 购买链接, or link output, display upstream returned links as Markdown links for manual user tapping only.
 - Suggest that the user returns to the official platform App to verify price, shop, after-sales policy, shipping, coupons, and availability.
 - Use the bundled `scripts/shopping_compare_helper.py` or the installed `taobao`/`maishou` local script for read-only API search.
 
 Not allowed:
 
 - Do not use this skill for takeout, food recommendation, Meituan takeout, or today-what-to-eat prompts. Use `takeout-lite-recommender` for those.
-- Do not automatically open purchase links, rebate links, promotion links, short links, or redirect links.
+- Do not automatically open purchase links, rebate links, promotion links, short links, or redirect links. Showing links is allowed only for manual user choice.
 - Do not open browser pages, Baidu, Taobao web, JD web, Douyin web, or public search pages as a fallback for price comparison. If the local script cannot return results, report that comparison is incomplete instead of triggering human verification pages.
 - Do not automatically place orders, add to cart, fill delivery address, fill phone number, enter verification code, use cookies/tokens, log in, or complete a purchase.
 - Do not use rebate links, invite codes, referral identity, or sharing identity as the default basis for recommendation.
@@ -34,12 +35,12 @@ The installed OpenClaw `taobao` package currently contains a `maishou` skill. It
 - Contains a default invite code fallback `6110440`, overridable by the `MAISHOU_INVITE_CODE` environment variable.
 - Contains a hardcoded `openid` used in search requests.
 - Search results include a `commission` field, so rebate or affiliate economics may be present upstream.
-- Has a `detail` command that can request target purchase URLs and copy commands.
+- Has a `detail` command that can request target purchase URLs and copy commands. Use it only when the user explicitly asks for links.
 
 Default policy for CowWechat:
 
 - Use this auxiliary skill for read-only search and comparison only.
-- Prefer search/list results over detail-link generation.
+- Prefer search/list results over detail-link generation unless the user explicitly asks for links.
 - Do not open or follow purchase links, promotion links, short links, or app schema links.
 - Do not hardcode additional invite codes, openid/user IDs, affiliate IDs, referral IDs, rebate codes, PID/adzone values, or promotion-link templates in this CowWechat skill.
 - If purchase links, copy commands, invite codes, openid/user IDs, commission fields, rebate identity, or sharing identity appear in upstream output, disclose that possibility, do not use them for automated purchase, and advise the user to verify manually in official Apps.
@@ -60,7 +61,9 @@ Default policy for CowWechat:
    - Prefer: `python "<base_dir>/scripts/shopping_compare_helper.py" "<keyword>" --platform all`
    - For Taobao/Tmall only: use `--platform taobao`
    - For JD only: use `--platform jd`
+   - For Pinduoduo only: use `--platform pdd`
    - For Douyin only: use `--platform douyin`
+   - If the user explicitly asks for 商品链接 or 购买链接, add `--include-links` and show returned links as manual links.
    - Do not use browser automation or public shopping webpages as fallback.
 4. Produce a comparison table with at least:
    - Platform.
@@ -101,7 +104,8 @@ The helper:
 - Locates the installed OpenClaw `taobao` package under `%USERPROFILE%\.openclaw\workspace\skills\taobao`.
 - Calls its `scripts/main.py search` command through `uv` in read-only mode.
 - Searches the requested platform scope without opening a browser.
-- Never calls the upstream `detail` command, because that path can return purchase/share links and copy commands.
+- Calls only `search` by default.
+- Calls upstream `detail` only when `--include-links` is used, then displays returned links/口令 without opening them.
 
 If the helper cannot find the installed script, `uv`, or usable results, state that `shopping-lite-compare` is incomplete and ask the user to install or fix the `taobao` skill. Do not switch to browser search.
 

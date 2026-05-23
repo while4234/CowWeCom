@@ -19,8 +19,9 @@ openclaw.cmd skills list
 
 - 只读搜索商品。
 - 只读查价、查券、对比平台结果。
-- 平台范围：淘宝/天猫、京东、抖音；必要时可全平台搜索。
+- 平台范围：淘宝/天猫、京东、拼多多、抖音；必要时可全平台搜索。
 - 输出平台、商品标题、展示价格、优惠信息、销量/评价等辅助 skill 返回的非敏感信息。
+- 用户明确要求商品链接/购买链接时，可以展示上游返回的链接和口令，供用户手动点击或复制。
 - 建议用户回官方 App 核验价格、优惠、店铺、售后、运费和库存。
 - 优先使用本 skill 自带的 `scripts/shopping_compare_helper.py` 调用本地已安装的 `taobao`/`maishou` 搜索脚本。
 
@@ -57,10 +58,12 @@ openclaw.cmd skills list
 python skills/shopping-lite-compare/scripts/shopping_compare_helper.py "苹果20W充电器" --platform all
 python skills/shopping-lite-compare/scripts/shopping_compare_helper.py "苹果20W充电器" --platform taobao
 python skills/shopping-lite-compare/scripts/shopping_compare_helper.py "苹果20W充电器" --platform jd
+python skills/shopping-lite-compare/scripts/shopping_compare_helper.py "苹果20W充电器" --platform pdd
 python skills/shopping-lite-compare/scripts/shopping_compare_helper.py "苹果20W充电器" --platform douyin
+python skills/shopping-lite-compare/scripts/shopping_compare_helper.py "苹果20W充电器" --platform all --include-links
 ```
 
-helper 只执行 `search`，不会执行 `detail`，不会生成购买链接，也不会打开浏览器。
+helper 默认只执行 `search`，不会生成购买链接，也不会打开浏览器。只有用户明确要求链接时，才使用 `--include-links` 调用上游 `detail` 获取链接/口令；即便如此也只展示，不自动打开、不下单、不加购。
 
 ## 验收样例
 
