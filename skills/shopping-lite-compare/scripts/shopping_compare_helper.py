@@ -221,7 +221,11 @@ def main() -> int:
     parser.add_argument("keyword", help="Product keyword")
     parser.add_argument("--platform", default="all", choices=sorted(PLATFORMS), help="Platform scope")
     parser.add_argument("--limit", type=int, default=5, help="Max rows per search scope")
-    parser.add_argument("--include-links", action="store_true", help="Fetch upstream manual purchase/share links without opening them")
+    parser.add_argument(
+        "--no-links",
+        action="store_true",
+        help="Do not fetch upstream manual purchase/share links",
+    )
     args = parser.parse_args()
 
     script = installed_taobao_script()
@@ -236,7 +240,7 @@ def main() -> int:
             rows = run_search(script, args.keyword, source, args.limit)
             for row in rows:
                 manual_link, copy_command = ("-", "-")
-                if args.include_links:
+                if not args.no_links:
                     manual_link, copy_command = run_detail(script, row)
                 results.append(normalize_result(row, platform_name, manual_link, copy_command))
         except Exception as exc:
