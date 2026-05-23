@@ -1,15 +1,5 @@
 {
   "format": "cowagent-knowledge-backend-v1",
   "sqlite_path": "indexes/kb.sqlite",
-  "documents": [
-    {
-      "id": "ec894ddf5ce99711fd677dfe",
-      "title": "AMBA 4 AXI4-Stream Protocol Specification v1.0",
-      "kb_id": "axi4_stream",
-      "version_id": "923a8304fd49bedac5cc7cc3",
-      "source_path": "originals/5eab83e14d300699_IHI0051A_amba4_axi4_stream_v1_0_protocol_spec.pdf",
-      "content_hash": "5eab83e14d3006997372f88370309a3d5cf70b1583c63476e436f2c09b787c82",
-      "status": "ready"
-    }
-  ]
+  "documents": []
 }

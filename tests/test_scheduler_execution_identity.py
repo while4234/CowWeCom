@@ -27,6 +27,16 @@ class FakeChannel:
         self.sent.append((reply, context))
 
 
+class FakeWeixinChannel:
+    def __init__(self, result):
+        self.result = result
+        self.active_sends = []
+
+    def active_send_text_result(self, receiver, text):
+        self.active_sends.append((receiver, text))
+        return self.result
+
+
 class TestSchedulerExecutionIdentity(unittest.TestCase):
     def test_agent_task_preserves_owner_identity_and_scheduler_session(self):
         bridge = FakeAgentBridge()
@@ -61,6 +71,61 @@ class TestSchedulerExecutionIdentity(unittest.TestCase):
         self.assertEqual(context.get("conversation_id"), "scheduler_normal_task1")
         self.assertTrue(context.get("is_scheduled_task"))
         self.assertEqual(len(channel.sent), 1)
+
+    def test_agent_task_weixin_uses_running_channel_active_send(self):
+        bridge = FakeAgentBridge()
+        channel = FakeWeixinChannel({"ok": True, "reason": "sent"})
+        task = {
+            "id": "task1",
+            "name": "owner task",
+            "owner_actor_id": "weixin_user:normal",
+            "owner_role": "user",
+            "owner_memory_user_id": "normal-memory",
+            "action": {
+                "type": "agent_task",
+                "task_description": "run owner task",
+                "receiver": "normal",
+                "receiver_name": "Normal User",
+                "is_group": False,
+                "channel_type": "weixin_user",
+                "notify_session_id": "normal",
+            },
+        }
+
+        with patch("agent.tools.scheduler.integration._get_running_channel", return_value=channel), patch(
+            "channel.channel_factory.create_channel"
+        ) as create_channel:
+            _execute_agent_task(task, bridge)
+
+        create_channel.assert_not_called()
+        self.assertEqual(channel.active_sends, [("normal", "done")])
+        self.assertTrue(hasattr(bridge, "remembered"))
+
+    def test_agent_task_weixin_send_failure_does_not_remember_delivery(self):
+        bridge = FakeAgentBridge()
+        channel = FakeWeixinChannel({"ok": False, "reason": "missing_context_token"})
+        task = {
+            "id": "task1",
+            "name": "owner task",
+            "owner_actor_id": "weixin_user:normal",
+            "owner_role": "user",
+            "owner_memory_user_id": "normal-memory",
+            "action": {
+                "type": "agent_task",
+                "task_description": "run owner task",
+                "receiver": "normal",
+                "receiver_name": "Normal User",
+                "is_group": False,
+                "channel_type": "weixin_user",
+                "notify_session_id": "normal",
+            },
+        }
+
+        with patch("agent.tools.scheduler.integration._get_running_channel", return_value=channel):
+            _execute_agent_task(task, bridge)
+
+        self.assertEqual(channel.active_sends, [("normal", "done")])
+        self.assertFalse(hasattr(bridge, "remembered"))
 
     def test_agent_task_without_owner_does_not_execute(self):
         bridge = FakeAgentBridge()

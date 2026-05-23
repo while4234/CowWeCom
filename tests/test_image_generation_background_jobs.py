@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from config import conf
 from agent.tools.image_generation.image_generation_task import ImageGenerationTaskTool
 from agent.tools.image_generation.job_manager import ImageGenerationJobManager
 from bridge.context import Context, ContextType
@@ -333,6 +334,39 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
                 self.assertEqual(wait_for(job), "succeeded")
                 self.assertEqual(env_file.read_text(encoding="utf-8"), "")
             finally:
+                manager.shutdown(wait=False)
+
+    def test_manager_injects_codex_auth_file_from_skill_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script_dir = Path(tmp) / "scripts"
+            script_dir.mkdir()
+            script = script_dir / "fake_generate.py"
+            env_file = Path(tmp) / "codex_auth_file.txt"
+            auth_file = Path(tmp) / "auth.json"
+            auth_file.write_text("{}", encoding="utf-8")
+            script.write_text(
+                "\n".join([
+                    "import base64, json, os, sys",
+                    "args = json.loads(sys.argv[1])",
+                    f"open({str(env_file)!r}, 'w', encoding='utf-8').write(os.environ.get('CODEX_AUTH_FILE', ''))",
+                    "os.makedirs(args['output_dir'], exist_ok=True)",
+                    "out = os.path.join(args['output_dir'], 'out.png')",
+                    f"open(out, 'wb').write(base64.b64decode({PNG_B64!r}))",
+                    "print(json.dumps({'images': [{'url': out}]}))",
+                ]),
+                encoding="utf-8",
+            )
+            manager = ImageGenerationJobManager(script_path=str(script), workspace_root=tmp, global_workers=1)
+            manager._get_channel = lambda channel_type: FakeChannel()
+            original_skill = conf().get("skill", {})
+            conf()["skill"] = {"image-generation": {"codex_auth_file": str(auth_file)}}
+            try:
+                job = manager.submit({"prompt": "sleep:0"}, make_context("a"), make_profile("weixin:a", "user_a", tmp))
+                self.assertEqual(wait_for(job), "succeeded")
+                configured = env_file.read_text(encoding="utf-8")
+                self.assertTrue(os.path.samefile(configured, auth_file))
+            finally:
+                conf()["skill"] = original_skill
                 manager.shutdown(wait=False)
 
     def test_failed_generation_sends_failure_once(self):

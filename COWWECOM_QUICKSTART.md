@@ -1,0 +1,55 @@
+# CowWeCom Quickstart
+
+This repository is prepared as a clean CowWeCom baseline. It is safe to clone on
+another machine, install dependencies, copy the config template, and fill only
+local credentials in `config.json`.
+
+## 1. Create Local Config
+
+```powershell
+Copy-Item .\config-template.json .\config.json
+```
+
+`config.json` is ignored by Git. Keep real API keys, passwords, Bot IDs, and
+Secrets there only.
+
+## 2. Fill Required Values
+
+For the default DeepSeek-compatible template:
+
+```json
+{
+  "channel_type": "wecom_bot",
+  "model": "deepseek-v4-flash",
+  "deepseek_api_key": "YOUR_LLM_API_KEY",
+  "wecom_bot_id": "YOUR_WECOM_BOT_ID",
+  "wecom_bot_secret": "YOUR_WECOM_BOT_SECRET"
+}
+```
+
+You may also use the Web console to scan and connect the WeCom Bot instead of
+typing `wecom_bot_id` and `wecom_bot_secret` manually.
+
+## 3. Install And Run
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe app.py
+```
+
+The WeCom Bot connection is ready when the log includes:
+
+```text
+[WecomBot] Subscribe success
+```
+
+## Safety Notes
+
+- Do not commit `config.json`, `.env`, logs, runtime databases, or local
+  workspace files.
+- `knowledge_backend/indexes/`, `knowledge_backend/originals/`,
+  `knowledge_backend/derived/`, and `knowledge_backend/reports/` are local
+  runtime data and are ignored by Git.
+- Push only to this project's `origin` remote after it is changed to the new
+  CowWeCom repository.

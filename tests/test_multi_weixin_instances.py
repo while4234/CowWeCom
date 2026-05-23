@@ -154,6 +154,39 @@ class TestMultiWeixinInstances(unittest.TestCase):
 
         self.assertFalse(channel.active_send_text("receiver-id", "hello from bridge"))
 
+    def test_active_send_text_result_preserves_ret_minus_2(self):
+        class RejectingWeixinApi:
+            def send_text(self, receiver, text, context_token):
+                return {"ret": -2}
+
+        channel = WeixinChannel("weixin_user")
+        channel.channel_type = "weixin_user"
+        channel.api = RejectingWeixinApi()
+        channel._context_tokens["receiver-id"] = "ctx-token"
+
+        result = channel.active_send_text_result("receiver-id", "hello from bridge")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "weixin_send_rejected")
+        self.assertEqual(result["ret"], -2)
+        self.assertFalse(WeixinChannel._is_send_response_ok({"ret": -2}))
+        self.assertIn("-2", WeixinChannel._summarize_send_response({"ret": -2}))
+
+    def test_reply_send_empty_response_is_reported_as_failure(self):
+        class EmptyWeixinApi:
+            def send_text(self, receiver, text, context_token):
+                return {}
+
+        channel = WeixinChannel("weixin_user")
+        channel.channel_type = "weixin_user"
+        channel.api = EmptyWeixinApi()
+
+        result = channel._send_text_result("hello from bridge", "receiver-id", "ctx-token")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "empty_response")
+        self.assertIn("empty_response", WeixinChannel._summarize_send_response({}))
+
     def test_weixin_api_send_timeout_is_not_success(self):
         api = WeixinApi()
         with patch("channel.weixin.weixin_api.requests.post", side_effect=requests.exceptions.Timeout()):

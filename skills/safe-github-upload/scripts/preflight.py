@@ -143,6 +143,21 @@ def staged_files(root: Path) -> list[str]:
     return [normalize_path(line) for line in result.stdout.splitlines() if line.strip()]
 
 
+def staged_name_status(root: Path) -> list[dict[str, str]]:
+    result = run_git(root, ["diff", "--cached", "--name-status"])
+    entries: list[dict[str, str]] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        status = parts[0].strip()
+        path = normalize_path(parts[-1])
+        entries.append({"status": status, "path": path})
+    return entries
+
+
 def scan_staged_secrets(root: Path, paths: Iterable[str]) -> list[dict[str, str]]:
     hits: list[dict[str, str]] = []
     for rel in paths:
@@ -166,10 +181,15 @@ def scan_staged_secrets(root: Path, paths: Iterable[str]) -> list[dict[str, str]
 def build_report(root: Path) -> tuple[dict, bool]:
     status_result = run_git(root, ["status", "--porcelain=v1", "--untracked-files=all"])
     status_entries = parse_status(status_result.stdout)
-    staged = staged_files(root)
+    staged_entries = staged_name_status(root)
+    staged = [entry["path"] for entry in staged_entries]
     ignore_rules = read_ignore_rules(root)
     missing_ignore_rules = [rule for rule in REQUIRED_IGNORE_RULES if rule not in ignore_rules]
-    protected_staged = [path for path in staged if is_protected(path)]
+    protected_staged = [
+        entry["path"]
+        for entry in staged_entries
+        if entry["status"] != "D" and is_protected(entry["path"])
+    ]
     protected_changed = [entry["path"] for entry in status_entries if is_protected(entry["path"])]
     secret_hits = scan_staged_secrets(root, staged)
     branch = run_git(root, ["branch", "--show-current"]).stdout.strip()

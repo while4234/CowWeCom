@@ -93,6 +93,23 @@ class SafeGithubUploadSkillTest(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertIn("feature.py", payload["staged_files"])
 
+    def test_preflight_allows_staged_deletion_of_protected_runtime_file(self):
+        index_dir = self.root / "knowledge_backend" / "indexes"
+        index_dir.mkdir(parents=True)
+        db_path = index_dir / "kb.sqlite"
+        db_path.write_bytes(b"local runtime db")
+        run_git(self.root, "add", "knowledge_backend/indexes/kb.sqlite")
+        run_git(self.root, "commit", "-m", "track runtime db")
+        run_git(self.root, "rm", "knowledge_backend/indexes/kb.sqlite")
+
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "ok")
+        self.assertIn("knowledge_backend/indexes/kb.sqlite", payload["staged_files"])
+        self.assertNotIn("knowledge_backend/indexes/kb.sqlite", payload["protected_staged"])
+
 
 if __name__ == "__main__":
     unittest.main()

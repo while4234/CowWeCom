@@ -1,5 +1,5 @@
 {
-  "channel_type": "weixin",
+  "channel_type": "wecom_bot",
   "model": "deepseek-v4-flash",
   "deepseek_api_key": "",
   "deepseek_api_base": "https://api.deepseek.com/v1",
@@ -141,7 +141,8 @@
   },
   "skill": {
     "image-generation": {
-      "runtime": "codex_auth"
+      "runtime": "codex_auth",
+      "codex_auth_file": ""
     }
   }
 }

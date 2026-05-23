@@ -308,6 +308,25 @@ class TestSocialBridgeService(unittest.TestCase):
         self.assertEqual(pending["messages"][0]["from"]["bridge_user_id"], service._public_user_id("weixin:a"))
         self.assertEqual(len(service.pending_messages("weixin:a")["messages"]), 1)
 
+    def test_send_message_marks_target_stale_when_weixin_rejects(self):
+        class RejectingRouter:
+            def send_text(self, target, text):
+                return {"delivered": False, "reason": "weixin_send_rejected", "ret": -2}
+
+        service = SocialBridgeService(self.store, RejectingRouter())
+
+        result = service.send_message("weixin:a", "weixin:b", "hello")
+        target = self.store.get_user("weixin:b")
+        pending = service.pending_messages("weixin:b")
+
+        self.assertFalse(result["delivered"])
+        self.assertEqual(result["status"], "pending")
+        self.assertEqual(result["result"]["ret"], -2)
+        self.assertFalse(target.metadata["can_active_send"])
+        self.assertEqual(target.metadata["context_token"], "")
+        self.assertEqual(target.metadata["active_send_stale_ret"], -2)
+        self.assertEqual(pending["messages"][0]["result"]["ret"], -2)
+
     def test_pending_message_retry_marks_sent_after_router_recovers(self):
         router = FakeRouter(delivered=False)
         service = SocialBridgeService(self.store, router)
@@ -338,6 +357,65 @@ class TestSocialBridgeService(unittest.TestCase):
         self.assertTrue(result["retry"]["delivered"])
         self.assertEqual(result["retry"]["status"], "sent")
         self.assertEqual(result["messages"], [])
+
+    def test_pending_message_retry_after_context_refresh_uses_updated_target_metadata(self):
+        class TokenAwareRouter:
+            def __init__(self):
+                self.tokens = []
+
+            def send_text(self, target, text):
+                token = (target.metadata or {}).get("context_token", "")
+                self.tokens.append(token)
+                if token == "new-token":
+                    return {"delivered": True, "reason": "sent", "token": token}
+                return {"delivered": False, "reason": "weixin_send_rejected", "ret": -2, "token": token}
+
+        self.store.register_user(
+            "weixin:b",
+            "memory_b",
+            "Alice",
+            {
+                "channel_type": "weixin_user",
+                "wechat_id": "alice_wx",
+                "nickname": "Alice",
+                "receiver": "raw-b",
+                "context_token": "old-token",
+                "can_active_send": True,
+            },
+        )
+        router = TokenAwareRouter()
+        service = SocialBridgeService(self.store, router)
+
+        queued = service.send_message("weixin:a", "weixin:b", "hello")
+        service.register_user(
+            "weixin:b",
+            "memory_b",
+            "Alice",
+            channel_type="weixin_user",
+            raw_user_id="raw-b",
+            receiver="raw-b",
+            context_token="new-token",
+            can_active_send=True,
+            metadata={"wechat_id": "alice_wx", "nickname": "Alice"},
+        )
+        result = service.pending_messages("weixin:b", retry_message_id=queued["message_id"])
+
+        self.assertEqual(router.tokens, ["old-token", "new-token"])
+        self.assertTrue(result["retry"]["delivered"])
+        self.assertEqual(result["retry"]["status"], "sent")
+        self.assertEqual(result["messages"], [])
+
+    def test_retry_pending_for_target_only_retries_inbound_messages(self):
+        router = FakeRouter(delivered=False)
+        service = SocialBridgeService(self.store, router)
+        service.send_message("weixin:a", "weixin:b", "for b")
+        service.send_message("weixin:b", "weixin:a", "for a")
+
+        router.delivered = True
+        result = service.retry_pending_for_target("weixin:b")
+
+        self.assertEqual(len(result["retried"]), 1)
+        self.assertEqual(result["retried"][0]["status"], "sent")
 
     def test_router_uses_running_weixin_channel_active_send(self):
         from agent.social_bridge.service import ActiveMessageRouter
@@ -406,6 +484,82 @@ class TestSocialBridgeService(unittest.TestCase):
 
         self.assertTrue(result["delivered"])
         self.assertEqual(calls, [("raw-b", "hello standalone", "ctx-b")])
+
+    def test_router_sends_to_running_wecom_bot_channel(self):
+        from agent.social_bridge.service import ActiveMessageRouter
+
+        calls = []
+        self.store.register_user(
+            "wecom_bot:user-a",
+            "wecom_user_a",
+            "WeCom User",
+            {
+                "channel_type": "wecom_bot",
+                "receiver": "user-a",
+                "can_active_send": True,
+            },
+        )
+
+        class FakeChannel:
+            def active_send_text_result(self, receiver, text, is_group=False):
+                calls.append((receiver, text, is_group))
+                return {"ok": True, "reason": "sent"}
+
+        fake_main = SimpleNamespace(
+            get_channel_manager=lambda: SimpleNamespace(get_channel=lambda channel_type: FakeChannel())
+        )
+        target = self.store.get_user("wecom_bot:user-a")
+
+        with patch.dict(sys.modules, {"app": SimpleNamespace(get_channel_manager=lambda: None), "__main__": fake_main}):
+            result = ActiveMessageRouter().send_text(target, "hello wecom")
+
+        self.assertTrue(result["delivered"])
+        self.assertEqual(result["channel_type"], "wecom_bot")
+        self.assertEqual(calls, [("user-a", "hello wecom", False)])
+
+    def test_router_requires_running_wecom_bot_channel(self):
+        from agent.social_bridge.service import ActiveMessageRouter
+
+        self.store.register_user(
+            "wecom_bot:user-a",
+            "wecom_user_a",
+            "WeCom User",
+            {
+                "channel_type": "wecom_bot",
+                "receiver": "user-a",
+                "can_active_send": True,
+            },
+        )
+        target = self.store.get_user("wecom_bot:user-a")
+
+        with patch.object(ActiveMessageRouter, "_get_channel_manager", return_value=None), patch.object(
+            ActiveMessageRouter,
+            "_create_standalone_channel",
+        ) as create_channel:
+            result = ActiveMessageRouter().send_text(target, "hello wecom")
+
+        create_channel.assert_not_called()
+        self.assertFalse(result["delivered"])
+        self.assertEqual(result["reason"], "channel_not_running")
+
+    def test_router_does_not_treat_weixin_payload_dict_as_success(self):
+        from agent.social_bridge.service import ActiveMessageRouter
+
+        class FakeChannel:
+            def active_send_text(self, receiver, text, context_token=""):
+                return {"ret": -2}
+
+        fake_main = SimpleNamespace(
+            get_channel_manager=lambda: SimpleNamespace(get_channel=lambda channel_type: FakeChannel())
+        )
+        target = self.store.get_user("weixin:b")
+
+        with patch.dict(sys.modules, {"app": SimpleNamespace(get_channel_manager=lambda: None), "__main__": fake_main}):
+            result = ActiveMessageRouter().send_text(target, "hello")
+
+        self.assertFalse(result["delivered"])
+        self.assertEqual(result["reason"], "send_rejected")
+        self.assertEqual(result["ret"], -2)
 
     def test_send_message_accepts_public_bridge_user_id(self):
         router = FakeRouter(delivered=True)

@@ -582,6 +582,20 @@ class WeixinChannel(ChatChannel):
                     "can_active_send": bool(context_token),
                 },
             )
+            if context_token:
+                try:
+                    from agent.social_bridge import get_social_bridge_service
+
+                    limit = int(conf().get("social_bridge_auto_retry_limit", 5) or 5)
+                    result = get_social_bridge_service().retry_pending_for_target(profile.actor_id, limit=limit)
+                    retried = [item for item in result.get("retried", []) if item.get("delivered")]
+                    if retried:
+                        logger.info(
+                            f"[Weixin] Retried {len(retried)} pending social bridge message(s) "
+                            f"after context refresh for channel={self.channel_type}"
+                        )
+                except Exception as e:
+                    logger.debug(f"[Weixin] Pending social bridge retry skipped: {e}")
         except Exception as e:
             logger.debug(f"[Weixin] Social bridge user registration skipped: {e}")
 
@@ -653,36 +667,61 @@ class WeixinChannel(ChatChannel):
 
         if not context_token:
             logger.error(f"[Weixin] No context_token for receiver={receiver}, cannot send")
-            return
+            return False
 
         if not self._ensure_api():
-            return
+            return False
 
         if reply.type == ReplyType.TEXT:
-            self._send_text(reply.content, receiver, context_token)
+            return self._send_text(reply.content, receiver, context_token)
         elif reply.type in (ReplyType.IMAGE_URL, ReplyType.IMAGE):
             self._send_image(reply.content, receiver, context_token)
+            return True
         elif reply.type == ReplyType.FILE:
             self._send_file(reply.content, receiver, context_token)
+            return True
         elif reply.type in (ReplyType.VIDEO, ReplyType.VIDEO_URL):
             self._send_video(reply.content, receiver, context_token)
+            return True
         else:
             logger.warning(f"[Weixin] Unsupported reply type: {reply.type}, fallback to text")
-            self._send_text(str(reply.content), receiver, context_token)
+            return self._send_text(str(reply.content), receiver, context_token)
 
     def active_send_text(self, receiver: str, text: str, context_token: str = "") -> bool:
         """Send a text message without an inbound message context."""
+        return bool(self.active_send_text_result(receiver, text, context_token=context_token).get("ok"))
+
+    def active_send_text_result(self, receiver: str, text: str, context_token: str = "") -> dict:
+        """Send a text message and return a normalized delivery result."""
         if not receiver or not text:
-            return False
+            return {
+                "ok": False,
+                "reason": "missing_receiver_or_text",
+                "receiver": receiver,
+                "context_token_present": bool(context_token),
+            }
 
         token = context_token or self._context_tokens.get(receiver, "")
         if not token:
             logger.warning(f"[Weixin] No context_token for active send receiver={receiver}")
-            return False
+            return {
+                "ok": False,
+                "reason": "missing_context_token",
+                "receiver": receiver,
+                "context_token_present": False,
+            }
 
         if not self._ensure_api():
-            return False
-        return self._send_text(text, receiver, token)
+            return {
+                "ok": False,
+                "reason": "api_unavailable",
+                "receiver": receiver,
+                "context_token_present": True,
+            }
+        result = self._send_text_result(text, receiver, token)
+        result["receiver"] = receiver
+        result["context_token_present"] = True
+        return result
 
     def _get_context_token(self, receiver: str, msg=None) -> str:
         """Get the context_token for a receiver, required for all sends."""
@@ -691,60 +730,98 @@ class WeixinChannel(ChatChannel):
         return self._context_tokens.get(receiver, "")
 
     def _send_text(self, text: str, receiver: str, context_token: str) -> bool:
+        return bool(self._send_text_result(text, receiver, context_token).get("ok"))
+
+    def _send_text_result(self, text: str, receiver: str, context_token: str) -> dict:
         if len(text) <= TEXT_CHUNK_LIMIT:
             try:
                 response = self.api.send_text(receiver, text, context_token)
-                if not self._is_send_response_ok(response):
+                result = self._normalize_send_response(response)
+                if not result["ok"]:
                     logger.warning(
                         f"[Weixin] Text send rejected for receiver={receiver}: "
                         f"{self._summarize_send_response(response)}"
                     )
-                    return False
+                    return result
                 logger.debug(f"[Weixin] Text sent to {receiver}, len={len(text)}")
             except Exception as e:
                 logger.error(f"[Weixin] Failed to send text: {e}")
-                return False
-            return True
+                return {"ok": False, "reason": "send_error", "error": str(e)}
+            return result
 
         chunks = self._split_text(text, TEXT_CHUNK_LIMIT)
         for i, chunk in enumerate(chunks):
             try:
                 response = self.api.send_text(receiver, chunk, context_token)
-                if not self._is_send_response_ok(response):
+                result = self._normalize_send_response(response)
+                if not result["ok"]:
                     logger.warning(
                         f"[Weixin] Text chunk {i+1}/{len(chunks)} rejected for receiver={receiver}: "
                         f"{self._summarize_send_response(response)}"
                     )
-                    return False
+                    result["failed_chunk"] = i + 1
+                    result["total_chunks"] = len(chunks)
+                    return result
                 logger.debug(f"[Weixin] Text chunk {i+1}/{len(chunks)} sent to {receiver}, len={len(chunk)}")
             except Exception as e:
                 logger.error(f"[Weixin] Failed to send text chunk {i+1}/{len(chunks)}: {e}")
-                return False
+                return {
+                    "ok": False,
+                    "reason": "send_error",
+                    "error": str(e),
+                    "failed_chunk": i + 1,
+                    "total_chunks": len(chunks),
+                }
             if i < len(chunks) - 1:
                 time.sleep(0.5)
-        return True
+        return {"ok": True, "reason": "sent", "chunks": len(chunks)}
 
     @staticmethod
     def _is_send_response_ok(response) -> bool:
+        return bool(WeixinChannel._normalize_send_response(response).get("ok"))
+
+    @staticmethod
+    def _normalize_send_response(response) -> dict:
         if response is None:
-            return True
+            return {"ok": True, "reason": "sent", "response_type": "none"}
         if not isinstance(response, dict):
-            return bool(response)
+            return {
+                "ok": bool(response),
+                "reason": "sent" if response else "empty_response",
+                "response_type": type(response).__name__,
+            }
+        if not response:
+            return {"ok": False, "reason": "empty_response"}
         ret = response.get("ret")
         if ret is None:
-            return False
+            return {
+                "ok": False,
+                "reason": "malformed_response",
+                "response_keys": sorted(str(key) for key in response.keys())[:8],
+            }
         try:
-            return int(ret) == 0
+            ok = int(ret) == 0
         except (TypeError, ValueError):
-            return str(ret).strip() == "0"
+            ok = str(ret).strip() == "0"
+        result = {
+            "ok": ok,
+            "reason": "sent" if ok else "weixin_send_rejected",
+            "ret": ret,
+        }
+        for key in ("errcode", "errmsg", "error", "message", "endpoint"):
+            if key in response:
+                result[key] = response.get(key)
+        return result
 
     @staticmethod
     def _summarize_send_response(response) -> str:
         if not isinstance(response, dict):
             return repr(response)
+        if not response:
+            return repr({"empty_response": True})
         keys = ("ret", "errcode", "errmsg", "error", "message", "endpoint")
         summary = {key: response.get(key) for key in keys if key in response}
-        return repr(summary or {"keys": sorted(response.keys())[:8]})
+        return repr(summary or {"response_keys": sorted(response.keys())[:8]})
 
     @staticmethod
     def _split_text(text: str, limit: int) -> list:

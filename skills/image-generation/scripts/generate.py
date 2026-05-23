@@ -755,6 +755,8 @@ class CodexAuthProvider(ImageProvider):
         configured = (
             auth_file
             or os.environ.get("CODEX_AUTH_FILE")
+            or os.environ.get("SKILL_IMAGE_GENERATION_CODEX_AUTH_FILE")
+            or os.environ.get("SKILL_IMAGE_GENERATION_AUTH_FILE")
             or os.environ.get("CODEX_AUTH_JSON")
             or ""
         ).strip()

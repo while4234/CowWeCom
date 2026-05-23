@@ -352,6 +352,7 @@ available_setting = {
     "skill": {
         "image-generation": {
             "runtime": "codex_auth",
+            "codex_auth_file": "",
         }
     },  # Per-skill runtime config; nested keys flatten to SKILL_<NAME>_<KEY> env vars at startup
     "mcp_servers": [],  # MCP server list; each entry supports type "stdio" (local process) or "sse" (remote URL)
@@ -421,7 +422,7 @@ config = Config()
 
 def _is_sensitive_config_key(key):
     key = str(key).lower()
-    sensitive_markers = ("key", "secret", "password", "token", "cookie", "credential", "bearer")
+    sensitive_markers = ("key", "secret", "password", "token", "cookie", "credential", "auth", "bearer")
     return any(marker in key for marker in sensitive_markers)
 
 

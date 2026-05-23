@@ -614,7 +614,13 @@ class ChatChannel(Channel):
 
     def _send(self, reply: Reply, context: Context, retry_cnt=0):
         try:
-            self.send(reply, context)
+            sent = self.send(reply, context)
+            if sent is False:
+                logger.warning(
+                    "[chat_channel] send returned false for session=%s reply_type=%s",
+                    context.get("session_id", ""),
+                    reply.type,
+                )
         except Exception as e:
             logger.error("[chat_channel] sendMsg error: {}".format(str(e)))
             if isinstance(e, NotImplementedError):

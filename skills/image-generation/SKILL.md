@@ -24,7 +24,8 @@ For this project, CowAgent uses direct Codex-auth runtime:
 ```json
 "skill": {
   "image-generation": {
-    "runtime": "codex_auth"
+    "runtime": "codex_auth",
+    "codex_auth_file": ""
   }
 }
 ```
@@ -32,6 +33,7 @@ For this project, CowAgent uses direct Codex-auth runtime:
 At startup, this config is flattened to:
 
 - `SKILL_IMAGE_GENERATION_RUNTIME=codex_auth`
+- `SKILL_IMAGE_GENERATION_CODEX_AUTH_FILE=<path>` when configured
 
 In `codex_auth` runtime, `scripts/generate.py` reads the local Codex auth JSON,
 uses the access token and account id to call the Codex image backend directly,
@@ -41,8 +43,8 @@ third-party intermediary API.
 
 The default auth location is `$CODEX_HOME/auth.json`, falling back to
 `~/.codex/auth.json`. To override it for a controlled deployment, set
-`CODEX_AUTH_FILE` to an auth JSON path. Never paste tokens into chat or config,
-and never log token values.
+`skill.image-generation.codex_auth_file` or `CODEX_AUTH_FILE` to an auth JSON
+path. Never paste tokens into chat or config, and never log token values.
 
 The background worker is the only CowAgent runtime component that should call:
 

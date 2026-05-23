@@ -1,6 +1,7 @@
 .DS_Store
 .idea
 .vscode
+.pytest_cache/
 .venv
 .vs
 __pycache__/
@@ -30,6 +31,10 @@ plugins.json
 logs/
 secrets/
 workspace
+knowledge_backend/indexes/*.sqlite
+knowledge_backend/originals/
+knowledge_backend/derived/
+knowledge_backend/reports/
 config.yaml
 user_datas.pkl
 chatgpt_tool_hub/

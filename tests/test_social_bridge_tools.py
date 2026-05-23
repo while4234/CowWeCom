@@ -15,6 +15,7 @@ from agent.tools.social_bridge.social_bridge import (
 class FakeSocialBridgeService:
     def __init__(self):
         self.calls = []
+        self.pending_result = [{"from": "user-b", "text": "hello"}]
 
     def list_users(self, **kwargs):
         self.calls.append(("list_users", kwargs))
@@ -30,7 +31,7 @@ class FakeSocialBridgeService:
 
     def pending_messages(self, **kwargs):
         self.calls.append(("pending_messages", kwargs))
-        return [{"from": "user-b", "text": "hello"}]
+        return self.pending_result
 
 
 class TestSocialBridgeTools(unittest.TestCase):
@@ -172,6 +173,30 @@ class TestSocialBridgeTools(unittest.TestCase):
                 },
             ),
         )
+
+    def test_pending_messages_preserves_retry_failure_details(self):
+        self.service.pending_result = {
+            "retry": {
+                "delivered": False,
+                "reason": "weixin_send_rejected",
+                "result": {"ret": -2},
+            },
+            "messages": [
+                {
+                    "message_id": "bridge_msg_1",
+                    "result": {"ret": -2},
+                }
+            ],
+        }
+        tool = BridgePendingMessagesTool()
+        tool.context = SimpleNamespace(_current_user_id="user-a")
+
+        result = tool.execute({"limit": 3, "retry_message_id": "bridge_msg_1"})
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.result["retry"]["reason"], "weixin_send_rejected")
+        self.assertEqual(result.result["retry"]["result"]["ret"], -2)
+        self.assertEqual(result.result["messages"][0]["result"]["ret"], -2)
 
     def test_import_error_is_reported_cleanly(self):
         tool = BridgeListUsersTool()

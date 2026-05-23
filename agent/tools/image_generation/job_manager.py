@@ -246,6 +246,7 @@ class ImageGenerationJobManager:
 
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
+        self._ensure_codex_auth_env(env)
         self._ensure_default_broker_env(env, job.args.get("runtime"))
         completed = subprocess.run(
             [sys.executable, self.script_path, json.dumps(job.args, ensure_ascii=False)],
@@ -304,6 +305,26 @@ class ImageGenerationJobManager:
             [sys.executable, broker_path],
             ensure_ascii=False,
         )
+
+    @staticmethod
+    def _ensure_codex_auth_env(env: Dict[str, str]) -> None:
+        if env.get("CODEX_AUTH_FILE"):
+            return
+        skill_conf = conf().get("skill", {})
+        if not isinstance(skill_conf, dict):
+            return
+        image_conf = skill_conf.get("image-generation") or skill_conf.get("image_generation")
+        if not isinstance(image_conf, dict):
+            return
+        auth_file = (
+            image_conf.get("codex_auth_file")
+            or image_conf.get("auth_file")
+            or image_conf.get("codex_auth_path")
+            or ""
+        )
+        auth_file = str(auth_file).strip()
+        if auth_file:
+            env["CODEX_AUTH_FILE"] = os.path.abspath(os.path.expanduser(auth_file))
 
     @staticmethod
     def _configured_runtime() -> str:

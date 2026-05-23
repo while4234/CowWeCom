@@ -30,20 +30,22 @@ class ActiveMessageRouter:
     """Route proactive bridge messages to a supported running chat channel."""
 
     SUPPORTED_WEIXIN_PREFIX = "weixin"
+    RUNNING_CHANNEL_ONLY = {"wecom_bot"}
 
     def send_text(self, target: BridgeUser, text: str) -> Dict[str, Any]:
         metadata = target.metadata or {}
         channel_type = str(metadata.get("channel_type") or "").strip()
         receiver = str(metadata.get("receiver") or metadata.get("raw_user_id") or "").strip()
         context_token = str(metadata.get("context_token") or "").strip()
+        is_group = bool(metadata.get("is_group"))
 
-        if not self._is_supported_weixin(channel_type):
+        if not channel_type:
             return {
                 "delivered": False,
                 "reason": "unsupported_channel",
                 "channel_type": channel_type,
             }
-        if not receiver or not context_token:
+        if not receiver:
             return {
                 "delivered": False,
                 "reason": "unreachable",
@@ -52,7 +54,8 @@ class ActiveMessageRouter:
             }
 
         channel = self._get_running_channel(channel_type)
-        if channel is None:
+        running_channel = channel is not None
+        if channel is None and not self._requires_running_channel(channel_type):
             channel = self._create_standalone_channel(channel_type)
         if channel is None:
             return {
@@ -63,10 +66,36 @@ class ActiveMessageRouter:
             }
 
         try:
-            if hasattr(channel, "active_send_text"):
-                ok = bool(channel.active_send_text(receiver, text, context_token=context_token))
+            if hasattr(channel, "active_send_text_result"):
+                channel_result = self._call_active_send_text_result(
+                    channel,
+                    receiver,
+                    text,
+                    channel_type=channel_type,
+                    context_token=context_token,
+                    is_group=is_group,
+                    running_channel=running_channel,
+                )
+                send_result = self._normalize_channel_send_result(channel_result)
+            elif hasattr(channel, "active_send_text"):
+                channel_result = channel.active_send_text(receiver, text, context_token=context_token)
+                send_result = self._normalize_channel_send_result(channel_result)
+            elif self._is_supported_weixin(channel_type):
+                if not context_token:
+                    send_result = {
+                        "delivered": False,
+                        "reason": "needs_fresh_context",
+                        "context_token_present": False,
+                    }
+                else:
+                    ok = self._send_text_with_channel_send(channel, receiver, text, context_token)
+                    send_result = {"delivered": bool(ok), "reason": "sent" if ok else "send_rejected"}
             else:
-                ok = self._send_text_with_channel_send(channel, receiver, text, context_token)
+                send_result = {
+                    "delivered": False,
+                    "reason": "unsupported_channel",
+                    "channel_type": channel_type,
+                }
         except Exception as e:
             logger.warning(f"[SocialBridge] Active send failed: {e}")
             return {
@@ -77,16 +106,77 @@ class ActiveMessageRouter:
                 "receiver": receiver,
             }
 
+        send_result["channel_type"] = channel_type
+        send_result["receiver"] = receiver
+        if not send_result.get("context_token_present") and context_token:
+            send_result["stored_context_token_present"] = True
+        return send_result
+
+    @staticmethod
+    def _normalize_channel_send_result(result: Any) -> Dict[str, Any]:
+        if isinstance(result, dict):
+            if "delivered" in result:
+                delivered = bool(result.get("delivered"))
+            elif "ok" in result:
+                delivered = bool(result.get("ok"))
+            elif "ret" in result:
+                delivered = str(result.get("ret")).strip() == "0"
+            else:
+                delivered = False
+
+            reason = str(result.get("reason") or "").strip()
+            if not reason:
+                reason = "sent" if delivered else "send_rejected"
+            if reason == "missing_context_token":
+                reason = "needs_fresh_context"
+
+            normalized = {
+                key: value
+                for key, value in result.items()
+                if key not in {"ok", "delivered"}
+            }
+            normalized["delivered"] = delivered
+            normalized["reason"] = reason
+            return normalized
+
+        delivered = bool(result)
         return {
-            "delivered": ok,
-            "reason": "sent" if ok else "send_rejected",
-            "channel_type": channel_type,
-            "receiver": receiver,
+            "delivered": delivered,
+            "reason": "sent" if delivered else "send_rejected",
         }
+
+    @classmethod
+    def _requires_running_channel(cls, channel_type: str) -> bool:
+        return channel_type in cls.RUNNING_CHANNEL_ONLY
 
     @classmethod
     def _is_supported_weixin(cls, channel_type: str) -> bool:
         return channel_type == "weixin" or channel_type.startswith("weixin_")
+
+    @classmethod
+    def _call_active_send_text_result(
+        cls,
+        channel,
+        receiver: str,
+        text: str,
+        *,
+        channel_type: str,
+        context_token: str,
+        is_group: bool,
+        running_channel: bool,
+    ) -> Any:
+        if channel_type == "wecom_bot":
+            return channel.active_send_text_result(receiver, text, is_group=is_group)
+
+        # Running Weixin channels have the only trustworthy fresh context cache.
+        # Persisted context tokens can survive restarts and become stale.
+        if cls._is_supported_weixin(channel_type) and not running_channel:
+            return channel.active_send_text_result(
+                receiver,
+                text,
+                context_token=context_token,
+            )
+        return channel.active_send_text_result(receiver, text)
 
     @staticmethod
     def _get_running_channel(channel_type: str):
@@ -256,6 +346,7 @@ class SocialBridgeService:
             updated = self.store.mark_sent(bridge_message.message_id, send_result)
             return self._message_result(updated or bridge_message, delivered=True)
 
+        self._mark_active_send_stale(target, send_result)
         updated = self.store.mark_pending(bridge_message.message_id, send_result)
         return self._message_result(updated or bridge_message, delivered=False)
 
@@ -284,6 +375,15 @@ class SocialBridgeService:
     def bridge_pending_messages(self, **kwargs: Any) -> Dict[str, Any]:
         return self.pending_messages(**kwargs)
 
+    def retry_pending_for_target(self, actor_id: str, limit: int = 5) -> Dict[str, Any]:
+        pending = self.store.list_pending_for_actor(actor_id, limit=limit)
+        retried = []
+        for item in pending:
+            if item.message.target_actor_user_id != actor_id:
+                continue
+            retried.append(self.retry_pending_message(actor_id, item.message.message_id))
+        return {"retried": retried}
+
     def retry_pending_message(self, actor_id: str, message_id: str) -> Dict[str, Any]:
         getter = getattr(self.store, "get_message", None)
         if not callable(getter):
@@ -310,6 +410,7 @@ class SocialBridgeService:
             updated = self.store.mark_sent(message.message_id, send_result)
             return self._message_result(updated or message, delivered=True)
 
+        self._mark_active_send_stale(target, send_result)
         updated = self.store.mark_pending(message.message_id, send_result)
         return self._message_result(updated or message, delivered=False)
 
@@ -341,6 +442,40 @@ class SocialBridgeService:
             display_name=display_name,
             metadata=merged,
         )
+
+    def _mark_active_send_stale(
+        self,
+        target: Optional[BridgeUser],
+        send_result: Dict[str, Any],
+    ) -> None:
+        if target is None or not isinstance(send_result, dict):
+            return
+
+        reason = str(send_result.get("reason") or "").strip()
+        if reason not in {"needs_fresh_context", "send_rejected", "weixin_send_rejected", "malformed_response"}:
+            return
+
+        metadata = dict(target.metadata or {})
+        if not metadata.get("context_token") and not metadata.get("can_active_send"):
+            return
+
+        metadata["context_token"] = ""
+        metadata["can_active_send"] = False
+        metadata["active_send_stale_reason"] = reason
+        if "ret" in send_result:
+            metadata["active_send_stale_ret"] = send_result.get("ret")
+        if "errmsg" in send_result:
+            metadata["active_send_stale_errmsg"] = send_result.get("errmsg")
+
+        try:
+            self.store.register_user(
+                actor_user_id=target.actor_user_id,
+                memory_user_id=target.memory_user_id,
+                display_name=target.display_name,
+                metadata=metadata,
+            )
+        except Exception as e:
+            logger.debug(f"[SocialBridge] Failed to mark active send stale: {e}")
 
     def get_user(self, actor_id: str) -> Optional[BridgeUser]:
         getter = getattr(self.store, "get_user", None)
@@ -882,6 +1017,7 @@ class SocialBridgeService:
             "text": item.message.body,
             "created_at": item.message.created_at,
             "relationship": self._json(item.relationship) if item.relationship else None,
+            "result": item.message.result,
         }
 
     def _message_result(self, message: BridgeMessage, delivered: bool) -> Dict[str, Any]:

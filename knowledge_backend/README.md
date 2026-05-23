@@ -1,14 +1,18 @@
 # CowAgent Knowledge Backend
 
-This directory is the project-portable backend knowledge store. Keep it with the
-repository when moving the deployment to another machine.
+This directory is the optional backend knowledge store. A clean CowWeCom
+deployment does not require any prebuilt knowledge index.
 
 ## What Lives Here
 
-- `indexes/kb.sqlite`: authoritative SQLite index for parsed documents, chunks,
+- `indexes/kb.sqlite`: generated SQLite index for parsed documents, chunks,
   source spans, entities, relations, jobs, and search metadata.
-- `originals/`: copied source protocol files used to build the index.
-- `manifest.json`: portable summary of indexed documents.
+- `originals/`: copied source files used to build the index.
+- `derived/` and `reports/`: generated study documents and validation reports.
+- `manifest.json`: safe portable summary of indexed documents.
+
+The generated index, originals, derived files, and reports are ignored by Git so
+the public baseline stays small and free of local private knowledge.
 
 ## Runtime Layout
 
@@ -37,7 +41,7 @@ knowledge workflow.
 
 ## Moving To Another Machine
 
-1. Copy the project directory, including this `knowledge_backend/` directory.
+1. Copy or clone the project directory.
 2. Install normal project dependencies and optional knowledge dependencies.
 3. Enable `knowledge_backend` in local `config.json`.
 4. Export the readable Markdown library into the target Agent workspace:
@@ -46,8 +50,8 @@ knowledge workflow.
 python scripts/export_knowledge_backend_docs.py
 ```
 
-The export step is deterministic and does not re-parse the protocol PDF. It
-reads `indexes/kb.sqlite` and writes Markdown pages to `~/cow/knowledge`.
+The export step is deterministic after an index exists. It reads
+`indexes/kb.sqlite` and writes Markdown pages to `~/cow/knowledge`.
 
 If the target machine uses a different Agent workspace, configure:
 

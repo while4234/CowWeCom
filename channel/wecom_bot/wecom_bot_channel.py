@@ -345,9 +345,55 @@ class WecomBotChannel(ChatChannel):
             no_need_at=True,
         )
         if context:
+            self._remember_social_bridge_user(context, wecom_msg)
             if req_id:
                 context["on_event"] = self._make_stream_callback(req_id)
             self.produce(context)
+
+    def _remember_social_bridge_user(self, context: Context, wecom_msg: WecomBotMessage) -> None:
+        """Best-effort bridge directory registration for reachable WeCom single-chat users."""
+        if wecom_msg.is_group:
+            return
+
+        raw_user_id = str(getattr(wecom_msg, "from_user_id", "") or "").strip()
+        if not raw_user_id:
+            return
+
+        try:
+            from agent.social_bridge import get_bridge_store, get_social_bridge_service
+            from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile
+
+            profile = resolve_agent_user_profile(context)
+            apply_profile_to_context(context, profile)
+            display_name = (
+                str(getattr(wecom_msg, "actual_user_nickname", "") or "").strip()
+                or profile.display_name
+                or raw_user_id
+            )
+            get_bridge_store().register_user(
+                actor_user_id=profile.actor_id,
+                memory_user_id=profile.memory_user_id,
+                display_name=display_name,
+                metadata={
+                    "channel_type": profile.channel_type,
+                    "platform": "wecom_bot",
+                    "raw_user_id": raw_user_id,
+                    "receiver": raw_user_id,
+                    "public_name": display_name,
+                    "can_active_send": True,
+                    "is_group": False,
+                },
+            )
+            limit = int(conf().get("social_bridge_auto_retry_limit", 5) or 5)
+            result = get_social_bridge_service().retry_pending_for_target(profile.actor_id, limit=limit)
+            retried = [item for item in result.get("retried", []) if item.get("delivered")]
+            if retried:
+                logger.info(
+                    f"[WecomBot] Retried {len(retried)} pending social bridge message(s) "
+                    f"after single-chat activity"
+                )
+        except Exception as e:
+            logger.debug(f"[WecomBot] Social bridge user registration skipped: {e}")
 
     # ------------------------------------------------------------------
     # Event callback
@@ -501,6 +547,42 @@ class WecomBotChannel(ChatChannel):
         else:
             logger.warning(f"[WecomBot] Unsupported reply type: {reply.type}, falling back to text")
             self._send_text(str(reply.content), receiver, is_group, req_id)
+
+    def active_send_text_result(self, receiver: str, text: str, is_group: bool = False, **kwargs) -> dict:
+        """Proactively send text to a reachable WeCom chat and return a normalized result."""
+        clean_receiver = str(receiver or "").strip()
+        if not clean_receiver:
+            return {
+                "ok": False,
+                "delivered": False,
+                "reason": "unreachable",
+                "receiver": clean_receiver,
+            }
+        if not self._connected or self._ws is None:
+            return {
+                "ok": False,
+                "delivered": False,
+                "reason": "channel_not_running",
+                "receiver": clean_receiver,
+            }
+
+        try:
+            self._active_send_markdown(str(text or ""), clean_receiver, bool(is_group))
+            return {
+                "ok": True,
+                "delivered": True,
+                "reason": "sent",
+                "receiver": clean_receiver,
+            }
+        except Exception as e:
+            logger.warning(f"[WecomBot] Active send failed: {e}")
+            return {
+                "ok": False,
+                "delivered": False,
+                "reason": "send_error",
+                "error": str(e),
+                "receiver": clean_receiver,
+            }
 
     # ------------------------------------------------------------------
     # Respond message (via websocket)
