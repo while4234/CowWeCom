@@ -15,11 +15,13 @@ Allowed:
 - Use platforms returned by the auxiliary skill, especially Taobao/Tmall, JD, Douyin, and all-platform search when no platform is specified.
 - Output non-sensitive product information returned by the auxiliary skill, such as platform, product title, displayed price, coupon or discount information, shop/sales/review-like fields when available, and a recommendation reason.
 - Suggest that the user returns to the official platform App to verify price, shop, after-sales policy, shipping, coupons, and availability.
+- Use the bundled `scripts/shopping_compare_helper.py` or the installed `taobao`/`maishou` local script for read-only API search.
 
 Not allowed:
 
 - Do not use this skill for takeout, food recommendation, Meituan takeout, or today-what-to-eat prompts. Use `takeout-lite-recommender` for those.
 - Do not automatically open purchase links, rebate links, promotion links, short links, or redirect links.
+- Do not open browser pages, Baidu, Taobao web, JD web, Douyin web, or public search pages as a fallback for price comparison. If the local script cannot return results, report that comparison is incomplete instead of triggering human verification pages.
 - Do not automatically place orders, add to cart, fill delivery address, fill phone number, enter verification code, use cookies/tokens, log in, or complete a purchase.
 - Do not use rebate links, invite codes, referral identity, or sharing identity as the default basis for recommendation.
 - Do not ask the user to provide phone numbers, addresses, verification codes, cookies, tokens, or account credentials.
@@ -55,6 +57,11 @@ Default policy for CowWechat:
    - JD specified: use JD search.
    - Douyin or Douyin Mall specified: use Douyin search.
 3. Use or guide use of the installed `taobao`/`maishou` auxiliary skill for read-only search and comparison.
+   - Prefer: `python "<base_dir>/scripts/shopping_compare_helper.py" "<keyword>" --platform all`
+   - For Taobao/Tmall only: use `--platform taobao`
+   - For JD only: use `--platform jd`
+   - For Douyin only: use `--platform douyin`
+   - Do not use browser automation or public shopping webpages as fallback.
 4. Produce a comparison table with at least:
    - Platform.
    - Product title.
@@ -80,6 +87,23 @@ Example response:
 ```markdown
 我不能替你自动下单、打开购买链接或填写收货/登录信息。可以保留当前比价建议：请回淘宝/天猫、京东或抖音官方 App 手动核验价格、店铺、售后、运费和优惠券后再自行购买。
 ```
+
+## Local Helper
+
+Run:
+
+```bash
+python "<base_dir>/scripts/shopping_compare_helper.py" "苹果20W充电器" --platform all
+```
+
+The helper:
+
+- Locates the installed OpenClaw `taobao` package under `%USERPROFILE%\.openclaw\workspace\skills\taobao`.
+- Calls its `scripts/main.py search` command through `uv` in read-only mode.
+- Searches the requested platform scope without opening a browser.
+- Never calls the upstream `detail` command, because that path can return purchase/share links and copy commands.
+
+If the helper cannot find the installed script, `uv`, or usable results, state that `shopping-lite-compare` is incomplete and ask the user to install or fix the `taobao` skill. Do not switch to browser search.
 
 ## Output Template
 

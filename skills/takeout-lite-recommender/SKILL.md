@@ -18,6 +18,7 @@ Allowed:
 - Generate three takeout dish or category candidates.
 - Suggest Meituan App search keywords.
 - Remind the user to claim or check Meituan coupons when the user mentions Meituan, takeout coupons, red packets, saving money, discounts, or cheap options.
+- Display Meituan coupon usage links returned by `meituan-coupons` as normal Markdown links, such as `[立即使用](jump_url)`, when the coupon script returns `jump_url`.
 
 Not allowed:
 
@@ -26,6 +27,7 @@ Not allowed:
 - Do not call unauthorized Meituan takeout merchant APIs.
 - Do not scrape Meituan App or web pages.
 - Do not place orders or click purchase/order links.
+- Do not click or open Meituan coupon, purchase, or order links automatically. The user must tap links manually in WeCom or the official App.
 - Do not upload or request phone numbers, verification codes, tokens, cookies, delivery addresses, or other sensitive data.
 - Do not trigger shopping price comparison. Use `shopping-lite-compare` only when the user explicitly asks for e-commerce price comparison.
 
@@ -39,7 +41,10 @@ Not allowed:
    - Dining mode, especially takeout.
    - City or business district if the user provides it.
 2. Generate three dish or category candidates. Reference `eat-what-today-skill` if available, but keep this skill usable without network access or external store data.
-3. If the user mentions Meituan, coupons, red packets, saving money, discounts, or cheap options, prioritize using or suggesting `meituan-coupons` before choosing a final order.
+3. If the user mentions Meituan, coupons, red packets, saving money, discounts, or cheap options, prioritize `meituan-coupons`:
+   - If `meituan-coupons` can be executed and returns coupons, preserve returned coupon fields and show any returned `jump_url` as a clickable Markdown link.
+   - If login, verification, or user action is required, follow `meituan-coupons` authentication rules and never invent coupon links.
+   - Never open or click the link for the user.
 4. For each candidate, provide one or two Meituan App search keywords, such as:
    - `黄焖鸡 高评分 30分钟内`
    - `麻辣烫 满减 配送快`
@@ -63,6 +68,25 @@ Supported options:
 - `--coupon`
 
 The script is local-only. It does not use the network and does not call Meituan APIs.
+
+## Coupon Link Output
+
+When `meituan-coupons` returns coupon data, include a coupon section before the final reminder:
+
+```markdown
+三、美团红包/券
+
+| 券名称 | 面额 | 使用条件 | 有效期 | 去使用 |
+|---|---:|---|---|---|
+| ... | ... | ... | ... | [立即使用](jump_url) |
+```
+
+Rules:
+
+- Only use `jump_url` values returned by `meituan-coupons`.
+- Do not create, guess, shorten, rewrite, open, or click links.
+- If no `jump_url` is returned, show `-` and tell the user to check the Meituan App.
+- Links are for manual user tapping in WeCom or the official App only.
 
 ## Output Format
 

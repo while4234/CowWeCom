@@ -22,10 +22,12 @@ openclaw.cmd skills list
 - 平台范围：淘宝/天猫、京东、抖音；必要时可全平台搜索。
 - 输出平台、商品标题、展示价格、优惠信息、销量/评价等辅助 skill 返回的非敏感信息。
 - 建议用户回官方 App 核验价格、优惠、店铺、售后、运费和库存。
+- 优先使用本 skill 自带的 `scripts/shopping_compare_helper.py` 调用本地已安装的 `taobao`/`maishou` 搜索脚本。
 
 ## 禁止范围
 
 - 不自动打开购买链接、返利链接、推广链接、短链或跳转链接。
+- 不使用浏览器网页、百度、淘宝网页、京东网页或抖音网页作为比价 fallback。若本地脚本不可用或无结果，应明确说明比价不完整，避免打开平台网页卡在人机验证。
 - 不自动下单，不自动加购。
 - 不自动填写地址、手机号、验证码、cookie、token。
 - 不自动登录。
@@ -48,6 +50,17 @@ openclaw.cmd skills list
 
 因此本 CowWechat skill 默认只用于只读比价搜索，不自动调用购买链路，不自动打开或使用购买/返利/推广链接，不自动使用邀请码完成购买。
 本 skill 不新增或隐藏任何邀请码、openid/user ID、affiliate ID、referral ID、rebate code、PID/adzone 或推广链接模板；如果上游返回佣金、返利、分享或推广链接相关信息，应明确披露并建议用户回官方 App 手动核验。
+
+## 本地只读 helper
+
+```powershell
+python skills/shopping-lite-compare/scripts/shopping_compare_helper.py "苹果20W充电器" --platform all
+python skills/shopping-lite-compare/scripts/shopping_compare_helper.py "苹果20W充电器" --platform taobao
+python skills/shopping-lite-compare/scripts/shopping_compare_helper.py "苹果20W充电器" --platform jd
+python skills/shopping-lite-compare/scripts/shopping_compare_helper.py "苹果20W充电器" --platform douyin
+```
+
+helper 只执行 `search`，不会执行 `detail`，不会生成购买链接，也不会打开浏览器。
 
 ## 验收样例
 
