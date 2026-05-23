@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 
@@ -137,6 +138,190 @@ class DailyMemeHarvesterTest(unittest.TestCase):
         self.assertEqual(candidates[0].provider, "xiaohongshu")
         self.assertTrue(candidates[0].image_url.startswith("https://sns-webpic-qc.xhscdn.com/"))
 
+    def test_provider_aliases_include_xiaohongshu(self):
+        providers = self.module.parse_csv("小红书,xhs,red")
+
+        self.assertEqual(providers, ["xiaohongshu", "xiaohongshu", "xiaohongshu"])
+
+    def test_hot_driven_queries_prefer_terms_before_fallback_keywords(self):
+        provider_config = {
+            "use_hot_terms": True,
+            "max_hot_terms": 1,
+            "max_search_queries": 4,
+            "search_patterns": ["{term}", "{term} 名场面", "{term} 表情包"],
+            "fallback_keywords": ["今日热梗"],
+        }
+        config = {"_hot_terms": [{"word": "热点事件", "score": 9999}], "max_per_provider": 30}
+
+        queries = self.module.build_hot_driven_queries(provider_config, config)
+
+        self.assertEqual(queries, ["热点事件", "热点事件 名场面", "热点事件 表情包", "今日热梗"])
+
+    def test_select_candidates_limits_each_provider_to_top_three(self):
+        candidates = []
+        for provider in ("weibo", "xiaohongshu"):
+            for index in range(5):
+                candidates.append(
+                    self.module.MemeCandidate(
+                        provider=provider,
+                        source_id=f"{provider}-{index}",
+                        source_url=f"https://example.com/{provider}/{index}",
+                        image_url=f"https://cdn.example.com/{provider}-{index}.jpg",
+                        score=100 - index,
+                    )
+                )
+
+        selected = self.module.select_candidates_for_download(
+            candidates,
+            {"providers": ["weibo", "xiaohongshu"], "max_total": 6, "max_downloads_per_provider": 3},
+        )
+
+        self.assertEqual(len(selected), 6)
+        self.assertEqual([item.provider for item in selected[:3]], ["weibo", "weibo", "weibo"])
+        self.assertEqual([item.provider for item in selected[3:]], ["xiaohongshu", "xiaohongshu", "xiaohongshu"])
+
+    def test_filter_candidates_dedupes_same_weibo_content_before_images(self):
+        candidates = [
+            self.module.MemeCandidate(
+                provider="weibo",
+                source_id=f"post:pic:{index}",
+                source_url="https://weibo.com/100/ABC",
+                image_url=f"https://wx1.sinaimg.cn/large/{index}.jpg",
+                title="同一条微博多图",
+                score=100 - index,
+            )
+            for index in range(3)
+        ]
+
+        filtered, skipped = self.module.filter_candidates(candidates, {"skip_sensitive": True, "dedupe_same_content": True})
+
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(skipped, 2)
+
+    def test_select_candidates_dedupes_same_hot_topic_across_providers_without_backfill(self):
+        candidates = [
+            self.module.MemeCandidate(
+                provider="weibo",
+                source_id="weibo-1",
+                source_url="https://weibo.com/1",
+                image_url="https://cdn.example.com/weibo-1.jpg",
+                score=100,
+                extra={"term": "同一个热点"},
+            ),
+            self.module.MemeCandidate(
+                provider="weibo",
+                source_id="weibo-2",
+                source_url="https://weibo.com/2",
+                image_url="https://cdn.example.com/weibo-2.jpg",
+                score=90,
+                extra={"term": "微博独有"},
+            ),
+            self.module.MemeCandidate(
+                provider="xiaohongshu",
+                source_id="xhs-1",
+                source_url="https://www.xiaohongshu.com/search_result?keyword=1",
+                image_url="https://cdn.example.com/xhs-1.jpg",
+                score=99,
+                extra={"term": "同一个热点"},
+            ),
+            self.module.MemeCandidate(
+                provider="xiaohongshu",
+                source_id="xhs-2",
+                source_url="https://www.xiaohongshu.com/search_result?keyword=2",
+                image_url="https://cdn.example.com/xhs-2.jpg",
+                score=80,
+                extra={"term": "小红书独有"},
+            ),
+        ]
+
+        selected = self.module.select_candidates_for_download(
+            candidates,
+            {"providers": ["weibo", "xiaohongshu"], "max_total": 4, "max_downloads_per_provider": 2},
+        )
+
+        self.assertEqual([item.source_id for item in selected], ["weibo-1", "weibo-2", "xhs-2"])
+
+    def test_same_day_seen_filters_previous_hot_topic_before_top_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            now = self.module.now_for_config({"timezone": "Asia/Shanghai"})
+            day_key = now.date().isoformat()
+            self.module.atomic_write_json(
+                self.module.daily_seen_path(output_dir),
+                {day_key: {"topic:samehot": now.isoformat()}},
+            )
+            candidates = [
+                self.module.MemeCandidate(
+                    provider="weibo",
+                    source_id="same",
+                    source_url="https://weibo.com/same",
+                    image_url="https://cdn.example.com/same.jpg",
+                    title="same",
+                    score=100,
+                    extra={"term": "same hot"},
+                ),
+                self.module.MemeCandidate(
+                    provider="weibo",
+                    source_id="fresh",
+                    source_url="https://weibo.com/fresh",
+                    image_url="https://cdn.example.com/fresh.jpg",
+                    title="fresh",
+                    score=90,
+                    extra={"term": "fresh hot"},
+                ),
+            ]
+
+            filtered, skipped = self.module.filter_same_day_seen(
+                candidates,
+                {"output_dir": str(output_dir), "timezone": "Asia/Shanghai", "dedupe_days": 90},
+            )
+
+            self.assertEqual(skipped, 1)
+            self.assertEqual([item.source_id for item in filtered], ["fresh"])
+
+    def test_xiaohongshu_runs_proxy_guard_once_then_retries(self):
+        html_text = '<script>{"url":"https:\\/\\/sns-webpic-qc.xhscdn.com\\/abc.jpg"}</script>'
+        config = {
+            "_env": {},
+            "_warnings": [],
+            "_failed_providers": set(),
+            "_hot_terms": [{"word": "热点事件", "score": 1000}],
+            "user_agent": "test-agent",
+            "max_per_provider": 1,
+            "proxy_guard": {
+                "enabled": True,
+                "script": str(SCRIPT),
+                "providers": ["xiaohongshu"],
+                "timeout_seconds": 1,
+            },
+            "xiaohongshu": {
+                "search_patterns": ["{term}"],
+                "fallback_keywords": [],
+                "max_search_queries": 1,
+                "request_interval_seconds": 0,
+                "request_timeout_seconds": 1,
+                "endpoint_search": "https://www.xiaohongshu.com/search_result",
+                "disable_proxy": True,
+                "use_requests": True,
+            },
+        }
+
+        with patch.object(
+            self.module,
+            "http_get_text_requests",
+            side_effect=[self.module.FetchError("Network error for xhs"), (html_text, {})],
+        ), patch.object(
+            self.module.subprocess,
+            "run",
+            return_value=CompletedProcess(args=["python"], returncode=0, stdout="{}", stderr=""),
+        ) as run_mock:
+            candidates = self.module.collect_xiaohongshu(config)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].provider, "xiaohongshu")
+        self.assertEqual(run_mock.call_count, 1)
+        self.assertTrue(any("rule guard" in warning for warning in config["_warnings"]))
+
     def test_download_candidate_validates_image_and_dedupes_by_sha256(self):
         image_bytes = b"fake-jpeg-bytes"
         expected_sha = hashlib.sha256(image_bytes).hexdigest()
@@ -257,6 +442,32 @@ class DailyMemeHarvesterTest(unittest.TestCase):
             config = self.module.build_config(args, env={"MEME_OUTPUT_DIR": str(Path(tmp) / "env-out")})
 
             self.assertEqual(Path(config["output_dir"]), (Path(tmp) / "cli-out").resolve())
+
+    def test_legacy_weibo_only_default_config_migrates_to_current_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps({"providers": ["weibo"], "max_total": 3, "output_dir": str(Path(tmp) / "out")}),
+                encoding="utf-8",
+            )
+            args = Namespace(
+                config=str(config_path),
+                providers=None,
+                max_total=None,
+                max_per_provider=None,
+                since_hours=None,
+                dry_run=True,
+                json=True,
+                debug=False,
+                out=None,
+            )
+
+            config = self.module.build_config(args, env={})
+
+            self.assertEqual(config["providers"], ["weibo", "xiaohongshu"])
+            self.assertEqual(config["max_total"], 6)
+            self.assertEqual(config["max_downloads_per_provider"], 3)
+            self.assertIn("legacy weibo-only default config detected", config["_warnings"][0])
 
     def test_config_loader_accepts_utf8_bom_from_powershell(self):
         with tempfile.TemporaryDirectory() as tmp:
