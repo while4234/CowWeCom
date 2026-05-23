@@ -14,6 +14,7 @@ from common.agent_task_runtime import TaskCancelled
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common.log import logger
 from common.llm_usage_tracker import normalize_usage, stable_metadata_hash
+from common.tool_attempt_memory import ToolAttemptMemory, is_mutating_tool, is_readonly_reusable_tool
 
 
 # Maximum number of characters of model "reasoning / thinking" content to persist
@@ -98,6 +99,10 @@ class AgentStreamExecutor:
         
         # Tool failure tracking for retry protection
         self.tool_failure_history = []  # List of (tool_name, args_hash, success) tuples
+        self.tool_attempt_memory = ToolAttemptMemory()
+        self._tool_attempt_memory_snapshot = {}
+        self._readonly_tool_result_cache = {}
+        self._reset_request_tool_counters()
         
         # Track files to send (populated by read tool)
         self.files_to_send = []  # List of file metadata dicts
@@ -113,6 +118,17 @@ class AgentStreamExecutor:
                 })
             except Exception as e:
                 logger.error(f"Event callback error: {e}")
+
+    def _reset_request_tool_counters(self):
+        """Reset per-user-request counters used by cache telemetry."""
+        self._tool_attempt_count = 0
+        self._tool_attempt_success_count = 0
+        self._tool_attempt_error_count = 0
+        self._tool_skip_count = 0
+        self._tool_duplicate_success_count = 0
+        self._tool_memory_rule_hits = 0
+        self._last_tool_failure_class = ""
+        self._request_tool_result_compacted_count = 0
 
     def _raise_if_cancelled(self):
         if self.cancellation_token and self.cancellation_token.is_cancelled():
@@ -283,10 +299,17 @@ class AgentStreamExecutor:
         tool_id = duplicate_call["id"]
         arguments = duplicate_call.get("arguments", {})
 
+        self._tool_attempt_count += 1
         logger.warning(
             f"Skipped duplicate same-turn tool call: {tool_name} "
             f"({tool_id}) duplicates {original_call.get('id')}"
         )
+        self._tool_skip_count += 1
+        if result.get("status") == "success":
+            self._tool_duplicate_success_count += 1
+            self._tool_attempt_success_count += 1
+        else:
+            self._tool_attempt_error_count += 1
 
         self._emit_event("tool_execution_start", {
             "tool_call_id": tool_id,
@@ -303,6 +326,118 @@ class AgentStreamExecutor:
 
         return result
 
+    def _readonly_tool_cache_key(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+        return f"{tool_name}:{stable_metadata_hash(arguments or {})}"
+
+    def _reuse_readonly_tool_result(
+        self,
+        tool_name: str,
+        tool_id: str,
+        arguments: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Reuse an exact read-only result only within the current user request."""
+        if not is_readonly_reusable_tool(tool_name):
+            return None
+
+        cache_key = self._readonly_tool_cache_key(tool_name, arguments)
+        cached = self._readonly_tool_result_cache.get(cache_key)
+        if not cached:
+            return None
+
+        result_hash = cached.get("result_hash", "")
+        result_chars = int(cached.get("result_chars") or 0)
+        result = {
+            "status": "success",
+            "result": (
+                "[Repeated read-only tool result omitted for cache efficiency: "
+                f"hash={result_hash}, chars={result_chars}. "
+                "The full result from the same request is already in conversation context.]"
+            ),
+            "execution_time": 0,
+            "duplicate_success_skipped": True,
+            "duplicate_result_hash": result_hash,
+        }
+
+        self._tool_skip_count += 1
+        self._tool_duplicate_success_count += 1
+        self._tool_attempt_success_count += 1
+        self._record_tool_result(tool_name, arguments, True)
+        logger.info(
+            f"[ToolAttemptMemory] Reused read-only tool result for {tool_name} "
+            f"(hash={result_hash}, chars={result_chars})"
+        )
+        self._emit_event("tool_execution_start", {
+            "tool_call_id": tool_id,
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "duplicate_success_skipped": True,
+        })
+        self._emit_event("tool_execution_end", {
+            "tool_call_id": tool_id,
+            "tool_name": tool_name,
+            **result,
+        })
+        return result
+
+    def _remember_readonly_tool_result(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        result: Dict[str, Any],
+    ) -> None:
+        if not is_readonly_reusable_tool(tool_name) or result.get("status") != "success":
+            return
+        result_text = self._tool_result_text(result.get("result"))
+        self._readonly_tool_result_cache[self._readonly_tool_cache_key(tool_name, arguments)] = {
+            "result_hash": stable_metadata_hash(result_text),
+            "result_chars": len(result_text),
+        }
+
+    @staticmethod
+    def _tool_result_text(result: Any) -> str:
+        if isinstance(result, (dict, list)):
+            try:
+                return json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
+            except TypeError:
+                return str(result)
+        return str(result or "")
+
+    def _record_safe_tool_attempt(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        result_status: str,
+        result: Any,
+        *,
+        skipped: bool = False,
+    ) -> None:
+        try:
+            record = self.tool_attempt_memory.record_attempt(
+                tool_name,
+                arguments,
+                result_status,
+                result,
+                skipped=skipped,
+            )
+        except Exception as e:
+            logger.debug(f"[ToolAttemptMemory] Failed to record tool attempt: {e}")
+            return
+
+        failure_class = str((record or {}).get("failure_class") or "")
+        if failure_class:
+            self._last_tool_failure_class = failure_class
+
+    def _persisted_tool_skip_decision(self, tool_name: str, arguments: Dict[str, Any]):
+        try:
+            return self.tool_attempt_memory.should_skip_with_rules(
+                tool_name,
+                arguments,
+                self._tool_attempt_memory_snapshot,
+            )
+        except Exception as e:
+            logger.debug(f"[ToolAttemptMemory] Failed to check rule snapshot: {e}")
+            return None
+
     def run_stream(self, user_message: str) -> str:
         """
         Execute streaming reasoning loop
@@ -315,6 +450,13 @@ class AgentStreamExecutor:
         """
         # Log user message with model info
         self._raise_if_cancelled()
+        self._reset_request_tool_counters()
+        self._readonly_tool_result_cache = {}
+        try:
+            self._tool_attempt_memory_snapshot = self.tool_attempt_memory.load_rules_snapshot()
+        except Exception as e:
+            logger.debug(f"[ToolAttemptMemory] Failed to load rule snapshot: {e}")
+            self._tool_attempt_memory_snapshot = {}
         
         thinking_enabled = self._is_thinking_enabled()
         self._request_runtime_context = self._build_request_context_text(user_message)
@@ -1148,6 +1290,7 @@ class AgentStreamExecutor:
         tool_name = tool_call["name"]
         tool_id = tool_call["id"]
         arguments = tool_call["arguments"]
+        self._tool_attempt_count += 1
 
         # Check if there was a JSON parse error
         if "_parse_error" in tool_call:
@@ -1158,13 +1301,59 @@ class AgentStreamExecutor:
                 "result": f"Failed to parse tool arguments. {parse_error}. Please ensure your tool call uses valid JSON format with all required parameters.",
                 "execution_time": 0
             }
+            self._tool_skip_count += 1
+            self._tool_attempt_error_count += 1
             self._record_tool_result(tool_name, arguments, False)
             return result
+
+        skip_decision = self._persisted_tool_skip_decision(tool_name, arguments)
+        if skip_decision and skip_decision.should_skip:
+            result = {
+                "status": "error",
+                "result": skip_decision.reason,
+                "execution_time": 0,
+                "tool_attempt_skipped": True,
+                "tool_failure_class": skip_decision.failure_class,
+            }
+            self._tool_skip_count += 1
+            self._tool_memory_rule_hits += 1
+            self._tool_attempt_error_count += 1
+            self._last_tool_failure_class = skip_decision.failure_class
+            self._record_tool_result(tool_name, arguments, False)
+            self._record_safe_tool_attempt(
+                tool_name,
+                arguments,
+                "error",
+                skip_decision.reason,
+                skipped=True,
+            )
+            logger.info(
+                f"[ToolAttemptMemory] Skipped known failing tool attempt: "
+                f"{tool_name} (class={skip_decision.failure_class}, count={skip_decision.count})"
+            )
+            self._emit_event("tool_execution_start", {
+                "tool_call_id": tool_id,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "tool_attempt_skipped": True,
+            })
+            self._emit_event("tool_execution_end", {
+                "tool_call_id": tool_id,
+                "tool_name": tool_name,
+                **result,
+            })
+            return result
+
+        reused_result = self._reuse_readonly_tool_result(tool_name, tool_id, arguments)
+        if reused_result:
+            return reused_result
 
         # Check for consecutive failures (retry protection)
         should_stop, stop_reason, is_critical = self._check_consecutive_failures(tool_name, arguments)
         if should_stop:
             logger.error(f"🛑 {stop_reason}")
+            self._tool_skip_count += 1
+            self._tool_attempt_error_count += 1
             self._record_tool_result(tool_name, arguments, False)
             
             if is_critical:
@@ -1212,7 +1401,16 @@ class AgentStreamExecutor:
 
             # Record tool result for failure tracking
             success = result.status == "success"
+            if success:
+                self._tool_attempt_success_count += 1
+            else:
+                self._tool_attempt_error_count += 1
             self._record_tool_result(tool_name, arguments, success)
+            self._record_safe_tool_attempt(tool_name, arguments, result.status, result.result)
+            if success:
+                self._remember_readonly_tool_result(tool_name, arguments, result_dict)
+            if is_mutating_tool(tool_name):
+                self._readonly_tool_result_cache = {}
 
             # Auto-refresh skills after skill creation
             if tool_name == "bash" and result.status == "success":
@@ -1238,7 +1436,11 @@ class AgentStreamExecutor:
                 "execution_time": 0
             }
             # Record failure
+            self._tool_attempt_error_count += 1
             self._record_tool_result(tool_name, arguments, False)
+            self._record_safe_tool_attempt(tool_name, arguments, "error", str(e))
+            if is_mutating_tool(tool_name):
+                self._readonly_tool_result_cache = {}
             
             self._emit_event("tool_execution_end", {
                 "tool_call_id": tool_id,
@@ -1743,13 +1945,89 @@ class AgentStreamExecutor:
         not as a message. The AgentLLMModel will handle this.
         """
         # Don't add system message here - it will be handled separately by the LLM adapter.
-        runtime_context = getattr(self, "_request_runtime_context", "")
-        if not runtime_context:
-            return self.messages
-
         messages = self._copy_messages_for_request()
-        self._prepend_runtime_context(messages, runtime_context)
+        self._compact_request_tool_results(messages)
+        runtime_context = getattr(self, "_request_runtime_context", "")
+        if runtime_context:
+            self._prepend_runtime_context(messages, runtime_context)
         return messages
+
+    def _compact_request_tool_results(self, messages: List[Dict[str, Any]]) -> None:
+        """Compact older oversized tool results in the request copy only."""
+        self._request_tool_result_compacted_count = 0
+        blocks = []
+        for message_index, message in enumerate(messages or []):
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                text = str(block.get("content") or "")
+                blocks.append((message_index, block, text))
+
+        total_chars = sum(len(text) for _, _, text in blocks)
+        budget, keep_recent, small_limit = self._request_tool_result_compaction_settings()
+        if total_chars <= budget:
+            return
+
+        current_turn_start = self._current_turn_start_index(messages)
+        recent_start = max(0, len(blocks) - keep_recent)
+        for order, (message_index, block, text) in enumerate(blocks):
+            if message_index >= current_turn_start:
+                continue
+            if order >= recent_start:
+                continue
+            if len(text) <= small_limit:
+                continue
+            text_hash = stable_metadata_hash(text)
+            block["content"] = (
+                "[Tool result compacted for cache efficiency: "
+                f"hash={text_hash}, chars={len(text)}. "
+                "This was from an earlier turn; use the later assistant summary already "
+                "in conversation, or rerun/read again only when exact source text is required.]"
+            )
+            self._request_tool_result_compacted_count += 1
+
+        if self._request_tool_result_compacted_count:
+            logger.info(
+                "[PromptCache] Compacted %s historical tool result(s) in request copy "
+                "(total=%s chars, budget=%s)",
+                self._request_tool_result_compacted_count,
+                total_chars,
+                budget,
+            )
+
+    @staticmethod
+    def _current_turn_start_index(messages: List[Dict[str, Any]]) -> int:
+        for index in range(len(messages or []) - 1, -1, -1):
+            message = messages[index]
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, list) and any(
+                isinstance(block, dict) and block.get("type") == "text" for block in content
+            ):
+                return index
+            if isinstance(content, str):
+                return index
+        return len(messages or [])
+
+    @staticmethod
+    def _request_tool_result_compaction_settings() -> Tuple[int, int, int]:
+        try:
+            from config import conf
+
+            budget = int(conf().get("tool_result_request_compaction_budget_chars", 160000) or 160000)
+            keep_recent = int(conf().get("tool_result_request_compaction_keep_recent", 4) or 4)
+            small_limit = int(conf().get("tool_result_request_compaction_small_limit_chars", 12000) or 12000)
+        except Exception:
+            budget = 160000
+            keep_recent = 4
+            small_limit = 12000
+        return max(40000, budget), max(1, keep_recent), max(2000, small_limit)
 
     def _build_request_context_text(self, user_message: str) -> str:
         runtime_context = self._build_runtime_context_text()
@@ -1941,6 +2219,14 @@ class AgentStreamExecutor:
             "retrieved_knowledge_hash": getattr(self, "_request_knowledge_context_hash", "") or "",
             "tool_result_chars": tool_result_chars,
             "tool_result_hash": stable_metadata_hash(tool_results_for_hash) if tool_results_for_hash else "",
+            "tool_attempt_count": int(getattr(self, "_tool_attempt_count", 0) or 0),
+            "tool_attempt_success_count": int(getattr(self, "_tool_attempt_success_count", 0) or 0),
+            "tool_attempt_error_count": int(getattr(self, "_tool_attempt_error_count", 0) or 0),
+            "tool_skip_count": int(getattr(self, "_tool_skip_count", 0) or 0),
+            "tool_duplicate_success_count": int(getattr(self, "_tool_duplicate_success_count", 0) or 0),
+            "tool_memory_rule_hits": int(getattr(self, "_tool_memory_rule_hits", 0) or 0),
+            "tool_compacted_result_count": int(getattr(self, "_request_tool_result_compacted_count", 0) or 0),
+            "tool_failure_class": getattr(self, "_last_tool_failure_class", "") or "",
         }
 
     def _classify_request_kind(self, messages: List[Dict[str, Any]], tool_result_chars: int) -> str:

@@ -12,8 +12,8 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 ## Current Baseline
 
-- Latest local code work: documented and templated `wecom_bot_auth_source` for WeCom Bot QR/manual setup.
-- Latest code baseline commit: current commit `docs: document wecom bot auth source`.
+- Latest local code work: optimized prompt-cache diagnostics around tool attempts and oversized tool results without changing the model connection path.
+- Latest code baseline commit: current commit `feat: optimize cache tool attempts`.
 - Latest validation: `py_compile config.py` passed; `node --check channel\web\static\js\console.js` passed; safe GitHub upload preflight passed before staging.
 - Previous local code work: safe GitHub upload skill for WeChat-driven code publishing.
 - Latest committed skill sync: `631f159` `feat: sync local cow skills`
@@ -25,6 +25,7 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 ## Change Log
 
+- `2026-05-23` current commit `feat: optimize cache tool attempts`: Added safe tool-attempt memory for repeated non-retryable failures, request-local read-only tool result reuse, request-copy compaction for older oversized tool results, and cache telemetry/report counters for tool attempts, skips, duplicate successes, memory rule hits, and compacted results. Validation: focused tool-attempt, prompt-cache, Responses API, knowledge-context, scheduler duplicate, and CowAgent self-evolution pytest suites passed; safe upload preflight passed before staging.
 - `2026-05-23` current commit `feat: add community skill discovery guards`: Added localized `find-skills-skill`, `skill-guard`, `quick-weather`, and `fast-market-price` CowWechat skills; synced the community search workflow from ClawHub's popular `find-skills-skill`, added a local pre-install static security gate based on `skill-guard`, and extracted qq_openclaw-style Open-Meteo weather plus Coinbase/Yahoo quick quote scripts. Validation: quick validation passed for all four skills; scripts passed `py_compile`; `find_skills.py` returned known ClawHub leads plus live `npx clawhub search`; `quick_weather.py "明天成都天气"` returned an Open-Meteo forecast; `fast_price.py "比特币"` returned Coinbase BTC/USD; `fast_price.py "黄金"` returned Yahoo Finance `GC=F`; `skill-guard` passed on clean skills and blocked a malicious temp skill with prompt injection and token upload text.
 - `2026-05-23` current commit `feat: add takeout and shopping lite skills`: Added local `takeout-lite-recommender` and `shopping-lite-compare` skills, synced their runtime copies, installed the requested OpenClaw ClawHub skills (`eat-what-today-skill`, `meituan-coupons`, `taobao`), and documented that the installed `taobao` package is a `maishou` skill with `maishou88.com` requests, a default invite code, hardcoded openid, possible commission fields, and detail/share purchase-link generation. Validation: both skill quick validations passed with `PYTHONUTF8=1`; `takeout_lite.py` py_compile passed; takeout sample output included 3 recommendations, reasons, budget ranges, Meituan search keywords, coupon reminder, and compliance notice; routing/disclosure smoke passed. Per user instruction, this local integration is not pushed to `origin`.
 - `2026-05-23` current commit `docs: document wecom bot auth source`: Added `wecom_bot_auth_source` to defaults and safe templates, and updated WeCom Bot setup docs/quickstart to explain QR creation source fallback to manual Bot ID/Secret configuration. Validation: `py_compile config.py` passed; `node --check channel\web\static\js\console.js` passed; safe upload preflight passed.

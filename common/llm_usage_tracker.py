@@ -29,6 +29,7 @@ _REQUEST_SHAPE_TEXT_FIELDS = {
     "messages_prefix_hash",
     "retrieved_knowledge_hash",
     "tool_result_hash",
+    "tool_failure_class",
 }
 _REQUEST_SHAPE_INT_FIELDS = {
     "message_count",
@@ -37,6 +38,13 @@ _REQUEST_SHAPE_INT_FIELDS = {
     "runtime_context_chars",
     "retrieved_knowledge_chars",
     "tool_result_chars",
+    "tool_attempt_count",
+    "tool_attempt_success_count",
+    "tool_attempt_error_count",
+    "tool_skip_count",
+    "tool_duplicate_success_count",
+    "tool_memory_rule_hits",
+    "tool_compacted_result_count",
 }
 
 
@@ -143,6 +151,13 @@ def get_cache_usage_report(limit: int = 50) -> Dict[str, Any]:
         if _to_int(r.get("prompt_tokens")) >= LONG_INPUT_ZERO_HIT_THRESHOLD
         and _to_int(r.get("cached_tokens")) == 0
     )
+    tool_attempt_count = sum(_to_int(r.get("tool_attempt_count")) for r in records)
+    tool_attempt_success_count = sum(_to_int(r.get("tool_attempt_success_count")) for r in records)
+    tool_attempt_error_count = sum(_to_int(r.get("tool_attempt_error_count")) for r in records)
+    tool_skip_count = sum(_to_int(r.get("tool_skip_count")) for r in records)
+    tool_duplicate_success_count = sum(_to_int(r.get("tool_duplicate_success_count")) for r in records)
+    tool_memory_rule_hits = sum(_to_int(r.get("tool_memory_rule_hits")) for r in records)
+    tool_compacted_result_count = sum(_to_int(r.get("tool_compacted_result_count")) for r in records)
 
     user_aliases = _user_aliases(records)
     user_labels = _known_user_labels(records)
@@ -172,11 +187,25 @@ def get_cache_usage_report(limit: int = 50) -> Dict[str, Any]:
             "completion_tokens": 0,
             "long_input_requests": 0,
             "long_input_zero_cache_requests": 0,
+            "tool_attempt_count": 0,
+            "tool_attempt_success_count": 0,
+            "tool_attempt_error_count": 0,
+            "tool_skip_count": 0,
+            "tool_duplicate_success_count": 0,
+            "tool_memory_rule_hits": 0,
+            "tool_compacted_result_count": 0,
         })
         kind_bucket["requests"] += 1
         kind_bucket["prompt_tokens"] += _to_int(record.get("prompt_tokens"))
         kind_bucket["cached_tokens"] += _to_int(record.get("cached_tokens"))
         kind_bucket["completion_tokens"] += _to_int(record.get("completion_tokens"))
+        kind_bucket["tool_attempt_count"] += _to_int(record.get("tool_attempt_count"))
+        kind_bucket["tool_attempt_success_count"] += _to_int(record.get("tool_attempt_success_count"))
+        kind_bucket["tool_attempt_error_count"] += _to_int(record.get("tool_attempt_error_count"))
+        kind_bucket["tool_skip_count"] += _to_int(record.get("tool_skip_count"))
+        kind_bucket["tool_duplicate_success_count"] += _to_int(record.get("tool_duplicate_success_count"))
+        kind_bucket["tool_memory_rule_hits"] += _to_int(record.get("tool_memory_rule_hits"))
+        kind_bucket["tool_compacted_result_count"] += _to_int(record.get("tool_compacted_result_count"))
         if _to_int(record.get("prompt_tokens")) >= LONG_INPUT_ZERO_HIT_THRESHOLD:
             kind_bucket["long_input_requests"] += 1
             if _to_int(record.get("cached_tokens")) == 0:
@@ -236,6 +265,13 @@ def get_cache_usage_report(limit: int = 50) -> Dict[str, Any]:
                 if long_input_requests
                 else 0.0
             ),
+            "tool_attempt_count": tool_attempt_count,
+            "tool_attempt_success_count": tool_attempt_success_count,
+            "tool_attempt_error_count": tool_attempt_error_count,
+            "tool_skip_count": tool_skip_count,
+            "tool_duplicate_success_count": tool_duplicate_success_count,
+            "tool_memory_rule_hits": tool_memory_rule_hits,
+            "tool_compacted_result_count": tool_compacted_result_count,
         },
         "models": models,
         "request_kinds": request_kinds,

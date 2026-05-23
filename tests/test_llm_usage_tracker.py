@@ -66,6 +66,14 @@ class TestLLMUsageTracker(unittest.TestCase):
                         "retrieved_knowledge_hash": "knowledgehash",
                         "tool_result_chars": 0,
                         "tool_result_hash": "toolhash",
+                        "tool_attempt_count": 4,
+                        "tool_attempt_success_count": 3,
+                        "tool_attempt_error_count": 1,
+                        "tool_skip_count": 2,
+                        "tool_duplicate_success_count": 1,
+                        "tool_memory_rule_hits": 1,
+                        "tool_compacted_result_count": 3,
+                        "tool_failure_class": "non_retryable_args",
                         "prompt": "raw prompt must not be persisted",
                         "messages": [{"role": "user", "content": "secret"}],
                         "tool_arguments": {"path": "secret.txt"},
@@ -80,6 +88,11 @@ class TestLLMUsageTracker(unittest.TestCase):
         self.assertEqual(record["message_count"], 12)
         self.assertEqual(record["retrieved_knowledge_chars"], 900)
         self.assertEqual(record["tool_result_hash"], "toolhash")
+        self.assertEqual(record["tool_attempt_count"], 4)
+        self.assertEqual(record["tool_attempt_success_count"], 3)
+        self.assertEqual(record["tool_attempt_error_count"], 1)
+        self.assertEqual(record["tool_skip_count"], 2)
+        self.assertEqual(record["tool_failure_class"], "non_retryable_args")
         self.assertNotIn("prompt", record)
         self.assertNotIn("messages", record)
         self.assertNotIn("tool_arguments", record)
@@ -143,6 +156,9 @@ class TestLLMUsageTracker(unittest.TestCase):
                 "cached_tokens": 0,
                 "completion_tokens": 100,
                 "total_tokens": 60100,
+                "tool_attempt_count": 2,
+                "tool_attempt_error_count": 1,
+                "tool_skip_count": 1,
             },
             {
                 "timestamp": "2026-05-22T01:01:00+00:00",
@@ -151,6 +167,9 @@ class TestLLMUsageTracker(unittest.TestCase):
                 "cached_tokens": 30000,
                 "completion_tokens": 100,
                 "total_tokens": 60100,
+                "tool_attempt_count": 1,
+                "tool_attempt_success_count": 1,
+                "tool_duplicate_success_count": 1,
             },
             {
                 "timestamp": "2026-05-22T01:02:00+00:00",
@@ -159,6 +178,8 @@ class TestLLMUsageTracker(unittest.TestCase):
                 "cached_tokens": 0,
                 "completion_tokens": 50,
                 "total_tokens": 1250,
+                "tool_memory_rule_hits": 1,
+                "tool_compacted_result_count": 2,
             },
         ]
 
@@ -169,12 +190,21 @@ class TestLLMUsageTracker(unittest.TestCase):
         self.assertEqual(report["summary"]["long_input_requests"], 2)
         self.assertEqual(report["summary"]["long_input_zero_cache_requests"], 1)
         self.assertAlmostEqual(report["summary"]["long_input_zero_cache_rate"], 0.5)
+        self.assertEqual(report["summary"]["tool_attempt_count"], 3)
+        self.assertEqual(report["summary"]["tool_attempt_error_count"], 1)
+        self.assertEqual(report["summary"]["tool_skip_count"], 1)
+        self.assertEqual(report["summary"]["tool_memory_rule_hits"], 1)
+        self.assertEqual(report["summary"]["tool_compacted_result_count"], 2)
 
         kinds = {item["request_kind"]: item for item in report["request_kinds"]}
         self.assertEqual(kinds["normal"]["requests"], 2)
         self.assertEqual(kinds["normal"]["long_input_requests"], 2)
         self.assertEqual(kinds["normal"]["long_input_zero_cache_requests"], 1)
         self.assertAlmostEqual(kinds["normal"]["cache_hit_rate"], 30000 / 120000)
+        self.assertEqual(kinds["normal"]["tool_attempt_count"], 3)
+        self.assertEqual(kinds["normal"]["tool_duplicate_success_count"], 1)
+        self.assertEqual(kinds["knowledge_auto"]["tool_memory_rule_hits"], 1)
+        self.assertEqual(kinds["knowledge_auto"]["tool_compacted_result_count"], 2)
 
     def test_cache_report_labels_legacy_session_records_from_new_wechat_record(self):
         records = [
