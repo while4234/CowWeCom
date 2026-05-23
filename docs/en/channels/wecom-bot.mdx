@@ -29,7 +29,7 @@ Connect CowAgent via WeCom AI Bot, supporting both direct messages and group cha
 
 ### Option A: Web Console
 
-Start the program and open the Web console (local access: http://127.0.0.1:9899). Go to the **Channels** tab, click **Connect Channel**, select **WeCom Bot**, fill in the Bot ID and Secret from the previous step, and click Connect.
+Start the program and open the Web console (local access: http://127.0.0.1:9899). Go to the **Channels** tab, click **Connect Channel**, select **WeCom Bot**, scan to create a bot or fill in the Bot ID and Secret from the previous step, and click Connect. The QR flow uses `wecom_bot_auth_source`; if QR-code creation reports invalid parameters, confirm the source value or use the manual flow.
 
 <img src="https://cdn.link-ai.tech/doc/20260316181711.png" width="600"/>
 
@@ -41,7 +41,8 @@ Add the following to your `config.json`:
 {
   "channel_type": "wecom_bot",
   "wecom_bot_id": "YOUR_BOT_ID",
-  "wecom_bot_secret": "YOUR_SECRET"
+  "wecom_bot_secret": "YOUR_SECRET",
+  "wecom_bot_auth_source": "cowagent"
 }
 ```
 

@@ -23,12 +23,15 @@ For the default DeepSeek-compatible template:
   "model": "deepseek-v4-flash",
   "deepseek_api_key": "YOUR_LLM_API_KEY",
   "wecom_bot_id": "YOUR_WECOM_BOT_ID",
-  "wecom_bot_secret": "YOUR_WECOM_BOT_SECRET"
+  "wecom_bot_secret": "YOUR_WECOM_BOT_SECRET",
+  "wecom_bot_auth_source": "cowagent"
 }
 ```
 
-You may also use the Web console to scan and connect the WeCom Bot instead of
-typing `wecom_bot_id` and `wecom_bot_secret` manually.
+You can also use the Web console to scan or enter the WeCom Bot ID and Secret
+manually. The scan flow uses `wecom_bot_auth_source`; if WeCom reports invalid
+parameters, confirm the source value or create the bot in the WeCom desktop
+client and copy the credentials into the Web console or `config.json`.
 
 ## 3. Install And Run
 

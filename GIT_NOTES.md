@@ -12,9 +12,9 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 ## Current Baseline
 
-- Latest local skill work: installed and synced `bdpan-storage`, `bilibili-all-in-one`, `frontend-design`, and `wecom-cli` into both runtime and repository skill directories; skipped `plugin-amap` because it requires `LINKAI_API_KEY`.
-- Latest code baseline commit: current commit `chore: add requested cow skills`.
-- Latest validation: skill quick validation passed for all four new skills in both copies; SkillManager loaded the four expected skill names and did not load `plugin-amap`; Bilibili skill import smoke passed; safe GitHub upload preflight passed before staging.
+- Latest local code work: documented and templated `wecom_bot_auth_source` for WeCom Bot QR/manual setup.
+- Latest code baseline commit: current commit `docs: document wecom bot auth source`.
+- Latest validation: `py_compile config.py` passed; `node --check channel\web\static\js\console.js` passed; safe GitHub upload preflight passed before staging.
 - Previous local code work: safe GitHub upload skill for WeChat-driven code publishing.
 - Latest committed skill sync: `631f159` `feat: sync local cow skills`
 - Latest merged code work: `852e909` `feat: add wechat quick progress lane`; `c309e61` `fix: make weixin onboarding greeting deterministic`
@@ -25,6 +25,7 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 ## Change Log
 
+- `2026-05-23` current commit `docs: document wecom bot auth source`: Added `wecom_bot_auth_source` to defaults and safe templates, and updated WeCom Bot setup docs/quickstart to explain QR creation source fallback to manual Bot ID/Secret configuration. Validation: `py_compile config.py` passed; `node --check channel\web\static\js\console.js` passed; safe upload preflight passed.
 - `2026-05-23` current commit `chore: add requested cow skills`: Installed `bdpan-storage`, `bilibili-all-in-one`, `frontend-design`, and `wecom-cli` from the requested sources, synced runtime copies into `skills/`, normalized upstream frontmatter where needed for CowWechat validation/loading, and intentionally skipped `plugin-amap` because its package hard-requires LinkAI plugin execution through `LINKAI_API_KEY`. Validation: quick validation passed for runtime and repo copies; SkillManager loaded all four installed skills; Bilibili import smoke passed; safe upload preflight passed.
 - `2026-05-23` current commit `feat: add cache shape telemetry`: Added safe request-shape hashes/counts to LLM usage telemetry, grouped cache reports by `request_kind`, surfaced long-input zero-cache metrics, stabilized retrieved knowledge snippets as compact JSON lines, and lightly extended the cache dashboard recent table. Validation: focused prompt-cache/Responses/knowledge-context pytest passed with 19 tests; `git diff --check` passed with CRLF warnings only; safe upload preflight passed before staging.
 - `2026-05-23` `b43fd74` `fix: make github skill use local credentials`: Updated the GitHub skill so it no longer requires `jq` or a shell-exported `GITHUB_TOKEN`; added a helper that resolves `GITHUB_TOKEN`, `GH_TOKEN`, or Git Credential Manager credentials and calls the GitHub REST API through `curl.exe`; removed the unsafe token-in-remote guidance; synced the runtime skill copy. Validation: skill quick validation passed; helper resolved a local token and authenticated `/user` as `while4234`; safe upload preflight passed.

@@ -774,19 +774,20 @@ Coding Plan 是各厂商推出的编程包月套餐，所有厂商均可通过 O
 
 企微智能机器人使用 WebSocket 长连接模式，无需公网 IP 和域名。详细步骤参考 [企微智能机器人接入](https://docs.cowagent.ai/channels/wecom-bot)。
 
-**方式一：扫码一键创建（推荐）**
+**方式一：扫码创建**
 
-启动 Cow 后打开 Web 控制台，**通道** → **接入通道** → 选择 **企微智能机器人** → 使用企业微信扫码创建。
+启动 Cow 后打开 Web 控制台，**通道** → **接入通道** → 选择 **企微智能机器人** → 使用企业微信扫码创建。扫码创建使用 `wecom_bot_auth_source`，如果提示“参数不合法”，请确认该 source 是否可用，或改用下面的手动配置。
 
 **方式二：手动配置**
 
-在企业微信中创建智能机器人并选择**长连接模式**，记录 Bot ID 和 Secret 后填入 `config.json`：
+在企业微信桌面客户端中创建智能机器人，选择 **API 模式** 和 **长连接模式**，记录 Bot ID 和 Secret 后填入 Web 控制台或 `config.json`：
 
 ```json
 {
     "channel_type": "wecom_bot",
     "wecom_bot_id": "YOUR_BOT_ID",
-    "wecom_bot_secret": "YOUR_SECRET"
+    "wecom_bot_secret": "YOUR_SECRET",
+    "wecom_bot_auth_source": "cowagent"
 }
 ```
 

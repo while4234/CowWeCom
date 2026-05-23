@@ -57,6 +57,7 @@
   "dingtalk_client_secret": "",
   "wecom_bot_id": "",
   "wecom_bot_secret": "",
+  "wecom_bot_auth_source": "cowagent",
   "weixin_instances": {},
   "web_host": "",
   "web_password": "",
