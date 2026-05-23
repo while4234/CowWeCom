@@ -56,6 +56,7 @@ with machine setup notes and any required user-provided keys.
 | `markdown-converter` | Convert PDF, Office, HTML, CSV/JSON/XML, images, audio, archives, YouTube URLs, and EPUBs to Markdown. | No external API key; converter dependencies may be installed locally. |
 | `pdf` | Read, extract, split, merge, rotate, watermark, create, and secure PDF files. | No external API key. |
 | `plugin-12306-ticket` | Query China Railway 12306 tickets, stations, and train route information through local public 12306 endpoints. | No external API key; needs Python network access. |
+| `playwright-browser-control` | Use Playwright MCP with a dedicated persistent Chrome profile for browser automation and web validation. | No API key; requires local Playwright MCP and Chrome profile setup. |
 | `pptx` | Create, read, edit, and extract content from PowerPoint `.pptx` decks. | No external API key. |
 | `reliable-search` | Search with Serper/Brave provider fallback. | `SERPER_API_KEY` or `BRAVE_API_KEY` supplied by the user. |
 | `safe-github-upload` | Commit and push CowWechat code to GitHub while respecting `.gitignore`, avoiding secrets/runtime state, validating staged files, and syncing skill copies. | GitHub credentials configured locally; no key is stored in the skill. |

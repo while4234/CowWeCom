@@ -1,0 +1,4 @@
+interface:
+  display_name: "Playwright Browser Control"
+  short_description: "Control Chrome through a persistent Playwright MCP profile"
+  default_prompt: "Use Playwright MCP with the dedicated persistent Chrome profile for browser tasks. Use extension mode only when the user specifically needs the real Chrome Default profile or installed extensions."
