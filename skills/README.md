@@ -50,6 +50,8 @@ with machine setup notes and any required user-provided keys.
 | `code-update` | Safely fast-forward CowWechat from GitHub while protecting local state. | No API key; Git credentials stay local. |
 | `cowagent-self-evolution` | Record and reuse local execution lessons such as Windows shell dialect failures without showing them in chat. | No external API key; needs Python. |
 | `docx` | Create, read, edit, and format Word `.docx` documents. | No external API key. |
+| `fast-market-price` | Fetch quick market quotes for BTC/ETH, gold, silver, oil, FX, major indexes, and symbols. | No external API key; needs Python network access. |
+| `find-skills-skill` | Search and vet community skills before local CowWechat installation. | No external API key; optional `npx clawhub` improves live search. |
 | `github` | Perform GitHub repository, fork, PR, release, issue, and comment operations. | `GITHUB_TOKEN`; also needs `git`, `curl`, and `jq`. |
 | `image-generation` | Generate/edit images through background jobs. | Local Codex login, or one configured image provider API key. |
 | `knowledge-wiki` | Maintain a local structured knowledge wiki. | No API key. |
@@ -58,8 +60,10 @@ with machine setup notes and any required user-provided keys.
 | `plugin-12306-ticket` | Query China Railway 12306 tickets, stations, and train route information through local public 12306 endpoints. | No external API key; needs Python network access. |
 | `playwright-browser-control` | Use Playwright MCP with a dedicated persistent Chrome profile for browser automation and web validation. | No API key; requires local Playwright MCP and Chrome profile setup. |
 | `pptx` | Create, read, edit, and extract content from PowerPoint `.pptx` decks. | No external API key. |
+| `quick-weather` | Fetch fast current weather and forecasts through Open-Meteo. | No external API key; needs Python network access. |
 | `reliable-search` | Search with Serper/Brave provider fallback. | `SERPER_API_KEY` or `BRAVE_API_KEY` supplied by the user. |
 | `safe-github-upload` | Commit and push CowWechat code to GitHub while respecting `.gitignore`, avoiding secrets/runtime state, validating staged files, and syncing skill copies. | GitHub credentials configured locally; no key is stored in the skill. |
+| `skill-guard` | Pre-install static security gate for third-party skills; blocks prompt injection, secret exfiltration, destructive commands, and suspicious installers. | No external API key; needs Python. |
 | `skill-creator` | Create, validate, and package skills. | No API key unless the new skill needs one. |
 | `stock-analysis` | Analyze stocks and cryptocurrencies, portfolios, watchlists, dividends, and trend signals. | No external API key; requires `uv`. |
 | `token-usage-tracker` | Track local per-user token usage. | No API key. |
