@@ -12,9 +12,9 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 ## Current Baseline
 
-- Latest local code work: WeCom per-user onboarding now uses each actor's `memory/users/<memory_user_id>/USER.md` so new normal users still receive the deterministic first "你好" welcome after the admin has completed global bootstrap.
-- Latest code baseline commit: current commit `fix: isolate per-user onboarding`.
-- Latest validation: `.venv\Scripts\python.exe -m unittest tests.test_agent_onboarding_welcome tests.test_wecom_social_bridge tests.test_multi_user_isolation` passed with 29 tests; `.venv\Scripts\python.exe -m py_compile bridge\agent_bridge.py tests\test_agent_onboarding_welcome.py` passed; safe GitHub upload preflight passed before staging.
+- Latest local code work: WeCom web console no longer launches the QR auth creation flow because it grants creator data permissions and makes the bot creator-only for other members.
+- Latest code baseline commit: current commit `fix: prefer manual wecom bot setup`.
+- Latest validation: `node --check channel\web\static\js\console.js` passed; runtime restart smoke returned `http://127.0.0.1:9899/` 200; safe GitHub upload preflight passed before staging.
 - Previous local code work: safe GitHub upload skill for WeChat-driven code publishing.
 - Latest committed skill sync: `631f159` `feat: sync local cow skills`
 - Latest merged code work: `852e909` `feat: add wechat quick progress lane`; `c309e61` `fix: make weixin onboarding greeting deterministic`
@@ -25,6 +25,7 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 ## Change Log
 
+- `2026-05-23` current commit `fix: prefer manual wecom bot setup`: Changed the WeCom bot console flow to default to manual Bot ID/Secret entry and replaced QR auth creation with a warning that it grants creator data permissions, causing non-creators to see "仅限创建者本人可使用". Validation: `node --check channel\web\static\js\console.js` passed; Web restart smoke returned 200; safe upload preflight passed.
 - `2026-05-23` current commit `fix: isolate per-user onboarding`: Changed onboarding detection to fall back to per-user `USER.md` for resolved chat profiles, auto-create a safe placeholder user file for new actors, and keep initialized users from seeing the first-run welcome repeatedly. Validation: agent onboarding, WeCom social bridge, and multi-user isolation unittest suites passed; py_compile passed for touched files; safe upload preflight passed.
 - `2026-05-23` `a5c4062` `chore: prepare cowwecom github baseline`: Changed safe templates and Docker compose defaults to `wecom_bot`, added `COWWECOM_QUICKSTART.md`, removed generated knowledge sqlite/PDF/derived/report artifacts from Git tracking while keeping local files ignored, reset the knowledge manifest to an empty safe baseline, and updated safe upload preflight/tests to allow staged deletion of protected runtime files. Validation: staged preflight OK; focused pytest passed with 82 total tests; py_compile passed for touched skill scripts.
 - `2026-05-23` current commit `feat: add a2e daily checkin skill`: Added project-local A2E check-in skill, bundled the existing PowerShell browser/profile helper, added a safe example state while ignoring the real local state file, synced the deployed workspace copy, added focused SkillManager discovery tests, and added hard project rules requiring local Git for all projects and automatic GitHub push for this CowWechat repository. Validation: A2E skill pytest passed; skill quick validation passed; PowerShell parser check passed; safe upload preflight passed.

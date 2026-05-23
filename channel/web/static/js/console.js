@@ -3947,6 +3947,7 @@ function connectWeixinAfterQr(instance) {
 // fully offline.
 const WECOM_BOT_SDK_URL = 'https://wwcdn.weixin.qq.com/node/wework/js/wecom-aibot-sdk@0.1.0.min.js';
 const WECOM_BOT_SOURCE = 'cowagent';
+const WECOM_BOT_MANUAL_SETUP_NOTICE = '请在企业微信后台手动创建 API 模式 / 长连接机器人，并且不要授予“数据使用权限/可使用权限”。扫码创建会触发创建者数据授权，导致其他成员看到“仅限创建者本人可使用”。';
 let _wecomSdkLoaded = false;
 
 function ensureWecomSdkLoaded() {
@@ -3979,8 +3980,7 @@ function _wecomBotAuthSource() {
 function buildWecomBotPanel(ch) {
     const scanLabel = t('wecom_mode_scan');
     const manualLabel = t('wecom_mode_manual');
-    const hasCreds = _wecomBotHasCreds(ch);
-    const defaultMode = hasCreds ? 'manual' : 'scan';
+    const defaultMode = 'manual';
     return `
         <div id="wecom-bot-panel" data-default-mode="${defaultMode}">
             <div class="flex items-center justify-center gap-1 mb-5 bg-slate-100 dark:bg-white/5 rounded-lg p-1">
@@ -4016,11 +4016,13 @@ function switchWecomBotMode(mode) {
         actions.classList.add('hidden');
         content.innerHTML = `
             <div class="flex flex-col items-center py-4">
-                <p class="text-sm text-slate-600 dark:text-slate-300 mb-2">${t('wecom_scan_desc')}</p>
-                <button onclick="startWecomBotAuth()"
-                    class="mt-3 px-6 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium
+                <div class="max-w-xl rounded-lg border border-amber-400/40 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+                    ${escapeHtml(WECOM_BOT_MANUAL_SETUP_NOTICE)}
+                </div>
+                <button onclick="switchWecomBotMode('manual')"
+                    class="mt-4 px-6 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium
                            cursor-pointer transition-colors duration-150">
-                    <i class="fas fa-qrcode mr-2"></i>${t('wecom_scan_btn')}
+                    ${t('wecom_mode_manual')}
                 </button>
                 <div id="wecom-scan-status" class="mt-3"></div>
             </div>`;
@@ -4036,32 +4038,10 @@ function switchWecomBotMode(mode) {
 
 function startWecomBotAuth() {
     const statusEl = document.getElementById('wecom-scan-status');
-    ensureWecomSdkLoaded().then(() => {
-        WecomAIBotSDK.openBotInfoAuthWindow({
-            source: _wecomBotAuthSource(),
-            onCreated: function(bot) {
-                if (statusEl) {
-                    statusEl.innerHTML = `
-                        <div class="flex flex-col items-center py-2">
-                            <div class="w-10 h-10 rounded-full bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center mb-2">
-                                <i class="fas fa-check text-emerald-500 text-lg"></i>
-                            </div>
-                            <p class="text-sm font-medium text-emerald-600 dark:text-emerald-400">${t('wecom_scan_success')}</p>
-                        </div>`;
-                }
-                connectWecomBotAfterAuth(bot.botid, bot.secret);
-            },
-            onError: function(err) {
-                if (statusEl) {
-                    statusEl.innerHTML = `<p class="text-sm text-red-500">${t('wecom_scan_fail')}: ${err.message || err.code || ''}</p>`;
-                }
-            }
-        });
-    }).catch(err => {
-        if (statusEl) {
-            statusEl.innerHTML = `<p class="text-sm text-red-500">SDK load failed: ${err.message}</p>`;
-        }
-    });
+    if (statusEl) {
+        statusEl.innerHTML = `<p class="text-sm text-amber-600 dark:text-amber-300">${escapeHtml(WECOM_BOT_MANUAL_SETUP_NOTICE)}</p>`;
+    }
+    switchWecomBotMode('manual');
 }
 
 function connectWecomBotAfterAuth(botId, secret) {
@@ -4093,32 +4073,9 @@ function connectWecomBotAfterAuth(botId, secret) {
 
 function startWecomBotAuthInCard() {
     const statusEl = document.getElementById('wecom-card-scan-status');
-    ensureWecomSdkLoaded().then(() => {
-        WecomAIBotSDK.openBotInfoAuthWindow({
-            source: _wecomBotAuthSource(),
-            onCreated: function(bot) {
-                if (statusEl) {
-                    statusEl.innerHTML = `
-                        <div class="flex flex-col items-center py-2">
-                            <div class="w-10 h-10 rounded-full bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center mb-2">
-                                <i class="fas fa-check text-emerald-500 text-lg"></i>
-                            </div>
-                            <p class="text-sm font-medium text-emerald-600 dark:text-emerald-400">${t('wecom_scan_success')}</p>
-                        </div>`;
-                }
-                connectWecomBotAfterAuth(bot.botid, bot.secret);
-            },
-            onError: function(err) {
-                if (statusEl) {
-                    statusEl.innerHTML = `<p class="text-sm text-red-500">${t('wecom_scan_fail')}: ${err.message || err.code || ''}</p>`;
-                }
-            }
-        });
-    }).catch(err => {
-        if (statusEl) {
-            statusEl.innerHTML = `<p class="text-sm text-red-500">SDK load failed: ${err.message}</p>`;
-        }
-    });
+    if (statusEl) {
+        statusEl.innerHTML = `<p class="text-sm text-amber-600 dark:text-amber-300">${escapeHtml(WECOM_BOT_MANUAL_SETUP_NOTICE)}</p>`;
+    }
 }
 
 // Initialize wecom bot panel with correct default mode when inserted into DOM
