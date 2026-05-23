@@ -12,9 +12,9 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 ## Current Baseline
 
-- Latest local code work: WeCom web console no longer launches the QR auth creation flow because it grants creator data permissions and makes the bot creator-only for other members.
-- Latest code baseline commit: current commit `fix: prefer manual wecom bot setup`.
-- Latest validation: `node --check channel\web\static\js\console.js` passed; runtime restart smoke returned `http://127.0.0.1:9899/` 200; safe GitHub upload preflight passed before staging.
+- Latest local code work: prompt-cache telemetry now records safe request-shape diagnostics and stable knowledge auto-injection formatting without changing the current Responses API connection or prompt-cache parameters.
+- Latest code baseline commit: current commit `feat: add cache shape telemetry`.
+- Latest validation: `.venv\Scripts\python.exe -m pytest tests/test_llm_usage_tracker.py tests/test_openai_responses_api.py tests/test_agent_stream_knowledge_context.py` passed with 19 tests; `git diff --check` passed with Windows CRLF warnings only; safe GitHub upload preflight passed before staging.
 - Previous local code work: safe GitHub upload skill for WeChat-driven code publishing.
 - Latest committed skill sync: `631f159` `feat: sync local cow skills`
 - Latest merged code work: `852e909` `feat: add wechat quick progress lane`; `c309e61` `fix: make weixin onboarding greeting deterministic`
@@ -25,6 +25,7 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 
 ## Change Log
 
+- `2026-05-23` current commit `feat: add cache shape telemetry`: Added safe request-shape hashes/counts to LLM usage telemetry, grouped cache reports by `request_kind`, surfaced long-input zero-cache metrics, stabilized retrieved knowledge snippets as compact JSON lines, and lightly extended the cache dashboard recent table. Validation: focused prompt-cache/Responses/knowledge-context pytest passed with 19 tests; `git diff --check` passed with CRLF warnings only; safe upload preflight passed before staging.
 - `2026-05-23` `b43fd74` `fix: make github skill use local credentials`: Updated the GitHub skill so it no longer requires `jq` or a shell-exported `GITHUB_TOKEN`; added a helper that resolves `GITHUB_TOKEN`, `GH_TOKEN`, or Git Credential Manager credentials and calls the GitHub REST API through `curl.exe`; removed the unsafe token-in-remote guidance; synced the runtime skill copy. Validation: skill quick validation passed; helper resolved a local token and authenticated `/user` as `while4234`; safe upload preflight passed.
 - `2026-05-23` current commit `feat: add playwright browser control skill`: Added the local persistent Playwright browser-control skill to the project skills directory, included its agent metadata and setup notes, documented it in the skills index, and synced the deployed workspace copy. Validation: skill quick validation and safe upload preflight passed.
 - `2026-05-23` current commit `fix: prefer manual wecom bot setup`: Changed the WeCom bot console flow to default to manual Bot ID/Secret entry and replaced QR auth creation with a warning that it grants creator data permissions, causing non-creators to see "仅限创建者本人可使用". Validation: `node --check channel\web\static\js\console.js` passed; Web restart smoke returned 200; safe upload preflight passed.

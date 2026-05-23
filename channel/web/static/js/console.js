@@ -4448,7 +4448,10 @@ function renderCacheSummary(summary) {
     setText('cache-requests-value', formatTokenCount(summary.requests));
     setText('cache-cached-sub', `${formatTokenCount(summary.uncached_prompt_tokens)} uncached`);
     setText('cache-output-sub', `${formatTokenCount(summary.completion_tokens)} output`);
-    setText('cache-hit-sub', `${formatTokenCount(summary.cache_hits)} / ${formatTokenCount(summary.requests)} hits`);
+    const longZero = Number(summary.long_input_zero_cache_requests || 0);
+    const longTotal = Number(summary.long_input_requests || 0);
+    const longZeroText = longTotal ? ` · ${formatTokenCount(longZero)} / ${formatTokenCount(longTotal)} long zero` : '';
+    setText('cache-hit-sub', `${formatTokenCount(summary.cache_hits)} / ${formatTokenCount(summary.requests)} hits${longZeroText}`);
     const bar = document.getElementById('cache-rate-bar');
     if (bar) bar.style.width = Math.max(0, Math.min(100, hitRate * 100)).toFixed(1) + '%';
 }
@@ -4555,6 +4558,7 @@ function renderCacheTable(records) {
                 <td class="px-4 py-3 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">${escapeHtml(when)}</td>
                 <td class="px-4 py-3 text-xs text-slate-700 dark:text-slate-200 whitespace-nowrap">${escapeHtml(record.model || 'unknown')}</td>
                 <td class="px-4 py-3 text-xs text-slate-500 dark:text-slate-400">${escapeHtml(record.channel_type || '--')}</td>
+                <td class="px-4 py-3 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">${escapeHtml(record.request_kind || '--')}</td>
                 <td class="px-4 py-3 text-xs text-right font-mono text-slate-700 dark:text-slate-200">${formatTokenCount(record.prompt_tokens)}</td>
                 <td class="px-4 py-3 text-xs text-right font-mono text-emerald-500">${formatTokenCount(record.cached_tokens)}</td>
                 <td class="px-4 py-3 text-xs text-right font-mono text-slate-700 dark:text-slate-200">${formatPercent(record.cache_hit_rate)}</td>
@@ -4568,6 +4572,7 @@ function renderCacheTable(records) {
                     <th class="px-4 py-2 text-left text-[11px] uppercase text-slate-400 font-medium">Time</th>
                     <th class="px-4 py-2 text-left text-[11px] uppercase text-slate-400 font-medium">Model</th>
                     <th class="px-4 py-2 text-left text-[11px] uppercase text-slate-400 font-medium">Channel</th>
+                    <th class="px-4 py-2 text-left text-[11px] uppercase text-slate-400 font-medium">Kind</th>
                     <th class="px-4 py-2 text-right text-[11px] uppercase text-slate-400 font-medium">Input</th>
                     <th class="px-4 py-2 text-right text-[11px] uppercase text-slate-400 font-medium">Cached</th>
                     <th class="px-4 py-2 text-right text-[11px] uppercase text-slate-400 font-medium">Rate</th>

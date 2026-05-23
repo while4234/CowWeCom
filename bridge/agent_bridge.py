@@ -161,6 +161,9 @@ class AgentLLMModel(LLMModel):
                 system_prompt = getattr(request, 'system', None)
                 if system_prompt:
                     kwargs['system'] = system_prompt
+                cache_shape_metadata = getattr(request, 'cache_shape_metadata', None)
+                if isinstance(cache_shape_metadata, dict):
+                    kwargs['cache_shape_metadata'] = cache_shape_metadata
 
                 # Pass context metadata to bot
                 channel_type = getattr(self, 'channel_type', None) or ''
@@ -229,6 +232,9 @@ class AgentLLMModel(LLMModel):
                 # Add system prompt if present
                 if system_prompt:
                     kwargs['system'] = system_prompt
+                cache_shape_metadata = getattr(request, 'cache_shape_metadata', None)
+                if isinstance(cache_shape_metadata, dict):
+                    kwargs['cache_shape_metadata'] = cache_shape_metadata
 
                 # Pass context metadata to bot
                 channel_type = getattr(self, 'channel_type', None) or ''

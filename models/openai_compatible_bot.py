@@ -115,6 +115,9 @@ class OpenAICompatibleBot:
                 "user_id": kwargs.get("user_id") or getattr(self, "user_id", ""),
                 "user_label": kwargs.get("user_label") or getattr(self, "user_label", ""),
             }
+            cache_shape_metadata = kwargs.get("cache_shape_metadata")
+            if isinstance(cache_shape_metadata, dict):
+                request_params["_cache_metadata"].update(cache_shape_metadata)
             
             # Add max_tokens if specified
             if kwargs.get("max_tokens"):

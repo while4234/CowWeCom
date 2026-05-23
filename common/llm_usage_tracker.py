@@ -20,6 +20,24 @@ from common.utils import expand_path
 
 
 _LOCK = threading.Lock()
+LONG_INPUT_ZERO_HIT_THRESHOLD = 50000
+
+_REQUEST_SHAPE_TEXT_FIELDS = {
+    "request_kind",
+    "system_hash",
+    "tools_hash",
+    "messages_prefix_hash",
+    "retrieved_knowledge_hash",
+    "tool_result_hash",
+}
+_REQUEST_SHAPE_INT_FIELDS = {
+    "message_count",
+    "turn_count",
+    "tool_count",
+    "runtime_context_chars",
+    "retrieved_knowledge_chars",
+    "tool_result_chars",
+}
 
 
 def normalize_usage(usage: Dict[str, Any]) -> Dict[str, Any]:
@@ -116,11 +134,21 @@ def get_cache_usage_report(limit: int = 50) -> Dict[str, Any]:
     total_tokens = sum(_to_int(r.get("total_tokens")) for r in records)
     cache_hits = sum(1 for r in records if _to_int(r.get("cached_tokens")) > 0)
     cacheable_requests = sum(1 for r in records if _to_int(r.get("prompt_tokens")) >= 1024)
+    long_input_requests = sum(
+        1 for r in records if _to_int(r.get("prompt_tokens")) >= LONG_INPUT_ZERO_HIT_THRESHOLD
+    )
+    long_input_zero_cache_requests = sum(
+        1
+        for r in records
+        if _to_int(r.get("prompt_tokens")) >= LONG_INPUT_ZERO_HIT_THRESHOLD
+        and _to_int(r.get("cached_tokens")) == 0
+    )
 
     user_aliases = _user_aliases(records)
     user_labels = _known_user_labels(records)
     by_model: Dict[str, Dict[str, Any]] = {}
     by_user: Dict[str, Dict[str, Any]] = {}
+    by_request_kind: Dict[str, Dict[str, Any]] = {}
     for record in records:
         model = str(record.get("model") or "unknown")
         bucket = by_model.setdefault(model, {
@@ -134,6 +162,25 @@ def get_cache_usage_report(limit: int = 50) -> Dict[str, Any]:
         bucket["prompt_tokens"] += _to_int(record.get("prompt_tokens"))
         bucket["cached_tokens"] += _to_int(record.get("cached_tokens"))
         bucket["completion_tokens"] += _to_int(record.get("completion_tokens"))
+
+        request_kind = str(record.get("request_kind") or "unknown")
+        kind_bucket = by_request_kind.setdefault(request_kind, {
+            "request_kind": request_kind,
+            "requests": 0,
+            "prompt_tokens": 0,
+            "cached_tokens": 0,
+            "completion_tokens": 0,
+            "long_input_requests": 0,
+            "long_input_zero_cache_requests": 0,
+        })
+        kind_bucket["requests"] += 1
+        kind_bucket["prompt_tokens"] += _to_int(record.get("prompt_tokens"))
+        kind_bucket["cached_tokens"] += _to_int(record.get("cached_tokens"))
+        kind_bucket["completion_tokens"] += _to_int(record.get("completion_tokens"))
+        if _to_int(record.get("prompt_tokens")) >= LONG_INPUT_ZERO_HIT_THRESHOLD:
+            kind_bucket["long_input_requests"] += 1
+            if _to_int(record.get("cached_tokens")) == 0:
+                kind_bucket["long_input_zero_cache_requests"] += 1
 
         user_key = _user_key(record, user_aliases)
         user_label = _record_user_label(record, user_labels, user_key)
@@ -165,6 +212,8 @@ def get_cache_usage_report(limit: int = 50) -> Dict[str, Any]:
 
     models = _finalize_buckets(by_model.values())
     models.sort(key=lambda item: item["prompt_tokens"], reverse=True)
+    request_kinds = _finalize_request_kind_buckets(by_request_kind.values())
+    request_kinds.sort(key=lambda item: item["prompt_tokens"], reverse=True)
     users = _finalize_user_buckets(by_user.values())
     users.sort(key=lambda item: item["total_tokens"], reverse=True)
 
@@ -179,8 +228,17 @@ def get_cache_usage_report(limit: int = 50) -> Dict[str, Any]:
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
             "cache_hit_rate": (cached_tokens / prompt_tokens) if prompt_tokens else 0.0,
+            "long_input_threshold": LONG_INPUT_ZERO_HIT_THRESHOLD,
+            "long_input_requests": long_input_requests,
+            "long_input_zero_cache_requests": long_input_zero_cache_requests,
+            "long_input_zero_cache_rate": (
+                long_input_zero_cache_requests / long_input_requests
+                if long_input_requests
+                else 0.0
+            ),
         },
         "models": models,
+        "request_kinds": request_kinds,
         "users": users,
         "recent": recent,
         "tracking_enabled": _tracking_enabled(),
@@ -264,7 +322,44 @@ def _safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     retention = metadata.get("prompt_cache_retention")
     if retention:
         safe["prompt_cache_retention"] = _safe_text(retention)
+    safe.update(_safe_request_shape_metadata(metadata))
     return {k: v for k, v in safe.items() if v}
+
+
+def stable_metadata_hash(value: Any) -> str:
+    """Return a stable short hash for normalized telemetry-only structures."""
+    normalized = _normalize_for_hash(value)
+    try:
+        text = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        text = str(normalized)
+    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _normalize_for_hash(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _normalize_for_hash(value[key])
+            for key in sorted(value.keys(), key=lambda item: str(item))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_normalize_for_hash(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _safe_request_shape_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    safe: Dict[str, Any] = {}
+    for field in _REQUEST_SHAPE_TEXT_FIELDS:
+        value = _safe_text(metadata.get(field), max_len=96)
+        if value:
+            safe[field] = value
+    for field in _REQUEST_SHAPE_INT_FIELDS:
+        value = _to_int(metadata.get(field))
+        if value:
+            safe[field] = value
+    return safe
 
 
 def _finalize_buckets(buckets) -> List[Dict[str, Any]]:
@@ -298,6 +393,15 @@ def _finalize_user_buckets(buckets) -> List[Dict[str, Any]]:
             else 0.0
         )
         result.append(item)
+    return result
+
+
+def _finalize_request_kind_buckets(buckets) -> List[Dict[str, Any]]:
+    result = _finalize_buckets(buckets)
+    for item in result:
+        long_requests = _to_int(item.get("long_input_requests"))
+        long_zero = _to_int(item.get("long_input_zero_cache_requests"))
+        item["long_input_zero_cache_rate"] = (long_zero / long_requests) if long_requests else 0.0
     return result
 
 
