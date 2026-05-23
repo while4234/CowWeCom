@@ -3259,6 +3259,7 @@ function renderActiveChannels() {
             statusText = `<span class="text-xs text-primary-500">${t('channels_connected')}</span>`;
         }
         const weixinMetaHtml = isWeixin ? buildWeixinChannelMeta(ch) : '';
+        const channelUsersHtml = buildChannelUsersMeta(ch);
         const activeQrId = `weixin-active-qr-${safeDomId(ch.name)}`;
 
         card.innerHTML = `
@@ -3274,6 +3275,7 @@ function renderActiveChannels() {
                     </div>
                     <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">${escapeHtml(ch.name)}</p>
                     ${weixinMetaHtml}
+                    ${channelUsersHtml}
                 </div>
                 <button onclick="disconnectChannel('${ch.name}')"
                     class="px-3 py-1.5 rounded-lg text-xs font-medium
@@ -3317,6 +3319,52 @@ function renderActiveChannels() {
             startWeixinActiveStatusPoll();
         }
     });
+}
+
+function buildChannelUsersMeta(ch) {
+    const users = Array.isArray(ch.connected_users) ? ch.connected_users : [];
+    if (!users.length) return '';
+
+    const title = currentLang === 'zh' ? '已连接用户' : 'Connected users';
+    const shown = users.slice(0, 6);
+    const more = users.length - shown.length;
+    const rows = shown.map(user => {
+        const role = user.role === 'admin' ? 'admin' : 'user';
+        const roleLabel = role === 'admin'
+            ? (currentLang === 'zh' ? '管理员' : 'Admin')
+            : (currentLang === 'zh' ? '普通用户' : 'User');
+        const roleClass = role === 'admin'
+            ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-300 border-amber-100 dark:border-amber-800/40'
+            : 'bg-slate-50 dark:bg-white/5 text-slate-500 dark:text-slate-300 border-slate-100 dark:border-white/10';
+        const sendClass = user.can_active_send
+            ? 'text-emerald-500 dark:text-emerald-300'
+            : 'text-slate-400 dark:text-slate-500';
+        const sendText = user.can_active_send
+            ? (currentLang === 'zh' ? '可主动发送' : 'Reachable')
+            : (currentLang === 'zh' ? '等待再次对话' : 'Needs activity');
+        const name = user.display_name || user.raw_user_id || user.actor_id || '--';
+        return `
+            <div class="flex items-center justify-between gap-2 rounded-lg border border-slate-100 dark:border-white/10 bg-slate-50/70 dark:bg-white/[0.03] px-2.5 py-2">
+                <div class="min-w-0">
+                    <div class="truncate text-xs font-medium text-slate-700 dark:text-slate-200">${escapeHtml(name)}</div>
+                    <div class="truncate text-[11px] text-slate-400 dark:text-slate-500 font-mono">${escapeHtml(user.raw_user_id || user.actor_id || '')}</div>
+                </div>
+                <div class="flex flex-col items-end gap-1 flex-shrink-0">
+                    <span class="px-2 py-0.5 rounded-md border text-[11px] ${roleClass}">${roleLabel}</span>
+                    <span class="text-[11px] ${sendClass}">${sendText}</span>
+                </div>
+            </div>`;
+    }).join('');
+    const moreText = more > 0
+        ? `<div class="text-[11px] text-slate-400 dark:text-slate-500 px-1">${currentLang === 'zh' ? `还有 ${more} 个用户` : `${more} more users`}</div>`
+        : '';
+
+    return `
+        <div class="mt-3 space-y-2">
+            <div class="text-[11px] font-medium text-slate-500 dark:text-slate-400">${title}</div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">${rows}</div>
+            ${moreText}
+        </div>`;
 }
 
 function buildWeixinChannelMeta(ch) {
@@ -3922,6 +3970,12 @@ function _wecomBotHasCreds(ch) {
     return !!(idField && idField.value && secretField && secretField.value);
 }
 
+function _wecomBotAuthSource() {
+    const ch = channelsData.find(c => c.name === 'wecom_bot');
+    const sourceField = ch && ch.fields ? ch.fields.find(f => f.key === 'wecom_bot_auth_source') : null;
+    return (sourceField && sourceField.value ? String(sourceField.value).trim() : '') || WECOM_BOT_SOURCE;
+}
+
 function buildWecomBotPanel(ch) {
     const scanLabel = t('wecom_mode_scan');
     const manualLabel = t('wecom_mode_manual');
@@ -3984,7 +4038,7 @@ function startWecomBotAuth() {
     const statusEl = document.getElementById('wecom-scan-status');
     ensureWecomSdkLoaded().then(() => {
         WecomAIBotSDK.openBotInfoAuthWindow({
-            source: WECOM_BOT_SOURCE,
+            source: _wecomBotAuthSource(),
             onCreated: function(bot) {
                 if (statusEl) {
                     statusEl.innerHTML = `
@@ -4017,7 +4071,7 @@ function connectWecomBotAfterAuth(botId, secret) {
         body: JSON.stringify({
             action: 'connect',
             channel: 'wecom_bot',
-            config: { wecom_bot_id: botId, wecom_bot_secret: secret }
+            config: { wecom_bot_id: botId, wecom_bot_secret: secret, wecom_bot_auth_source: _wecomBotAuthSource() }
         })
     })
     .then(r => r.json())
@@ -4041,7 +4095,7 @@ function startWecomBotAuthInCard() {
     const statusEl = document.getElementById('wecom-card-scan-status');
     ensureWecomSdkLoaded().then(() => {
         WecomAIBotSDK.openBotInfoAuthWindow({
-            source: WECOM_BOT_SOURCE,
+            source: _wecomBotAuthSource(),
             onCreated: function(bot) {
                 if (statusEl) {
                     statusEl.innerHTML = `

@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from agent.social_bridge.service import ActiveMessageRouter
 from agent.social_bridge.store import BridgeUser
+from channel.web.web_channel import ChannelsHandler
 from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
 from config import conf
 
@@ -43,8 +44,14 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         self.channel._stream_states = {}
         self.channel._connected = False
         self.channel._ws = None
+        self._save_config_patch_patcher = patch(
+            "channel.wecom_bot.wecom_bot_channel._save_config_patch",
+            lambda patch_data: None,
+        )
+        self._save_config_patch_patcher.start()
 
     def tearDown(self):
+        self._save_config_patch_patcher.stop()
         self.channel.received_msgs = {}
         self.channel._stream_states = {}
         self.channel._connected = False
@@ -93,7 +100,102 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         self.assertEqual(registered["metadata"]["receiver"], "wecom-user-1")
         self.assertTrue(registered["metadata"]["can_active_send"])
         self.assertFalse(registered["metadata"]["is_group"])
+        self.assertEqual(conf()["agent_user_profiles"]["wecom_bot:wecom-user-1"]["role"], "user")
+        self.assertEqual(
+            conf()["agent_user_profiles"]["wecom_bot:wecom-user-1"]["memory_user_id"],
+            produced[0]["memory_user_id"],
+        )
         self.assertEqual(service.retry_calls, [("wecom_bot:wecom-user-1", 5)])
+
+    def test_inbound_single_chat_preserves_configured_admin_role(self):
+        conf()["agent_admin_users"] = ["wecom_bot:wecom-user-1"]
+        store = FakeBridgeStore()
+        service = FakeBridgeService()
+        self.channel.produce = lambda context: None
+
+        with patch("agent.social_bridge.get_bridge_store", return_value=store), patch(
+            "agent.social_bridge.get_social_bridge_service",
+            return_value=service,
+        ):
+            self.channel._handle_msg_callback(
+                {
+                    "cmd": "aibot_msg_callback",
+                    "headers": {"req_id": "req-1"},
+                    "body": {
+                        "msgid": "msg-admin",
+                        "chattype": "single",
+                        "msgtype": "text",
+                        "from": {"userid": "wecom-user-1"},
+                        "aibotid": "bot-1",
+                        "text": {"content": "hello admin"},
+                    },
+                }
+            )
+
+        self.assertEqual(conf()["agent_user_profiles"]["wecom_bot:wecom-user-1"]["role"], "admin")
+
+    def test_enter_chat_event_registers_user_as_normal_by_default(self):
+        store = FakeBridgeStore()
+        service = FakeBridgeService()
+
+        with patch("agent.social_bridge.get_bridge_store", return_value=store), patch(
+            "agent.social_bridge.get_social_bridge_service",
+            return_value=service,
+        ):
+            self.channel._handle_event_callback(
+                {
+                    "body": {
+                        "event": {"eventtype": "enter_chat"},
+                        "from": {"userid": "fresh-user", "name": "Fresh User"},
+                    }
+                }
+            )
+
+        self.assertEqual(len(store.registered), 1)
+        registered = store.registered[0]
+        self.assertEqual(registered["actor_user_id"], "wecom_bot:fresh-user")
+        self.assertEqual(registered["display_name"], "Fresh User")
+        self.assertEqual(conf()["agent_user_profiles"]["wecom_bot:fresh-user"]["role"], "user")
+
+    def test_channels_api_summarizes_wecom_connected_users_with_roles(self):
+        class FakeStore:
+            def list_visible_users(self, exclude_actor_id, limit=100):
+                return self.list_users(limit=limit)
+
+            def list_users(self, limit=100):
+                return [
+                    BridgeUser(
+                        actor_user_id="wecom_bot:admin-user",
+                        memory_user_id="admin-memory",
+                        display_name="Admin User",
+                        metadata={
+                            "channel_type": "wecom_bot",
+                            "raw_user_id": "admin-user",
+                            "receiver": "admin-user",
+                            "can_active_send": True,
+                        },
+                    ),
+                    BridgeUser(
+                        actor_user_id="weixin:old-user",
+                        memory_user_id="old-memory",
+                        display_name="Old User",
+                        metadata={"channel_type": "weixin"},
+                    ),
+                ]
+
+        conf()["agent_admin_users"] = ["wecom_bot:admin-user"]
+
+        fake_service = SimpleNamespace(sync_configured_users=lambda: {"synced": [], "count": 0})
+        with patch("agent.social_bridge.get_bridge_store", return_value=FakeStore()), patch(
+            "agent.social_bridge.get_social_bridge_service",
+            return_value=fake_service,
+        ):
+            users = ChannelsHandler._bridge_channel_users("wecom_bot")
+
+        self.assertEqual(len(users), 1)
+        self.assertEqual(users[0]["actor_id"], "wecom_bot:admin-user")
+        self.assertEqual(users[0]["role"], "admin")
+        self.assertTrue(users[0]["can_active_send"])
 
     def test_active_send_text_result_sends_markdown_and_reports_delivery(self):
         ws = FakeWebSocket()

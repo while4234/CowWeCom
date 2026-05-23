@@ -12,8 +12,10 @@ import hashlib
 import json
 import math
 import os
+from pathlib import Path
 import threading
 import time
+from types import SimpleNamespace
 import uuid
 
 import requests
@@ -76,6 +78,21 @@ def _loads_wecom_ws_json(raw):
         if "control character" in msg:
             return json.loads(_escape_control_chars_inside_json_strings(raw))
         raise
+
+
+def _save_config_patch(patch: dict) -> None:
+    config_path = Path(__file__).resolve().parents[2] / "config.json"
+    try:
+        if config_path.exists():
+            with config_path.open("r", encoding="utf-8-sig") as f:
+                file_cfg = json.load(f)
+        else:
+            file_cfg = {}
+        file_cfg.update(patch)
+        with config_path.open("w", encoding="utf-8") as f:
+            json.dump(file_cfg, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"[WecomBot] Failed to persist user profile mapping: {e}")
 
 
 @singleton
@@ -359,17 +376,31 @@ class WecomBotChannel(ChatChannel):
         if not raw_user_id:
             return
 
+        display_name = (
+            str(getattr(wecom_msg, "actual_user_nickname", "") or "").strip()
+            or raw_user_id
+        )
+        self._register_single_chat_user(raw_user_id, display_name, context=context)
+
+    def _register_single_chat_user(self, raw_user_id: str, display_name: str = "", context: Context = None) -> None:
+        """Best-effort bridge directory registration for reachable WeCom single-chat users."""
+        raw_user_id = str(raw_user_id or "").strip()
+        if not raw_user_id:
+            return
         try:
             from agent.social_bridge import get_bridge_store, get_social_bridge_service
             from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile
 
+            if context is None:
+                context = {
+                    "channel_type": self.channel_type,
+                    "msg": SimpleNamespace(from_user_id=raw_user_id, actual_user_id=None),
+                    "session_id": raw_user_id,
+                }
             profile = resolve_agent_user_profile(context)
             apply_profile_to_context(context, profile)
-            display_name = (
-                str(getattr(wecom_msg, "actual_user_nickname", "") or "").strip()
-                or profile.display_name
-                or raw_user_id
-            )
+            display_name = display_name or profile.display_name or raw_user_id
+            self._remember_agent_user_profile(profile, raw_user_id, display_name)
             get_bridge_store().register_user(
                 actor_user_id=profile.actor_id,
                 memory_user_id=profile.memory_user_id,
@@ -395,6 +426,39 @@ class WecomBotChannel(ChatChannel):
         except Exception as e:
             logger.debug(f"[WecomBot] Social bridge user registration skipped: {e}")
 
+    @staticmethod
+    def _remember_agent_user_profile(profile, raw_user_id: str, display_name: str) -> None:
+        """Persist discovered WeCom users so console/user management stays in sync."""
+        try:
+            profiles = conf().get("agent_user_profiles", {}) or {}
+            if not isinstance(profiles, dict):
+                profiles = {}
+            profiles = dict(profiles)
+
+            current = dict(profiles.get(profile.actor_id, {}) or {})
+            changed = False
+            defaults = {
+                "display_name": display_name or raw_user_id,
+                "raw_user_id": raw_user_id,
+                "platform": "wecom_bot",
+                "role": profile.role or "user",
+                "memory_user_id": profile.memory_user_id,
+            }
+            for key, value in defaults.items():
+                if value and current.get(key) != value:
+                    current[key] = value
+                    changed = True
+
+            if profiles.get(profile.actor_id) != current:
+                profiles[profile.actor_id] = current
+                changed = True
+
+            if changed:
+                conf()["agent_user_profiles"] = profiles
+                _save_config_patch({"agent_user_profiles": profiles})
+        except Exception as e:
+            logger.debug(f"[WecomBot] Failed to remember agent profile for {raw_user_id}: {e}")
+
     # ------------------------------------------------------------------
     # Event callback
     # ------------------------------------------------------------------
@@ -405,7 +469,16 @@ class WecomBotChannel(ChatChannel):
         event_type = event.get("eventtype", "")
 
         if event_type == "enter_chat":
-            logger.info(f"[WecomBot] User entered chat: {body.get('from', {}).get('userid')}")
+            from_user = body.get("from", {}) if isinstance(body.get("from"), dict) else {}
+            user_id = str(from_user.get("userid") or "").strip()
+            display_name = str(
+                from_user.get("name")
+                or from_user.get("nickname")
+                or from_user.get("display_name")
+                or user_id
+            ).strip()
+            logger.info(f"[WecomBot] User entered chat: {user_id}")
+            self._register_single_chat_user(user_id, display_name)
         elif event_type == "disconnected_event":
             logger.warning("[WecomBot] Received disconnected_event, another connection took over")
         else:

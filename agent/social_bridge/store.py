@@ -222,6 +222,27 @@ class BridgeStore:
 
         return [self._row_to_user(row) for row in rows]
 
+    def list_users(self, limit: int = 100) -> List[BridgeUser]:
+        """Return recently active bridge users without excluding the caller."""
+        safe_limit = max(1, int(limit))
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM bridge_users
+                    ORDER BY updated_at DESC, actor_user_id ASC
+                    LIMIT ?
+                    """,
+                    (safe_limit,),
+                ).fetchall()
+            finally:
+                conn.close()
+
+        return [self._row_to_user(row) for row in rows]
+
     def get_user(self, actor_user_id: str) -> Optional[BridgeUser]:
         actor_id = _require_text(actor_user_id, "actor_user_id")
         with self._lock:

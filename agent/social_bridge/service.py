@@ -443,6 +443,52 @@ class SocialBridgeService:
             metadata=merged,
         )
 
+    def sync_configured_users(self) -> Dict[str, Any]:
+        """Backfill bridge directory rows from configured agent/channel profiles."""
+        from agent.user_profiles import safe_actor_slug
+
+        synced = []
+        profiles = conf().get("agent_user_profiles", {}) or {}
+        if not isinstance(profiles, dict):
+            profiles = {}
+
+        for actor_id, profile in profiles.items():
+            if not isinstance(profile, dict):
+                continue
+            actor_text = str(actor_id or "").strip()
+            if not actor_text or ":" not in actor_text:
+                continue
+            channel_type, raw_user_id = actor_text.split(":", 1)
+            memory_user_id = str(profile.get("memory_user_id") or safe_actor_slug(actor_text)).strip()
+            display_name = str(
+                profile.get("display_name")
+                or profile.get("wechat_id")
+                or profile.get("name")
+                or raw_user_id
+            ).strip()
+            metadata = {
+                "channel_type": channel_type,
+                "platform": profile.get("platform") or channel_type,
+                "raw_user_id": str(profile.get("raw_user_id") or profile.get("raw_weixin_user_id") or raw_user_id),
+                "receiver": str(profile.get("receiver") or profile.get("raw_user_id") or raw_user_id),
+                "public_name": display_name,
+                "can_active_send": bool(profile.get("can_active_send", channel_type == "wecom_bot")),
+            }
+            if profile.get("wechat_id"):
+                metadata["wechat_id"] = profile.get("wechat_id")
+            try:
+                self.store.register_user(
+                    actor_user_id=actor_text,
+                    memory_user_id=memory_user_id,
+                    display_name=display_name,
+                    metadata=metadata,
+                )
+                synced.append(actor_text)
+            except Exception as e:
+                logger.debug(f"[SocialBridge] Failed to sync configured user {actor_text}: {e}")
+
+        return {"synced": synced, "count": len(synced)}
+
     def _mark_active_send_stale(
         self,
         target: Optional[BridgeUser],

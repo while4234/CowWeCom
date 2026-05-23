@@ -1267,6 +1267,7 @@ class ChannelsHandler:
             "fields": [
                 {"key": "wecom_bot_id", "label": "Bot ID", "type": "text"},
                 {"key": "wecom_bot_secret", "label": "Secret", "type": "secret"},
+                {"key": "wecom_bot_auth_source", "label": "Auth Source", "type": "text", "default": "cowagent"},
             ],
         }),
         ("qq", {
@@ -1477,6 +1478,59 @@ class ChannelsHandler:
         return value[:4] + "*" * (len(value) - 8) + value[-4:]
 
     @staticmethod
+    def _configured_agent_role(actor_id: str, raw_user_id: str) -> str:
+        profiles = conf().get("agent_user_profiles", {}) or {}
+        if isinstance(profiles, dict):
+            for candidate in (actor_id, raw_user_id):
+                profile = profiles.get(candidate)
+                if isinstance(profile, dict) and str(profile.get("role") or "").strip().lower() == "admin":
+                    return "admin"
+
+        admin_users = conf().get("agent_admin_users", []) or []
+        if isinstance(admin_users, str):
+            admin_users = [item.strip() for item in admin_users.split(",") if item.strip()]
+        else:
+            admin_users = [str(item).strip() for item in admin_users if str(item).strip()]
+
+        return "admin" if actor_id in admin_users or raw_user_id in admin_users else "user"
+
+    @classmethod
+    def _bridge_channel_users(cls, channel_name: str, limit: int = 100) -> list:
+        try:
+            from agent.social_bridge import get_bridge_store, get_social_bridge_service
+
+            get_social_bridge_service().sync_configured_users()
+            store = get_bridge_store()
+            list_users = getattr(store, "list_users", None)
+            users = list_users(limit=limit) if callable(list_users) else store.list_visible_users("__channel_console__", limit=limit)
+        except Exception as e:
+            logger.debug(f"[WebChannel] Failed to load bridge users for {channel_name}: {e}")
+            return []
+
+        results = []
+        for user in users:
+            metadata = user.metadata or {}
+            if str(metadata.get("channel_type") or "").strip() != channel_name:
+                continue
+            raw_user_id = str(metadata.get("raw_user_id") or metadata.get("receiver") or "").strip()
+            role = cls._configured_agent_role(user.actor_user_id, raw_user_id)
+            label = (
+                str(metadata.get("public_name") or "").strip()
+                or user.display_name
+                or raw_user_id
+                or user.actor_user_id
+            )
+            results.append({
+                "actor_id": user.actor_user_id,
+                "raw_user_id": raw_user_id,
+                "display_name": label,
+                "role": role,
+                "can_active_send": bool(metadata.get("can_active_send")),
+                "last_seen_at": user.updated_at,
+            })
+        return results
+
+    @staticmethod
     def _parse_channel_list(raw) -> list:
         if isinstance(raw, list):
             return [ch.strip() for ch in raw if ch.strip()]
@@ -1517,6 +1571,8 @@ class ChannelsHandler:
             ch_info.update(cls._weixin_identity(ch_name))
             if ch_name in active_channels:
                 ch_info["login_status"] = cls._get_weixin_login_status(ch_name)
+        elif ch_name == "wecom_bot":
+            ch_info["connected_users"] = cls._bridge_channel_users(ch_name)
         return ch_info
 
     @staticmethod
@@ -1674,7 +1730,7 @@ class ChannelsHandler:
         if channel_name == "weixin":
             channel_conf = dict(conf().get("weixin_channel", {}) or {})
             channel_conf["wechat_id"] = wechat_id
-            channel_conf.setdefault("role", "admin")
+            channel_conf.setdefault("role", "user")
             if raw_user_id:
                 channel_conf["user_id"] = raw_user_id
             conf()["weixin_channel"] = channel_conf
