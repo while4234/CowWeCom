@@ -1,5 +1,6 @@
 ---
 name: bilibili-all-in-one
+display-name: 哔哩哔哩
 description: A comprehensive Bilibili toolkit for hot trending monitoring, video downloading, playback, subtitles, and publishing.
 license: MIT
 metadata:

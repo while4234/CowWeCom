@@ -2991,6 +2991,7 @@ function loadSkillsSection() {
             const card = document.createElement('div');
             card.className = 'bg-white dark:bg-[#1A1A1A] rounded-xl border border-slate-200 dark:border-white/10 p-4 flex items-start gap-3 transition-opacity';
             card.dataset.skillName = sk.name;
+            card.dataset.skillDisplayName = sk.display_name || '';
             card.dataset.skillDesc = sk.description || '';
             card.dataset.enabled = sk.enabled ? '1' : '0';
             renderSkillCard(card, sk);
@@ -3042,9 +3043,10 @@ function toggleSkill(name, currentlyEnabled) {
         if (data.status === 'success') {
             if (card) {
                 const desc = card.dataset.skillDesc || '';
+                const displayName = card.dataset.skillDisplayName || '';
                 card.dataset.enabled = currentlyEnabled ? '0' : '1';
                 card.style.opacity = '1';
-                renderSkillCard(card, { name, description: desc, enabled: !currentlyEnabled });
+                renderSkillCard(card, { name, display_name: displayName, description: desc, enabled: !currentlyEnabled });
             }
         } else {
             if (card) card.style.opacity = '1';

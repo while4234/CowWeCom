@@ -4,7 +4,7 @@ Skill manager for managing skill lifecycle and operations.
 
 import os
 import json
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 from common.log import logger
 from agent.skills.types import Skill, SkillEntry, SkillSnapshot
@@ -109,7 +109,7 @@ class SkillManager:
                 "enabled": enabled,
                 "category": category,
             }
-            display_name = prev.get("display_name")
+            display_name = self._resolve_display_name(skill, prev.get("display_name"))
             if display_name:
                 entry_dict["display_name"] = display_name
             merged[name] = entry_dict
@@ -359,3 +359,35 @@ class SkillManager:
             if entry.skill.name == skill_key:
                 return entry
         return None
+
+    @staticmethod
+    def _resolve_display_name(skill: Skill, previous: Any) -> str:
+        """Choose the display label shown in management UIs."""
+        previous_name = SkillManager._normalize_display_name(previous)
+        skill_name = SkillManager._frontmatter_display_name(skill.frontmatter)
+
+        if skill_name and (not previous_name or SkillManager._looks_like_placeholder_mojibake(previous_name)):
+            return skill_name
+        return previous_name or skill_name
+
+    @staticmethod
+    def _frontmatter_display_name(frontmatter: Dict[str, object]) -> str:
+        for key in ("display-name", "display_name"):
+            value = frontmatter.get(key)
+            display_name = SkillManager._normalize_display_name(value)
+            if display_name:
+                return display_name
+        return ""
+
+    @staticmethod
+    def _normalize_display_name(value: Any) -> str:
+        if isinstance(value, list):
+            value = value[0] if value else ""
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    @staticmethod
+    def _looks_like_placeholder_mojibake(value: str) -> bool:
+        stripped = value.strip()
+        return stripped.count("?") >= 2
