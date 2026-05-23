@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from bridge.agent_bridge import AgentBridge
@@ -68,6 +69,39 @@ class TestAgentOnboardingWelcome(unittest.TestCase):
 
         self.assertIsNotNone(reply)
         mock_expand.assert_called_once_with("~/cow")
+
+    def test_returns_welcome_for_new_profile_without_global_bootstrap(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            profile = SimpleNamespace(memory_user_id="wecom_new_user", shared_workspace=workspace)
+
+            reply = AgentBridge._try_onboarding_welcome("你好", profile=profile)
+
+            user_file = os.path.join(workspace, "memory", "users", "wecom_new_user", "USER.md")
+            self.assertIsNotNone(reply)
+            self.assertEqual(reply.type, ReplyType.TEXT)
+            self.assertTrue(os.path.exists(user_file))
+            with open(user_file, "r", encoding="utf-8") as f:
+                self.assertIn("用户基本信息", f.read())
+
+    def test_does_not_intercept_initialized_profile(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            user_dir = os.path.join(workspace, "memory", "users", "wecom_ready_user")
+            os.makedirs(user_dir, exist_ok=True)
+            with open(os.path.join(user_dir, "USER.md"), "w", encoding="utf-8") as f:
+                f.write("# USER.md\n\n- 称呼: Hao\n- 交流风格: 简洁高效\n")
+            profile = SimpleNamespace(memory_user_id="wecom_ready_user", shared_workspace=workspace)
+
+            reply = AgentBridge._try_onboarding_welcome("你好", profile=profile)
+
+            self.assertIsNone(reply)
+
+    def test_does_not_intercept_task_like_greeting_for_new_profile(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            profile = SimpleNamespace(memory_user_id="wecom_task_user", shared_workspace=workspace)
+
+            reply = AgentBridge._try_onboarding_welcome("你好，帮我查一下日志", profile=profile)
+
+            self.assertIsNone(reply)
 
 
 if __name__ == "__main__":

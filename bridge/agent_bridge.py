@@ -313,6 +313,22 @@ class AgentBridge:
 3. **你希望我们交流是什么风格？** 比如：专业严谨 🤓 / 轻松幽默 😄 / 温暖友好 ☀️ / 简洁高效 ⚡
 不急，或者如果你一上来就有事找我帮忙，也直接说，我们边聊边了解～"""
     
+    _USER_ONBOARDING_TEMPLATE = """# USER.md - 用户基本信息
+
+- **姓名**: *(在首次对话时询问)*
+- **称呼**: *(用户希望被如何称呼)*
+- **交流风格**: *(在首次对话时询问)*
+"""
+
+    _USER_ONBOARDING_PLACEHOLDERS = (
+        "在首次对话时询问",
+        "用户希望被如何称呼",
+        "待填写",
+        "未填写",
+        "TODO",
+        "todo",
+    )
+
     def __init__(self, bridge: Bridge):
         self.bridge = bridge
         self.agents = {}  # session_id -> Agent instance mapping
@@ -340,13 +356,71 @@ class AgentBridge:
         return expand_path(configured_workspace)
 
     @classmethod
-    def _is_onboarding_pending(cls) -> bool:
+    def _is_global_onboarding_pending(cls) -> bool:
         workspace_root = cls._agent_workspace_root()
         return os.path.exists(os.path.join(workspace_root, "BOOTSTRAP.md"))
 
     @classmethod
-    def _try_onboarding_welcome(cls, query: str) -> Optional[Reply]:
-        if cls._is_onboarding_pending() and cls._is_onboarding_greeting(query):
+    def _profile_user_file(cls, profile) -> Optional[str]:
+        memory_user_id = getattr(profile, "memory_user_id", "")
+        if not memory_user_id:
+            return None
+        shared_workspace = getattr(profile, "shared_workspace", "") or cls._agent_workspace_root()
+        return os.path.join(shared_workspace, "memory", "users", str(memory_user_id), "USER.md")
+
+    @classmethod
+    def _ensure_profile_user_file(cls, profile) -> Optional[str]:
+        user_file = cls._profile_user_file(profile)
+        if not user_file:
+            return None
+        if os.path.exists(user_file):
+            return user_file
+        try:
+            os.makedirs(os.path.dirname(user_file), exist_ok=True)
+            with open(user_file, "w", encoding="utf-8") as f:
+                f.write(cls._USER_ONBOARDING_TEMPLATE)
+        except OSError as e:
+            logger.warning(f"[AgentBridge] Failed to create per-user onboarding file {user_file}: {e}")
+        return user_file
+
+    @classmethod
+    def _looks_user_profile_initialized(cls, content: str) -> bool:
+        text = (content or "").strip()
+        if not text:
+            return False
+        meaningful_lines = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if not meaningful_lines:
+            return False
+        return any(
+            not any(placeholder in line for placeholder in cls._USER_ONBOARDING_PLACEHOLDERS)
+            for line in meaningful_lines
+        )
+
+    @classmethod
+    def _is_profile_onboarding_pending(cls, profile) -> bool:
+        user_file = cls._ensure_profile_user_file(profile)
+        if not user_file:
+            return cls._is_global_onboarding_pending()
+        try:
+            with open(user_file, "r", encoding="utf-8") as f:
+                return not cls._looks_user_profile_initialized(f.read())
+        except OSError as e:
+            logger.warning(f"[AgentBridge] Failed to read per-user onboarding file {user_file}: {e}")
+            return True
+
+    @classmethod
+    def _is_onboarding_pending(cls, profile=None) -> bool:
+        if profile is not None:
+            return cls._is_profile_onboarding_pending(profile)
+        return cls._is_global_onboarding_pending()
+
+    @classmethod
+    def _try_onboarding_welcome(cls, query: str, profile=None) -> Optional[Reply]:
+        if cls._is_onboarding_pending(profile=profile) and cls._is_onboarding_greeting(query):
             logger.info("[AgentBridge] Returning deterministic onboarding greeting")
             return Reply(ReplyType.TEXT, cls._ONBOARDING_WELCOME)
         return None
@@ -472,7 +546,7 @@ class AgentBridge:
             else:
                 conversation_id = session_id
 
-            onboarding_reply = self._try_onboarding_welcome(query)
+            onboarding_reply = self._try_onboarding_welcome(query, profile=profile)
             if onboarding_reply:
                 return onboarding_reply
             
