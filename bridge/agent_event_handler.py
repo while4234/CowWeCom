@@ -63,6 +63,16 @@ class AgentEventHandler:
         # Call original callback if provided
         if self.original_callback:
             self.original_callback(event)
+
+    def _mark_visible_output(self, source):
+        """Tell session runtime that user-visible output has been produced."""
+        if not self.progress_runtime or not hasattr(self.progress_runtime, "mark_visible_output"):
+            return
+
+        try:
+            self.progress_runtime.mark_visible_output(source)
+        except Exception as e:
+            logger.debug(f"[AgentEventHandler] Failed to mark visible output: {e}")
     
     def _handle_turn_start(self, data):
         """Handle turn start event"""
@@ -73,6 +83,8 @@ class AgentEventHandler:
         """Handle message update event (streaming content text)"""
         delta = data.get("delta", "")
         self.current_content += delta
+        if delta:
+            self._mark_visible_output("message_update")
     
     def _handle_message_end(self, data):
         """Handle message end event"""
@@ -108,6 +120,7 @@ class AgentEventHandler:
             try:
                 from bridge.reply import Reply, ReplyType
                 reply = Reply(ReplyType.TEXT, message)
+                self._mark_visible_output("intermediate_send")
                 self.channel._send(reply, self.context)
             except Exception as e:
                 logger.debug(f"[AgentEventHandler] Failed to send to channel: {e}")
