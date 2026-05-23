@@ -1,6 +1,6 @@
 from models.bot_factory import create_bot
 from bridge.context import Context
-from bridge.reply import Reply
+from bridge.reply import Reply, ReplyType
 from common import const
 from common.log import logger
 from common.singleton import singleton
@@ -147,5 +147,19 @@ class Bridge(object):
         Returns:
             Reply object
         """
-        agent_bridge = self.get_agent_bridge()
-        return agent_bridge.agent_reply(query, context, on_event, clear_history)
+        try:
+            agent_bridge = self.get_agent_bridge()
+            return agent_bridge.agent_reply(query, context, on_event, clear_history)
+        except Exception as e:
+            logger.error(f"[Bridge] Agent reply failed before AgentBridge handled it: {e}")
+            try:
+                from bridge.agent_bridge import AgentBridge
+
+                runtime = context.get("_session_runtime") if context else None
+                return Reply(ReplyType.ERROR, AgentBridge._friendly_agent_error_text(e, runtime))
+            except Exception:
+                return Reply(
+                    ReplyType.ERROR,
+                    "这轮处理没有稳定完成，我先停止本轮尝试。\n"
+                    "建议把需求拆成更小一步，或换一种描述方式让我继续尝试。",
+                )

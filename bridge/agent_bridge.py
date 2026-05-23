@@ -694,6 +694,7 @@ class AgentBridge:
             
         except Exception as e:
             logger.error(f"Agent reply error: {e}")
+            runtime = context.get("_session_runtime") if context else None
             # If the agent cleared its messages due to format error / overflow,
             # also purge the DB so the next request starts clean.
             cleanup_session_id = conversation_id or session_id
@@ -715,10 +716,55 @@ class AgentBridge:
                 format_seconds(run_stream_elapsed),
                 format_seconds(persist_elapsed),
             )
-            return Reply(ReplyType.ERROR, f"Agent error: {str(e)}")
+            return Reply(ReplyType.ERROR, self._friendly_agent_error_text(e, runtime))
         finally:
             if conversation_id:
                 get_resource_leases().release_owner(conversation_id)
+
+    @staticmethod
+    def _friendly_agent_error_text(error: Exception, runtime=None) -> str:
+        reason, label = AgentBridge._classify_agent_error(error)
+        if runtime and hasattr(runtime, "update_progress"):
+            try:
+                runtime.update_progress("error", {"error": label})
+            except Exception:
+                pass
+        if runtime and hasattr(runtime, "failure_notice_text"):
+            try:
+                return runtime.failure_notice_text(reason)
+            except Exception:
+                pass
+        return (
+            "这轮处理没有稳定完成，我先停止本轮尝试。\n"
+            f"当前卡点：{label}。\n"
+            "建议把需求拆成更小一步，或换一种描述方式让我继续尝试。"
+        )
+
+    @staticmethod
+    def _classify_agent_error(error: Exception):
+        text = str(error or "")
+        lowered = text.lower()
+        if any(
+            marker in lowered
+            for marker in (
+                "context length",
+                "context overflow",
+                "context window",
+                "prompt is too long",
+                "request_too_large",
+                "上下文",
+                "历史记录",
+            )
+        ):
+            return "context_overflow", "上下文过长"
+        if "429" in lowered or "rate limit" in lowered or "限流" in lowered:
+            return "rate_limit", "模型限流或服务繁忙"
+        if any(
+            marker in lowered
+            for marker in ("timeout", "timed out", "connection", "network", "unavailable", "busy")
+        ):
+            return "model_error", "模型调用未稳定完成"
+        return "error", "运行中断"
     
     def _schedule_mcp_hot_reload(self, agent):
         """

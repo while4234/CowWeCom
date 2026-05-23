@@ -3,7 +3,9 @@ import unittest
 from unittest.mock import patch
 
 from bridge.agent_event_handler import AgentEventHandler
+from bridge.bridge import Bridge
 from bridge.context import Context, ContextType
+from bridge.reply import ReplyType
 from channel.chat_channel import ChatChannel
 from common.agent_task_runtime import SessionRuntime, TaskPolicy
 
@@ -15,6 +17,14 @@ class ImmediatePool:
     def submit(self, fn, *args, **kwargs):
         self.calls.append((fn, args, kwargs))
         return fn(*args, **kwargs)
+
+
+class FakeChannel:
+    def __init__(self):
+        self.sent = []
+
+    def _send(self, reply, context):
+        self.sent.append(reply.content)
 
 
 def make_text_context(content):
@@ -95,6 +105,42 @@ class TestFastLaneProgress(unittest.TestCase):
         self.assertEqual(len(pool.calls), 1)
         self.assertIn("当前没有运行中的任务", sent[0])
 
+    def test_silence_notice_is_thresholded_while_task_runs(self):
+        runtime = SessionRuntime()
+        runtime.start_task("long task")
+        runtime.last_visible_output_at = 100.0
+
+        with patch("common.agent_task_runtime.monotonic", side_effect=[144.0, 145.0, 200.0, 265.0]):
+            self.assertIsNone(runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0))
+            first = runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0)
+            self.assertIsNotNone(first)
+            self.assertIn("还在处理", first)
+            self.assertIsNone(runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0))
+            repeat = runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0)
+            self.assertIsNotNone(repeat)
+
+    def test_visible_output_resets_silence_notice_timer(self):
+        runtime = SessionRuntime()
+        runtime.start_task("long task")
+        runtime.last_visible_output_at = 100.0
+
+        with patch("common.agent_task_runtime.monotonic", side_effect=[145.0, 160.0, 204.0, 205.0]):
+            self.assertIsNotNone(runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0))
+            runtime.mark_visible_output("message_update")
+            self.assertIsNone(runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0))
+            self.assertIsNotNone(runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0))
+
+    def test_silence_notice_is_suppressed_after_finish_or_cancel(self):
+        finished_runtime = SessionRuntime()
+        finished_runtime.start_task("long task")
+        finished_runtime.finish_task("done")
+        self.assertIsNone(finished_runtime.claim_silence_notice(first_notice_seconds=0.0))
+
+        cancelled_runtime = SessionRuntime()
+        cancelled_runtime.start_task("long task")
+        self.assertTrue(cancelled_runtime.cancel_running())
+        self.assertIsNone(cancelled_runtime.claim_silence_notice(first_notice_seconds=0.0))
+
     def test_agent_events_update_progress_snapshot(self):
         runtime = SessionRuntime()
         runtime.start_task("analyze latency", max_turns=15)
@@ -116,6 +162,75 @@ class TestFastLaneProgress(unittest.TestCase):
         self.assertEqual(progress.llm_call_count, 1)
         self.assertNotIn("C:\\secret", progress.last_visible_preview)
         self.assertNotIn("abc", progress.last_visible_preview)
+
+    def test_status_text_sanitizes_summary_preview_and_error(self):
+        runtime = SessionRuntime()
+        runtime.start_task(r"read C:\secret\plan.txt token=summary-secret")
+        runtime.update_progress("message_update", {"delta": r"opened /home/user/private/file token=visible-secret"})
+        runtime.update_progress("error", {"error": r"failed with api_key=error-secret in C:\secret\trace.log"})
+
+        text = runtime.status_text()
+
+        self.assertNotIn("C:\\secret", text)
+        self.assertNotIn("/home/user/private", text)
+        self.assertNotIn("summary-secret", text)
+        self.assertNotIn("visible-secret", text)
+        self.assertNotIn("error-secret", text)
+
+        failure_text = runtime.failure_notice_text("error")
+        self.assertNotIn("C:\\secret", failure_text)
+        self.assertNotIn("error-secret", failure_text)
+
+    def test_turn_end_at_max_steps_sends_pre_summary_notice(self):
+        runtime = SessionRuntime()
+        runtime.start_task("long task", max_turns=2)
+        fake_channel = FakeChannel()
+        context = make_text_context("long task")
+        context["channel"] = fake_channel
+        context["_session_runtime"] = runtime
+        handler = AgentEventHandler(context=context)
+
+        handler.handle_event({"type": "turn_start", "data": {"turn": 2}})
+        handler.handle_event({"type": "turn_end", "data": {"turn": 2, "has_tool_calls": True}})
+
+        self.assertEqual(len(fake_channel.sent), 1)
+        self.assertIn("单次尝试", fake_channel.sent[0])
+
+    def test_non_stream_message_update_does_not_reset_visible_output_until_send(self):
+        runtime = SessionRuntime()
+        runtime.start_task("long task")
+        runtime.last_visible_output_at = 100.0
+        fake_channel = FakeChannel()
+        context = make_text_context("long task")
+        context["channel"] = fake_channel
+        context["_session_runtime"] = runtime
+        handler = AgentEventHandler(context=context)
+
+        with patch("common.agent_task_runtime.monotonic", side_effect=[150.0]):
+            handler.handle_event({"type": "message_update", "data": {"delta": "working"}})
+
+        self.assertEqual(runtime.last_visible_output_at, 100.0)
+
+        with patch("common.agent_task_runtime.monotonic", side_effect=[151.0, 151.0]):
+            handler.handle_event({"type": "message_end", "data": {"tool_calls": [{"name": "read"}]}})
+
+        self.assertEqual(runtime.last_visible_output_at, 151.0)
+        self.assertEqual(fake_channel.sent, ["working"])
+
+    def test_agent_bridge_error_falls_back_to_friendly_reply(self):
+        bridge = Bridge()
+
+        def raise_agent_error():
+            raise RuntimeError(r"agent crashed with token=bridge-secret at C:\secret\bridge.log")
+
+        with patch.object(bridge, "get_agent_bridge", side_effect=raise_agent_error):
+            reply = bridge.fetch_agent_reply("hello", make_text_context("hello"))
+
+        self.assertEqual(reply.type, ReplyType.ERROR)
+        self.assertIn("这轮处理没有稳定完成", reply.content)
+        self.assertNotIn("Agent error", reply.content)
+        self.assertNotIn("bridge-secret", reply.content)
+        self.assertNotIn("C:\\secret", reply.content)
 
     def test_cancel_marks_progress_and_clears_pending(self):
         runtime = SessionRuntime()

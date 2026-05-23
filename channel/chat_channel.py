@@ -142,13 +142,28 @@ class ChatChannel(Channel):
         )
         return any(pattern in lowered for pattern in patterns)
 
-    def _send_plain_text(self, context: Context, text: str):
+    def _send_plain_text(
+        self,
+        context: Context,
+        text: str,
+        track_visible: bool = True,
+        visible_source: str = "send",
+    ):
         reply = Reply(ReplyType.TEXT, text)
         reply = self._decorate_reply(context, reply)
         self._send_reply(context, reply)
+        runtime = context.get("_session_runtime") if context else None
+        if track_visible and runtime and hasattr(runtime, "mark_visible_output"):
+            runtime.mark_visible_output(visible_source)
 
     def _handle_control_progress(self, context: Context, runtime: SessionRuntime, include_eta_note: bool = False):
-        self._send_plain_text(context, runtime.status_text(include_eta_note=include_eta_note))
+        self._send_plain_text(
+            context,
+            runtime.status_text(include_eta_note=include_eta_note),
+            track_visible=False,
+        )
+        if hasattr(runtime, "mark_visible_output"):
+            runtime.mark_visible_output("control_progress")
 
     def _handle_control_cancel(self, context: Context, runtime: SessionRuntime):
         running_cancelled = runtime.cancel_running()
@@ -394,6 +409,8 @@ class ChatChannel(Channel):
                 send_start = monotonic()
                 self._send_reply(context, reply)
                 send_elapsed = elapsed(send_start)
+                if runtime and hasattr(runtime, "mark_visible_output"):
+                    runtime.mark_visible_output("final_reply")
         except Exception as e:
             final_phase = "error"
             if runtime:
@@ -655,6 +672,45 @@ class ChatChannel(Channel):
 
         return func
 
+    @staticmethod
+    def _long_task_expectation_enabled() -> bool:
+        return bool(conf().get("long_task_expectation_enabled", True))
+
+    @staticmethod
+    def _long_task_notice_seconds():
+        first = _safe_float(conf().get("long_task_silence_first_notice_seconds", 45), 45.0)
+        repeat = _safe_float(conf().get("long_task_silence_repeat_notice_seconds", 120), 120.0)
+        return max(0.0, first), max(0.0, repeat)
+
+    def _start_silence_watchdog(self, context: Context, runtime: SessionRuntime, token):
+        if not self._long_task_expectation_enabled():
+            return
+
+        first_notice_seconds, repeat_notice_seconds = self._long_task_notice_seconds()
+
+        def _watch():
+            while runtime.has_running() and not token.is_cancelled():
+                notice = runtime.claim_silence_notice(
+                    first_notice_seconds=first_notice_seconds,
+                    repeat_notice_seconds=repeat_notice_seconds,
+                )
+                if notice:
+                    control_pool.submit(
+                        self._send_plain_text,
+                        context,
+                        notice,
+                        True,
+                        "silence_notice",
+                    )
+                time.sleep(1.0)
+
+        thread = threading.Thread(
+            target=_watch,
+            daemon=True,
+            name=f"long-task-watchdog-{hash_id(context.get('session_id'))}",
+        )
+        thread.start()
+
     def produce(self, context: Context):
         session_id = context["session_id"]
         enqueued_at = monotonic()
@@ -732,6 +788,7 @@ class ChatChannel(Channel):
                         )
                         context["_session_runtime"] = runtime
                         context["_cancellation_token"] = token
+                        self._start_silence_watchdog(context, runtime, token)
                         logger.info(
                             "[Latency][Queue] dequeue session=%s queue_wait=%s pending_after=%s",
                             hash_id(session_id),
@@ -796,3 +853,10 @@ def check_contain(content, keyword_list):
         if content.find(ky) != -1:
             return True
     return None
+
+
+def _safe_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default

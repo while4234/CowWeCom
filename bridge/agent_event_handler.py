@@ -29,6 +29,7 @@ class AgentEventHandler:
         
         self.current_content = ""
         self.turn_number = 0
+        self._max_steps_notice_sent = False
     
     def handle_event(self, event):
         """
@@ -53,6 +54,8 @@ class AgentEventHandler:
             self._handle_message_update(data)
         elif event_type == "message_end":
             self._handle_message_end(data)
+        elif event_type == "turn_end":
+            self._handle_turn_end(data)
         elif event_type == "reasoning_update":
             pass
         elif event_type == "tool_execution_start":
@@ -83,7 +86,7 @@ class AgentEventHandler:
         """Handle message update event (streaming content text)"""
         delta = data.get("delta", "")
         self.current_content += delta
-        if delta:
+        if delta and self.context and self.context.get("on_event"):
             self._mark_visible_output("message_update")
     
     def _handle_message_end(self, data):
@@ -99,6 +102,20 @@ class AgentEventHandler:
                 logger.debug(f"💬 {self.current_content.strip()[:200]}{'...' if len(self.current_content) > 200 else ''}")
         
         self.current_content = ""
+
+    def _handle_turn_end(self, data):
+        """Warn before the agent spends more time summarizing after max steps."""
+        if self._max_steps_notice_sent or not self.progress_runtime:
+            return
+        max_turns = getattr(self.progress_runtime.progress, "max_turns", 0)
+        if not max_turns:
+            return
+        turn = data.get("turn", self.turn_number)
+        has_tool_calls = bool(data.get("has_tool_calls"))
+        if has_tool_calls and turn >= max_turns:
+            self._max_steps_notice_sent = True
+            if hasattr(self.progress_runtime, "failure_notice_text"):
+                self._send_to_channel(self.progress_runtime.failure_notice_text("max_steps"))
     
     def _handle_tool_execution_start(self, data):
         """Handle tool execution start event - logged by agent_stream.py"""

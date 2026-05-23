@@ -144,6 +144,10 @@ class SessionRuntime:
         self.running_task: Optional[RunningTask] = None
         self.progress = ProgressSnapshot()
         self.last_notice_at = 0.0
+        self.last_visible_output_at = 0.0
+        self.last_visible_output_source = ""
+        self.last_silence_notice_at = 0.0
+        self.silence_notice_count = 0
 
     def start_task(self, summary: str, max_turns: int = 0) -> CancellationToken:
         with self.lock:
@@ -166,6 +170,10 @@ class SessionRuntime:
                 max_turns=max_turns,
                 pending_count=self.queue.qsize(),
             )
+            self.last_visible_output_at = now
+            self.last_visible_output_source = "task_start"
+            self.last_silence_notice_at = 0.0
+            self.silence_notice_count = 0
             return token
 
     def finish_task(self, phase: str = "done") -> None:
@@ -180,6 +188,40 @@ class SessionRuntime:
         with self.lock:
             self.progress.pending_count = self.queue.qsize()
             self.progress.update(event_type, data)
+
+    def mark_visible_output(self, source: str = "") -> None:
+        with self.lock:
+            self.last_visible_output_at = monotonic()
+            self.last_visible_output_source = sanitize_identifier(source or "visible_output")
+            self.last_notice_at = self.last_visible_output_at
+            if self.last_visible_output_source != "silence_notice":
+                self.last_silence_notice_at = 0.0
+                self.silence_notice_count = 0
+
+    def claim_silence_notice(
+        self,
+        first_notice_seconds: float = 45.0,
+        repeat_notice_seconds: float = 120.0,
+    ) -> Optional[str]:
+        with self.lock:
+            if not self.running_task:
+                return None
+            if self.running_task.token.is_cancelled() or self.progress.cancel_requested:
+                return None
+            now = monotonic()
+            visible_at = self.last_visible_output_at or self.running_task.started_at
+            notice_at = self.last_silence_notice_at
+            if notice_at:
+                silence_for = now - max(visible_at, notice_at)
+                required = max(0.0, float(repeat_notice_seconds))
+            else:
+                silence_for = now - visible_at
+                required = max(0.0, float(first_notice_seconds))
+            if silence_for < required:
+                return None
+            self.last_silence_notice_at = now
+            self.silence_notice_count += 1
+            return self._silence_notice_text(now)
 
     def cancel_running(self, reason: str = "user_cancelled") -> bool:
         with self.lock:
@@ -262,6 +304,59 @@ class SessionRuntime:
             if progress.cancel_requested:
                 parts.append("已收到取消请求，正在等待当前步骤结束。")
             return "\n".join(parts)
+
+    def failure_notice_text(self, reason: str = "error") -> str:
+        with self.lock:
+            reason = sanitize_identifier(reason or "error")
+            progress = self.progress
+            reason_text = {
+                "max_steps": "这轮已经达到单次尝试的步骤上限，我先停止继续尝试，避免继续空转。",
+                "context_overflow": "这轮被对话上下文长度卡住了，我先停止本轮尝试。",
+                "rate_limit": "这轮被模型限流或服务繁忙卡住了，我先停止本轮尝试。",
+                "model_error": "这轮模型调用没有稳定完成，我先停止本轮尝试。",
+                "error": "这轮处理没有稳定完成，我先停止本轮尝试。",
+            }.get(reason, "这轮处理没有稳定完成，我先停止本轮尝试。")
+            parts = [reason_text]
+            if progress.task_summary:
+                parts.append(f"任务：{progress.task_summary}。")
+            if progress.started_at:
+                parts.append(f"已尝试 {format_seconds(elapsed(progress.started_at))}。")
+            if progress.turn:
+                turn_text = f"已进行到第 {progress.turn} 轮"
+                if progress.max_turns:
+                    turn_text += f"/最多 {progress.max_turns} 轮"
+                parts.append(turn_text + "。")
+            if progress.last_tool_name:
+                parts.append(f"最近工具：{progress.last_tool_name}。")
+            if progress.error:
+                parts.append(f"当前卡点：{progress.error}。")
+            parts.append("建议把需求拆成更小一步，或换一种描述方式让我继续尝试。")
+            return "\n".join(parts)
+
+    def _silence_notice_text(self, now: float) -> str:
+        progress = self.progress
+        parts = ["还在处理这条需求，只是刚才一段时间没有新的可见输出，我先报个进度。"]
+        if progress.task_summary:
+            parts.append(f"任务：{progress.task_summary}。")
+        if progress.started_at:
+            parts.append(f"已运行 {format_seconds(elapsed(progress.started_at, now))}，阶段：{_phase_text(progress.phase)}。")
+        else:
+            parts.append(f"阶段：{_phase_text(progress.phase)}。")
+        if progress.turn:
+            turn_text = f"第 {progress.turn} 轮"
+            if progress.max_turns:
+                turn_text += f"/最多 {progress.max_turns} 轮"
+            parts.append(turn_text + "。")
+        if progress.last_tool_name:
+            status = f"（{progress.last_tool_status}）" if progress.last_tool_status else ""
+            parts.append(f"最近工具：{progress.last_tool_name}{status}。")
+        if progress.last_visible_preview:
+            parts.append(f"最近输出：{progress.last_visible_preview}")
+        pending = self.queue.qsize()
+        if pending:
+            parts.append(f"队列中还有 {pending} 条消息。")
+        parts.append("可以发送 /状态 查看进展，或发送 /取消 取消当前任务。")
+        return "\n".join(parts)
 
 
 _SECRET_RE = re.compile(
