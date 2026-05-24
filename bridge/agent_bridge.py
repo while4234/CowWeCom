@@ -365,25 +365,19 @@ class AgentBridge:
     _USER_ONBOARDING_TEMPLATE = """# USER.md - 用户基本信息
 
 - **姓名**: *(在首次对话时询问)*
-- **称呼**: *(用户希望被如何称呼)*
+- **当前称呼**: *(用户希望现在被如何称呼)*
+- **别称/曾用称呼**:
+- **助手名称**: *(用户希望如何称呼助手)*
 - **交流风格**: *(在首次对话时询问)*
 """
 
     _GROUP_MEMBER_ONBOARDING_TEMPLATE = """# USER.md - 群成员称呼
 
-- **称呼**: *(用户希望被如何称呼)*
+- **当前称呼**: *(用户希望现在被如何称呼)*
+- **别称/曾用称呼**:
 - **企微用户ID**: {sender_id}
 - **企微显示名**: {sender_label}
 """
-
-    _USER_ONBOARDING_PLACEHOLDERS = (
-        "在首次对话时询问",
-        "用户希望被如何称呼",
-        "待填写",
-        "未填写",
-        "TODO",
-        "todo",
-    )
 
     def __init__(self, bridge: Bridge):
         self.bridge = bridge
@@ -414,7 +408,21 @@ class AgentBridge:
     @classmethod
     def _is_global_onboarding_pending(cls) -> bool:
         workspace_root = cls._agent_workspace_root()
-        return os.path.exists(os.path.join(workspace_root, "BOOTSTRAP.md"))
+        bootstrap_path = os.path.join(workspace_root, "BOOTSTRAP.md")
+        if not os.path.exists(bootstrap_path):
+            return False
+        try:
+            from agent.prompt.workspace import _is_onboarding_done
+            if _is_onboarding_done(workspace_root):
+                try:
+                    os.remove(bootstrap_path)
+                    logger.info("[AgentBridge] Auto-removed stale BOOTSTRAP.md before onboarding greeting")
+                except OSError as e:
+                    logger.warning(f"[AgentBridge] Failed to remove stale BOOTSTRAP.md: {e}")
+                return False
+        except Exception as e:
+            logger.warning(f"[AgentBridge] Failed to verify global onboarding state: {e}")
+        return True
 
     @classmethod
     def _profile_user_file(cls, profile) -> Optional[str]:
@@ -486,33 +494,28 @@ class AgentBridge:
         return bool(user_file and not os.path.exists(user_file))
 
     @classmethod
-    def _looks_user_profile_initialized(cls, content: str) -> bool:
-        text = (content or "").strip()
-        if not text:
+    def _profile_has_conversation_history(cls, profile) -> bool:
+        conversation_id = str(getattr(profile, "conversation_id", "") or "").strip()
+        if not conversation_id or not conf().get("conversation_persistence", True):
             return False
-        meaningful_lines = [
-            line.strip()
-            for line in text.splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        ]
-        if not meaningful_lines:
+        try:
+            from agent.memory import get_conversation_store
+            return get_conversation_store().has_messages(conversation_id)
+        except Exception as e:
+            logger.warning(
+                f"[AgentBridge] Failed to check conversation history for onboarding: {e}"
+            )
             return False
-        return any(
-            not any(placeholder in line for placeholder in cls._USER_ONBOARDING_PLACEHOLDERS)
-            for line in meaningful_lines
-        )
 
     @classmethod
     def _is_profile_onboarding_pending(cls, profile) -> bool:
-        user_file = cls._ensure_profile_user_file(profile)
+        user_file = cls._profile_user_file(profile)
         if not user_file:
             return cls._is_global_onboarding_pending()
-        try:
-            with open(user_file, "r", encoding="utf-8") as f:
-                return not cls._looks_user_profile_initialized(f.read())
-        except OSError as e:
-            logger.warning(f"[AgentBridge] Failed to read per-user onboarding file {user_file}: {e}")
-            return True
+        if os.path.exists(user_file):
+            return False
+        cls._ensure_profile_user_file(profile)
+        return not cls._profile_has_conversation_history(profile)
 
     @classmethod
     def _is_onboarding_pending(cls, profile=None) -> bool:
@@ -525,10 +528,11 @@ class AgentBridge:
         if context and bool(context.get("isgroup", False)):
             if profile is not None and cls._is_group_member_onboarding_pending(profile, context):
                 cls._ensure_group_member_user_file(profile, context)
-                logger.info("[AgentBridge] Returning deterministic group member onboarding greeting")
-                return Reply(ReplyType.TEXT, cls._GROUP_MEMBER_ONBOARDING_WELCOME)
+                if cls._is_onboarding_greeting(query):
+                    logger.info("[AgentBridge] Returning deterministic group member onboarding greeting")
+                    return Reply(ReplyType.TEXT, cls._GROUP_MEMBER_ONBOARDING_WELCOME)
             return None
-        if cls._is_onboarding_pending(profile=profile) and cls._is_onboarding_greeting(query):
+        if cls._is_onboarding_greeting(query) and cls._is_onboarding_pending(profile=profile):
             logger.info("[AgentBridge] Returning deterministic onboarding greeting")
             return Reply(ReplyType.TEXT, cls._ONBOARDING_WELCOME)
         return None

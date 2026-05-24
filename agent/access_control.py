@@ -354,13 +354,13 @@ class ToolAccessPolicy:
             return os.path.join(self.profile.shared_workspace, *rel.split("/"))
 
         own_prefix = f"memory/users/{self.profile.memory_user_id}/"
-        if rel == "MEMORY.md":
+        if rel in {"MEMORY.md", "USER.md"}:
             return os.path.join(
                 self.profile.shared_workspace,
                 "memory",
                 "users",
                 self.profile.memory_user_id,
-                "MEMORY.md",
+                rel,
             )
         if rel.startswith(own_prefix):
             return os.path.join(self.profile.shared_workspace, *rel.split("/"))

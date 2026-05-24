@@ -559,10 +559,13 @@ class AgentInitializer:
                 f"- actor_id: {profile.actor_id}\n"
                 f"- memory_user_id: {profile.memory_user_id}\n"
                 f"- 可写工作区: {profile.tool_workspace}\n"
+                f"- 用户静态身份文件: {os.path.join(profile.shared_workspace, 'memory', 'users', profile.memory_user_id, 'USER.md')}\n"
                 "- 可读取用户附件和低风险下载目录，包括自己的工作区、共享 tmp/downloads/attachments、"
                 "用户 Downloads/Desktop、共享 knowledge/ 和 skills/。\n"
                 "- 可以帮用户识别图片、下载网页文件、保存到自己的工作区并用 send 发回。"
                 "不要因为文件来自下载或临时目录就拒绝，除非命中受保护路径。\n"
+                "- 用户说明自己的姓名、称呼、身份，或给你取名、调整交流风格时，立即用 edit 更新 USER.md。\n"
+                "- 如果用户后来又说“我叫/叫我/以后叫我 X”，把 X 替换为唯一的当前称呼，并把旧称呼保留到“别称/曾用称呼”；平时只主动使用最新当前称呼。\n"
                 f"- 主动写入长期记忆时使用绝对路径: {os.path.join(profile.shared_workspace, 'memory', 'users', profile.memory_user_id, 'MEMORY.md')}\n"
                 f"- 当天记忆写入: {os.path.join(profile.shared_workspace, 'memory', 'users', profile.memory_user_id, '<YYYY-MM-DD>.md')}\n"
                 "- 普通聊天记忆只写入和读取本用户自己的 memory/users/<memory_user_id>/ 目录。\n"
@@ -572,6 +575,19 @@ class AgentInitializer:
                 "包括私聊和群聊；支持 CAPI 额度卡、CAPI 月卡和 Codex。"
             )
         ))
+
+        private_user = self.agent_bridge._ensure_profile_user_file(profile)
+        if private_user and os.path.exists(private_user):
+            try:
+                with open(private_user, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if content:
+                    context_files.append(ContextFile(
+                        path=f"memory/users/{profile.memory_user_id}/USER.md",
+                        content=content,
+                    ))
+            except Exception as e:
+                logger.warning(f"[AgentInitializer] Failed to load private user profile: {e}")
 
         private_memory = os.path.join(
             workspace_root, "memory", "users", profile.memory_user_id, "MEMORY.md"

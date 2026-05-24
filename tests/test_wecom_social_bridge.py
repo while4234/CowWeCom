@@ -394,7 +394,7 @@ class TestWecomBotSocialBridge(unittest.TestCase):
             second_user_file = Path(AgentBridge._group_member_user_file(second_profile, second_context))
 
             self.assertEqual(first_profile.memory_user_id, second_profile.memory_user_id)
-            self.assertEqual(first_reply.type, ReplyType.TEXT)
+            self.assertIsNone(first_reply)
             self.assertEqual(second_reply.type, ReplyType.TEXT)
             self.assertNotEqual(first_user_file, second_user_file)
             self.assertTrue(first_user_file.exists())

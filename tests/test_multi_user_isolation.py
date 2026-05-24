@@ -311,6 +311,24 @@ class TestMultiUserIsolation(unittest.TestCase):
             self.assertEqual(result.status, "success")
             self.assertEqual(tool.last_params["path"], expected)
 
+    def test_guarded_tool_maps_user_profile_path_to_private_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = make_profile(root=tmp)
+            tool = DummyTool(name="edit", cwd=profile.tool_workspace)
+            guarded = GuardedTool(tool, ToolAccessPolicy(profile))
+
+            result = guarded.execute({"path": "USER.md", "old_text": "old", "new_text": "new"})
+
+            expected = os.path.join(
+                profile.shared_workspace,
+                "memory",
+                "users",
+                profile.memory_user_id,
+                "USER.md",
+            )
+            self.assertEqual(result.status, "success")
+            self.assertEqual(tool.last_params["path"], expected)
+
     def test_normal_user_can_read_shared_skills(self):
         with tempfile.TemporaryDirectory() as tmp:
             profile = make_profile(root=tmp)

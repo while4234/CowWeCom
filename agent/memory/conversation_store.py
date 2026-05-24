@@ -357,6 +357,22 @@ class ConversationStore:
             result.append({"role": role, "content": content})
         return result
 
+    def has_messages(self, session_id: str) -> bool:
+        """Return whether a session already has persisted conversation messages."""
+        if not session_id:
+            return False
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+                return row is not None
+            finally:
+                conn.close()
+
     def append_messages(
         self,
         session_id: str,
