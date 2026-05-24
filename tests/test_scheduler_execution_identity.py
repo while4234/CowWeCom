@@ -8,12 +8,16 @@ from unittest.mock import patch
 from agent.tools.scheduler.integration import (
     LLM_BACKEND_AUTO_SWITCH_ACTION,
     LLM_BACKEND_AUTO_SWITCH_TASK_ID,
+    REASONING_POLICY_OPTIMIZER_ACTION,
+    REASONING_POLICY_OPTIMIZER_TASK_ID,
     _current_agent_bridge,
     _execute_agent_task,
     _execute_llm_backend_auto_switch,
+    _execute_reasoning_effort_policy_optimizer,
     _execute_send_message,
     _execute_tool_call,
     ensure_llm_backend_auto_switch_task,
+    ensure_reasoning_effort_policy_optimizer_task,
 )
 from agent.tools.scheduler.scheduler_tool import SchedulerTool
 from agent.tools.scheduler.task_store import TaskStore
@@ -364,6 +368,41 @@ class TestSchedulerExecutionIdentity(unittest.TestCase):
                 else:
                     conf()["llm_backend"] = old_llm_backend
 
+    def test_registers_reasoning_policy_optimizer_as_hidden_system_task_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_enabled = conf().get("reasoning_effort_policy_auto_optimize_enabled")
+            old_seconds = conf().get("reasoning_effort_policy_auto_optimize_check_seconds")
+            conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
+            conf()["reasoning_effort_policy_auto_optimize_check_seconds"] = 180
+            try:
+                store = TaskStore(os.path.join(tmp, "tasks.json"))
+                now = datetime(2026, 5, 25, 9, 0, 0)
+
+                first = ensure_reasoning_effort_policy_optimizer_task(store, now=now)
+                second = ensure_reasoning_effort_policy_optimizer_task(store, now=now)
+                tasks = store.list_tasks()
+
+                self.assertEqual(len(tasks), 1)
+                self.assertEqual(first["id"], REASONING_POLICY_OPTIMIZER_TASK_ID)
+                self.assertEqual(second["id"], REASONING_POLICY_OPTIMIZER_TASK_ID)
+                self.assertTrue(tasks[0]["system"])
+                self.assertTrue(tasks[0]["hidden"])
+                self.assertTrue(tasks[0]["enabled"])
+                self.assertEqual(tasks[0]["schedule"], {"type": "interval", "seconds": 180})
+                self.assertEqual(tasks[0]["action"]["type"], REASONING_POLICY_OPTIMIZER_ACTION)
+                self.assertNotEqual(tasks[0]["action"]["type"], "agent_task")
+                self.assertNotIn("receiver", tasks[0]["action"])
+                self.assertNotIn("notify_session_id", tasks[0]["action"])
+            finally:
+                if old_enabled is None:
+                    conf().pop("reasoning_effort_policy_auto_optimize_enabled", None)
+                else:
+                    conf()["reasoning_effort_policy_auto_optimize_enabled"] = old_enabled
+                if old_seconds is None:
+                    conf().pop("reasoning_effort_policy_auto_optimize_check_seconds", None)
+                else:
+                    conf()["reasoning_effort_policy_auto_optimize_check_seconds"] = old_seconds
+
     def test_llm_backend_auto_switch_action_runs_router_without_agent_reply(self):
         bridge = FakeAgentBridge()
         task = {
@@ -379,6 +418,29 @@ class TestSchedulerExecutionIdentity(unittest.TestCase):
 
         self.assertTrue(result)
         run_once.assert_called_once()
+        send_reply.assert_not_called()
+        self.assertFalse(hasattr(bridge, "query"))
+
+    def test_reasoning_policy_optimizer_action_runs_hidden_optimizer(self):
+        bridge = FakeAgentBridge()
+        task = {
+            "id": REASONING_POLICY_OPTIMIZER_TASK_ID,
+            "system": True,
+            "action": {"type": REASONING_POLICY_OPTIMIZER_ACTION},
+        }
+
+        with patch(
+            "common.reasoning_effort_policy.run_policy_optimizer_if_due",
+            return_value={"status": "success", "applied_rule_count": 1},
+        ) as optimizer, patch("agent.tools.scheduler.integration._send_scheduler_reply") as send_reply:
+            result = _execute_reasoning_effort_policy_optimizer(task, bridge)
+
+        self.assertTrue(result)
+        optimizer.assert_called_once()
+        adapter = optimizer.call_args.kwargs["model_adapter"]
+        self.assertEqual(adapter.channel_type, "scheduler_system")
+        self.assertEqual(adapter.session_id, REASONING_POLICY_OPTIMIZER_TASK_ID)
+        self.assertTrue(adapter.is_admin)
         send_reply.assert_not_called()
         self.assertFalse(hasattr(bridge, "query"))
 

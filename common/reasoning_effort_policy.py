@@ -31,6 +31,8 @@ from config import conf
 VALID_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
 ROUTED_EFFORTS = {"medium", "xhigh"}
 DEFAULT_OPTIMIZE_EVERY = 50
+DEFAULT_LEARNING_SAMPLE_LIMIT = 120
+MAX_LEARNING_MESSAGE_CHARS = 1000
 CHAT_SCOPE_PRIVATE = "private"
 CHAT_SCOPE_GROUP = "group"
 AUDIT_FILENAME = "reasoning_effort_policy_decisions.jsonl"
@@ -39,6 +41,8 @@ GROUP_AUDIT_FILENAME = "reasoning_effort_policy_decisions_group.jsonl"
 OPTIMIZER_REPORT_FILENAME = "reasoning_effort_policy_optimizer_reports.jsonl"
 OPTIMIZER_ATTEMPT_FILENAME = "reasoning_effort_policy_optimizer_attempts.jsonl"
 OPTIMIZER_STATE_FILENAME = "reasoning_effort_policy_optimizer_state.json"
+LEARNED_RULES_FILENAME = "reasoning_effort_policy_learned_rules.json"
+LEARNING_BUFFER_FILENAME = "reasoning_effort_policy_learning_buffer.jsonl"
 
 _AUDIT_FILENAMES = {
     CHAT_SCOPE_PRIVATE: PRIVATE_AUDIT_FILENAME,
@@ -46,8 +50,13 @@ _AUDIT_FILENAMES = {
 }
 
 _AUDIT_LOCK = threading.Lock()
+_LEARNING_BUFFER_LOCK = threading.Lock()
 _OPTIMIZER_LOCK = threading.Lock()
 _OPTIMIZER_RUNNING = False
+_LEARNED_RULES_LOCK = threading.Lock()
+_LEARNED_RULES_CACHE_PATH = ""
+_LEARNED_RULES_CACHE_MTIME = -1.0
+_LEARNED_RULES_CACHE: List[Dict[str, Any]] = []
 
 
 @dataclass
@@ -117,9 +126,17 @@ def classify_local_task(user_message: str, quality_effort: str = "xhigh", defaul
     if quality_rule:
         return quality_effort, quality_rule
 
+    learned_quality_rule = _match_learned_rule(text, quality_effort)
+    if learned_quality_rule:
+        return quality_effort, learned_quality_rule
+
     medium_rule = _match_medium_rule(text)
     if medium_rule:
         return default_effort, medium_rule
+
+    learned_medium_rule = _match_learned_rule(text, default_effort)
+    if learned_medium_rule:
+        return default_effort, learned_medium_rule
 
     return "", ""
 
@@ -164,6 +181,7 @@ def record_policy_decision(
         logger.debug(f"[ReasoningPolicy] Failed to record decision: {exc}")
         return
 
+    _append_learning_sample(decision, record, user_message)
     maybe_trigger_policy_optimizer_async(model_adapter)
 
 
@@ -224,33 +242,53 @@ def record_policy_task_outcome(
 
 def maybe_trigger_policy_optimizer_async(model_adapter: Any = None) -> bool:
     """Start a non-blocking optimizer pass when enough new decisions exist."""
-    if not bool(conf().get("reasoning_effort_policy_auto_optimize_enabled", False)):
+    due, total_count, _ = _optimizer_due_status()
+    if not due:
         return False
 
-    threshold = max(1, _to_int(conf().get("reasoning_effort_policy_auto_optimize_every_tasks")) or DEFAULT_OPTIMIZE_EVERY)
-    total_count = _count_policy_decision_records()
-    state = _read_optimizer_state()
-    last_count = _to_int(state.get("last_optimized_record_count"))
-    if total_count - last_count < threshold:
+    if not _begin_optimizer_run():
         return False
-
-    global _OPTIMIZER_RUNNING
-    with _OPTIMIZER_LOCK:
-        if _OPTIMIZER_RUNNING:
-            return False
-        _OPTIMIZER_RUNNING = True
 
     def _worker() -> None:
-        global _OPTIMIZER_RUNNING
         try:
             run_policy_optimizer_once(model_adapter=model_adapter, record_count=total_count, reason="threshold")
         finally:
-            with _OPTIMIZER_LOCK:
-                _OPTIMIZER_RUNNING = False
+            _end_optimizer_run()
 
     thread = threading.Thread(target=_worker, name="reasoning-effort-policy-optimizer", daemon=True)
     thread.start()
     return True
+
+
+def run_policy_optimizer_if_due(
+    *,
+    model_adapter: Any,
+    reason: str = "scheduler",
+) -> Dict[str, Any]:
+    """Run one optimizer pass synchronously when the configured threshold is due."""
+    due, total_count, failure_reason = _optimizer_due_status()
+    if not due:
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "skipped",
+            "reason": reason,
+            "failure_reason": failure_reason,
+            "record_count": total_count,
+        }
+
+    if not _begin_optimizer_run():
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "skipped",
+            "reason": reason,
+            "failure_reason": "optimizer_already_running",
+            "record_count": total_count,
+        }
+
+    try:
+        return run_policy_optimizer_once(model_adapter=model_adapter, record_count=total_count, reason=reason)
+    finally:
+        _end_optimizer_run()
 
 
 def run_policy_optimizer_once(
@@ -259,10 +297,12 @@ def run_policy_optimizer_once(
     record_count: Optional[int] = None,
     reason: str = "manual",
 ) -> Dict[str, Any]:
-    """Analyze recent routing decisions with same-backend gpt-5.5+xhigh."""
+    """Analyze recent routing decisions with the current model locked to xhigh."""
     records = _read_policy_decision_records_tail(limit=200)
+    learning_samples = _read_learning_samples_tail(limit=DEFAULT_LEARNING_SAMPLE_LIMIT)
     record_count = record_count if record_count is not None else _count_policy_decision_records()
     active_backend = get_current_backend()
+    optimizer_model = _optimizer_model_name(model_adapter)
     started = datetime.now(timezone.utc).isoformat()
     attempt_id = uuid.uuid4().hex[:12]
 
@@ -272,9 +312,14 @@ def run_policy_optimizer_once(
         "status": "skipped",
         "reason": reason,
         "active_backend": active_backend,
-        "optimizer_model": "gpt-5.5",
+        "optimizer_model": optimizer_model,
         "optimizer_reasoning_effort": "xhigh",
         "analyzed_records": len(records),
+        "learning_samples_analyzed": len(learning_samples),
+        "candidate_rule_count": 0,
+        "applied_rule_count": 0,
+        "rejected_rule_count": 0,
+        "raw_learning_samples_consumed": 0,
     }
     if not records or model_adapter is None:
         missing = []
@@ -288,28 +333,48 @@ def run_policy_optimizer_once(
         _write_optimizer_state(record_count, report["status"])
         return report
 
-    prompt = _optimizer_prompt(records)
+    prompt = _optimizer_prompt(records, learning_samples)
     try:
         from agent.protocol.models import LLMRequest
 
         request = LLMRequest(
             messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
             temperature=0,
-            max_tokens=900,
+            max_tokens=1200,
             stream=False,
             system=(
-                "You optimize a conservative routing policy. Return concise JSON-like "
-                "recommendations. Do not request raw user text."
+                "You optimize a conservative local routing policy. Use xhigh reasoning. "
+                "Return strict JSON only. Never quote, paraphrase, or include raw user prompts."
             ),
-            model="gpt-5.5",
+            model=optimizer_model,
             reasoning_effort="xhigh",
+            reasoning_effort_locked=True,
         )
         response = model_adapter.call(request)
         text = _extract_response_text(response)
         if not text:
             raise RuntimeError("empty_optimizer_response")
+        payload = _parse_optimizer_json(text)
+        candidates = _extract_rule_candidates(payload)
+        applied, rejected = _apply_optimizer_rule_candidates(
+            candidates,
+            records=records,
+            learning_samples=learning_samples,
+            attempt_id=attempt_id,
+        )
         report["status"] = "success"
-        report["recommendation"] = text[:6000]
+        report["candidate_rule_count"] = len(candidates)
+        report["applied_rule_count"] = len(applied)
+        report["rejected_rule_count"] = len(rejected)
+        report["applied_rules"] = [_rule_report_summary(rule) for rule in applied]
+        report["rejected_rules"] = rejected[:20]
+        summary = _safe_optimizer_note(payload.get("summary") if isinstance(payload, Mapping) else "", learning_samples, 500)
+        if summary:
+            report["summary"] = summary
+        if learning_samples:
+            consumed_ids = [str(sample.get("task_id") or "") for sample in learning_samples if sample.get("task_id")]
+            _delete_learning_samples(consumed_ids)
+            report["raw_learning_samples_consumed"] = len(set(consumed_ids))
     except Exception as exc:
         report["status"] = "failed"
         report["failure_reason"] = _safe_text(str(exc), 240)
@@ -349,6 +414,14 @@ def optimizer_attempt_path() -> str:
 
 def optimizer_state_path() -> str:
     return os.path.join(_workspace_data_dir(), OPTIMIZER_STATE_FILENAME)
+
+
+def learned_rules_path() -> str:
+    return os.path.join(_workspace_data_dir(), LEARNED_RULES_FILENAME)
+
+
+def learning_buffer_path() -> str:
+    return os.path.join(_workspace_data_dir(), LEARNING_BUFFER_FILENAME)
 
 
 def _extract_response_text(response: Any) -> str:
@@ -410,6 +483,28 @@ def _match_medium_rule(text: str) -> str:
     for rule, pattern in medium_patterns.items():
         if re.search(pattern, text, re.IGNORECASE):
             return rule
+    return ""
+
+
+def _match_learned_rule(text: str, effort: str) -> str:
+    normalized_effort = str(effort or "").strip().lower()
+    if normalized_effort not in ROUTED_EFFORTS:
+        return ""
+
+    for rule in _load_learned_rules():
+        if not bool(rule.get("enabled", True)):
+            continue
+        if str(rule.get("effort") or "").strip().lower() != normalized_effort:
+            continue
+        max_chars = _to_int(rule.get("max_chars")) or (120 if normalized_effort == "medium" else 1000)
+        if max_chars > 0 and len(text) > max_chars:
+            continue
+        keywords = rule.get("keywords") if isinstance(rule.get("keywords"), list) else []
+        for keyword in keywords:
+            normalized_keyword = _normalize_rule_keyword(keyword)
+            if normalized_keyword and normalized_keyword in text:
+                name = _sanitize_rule_name(rule.get("name") or rule.get("id") or "rule")
+                return f"learned_{normalized_effort}_{name}"[:96]
     return ""
 
 
@@ -491,6 +586,470 @@ def _to_int(value: Any) -> int:
 
 def _safe_int(value: Any) -> int:
     return max(0, _to_int(value))
+
+
+def _optimizer_due_status() -> Tuple[bool, int, str]:
+    total_count = _count_policy_decision_records()
+    if not bool(conf().get("reasoning_effort_policy_auto_optimize_enabled", False)):
+        return False, total_count, "auto_optimize_disabled"
+
+    threshold = max(1, _to_int(conf().get("reasoning_effort_policy_auto_optimize_every_tasks")) or DEFAULT_OPTIMIZE_EVERY)
+    state = _read_optimizer_state()
+    last_count = _to_int(state.get("last_optimized_record_count"))
+    if total_count - last_count < threshold:
+        return False, total_count, "threshold_not_reached"
+    return True, total_count, ""
+
+
+def _begin_optimizer_run() -> bool:
+    global _OPTIMIZER_RUNNING
+    with _OPTIMIZER_LOCK:
+        if _OPTIMIZER_RUNNING:
+            return False
+        _OPTIMIZER_RUNNING = True
+        return True
+
+
+def _end_optimizer_run() -> None:
+    global _OPTIMIZER_RUNNING
+    with _OPTIMIZER_LOCK:
+        _OPTIMIZER_RUNNING = False
+
+
+def _optimizer_model_name(model_adapter: Any) -> str:
+    for value in (
+        get_effective_model(),
+        getattr(model_adapter, "model", ""),
+        conf().get("model"),
+        "gpt-5.5",
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return "gpt-5.5"
+
+
+def _append_learning_sample(
+    decision: ReasoningEffortDecision,
+    audit_record: Mapping[str, Any],
+    user_message: str,
+) -> None:
+    if not _should_capture_learning_sample(decision, user_message):
+        return
+
+    text = str(user_message or "").strip()
+    sample = {
+        "timestamp": audit_record.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+        "task_id": decision.task_id,
+        "chat_scope": _normalize_chat_scope(decision.chat_scope),
+        "active_backend": decision.active_backend,
+        "main_model": decision.main_model,
+        "selected_effort": decision.selected_effort,
+        "local_rule": decision.local_rule,
+        "message_hash": audit_record.get("message_hash") or stable_metadata_hash(text),
+        "message_features": audit_record.get("message_features") or _message_features(text),
+        "message_text": text,
+    }
+    try:
+        path = learning_buffer_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with _LEARNING_BUFFER_LOCK:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(sample, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except Exception as exc:
+        logger.debug(f"[ReasoningPolicy] Failed to record learning sample: {exc}")
+
+
+def _should_capture_learning_sample(decision: ReasoningEffortDecision, user_message: str) -> bool:
+    if decision.local_rule != "uncertain_default_quality":
+        return False
+    if not bool(conf().get("reasoning_effort_policy_auto_optimize_enabled", False)):
+        return False
+    if not bool(conf().get("reasoning_effort_policy_learning_buffer_enabled", True)):
+        return False
+
+    text = str(user_message or "").strip()
+    if not text or len(text) > MAX_LEARNING_MESSAGE_CHARS:
+        return False
+    features = _message_features(text)
+    if features.get("has_url") or features.get("has_file_path_signal"):
+        return False
+    return not _looks_sensitive_text(text)
+
+
+def _read_learning_samples_tail(limit: int) -> List[Dict[str, Any]]:
+    rows = _read_jsonl_tail(learning_buffer_path(), limit)
+    return [item for item in rows if isinstance(item.get("message_text"), str) and item.get("task_id")]
+
+
+def _delete_learning_samples(task_ids: List[str]) -> None:
+    consumed = {str(task_id or "") for task_id in task_ids if task_id}
+    if not consumed:
+        return
+
+    path = learning_buffer_path()
+    with _LEARNING_BUFFER_LOCK:
+        rows = _read_jsonl_tail(path, limit=100000)
+        remaining = [item for item in rows if str(item.get("task_id") or "") not in consumed]
+        try:
+            if not remaining:
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+                return
+
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                for item in remaining:
+                    f.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
+            os.replace(tmp_path, path)
+        except Exception as exc:
+            logger.debug(f"[ReasoningPolicy] Failed to delete learning samples: {exc}")
+
+
+def _load_learned_rules() -> List[Dict[str, Any]]:
+    global _LEARNED_RULES_CACHE, _LEARNED_RULES_CACHE_MTIME, _LEARNED_RULES_CACHE_PATH
+    path = learned_rules_path()
+    try:
+        mtime = os.path.getmtime(path)
+    except FileNotFoundError:
+        with _LEARNED_RULES_LOCK:
+            _LEARNED_RULES_CACHE_PATH = path
+            _LEARNED_RULES_CACHE_MTIME = -1.0
+            _LEARNED_RULES_CACHE = []
+        return []
+    except Exception as exc:
+        logger.debug(f"[ReasoningPolicy] Failed to stat learned rules: {exc}")
+        return []
+
+    with _LEARNED_RULES_LOCK:
+        if _LEARNED_RULES_CACHE_PATH == path and _LEARNED_RULES_CACHE_MTIME == mtime:
+            return [dict(rule) for rule in _LEARNED_RULES_CACHE]
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            raw_rules = data.get("rules") if isinstance(data, Mapping) else []
+            rules = [dict(rule) for rule in raw_rules if isinstance(rule, Mapping)]
+            _LEARNED_RULES_CACHE_PATH = path
+            _LEARNED_RULES_CACHE_MTIME = mtime
+            _LEARNED_RULES_CACHE = rules
+            return [dict(rule) for rule in rules]
+        except Exception as exc:
+            logger.debug(f"[ReasoningPolicy] Failed to load learned rules: {exc}")
+            _LEARNED_RULES_CACHE_PATH = path
+            _LEARNED_RULES_CACHE_MTIME = mtime
+            _LEARNED_RULES_CACHE = []
+            return []
+
+
+def _write_learned_rules(rules: List[Dict[str, Any]]) -> None:
+    global _LEARNED_RULES_CACHE, _LEARNED_RULES_CACHE_MTIME, _LEARNED_RULES_CACHE_PATH
+    path = learned_rules_path()
+    doc = {
+        "version": 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "rules": rules[-100:],
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+    try:
+        mtime = os.path.getmtime(path)
+    except Exception:
+        mtime = -1.0
+    with _LEARNED_RULES_LOCK:
+        _LEARNED_RULES_CACHE_PATH = path
+        _LEARNED_RULES_CACHE_MTIME = mtime
+        _LEARNED_RULES_CACHE = [dict(rule) for rule in doc["rules"]]
+
+
+def _parse_optimizer_json(text: str) -> Dict[str, Any]:
+    stripped = str(text or "").strip()
+    stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
+    stripped = re.sub(r"\s*```$", "", stripped)
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start < 0 or end <= start:
+            raise RuntimeError("invalid_optimizer_json")
+        try:
+            payload = json.loads(stripped[start:end + 1])
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("invalid_optimizer_json") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid_optimizer_json")
+    return payload
+
+
+def _extract_rule_candidates(payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    for key in ("rules", "add_rules"):
+        items = payload.get(key)
+        if isinstance(items, list):
+            candidates.extend(dict(item) for item in items if isinstance(item, Mapping))
+
+    typed_keys = {
+        "add_local_medium_rules": "medium",
+        "medium_rules": "medium",
+        "add_local_xhigh_rules": "xhigh",
+        "xhigh_rules": "xhigh",
+    }
+    for key, effort in typed_keys.items():
+        items = payload.get(key)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            candidate = dict(item)
+            candidate.setdefault("effort", effort)
+            candidates.append(candidate)
+    return candidates
+
+
+def _apply_optimizer_rule_candidates(
+    candidates: List[Dict[str, Any]],
+    *,
+    records: List[Dict[str, Any]],
+    learning_samples: List[Dict[str, Any]],
+    attempt_id: str,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if not candidates:
+        return [], []
+
+    if not bool(conf().get("reasoning_effort_policy_auto_apply_enabled", True)):
+        rejected = []
+        for candidate in candidates:
+            rejected.append({
+                "name": _safe_text(candidate.get("name") or candidate.get("id") or "unnamed", 80),
+                "effort": _safe_text(candidate.get("effort"), 24),
+                "reason": "auto_apply_disabled",
+            })
+        return [], rejected
+
+    existing_rules = _load_learned_rules()
+    signatures = {
+        (str(rule.get("effort") or ""), tuple(rule.get("keywords") or []))
+        for rule in existing_rules
+    }
+    applied: List[Dict[str, Any]] = []
+    rejected: List[Dict[str, Any]] = []
+
+    for candidate in candidates:
+        rule, rejection = _validate_rule_candidate(
+            candidate,
+            records=records,
+            learning_samples=learning_samples,
+            attempt_id=attempt_id,
+        )
+        if rejection:
+            rejected.append(rejection)
+            continue
+        if not rule:
+            continue
+        signature = (str(rule.get("effort") or ""), tuple(rule.get("keywords") or []))
+        if signature in signatures:
+            rejected.append({
+                "name": rule["name"],
+                "effort": rule["effort"],
+                "reason": "duplicate_rule",
+            })
+            continue
+        signatures.add(signature)
+        existing_rules.append(rule)
+        applied.append(rule)
+
+    if applied:
+        _write_learned_rules(existing_rules)
+    return applied, rejected
+
+
+def _validate_rule_candidate(
+    candidate: Mapping[str, Any],
+    *,
+    records: List[Dict[str, Any]],
+    learning_samples: List[Dict[str, Any]],
+    attempt_id: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    effort = str(candidate.get("effort") or "").strip().lower()
+    if effort not in ROUTED_EFFORTS:
+        return None, _rule_rejection(candidate, "invalid_effort")
+
+    name = _sanitize_rule_name(candidate.get("name") or candidate.get("id") or candidate.get("rule") or "learned")
+    if _rule_name_looks_like_raw_sample(name, learning_samples):
+        name = "learned"
+    raw_keywords = candidate.get("keywords")
+    if isinstance(raw_keywords, str):
+        raw_keywords = [raw_keywords]
+    if not isinstance(raw_keywords, list):
+        return None, _rule_rejection(candidate, "missing_keywords")
+
+    keywords: List[str] = []
+    for keyword in raw_keywords:
+        normalized = _normalize_rule_keyword(keyword)
+        if normalized and not _unsafe_rule_keyword(normalized) and normalized not in keywords:
+            keywords.append(normalized)
+    if not keywords:
+        return None, _rule_rejection(candidate, "invalid_keywords")
+
+    min_support = max(1, _to_int(conf().get("reasoning_effort_policy_auto_apply_min_support")) or 2)
+    support_ids = _supported_learning_task_ids(keywords, learning_samples)
+    if len(support_ids) < min_support:
+        return None, _rule_rejection(candidate, "insufficient_support", support_count=len(support_ids))
+
+    if effort == "medium" and _support_has_failure_evidence(support_ids, records):
+        return None, _rule_rejection(candidate, "medium_support_has_failure_evidence", support_count=len(support_ids))
+
+    confidence = _coerce_confidence(candidate.get("confidence"))
+    if confidence < 0.65:
+        return None, _rule_rejection(candidate, "low_confidence", support_count=len(support_ids))
+
+    default_max_chars = 120 if effort == "medium" else 500
+    max_chars = _to_int(candidate.get("max_chars")) or default_max_chars
+    if effort == "medium":
+        max_chars = min(180, max(40, max_chars))
+    else:
+        max_chars = min(1000, max(80, max_chars))
+
+    rule = {
+        "id": _learned_rule_id(effort, name, keywords),
+        "enabled": True,
+        "effort": effort,
+        "name": name,
+        "keywords": keywords,
+        "max_chars": max_chars,
+        "confidence": confidence,
+        "reason": _safe_optimizer_note(
+            candidate.get("reason") or candidate.get("description") or "learned from supported background samples",
+            learning_samples,
+            240,
+        ) or "learned from supported background samples",
+        "support_count": len(support_ids),
+        "source": "reasoning_effort_policy_optimizer",
+        "source_attempt_id": attempt_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return rule, None
+
+
+def _supported_learning_task_ids(keywords: List[str], learning_samples: List[Dict[str, Any]]) -> List[str]:
+    supported = []
+    for sample in learning_samples:
+        text = _normalize_task_text(sample.get("message_text", ""))
+        if not text:
+            continue
+        if any(keyword in text for keyword in keywords):
+            task_id = str(sample.get("task_id") or sample.get("message_hash") or "")
+            if task_id and task_id not in supported:
+                supported.append(task_id)
+    return supported
+
+
+def _support_has_failure_evidence(task_ids: List[str], records: List[Dict[str, Any]]) -> bool:
+    task_id_set = set(task_ids)
+    for item in records:
+        if str(item.get("task_id") or "") not in task_id_set:
+            continue
+        if item.get("event_type") != "task_outcome":
+            continue
+        status = str(item.get("task_status") or "").strip().lower()
+        if status in {"failed", "error", "max_turns_exhausted"}:
+            return True
+        if bool(item.get("max_turns_exhausted")):
+            return True
+        if _safe_int(item.get("tool_attempt_error_count")) > 0:
+            return True
+    return False
+
+
+def _rule_rejection(candidate: Mapping[str, Any], reason: str, *, support_count: int = 0) -> Dict[str, Any]:
+    return {
+        "name": _safe_text(candidate.get("name") or candidate.get("id") or "unnamed", 80),
+        "effort": _safe_text(candidate.get("effort"), 24),
+        "reason": reason,
+        "support_count": max(0, int(support_count or 0)),
+    }
+
+
+def _rule_report_summary(rule: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": rule.get("id"),
+        "effort": rule.get("effort"),
+        "name": rule.get("name"),
+        "max_chars": rule.get("max_chars"),
+        "confidence": rule.get("confidence"),
+        "support_count": rule.get("support_count"),
+    }
+
+
+def _safe_optimizer_note(value: Any, learning_samples: List[Dict[str, Any]], max_len: int) -> str:
+    text = _safe_text(value, max_len)
+    if not text:
+        return ""
+    lowered = text.lower()
+    for sample in learning_samples:
+        raw = _safe_text(sample.get("message_text"), max_len).lower()
+        if raw and (raw in lowered or lowered in raw):
+            return ""
+    return text
+
+
+def _coerce_confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.75
+    return max(0.0, min(1.0, confidence))
+
+
+def _learned_rule_id(effort: str, name: str, keywords: List[str]) -> str:
+    digest = stable_metadata_hash("|".join(keywords))[:8]
+    return _safe_text(f"learned_{effort}_{name}_{digest}", 96)
+
+
+def _sanitize_rule_name(value: Any) -> str:
+    text = re.sub(r"[^a-zA-Z0-9_]+", "_", str(value or "learned").strip().lower())
+    text = re.sub(r"_+", "_", text).strip("_")
+    return (text or "learned")[:48]
+
+
+def _rule_name_looks_like_raw_sample(name: str, learning_samples: List[Dict[str, Any]]) -> bool:
+    if not name or name == "learned":
+        return False
+    for sample in learning_samples:
+        sample_name = _sanitize_rule_name(sample.get("message_text"))
+        if sample_name and len(sample_name) > 12 and (name in sample_name or sample_name in name):
+            return True
+    return False
+
+
+def _normalize_rule_keyword(value: Any) -> str:
+    return _normalize_task_text(value)
+
+
+def _unsafe_rule_keyword(keyword: str) -> bool:
+    if len(keyword) < 2 or len(keyword) > 32:
+        return True
+    if re.search(r"https?://|www\.|@|[a-zA-Z]:\\|/[^/\s]+/|\\[^\\\s]+\\", keyword):
+        return True
+    return _looks_sensitive_text(keyword)
+
+
+def _looks_sensitive_text(text: str) -> bool:
+    value = str(text or "")
+    if re.search(r"(?i)\b(api[_-]?key|token|secret|password|passwd|cookie|authorization|credential)\b\s*[:=]\s*\S+", value):
+        return True
+    if re.search(r"(?i)\bsk-[a-z0-9_-]{16,}\b", value):
+        return True
+    if re.search(r"(?i)\b(bearer|basic)\s+[a-z0-9._~+/=-]{16,}", value):
+        return True
+    return False
 
 
 def _count_jsonl_records(path: str) -> int:
@@ -622,7 +1181,7 @@ def _append_optimizer_attempt(report: Mapping[str, Any], record_count: int) -> N
         logger.debug(f"[ReasoningPolicy] Failed to write optimizer attempt: {exc}")
 
 
-def _optimizer_prompt(records: List[Dict[str, Any]]) -> str:
+def _optimizer_prompt(records: List[Dict[str, Any]], learning_samples: List[Dict[str, Any]]) -> str:
     compact_records = []
     for item in records[-200:]:
         compact_records.append({
@@ -646,9 +1205,46 @@ def _optimizer_prompt(records: List[Dict[str, Any]]) -> str:
             "tool_skip_count": item.get("tool_skip_count"),
             "tool_failure_class": item.get("tool_failure_class"),
         })
+    compact_samples = []
+    for item in learning_samples[-DEFAULT_LEARNING_SAMPLE_LIMIT:]:
+        compact_samples.append({
+            "task_id": item.get("task_id"),
+            "chat_scope": item.get("chat_scope"),
+            "active_backend": item.get("active_backend"),
+            "main_model": item.get("main_model"),
+            "selected_effort": item.get("selected_effort"),
+            "local_rule": item.get("local_rule"),
+            "message_features": item.get("message_features"),
+            "message_text": item.get("message_text"),
+        })
+    payload = {
+        "sanitized_records": compact_records,
+        "raw_learning_samples": compact_samples,
+        "rule_constraints": {
+            "valid_efforts": ["medium", "xhigh"],
+            "medium": "Only for clearly simple, low-risk, non-code, non-debug, non-repo, short tasks.",
+            "xhigh": "For local rules that should skip uncertainty and explicitly require deep reasoning.",
+            "keywords": "Return short reusable keywords or phrases, never full raw prompts.",
+            "support": "Prefer rules supported by at least two raw learning samples.",
+        },
+        "output_schema": {
+            "summary": "short sanitized summary",
+            "rules": [
+                {
+                    "effort": "medium|xhigh",
+                    "name": "snake_case_rule_name",
+                    "keywords": ["short keyword"],
+                    "max_chars": 120,
+                    "confidence": 0.8,
+                    "reason": "sanitized reason without raw prompt text",
+                }
+            ],
+        },
+    }
     return (
-        "Analyze these sanitized local reasoning-effort routing decisions. Recommend only conservative "
-        "local-rule changes. Protect quality-first tasks from being downgraded to medium. Return sections: "
-        "add_local_xhigh_rules, add_local_medium_rules, risky_medium_rules, local_rule_coverage.\n\n"
-        + json.dumps(compact_records, ensure_ascii=False, separators=(",", ":"))
+        "Analyze local reasoning-effort routing. The runtime path must stay local-only; do not suggest "
+        "per-request model classification. You may use raw_learning_samples only to infer short local "
+        "keyword rules, but your response must not quote or paraphrase any raw prompt. Return strict JSON "
+        "matching output_schema. If no rule is safe, return {\"summary\":\"no safe rule\",\"rules\":[]}.\n\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     )

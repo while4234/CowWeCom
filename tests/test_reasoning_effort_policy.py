@@ -316,6 +316,102 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertEqual(attempt["optimizer_model"], "gpt-5.5")
         self.assertIn("optimizer failed", attempt["failure_reason"])
 
+    def test_learned_medium_rule_applies_after_builtin_quality_rules(self):
+        os.makedirs(os.path.dirname(reasoning_effort_policy.learned_rules_path()), exist_ok=True)
+        with open(reasoning_effort_policy.learned_rules_path(), "w", encoding="utf-8") as f:
+            json.dump({
+                "version": 1,
+                "rules": [
+                    {
+                        "id": "learned_medium_lunchbox",
+                        "enabled": True,
+                        "effort": "medium",
+                        "name": "lunchbox",
+                        "keywords": ["lunchbox"],
+                        "max_chars": 120,
+                    },
+                    {
+                        "id": "learned_medium_python",
+                        "enabled": True,
+                        "effort": "medium",
+                        "name": "python_chat",
+                        "keywords": ["python"],
+                        "max_chars": 120,
+                    },
+                ],
+            }, f)
+
+        self.assertEqual(classify_local_task("lunchbox ideas"), ("medium", "learned_medium_lunchbox"))
+        self.assertEqual(classify_local_task("write a python script")[0], "xhigh")
+
+    def test_optimizer_applies_supported_rule_and_deletes_raw_learning_buffer(self):
+        conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
+        conf()["reasoning_effort_policy_auto_apply_min_support"] = 2
+        response = json.dumps({
+            "summary": "safe local medium rule",
+            "rules": [
+                {
+                    "effort": "medium",
+                    "name": "lunchbox_chat",
+                    "keywords": ["lunchbox"],
+                    "max_chars": 120,
+                    "confidence": 0.91,
+                    "reason": "short repeated non-code chat",
+                }
+            ],
+        })
+        model = FakePolicyModel(response=response)
+
+        first = resolve_reasoning_effort_for_task("lunchbox idea please", model)
+        second = resolve_reasoning_effort_for_task("quick lunchbox suggestion", model)
+        reasoning_effort_policy.record_policy_task_outcome(first, status="success", turn_count=1, max_turns=3)
+        reasoning_effort_policy.record_policy_task_outcome(second, status="success", turn_count=1, max_turns=3)
+
+        self.assertTrue(os.path.exists(reasoning_effort_policy.learning_buffer_path()))
+
+        report = reasoning_effort_policy.run_policy_optimizer_once(
+            model_adapter=model,
+            reason="manual",
+        )
+
+        self.assertEqual(report["status"], "success")
+        self.assertEqual(report["candidate_rule_count"], 1)
+        self.assertEqual(report["applied_rule_count"], 1)
+        self.assertEqual(report["raw_learning_samples_consumed"], 2)
+        self.assertFalse(os.path.exists(reasoning_effort_policy.learning_buffer_path()))
+        self.assertEqual(classify_local_task("lunchbox recommendation"), ("medium", "learned_medium_lunchbox_chat"))
+        self.assertEqual(model.calls[-1].model, "gpt-5.5")
+        self.assertEqual(model.calls[-1].reasoning_effort, "xhigh")
+        self.assertTrue(model.calls[-1].reasoning_effort_locked)
+
+        with open(reasoning_effort_policy.optimizer_report_path(), "r", encoding="utf-8") as f:
+            serialized_report = f.read()
+        self.assertNotIn("lunchbox idea please", serialized_report)
+        self.assertNotIn("quick lunchbox suggestion", serialized_report)
+
+    def test_optimizer_rejects_insufficient_support_without_persisting_raw_text(self):
+        conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
+        conf()["reasoning_effort_policy_auto_apply_min_support"] = 2
+        model = FakePolicyModel(response=json.dumps({
+            "rules": [{
+                "effort": "medium",
+                "name": "solo_chat",
+                "keywords": ["soloquery"],
+                "confidence": 0.9,
+            }]
+        }))
+
+        resolve_reasoning_effort_for_task("soloquery maybe", model)
+        report = reasoning_effort_policy.run_policy_optimizer_once(model_adapter=model, reason="manual")
+
+        self.assertEqual(report["status"], "success")
+        self.assertEqual(report["applied_rule_count"], 0)
+        self.assertEqual(report["rejected_rule_count"], 1)
+        self.assertFalse(os.path.exists(reasoning_effort_policy.learning_buffer_path()))
+        self.assertEqual(resolve_reasoning_effort_for_task("soloquery later", model).selected_effort, "xhigh")
+        with open(reasoning_effort_policy.optimizer_report_path(), "r", encoding="utf-8") as f:
+            self.assertNotIn("soloquery maybe", f.read())
+
 
 class FakeStreamingModel:
     model = "gpt-5.5"

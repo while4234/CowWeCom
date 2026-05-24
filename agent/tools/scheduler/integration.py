@@ -4,7 +4,7 @@ Integration module for scheduler with AgentBridge
 
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from croniter import croniter
 from config import conf
@@ -18,6 +18,8 @@ _scheduler_service = None
 _task_store = None
 LLM_BACKEND_AUTO_SWITCH_TASK_ID = "system_llm_backend_auto_switch"
 LLM_BACKEND_AUTO_SWITCH_ACTION = "system_llm_backend_auto_switch"
+REASONING_POLICY_OPTIMIZER_TASK_ID = "system_reasoning_effort_policy_optimizer"
+REASONING_POLICY_OPTIMIZER_ACTION = "system_reasoning_effort_policy_optimizer"
 # Module-level lock to guard idempotent initialization across threads
 _init_lock = threading.Lock()
 
@@ -83,6 +85,55 @@ def ensure_llm_backend_auto_switch_task(task_store, now: Optional[datetime] = No
     return task_store.get_task(LLM_BACKEND_AUTO_SWITCH_TASK_ID)
 
 
+def ensure_reasoning_effort_policy_optimizer_task(task_store, now: Optional[datetime] = None) -> Optional[dict]:
+    """Ensure the reasoning-effort policy optimizer is a hidden CowChat system task."""
+    if task_store is None:
+        return None
+
+    now = now or datetime.now()
+    enabled = bool(conf().get("reasoning_effort_policy_auto_optimize_enabled", False))
+    try:
+        seconds = int(conf().get("reasoning_effort_policy_auto_optimize_check_seconds") or 300)
+    except (TypeError, ValueError):
+        seconds = 300
+    seconds = max(60, seconds)
+    task = {
+        "id": REASONING_POLICY_OPTIMIZER_TASK_ID,
+        "name": "Reasoning effort policy optimizer",
+        "enabled": enabled,
+        "system": True,
+        "hidden": True,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "schedule": {"type": "interval", "seconds": seconds},
+        "action": {
+            "type": REASONING_POLICY_OPTIMIZER_ACTION,
+            "description": "Run the hidden local reasoning-effort policy optimizer",
+        },
+        "next_run_at": (now + timedelta(seconds=seconds)).isoformat(),
+    }
+
+    existing = task_store.get_task(REASONING_POLICY_OPTIMIZER_TASK_ID)
+    if not existing:
+        task_store.add_task(task)
+        logger.info("[Scheduler] Registered system task: %s", REASONING_POLICY_OPTIMIZER_TASK_ID)
+        return task
+
+    existing_schedule = existing.get("schedule") if isinstance(existing.get("schedule"), dict) else {}
+    updates = {
+        "name": task["name"],
+        "enabled": enabled,
+        "system": True,
+        "hidden": True,
+        "schedule": task["schedule"],
+        "action": task["action"],
+    }
+    if existing_schedule.get("seconds") != seconds or not existing.get("next_run_at"):
+        updates["next_run_at"] = task["next_run_at"]
+    task_store.update_task(REASONING_POLICY_OPTIMIZER_TASK_ID, updates)
+    return task_store.get_task(REASONING_POLICY_OPTIMIZER_TASK_ID)
+
+
 def _next_cron_run(expression: str, now: datetime) -> datetime:
     return croniter(expression, now).get_next(datetime)
 
@@ -127,6 +178,7 @@ def init_scheduler(agent_bridge) -> bool:
                 logger.debug(f"[Scheduler] Task store initialized: {store_path}")
 
             ensure_llm_backend_auto_switch_task(_task_store)
+            ensure_reasoning_effort_policy_optimizer_task(_task_store)
 
             # Create execute callback
             def execute_task_callback(task: dict):
@@ -137,6 +189,9 @@ def init_scheduler(agent_bridge) -> bool:
 
                     if action_type == LLM_BACKEND_AUTO_SWITCH_ACTION:
                         return _execute_llm_backend_auto_switch(task)
+                    if action_type == REASONING_POLICY_OPTIMIZER_ACTION:
+                        current_agent_bridge = _current_agent_bridge(agent_bridge)
+                        return _execute_reasoning_effort_policy_optimizer(task, current_agent_bridge)
 
                     current_agent_bridge = _current_agent_bridge(agent_bridge)
                     if action_type == "agent_task":
@@ -376,6 +431,42 @@ def _execute_llm_backend_auto_switch(task: dict) -> bool:
         logger.warning(
             "[Scheduler] System task %s failed: %s",
             task.get("id", LLM_BACKEND_AUTO_SWITCH_TASK_ID),
+            str(e)[:300],
+        )
+        return False
+
+
+def _execute_reasoning_effort_policy_optimizer(task: dict, agent_bridge) -> bool:
+    """Run the hidden policy optimizer through the current CowChat model adapter."""
+    try:
+        from bridge.agent_bridge import AgentLLMModel
+        from common.reasoning_effort_policy import run_policy_optimizer_if_due
+
+        adapter = AgentLLMModel(getattr(agent_bridge, "bridge", agent_bridge))
+        adapter.channel_type = "scheduler_system"
+        adapter.session_id = task.get("id", REASONING_POLICY_OPTIMIZER_TASK_ID)
+        adapter.user_id = "system"
+        adapter.actor_role = "admin"
+        adapter.is_admin = True
+        adapter.is_group = False
+
+        report = run_policy_optimizer_if_due(
+            model_adapter=adapter,
+            reason="cowchat_scheduler",
+        )
+        status = str(report.get("status") or "")
+        logger.info(
+            "[Scheduler] System task %s completed: status=%s applied=%s skipped_reason=%s",
+            task.get("id", REASONING_POLICY_OPTIMIZER_TASK_ID),
+            status,
+            report.get("applied_rule_count", 0),
+            report.get("failure_reason", ""),
+        )
+        return status in {"success", "skipped"}
+    except Exception as e:
+        logger.warning(
+            "[Scheduler] System task %s failed: %s",
+            task.get("id", REASONING_POLICY_OPTIMIZER_TASK_ID),
             str(e)[:300],
         )
         return False
