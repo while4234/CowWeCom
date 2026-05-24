@@ -193,6 +193,16 @@ def get_data_dir(workspace_root: Optional[str] = None) -> Path:
     return Path(expand_path(str(root))) / "data" / DATA_DIR_NAME
 
 
+def list_active_rules(workspace_root: Optional[str] = None) -> list[Dict[str, Any]]:
+    """Return compact active tool-attempt rules for diagnostics."""
+    rules = _load_active_rules(get_data_dir(workspace_root))
+    return sorted(
+        rules.values(),
+        key=lambda item: (_to_int(item.get("count")), str(item.get("last_seen") or "")),
+        reverse=True,
+    )
+
+
 def classify_tool_failure(
     tool_name: str,
     args: Dict[str, Any],

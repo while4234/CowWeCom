@@ -9,6 +9,7 @@ from common.tool_attempt_memory import (
     FAILURE_TRANSIENT,
     ToolAttemptMemory,
     classify_tool_failure,
+    list_active_rules,
 )
 
 
@@ -133,6 +134,22 @@ class TestToolAttemptMemory(unittest.TestCase):
             decision = memory.should_skip("read", {"path": r"D:\different.md"})
 
             self.assertFalse(decision.should_skip)
+
+    def test_lists_compact_active_rules_for_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = ToolAttemptMemory(tmpdir)
+            for index in range(3):
+                memory.record_attempt(
+                    "scheduler",
+                    {"action": "teleport", "task_id": f"task-{index}"},
+                    "error",
+                    "Unknown action: teleport",
+                )
+
+            rules = list_active_rules(tmpdir)
+
+            self.assertGreaterEqual(len(rules), 2)
+            self.assertTrue(any(rule.get("rule_type") == "policy_shape" for rule in rules))
 
 
 if __name__ == "__main__":

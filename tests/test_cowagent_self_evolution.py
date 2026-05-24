@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +20,7 @@ from common.self_evolution import (
     record_windows_shell_policy_application,
     record_windows_shell_failure,
 )
+from common.tool_attempt_memory import ToolAttemptMemory
 
 
 class SelfEvolutionDetectionTest(unittest.TestCase):
@@ -153,6 +156,39 @@ class CowAgentSelfEvolutionSkillTest(unittest.TestCase):
 
         self.assertIn("<name>cowagent-self-evolution</name>", prompt)
         self.assertIn("SKILL.md", prompt)
+
+    def test_skill_cli_lists_tool_attempt_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = ToolAttemptMemory(tmp)
+            for index in range(3):
+                memory.record_attempt(
+                    "scheduler",
+                    {"action": "teleport", "task_id": f"task-{index}"},
+                    "error",
+                    "Unknown action: teleport",
+                )
+
+            script = Path("skills") / "cowagent-self-evolution" / "scripts" / "self_evolution.py"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "list",
+                    "--source",
+                    "tools",
+                    "--workspace-root",
+                    tmp,
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                text=True,
+                encoding="utf-8",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+
+            payload = json.loads(result.stdout)
+            self.assertTrue(any(rule.get("rule_type") == "policy_shape" for rule in payload))
 
 
 if __name__ == "__main__":

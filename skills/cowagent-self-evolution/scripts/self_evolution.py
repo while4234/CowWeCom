@@ -27,51 +27,89 @@ def _load_api():
             list_active_rules,
             record_windows_shell_failure,
         )
+        from common.tool_attempt_memory import (
+            get_data_dir as get_tool_attempt_data_dir,
+            list_active_rules as list_tool_attempt_rules,
+        )
     except Exception as e:
         raise SystemExit(
             "Unable to import CowAgent runtime helpers. Run this script from the "
             f"CowWechat project root, or ensure the project root is on PYTHONPATH. Error: {e}"
         )
-    return ensure_seed_rules, get_data_dir, list_active_rules, record_windows_shell_failure
+    return {
+        "ensure_seed_rules": ensure_seed_rules,
+        "get_data_dir": get_data_dir,
+        "list_active_rules": list_active_rules,
+        "record_windows_shell_failure": record_windows_shell_failure,
+        "get_tool_attempt_data_dir": get_tool_attempt_data_dir,
+        "list_tool_attempt_rules": list_tool_attempt_rules,
+    }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Inspect or update CowAgent self-evolution records.")
     sub = parser.add_subparsers(dest="action", required=True)
+    workspace_help = "Optional agent workspace root. Defaults to CowAgent's configured workspace."
 
-    sub.add_parser("doctor", help="Show storage path and active rule count.")
-    sub.add_parser("list", help="Print active rules as JSON.")
-    sub.add_parser("seed", help="Persist built-in seed rules.")
+    doctor_parser = sub.add_parser("doctor", help="Show storage path and active rule count.")
+    doctor_parser.add_argument("--workspace-root", default=None, help=workspace_help)
+    list_parser = sub.add_parser("list", help="Print active rules as JSON.")
+    list_parser.add_argument("--workspace-root", default=None, help=workspace_help)
+    list_parser.add_argument(
+        "--source",
+        choices=("all", "self", "tools"),
+        default="all",
+        help="Which rule store to list. Defaults to all.",
+    )
+    seed_parser = sub.add_parser("seed", help="Persist built-in seed rules.")
+    seed_parser.add_argument("--workspace-root", default=None, help=workspace_help)
 
     log_shell = sub.add_parser("log-shell", help="Record a reusable Windows shell failure.")
+    log_shell.add_argument("--workspace-root", default=None, help=workspace_help)
     log_shell.add_argument("--command", dest="shell_command", required=True)
     log_shell.add_argument("--output", default="")
     log_shell.add_argument("--exit-code", type=int, default=None)
 
     args = parser.parse_args()
-    ensure_seed_rules, get_data_dir, list_active_rules, record_windows_shell_failure = _load_api()
+    api = _load_api()
+    workspace_root = args.workspace_root
 
     if args.action == "doctor":
-        rules = list_active_rules()
+        self_rules = api["list_active_rules"](workspace_root)
+        tool_rules = api["list_tool_attempt_rules"](workspace_root)
         print(json.dumps({
-            "data_dir": str(get_data_dir()),
-            "active_rules": len(rules),
+            "data_dir": str(api["get_data_dir"](workspace_root)),
+            "active_rules": len(self_rules),
+            "tool_attempt_memory": {
+                "data_dir": str(api["get_tool_attempt_data_dir"](workspace_root)),
+                "active_rules": len(tool_rules),
+            },
         }, ensure_ascii=False, indent=2))
         return 0
 
     if args.action == "list":
-        print(json.dumps(list_active_rules(), ensure_ascii=False, indent=2))
+        if args.source == "self":
+            payload = api["list_active_rules"](workspace_root)
+        elif args.source == "tools":
+            payload = api["list_tool_attempt_rules"](workspace_root)
+        else:
+            payload = {
+                "cowagent_self_evolution": api["list_active_rules"](workspace_root),
+                "tool_attempt_memory": api["list_tool_attempt_rules"](workspace_root),
+            }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
     if args.action == "seed":
-        print(json.dumps(ensure_seed_rules(), ensure_ascii=False, indent=2))
+        print(json.dumps(api["ensure_seed_rules"](workspace_root), ensure_ascii=False, indent=2))
         return 0
 
     if args.action == "log-shell":
-        result = record_windows_shell_failure(
+        result = api["record_windows_shell_failure"](
             args.shell_command,
             args.output,
             exit_code=args.exit_code,
+            workspace_root=workspace_root,
         )
         print(json.dumps(result or {"recorded": False}, ensure_ascii=False, indent=2))
         return 0

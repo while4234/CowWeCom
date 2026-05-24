@@ -39,16 +39,21 @@ Run from the project root when possible:
 ```bash
 python "<base_dir>/scripts/self_evolution.py" doctor
 python "<base_dir>/scripts/self_evolution.py" list
+python "<base_dir>/scripts/self_evolution.py" list --source tools
 python "<base_dir>/scripts/self_evolution.py" seed
 python "<base_dir>/scripts/self_evolution.py" log-shell --command "<failed command>" --output "<stderr/stdout>" --exit-code 1
 ```
 
 Commands:
 
-- `doctor` prints the active storage path and current compact rule count.
-- `list` prints active compact rules as JSON.
+- `doctor` prints the self-evolution storage path, tool-attempt storage path, and compact rule counts.
+- `list` prints both self-evolution and tool-attempt active compact rules as JSON.
+- `list --source self` prints only shell/self-evolution rules.
+- `list --source tools` prints all generic tool-attempt policy rules.
 - `seed` writes the built-in Windows shell dialect rule if it is not already present.
 - `log-shell` manually records a failed shell command when it matches a reusable Windows dialect mistake.
+
+All commands accept `--workspace-root <path>` after the command name for diagnostics against a specific agent workspace.
 
 ## Operating Rules
 
