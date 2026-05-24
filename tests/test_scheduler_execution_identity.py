@@ -37,6 +37,16 @@ class FakeWeixinChannel:
         return self.result
 
 
+class FakeWecomChannel:
+    def __init__(self, result):
+        self.result = result
+        self.active_sends = []
+
+    def active_send_text_result(self, receiver, text, is_group=False):
+        self.active_sends.append((receiver, text, is_group))
+        return self.result
+
+
 class TestSchedulerExecutionIdentity(unittest.TestCase):
     def test_agent_task_preserves_owner_identity_and_scheduler_session(self):
         bridge = FakeAgentBridge()
@@ -59,7 +69,7 @@ class TestSchedulerExecutionIdentity(unittest.TestCase):
         }
 
         with patch("channel.channel_factory.create_channel", return_value=channel):
-            _execute_agent_task(task, bridge)
+            result = _execute_agent_task(task, bridge)
 
         context = bridge.context
         self.assertIsNotNone(context)
@@ -71,6 +81,7 @@ class TestSchedulerExecutionIdentity(unittest.TestCase):
         self.assertEqual(context.get("conversation_id"), "scheduler_normal_task1")
         self.assertTrue(context.get("is_scheduled_task"))
         self.assertEqual(len(channel.sent), 1)
+        self.assertTrue(result)
 
     def test_agent_task_weixin_uses_running_channel_active_send(self):
         bridge = FakeAgentBridge()
@@ -95,11 +106,12 @@ class TestSchedulerExecutionIdentity(unittest.TestCase):
         with patch("agent.tools.scheduler.integration._get_running_channel", return_value=channel), patch(
             "channel.channel_factory.create_channel"
         ) as create_channel:
-            _execute_agent_task(task, bridge)
+            result = _execute_agent_task(task, bridge)
 
         create_channel.assert_not_called()
         self.assertEqual(channel.active_sends, [("normal", "done")])
         self.assertTrue(hasattr(bridge, "remembered"))
+        self.assertTrue(result)
 
     def test_agent_task_weixin_send_failure_does_not_remember_delivery(self):
         bridge = FakeAgentBridge()
@@ -122,10 +134,41 @@ class TestSchedulerExecutionIdentity(unittest.TestCase):
         }
 
         with patch("agent.tools.scheduler.integration._get_running_channel", return_value=channel):
-            _execute_agent_task(task, bridge)
+            result = _execute_agent_task(task, bridge)
 
         self.assertEqual(channel.active_sends, [("normal", "done")])
         self.assertFalse(hasattr(bridge, "remembered"))
+        self.assertFalse(result)
+
+    def test_agent_task_wecom_uses_active_send_result(self):
+        bridge = FakeAgentBridge()
+        channel = FakeWecomChannel({"ok": True, "reason": "sent"})
+        task = {
+            "id": "task1",
+            "name": "owner task",
+            "owner_actor_id": "wecom_bot:normal",
+            "owner_role": "user",
+            "owner_memory_user_id": "normal-memory",
+            "action": {
+                "type": "agent_task",
+                "task_description": "run owner task",
+                "receiver": "normal",
+                "receiver_name": "Normal User",
+                "is_group": False,
+                "channel_type": "wecom_bot",
+                "notify_session_id": "normal",
+            },
+        }
+
+        with patch("agent.tools.scheduler.integration._get_running_channel", return_value=channel), patch(
+            "channel.channel_factory.create_channel"
+        ) as create_channel:
+            result = _execute_agent_task(task, bridge)
+
+        create_channel.assert_not_called()
+        self.assertTrue(result)
+        self.assertEqual(channel.active_sends, [("normal", "done", False)])
+        self.assertTrue(hasattr(bridge, "remembered"))
 
     def test_agent_task_without_owner_does_not_execute(self):
         bridge = FakeAgentBridge()
@@ -141,9 +184,10 @@ class TestSchedulerExecutionIdentity(unittest.TestCase):
             },
         }
 
-        _execute_agent_task(task, bridge)
+        result = _execute_agent_task(task, bridge)
 
         self.assertIsNone(bridge.context)
+        self.assertFalse(result)
 
     def test_tool_call_without_owner_does_not_execute(self):
         bridge = FakeAgentBridge()

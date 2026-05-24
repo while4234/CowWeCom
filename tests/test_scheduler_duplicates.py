@@ -85,6 +85,16 @@ class FakeAgent:
         return 100000
 
 
+class FakeSchedulerService:
+    def __init__(self, result=True):
+        self.result = result
+        self.run_calls = []
+
+    def run_task_now(self, task_id):
+        self.run_calls.append(task_id)
+        return self.result
+
+
 def make_context(
     actor_id="weixin:user-a",
     session_id="session-a",
@@ -231,6 +241,77 @@ class TestSchedulerDuplicates(unittest.TestCase):
             self.assertNotIn("user gold", get_result)
             self.assertNotIn("user gold", delete_result)
             self.assertIsNotNone(store.get_task(user_task["id"]))
+
+    def test_scheduler_run_now_requires_owner_and_uses_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = TaskStore(os.path.join(tmp, "tasks.json"))
+            service = FakeSchedulerService(result=True)
+            user_tool = SchedulerTool({"channel_type": "weixin_user"})
+            user_tool.task_store = store
+            user_tool.scheduler_service = service
+            user_tool.current_context = make_context(
+                actor_id="weixin_user:normal",
+                session_id="normal-session",
+            )
+            user_tool.execute({
+                "action": "create",
+                "name": "user gold",
+                "message": "gold reminder",
+                "schedule_type": "once",
+                "schedule_value": "+1m",
+            })
+            task = store.list_tasks()[0]
+
+            owner_result = user_tool.execute({"action": "run_now", "task_id": task["id"]}).result
+
+            admin_tool = SchedulerTool({"channel_type": "weixin"})
+            admin_tool.task_store = store
+            admin_tool.scheduler_service = service
+            admin_tool.current_context = make_context(
+                actor_id="weixin:admin",
+                actor_role="admin",
+                session_id="admin-session",
+            )
+            admin_result = admin_tool.execute({"action": "run_now", "task_id": task["id"]}).result
+
+            self.assertEqual(service.run_calls, [task["id"]])
+            self.assertIn("已立即执行任务", owner_result)
+            self.assertIn("无权限", admin_result)
+
+    def test_scheduler_skip_pending_clears_only_owned_task_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = TaskStore(os.path.join(tmp, "tasks.json"))
+            store.add_task({
+                "id": "missed1",
+                "name": "missed task",
+                "enabled": True,
+                "created_at": "2026-05-22T08:00:00",
+                "updated_at": "2026-05-22T08:00:00",
+                "owner_actor_id": "weixin_user:normal",
+                "schedule": {"type": "cron", "expression": "0 9 * * *"},
+                "action": {
+                    "type": "send_message",
+                    "content": "legacy",
+                    "receiver": "normal",
+                    "notify_session_id": "normal",
+                    "channel_type": "weixin_user",
+                },
+                "next_run_at": "2026-05-25T09:00:00",
+                "last_error": "missed scheduled run",
+                "last_error_at": "2026-05-24T10:47:33",
+                "last_missed_run_at": "2026-05-24T09:00:00",
+            })
+            owner_tool = SchedulerTool({"channel_type": "weixin_user"})
+            owner_tool.task_store = store
+            owner_tool.current_context = make_context(actor_id="weixin_user:normal")
+
+            result = owner_tool.execute({"action": "skip_pending", "task_id": "missed1"}).result
+            task = store.get_task("missed1")
+
+            self.assertIn("已跳过任务", result)
+            self.assertIsNone(task["last_error"])
+            self.assertIsNone(task["last_error_at"])
+            self.assertIsNone(task["last_missed_run_at"])
 
     def test_scheduler_create_stores_owner_profile_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:

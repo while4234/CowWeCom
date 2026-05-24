@@ -327,6 +327,22 @@ def _sync_builtin_skills():
         logger.warning(f"[App] Builtin skills sync failed: {e}")
 
 
+def _start_scheduler_service():
+    """Start the normal task scheduler during app startup."""
+    try:
+        from agent.tools.scheduler.integration import init_scheduler
+        from bridge.bridge import Bridge
+
+        agent_bridge = Bridge().get_agent_bridge()
+        if getattr(agent_bridge, "scheduler_initialized", False):
+            return
+        if init_scheduler(agent_bridge):
+            agent_bridge.scheduler_initialized = True
+            logger.info("[App] Scheduler service started")
+    except Exception as e:
+        logger.warning(f"[App] Scheduler service failed to start: {e}")
+
+
 def run():
     global _channel_mgr
     try:
@@ -375,6 +391,7 @@ def run():
 
         _channel_mgr = ChannelManager()
         _channel_mgr.start(channel_names, first_start=True)
+        _start_scheduler_service()
 
         while True:
             time.sleep(1)

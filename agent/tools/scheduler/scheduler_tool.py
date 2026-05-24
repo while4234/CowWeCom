@@ -38,7 +38,7 @@ class SchedulerTool(BaseTool):
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "list", "get", "delete", "enable", "disable"],
+                "enum": ["create", "list", "get", "delete", "enable", "disable", "run_now", "skip_pending"],
                 "description": "操作类型: create(创建), list(列表), get(查询), delete(删除), enable(启用), disable(禁用)"
             },
             "task_id": {
@@ -76,6 +76,7 @@ class SchedulerTool(BaseTool):
         
         # Will be set by agent bridge
         self.task_store = None
+        self.scheduler_service = None
         self.current_context = None
     
     def execute(self, params: dict) -> ToolResult:
@@ -115,6 +116,12 @@ class SchedulerTool(BaseTool):
                 return ToolResult.success(result)
             elif action == "disable":
                 result = self._disable_task(**kwargs)
+                return ToolResult.success(result)
+            elif action == "run_now":
+                result = self._run_now(**kwargs)
+                return ToolResult.success(result)
+            elif action == "skip_pending":
+                result = self._skip_pending(**kwargs)
                 return ToolResult.success(result)
             else:
                 return ToolResult.fail(f"未知操作: {action}")
@@ -420,6 +427,44 @@ class SchedulerTool(BaseTool):
         self.task_store.enable_task(task_id, False)
         return f"✅ 任务 '{task['name']}' ({task_id}) 已禁用"
     
+    def _run_now(self, **kwargs) -> str:
+        """Manually run a stored task once."""
+        task_id = kwargs.get("task_id")
+        if not task_id:
+            return "错误: 缺少任务ID (task_id)"
+        if not self.scheduler_service:
+            return "错误: 定时任务执行服务未初始化"
+
+        task = self.task_store.get_task(task_id)
+        if not task:
+            return f"错误: 任务 '{task_id}' 不存在"
+        if not self._can_manage_task(task):
+            return "错误: 无权限执行该任务"
+
+        ok = self.scheduler_service.run_task_now(task_id)
+        if ok:
+            return f"已立即执行任务 '{task['name']}' ({task_id})，执行结果会发送到任务原接收会话。"
+        return f"已尝试立即执行任务 '{task['name']}' ({task_id})，但执行失败；失败通知已发送到任务原接收会话。"
+
+    def _skip_pending(self, **kwargs) -> str:
+        """Clear the latest missed/failed marker after the user chooses to skip."""
+        task_id = kwargs.get("task_id")
+        if not task_id:
+            return "错误: 缺少任务ID (task_id)"
+
+        task = self.task_store.get_task(task_id)
+        if not task:
+            return f"错误: 任务 '{task_id}' 不存在"
+        if not self._can_manage_task(task):
+            return "错误: 无权限跳过该任务"
+
+        self.task_store.update_task(task_id, {
+            "last_error": None,
+            "last_error_at": None,
+            "last_missed_run_at": None,
+        })
+        return f"已跳过任务 '{task['name']}' ({task_id}) 的当前待处理异常/补跑提醒。"
+
     def _filter_visible_tasks(self, tasks):
         owner = self._owner_actor_id()
         if not owner:
