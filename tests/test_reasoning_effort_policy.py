@@ -2,7 +2,6 @@ import json
 import os
 import tempfile
 import threading
-import time
 import unittest
 from unittest.mock import patch
 
@@ -13,29 +12,25 @@ from common import reasoning_effort_policy
 from common.llm_backend_router import BACKEND_CAPI
 from common.reasoning_effort_policy import (
     classify_local_task,
-    rank_mini_models,
     resolve_reasoning_effort_for_task,
 )
 from config import conf
 from models.openai_compatible_bot import OpenAICompatibleBot
 
 
-class FakeClassifierModel:
+class FakePolicyModel:
     channel_type = "wecom_bot"
     session_id = "session-secret"
     user_id = "user-secret"
     actor_role = "admin"
     is_admin = True
 
-    def __init__(self, response='{"effort":"medium","reason":"simple"}', delay=0):
+    def __init__(self, response='{"effort":"medium","reason":"simple"}'):
         self.response = response
-        self.delay = delay
         self.calls = []
 
     def call(self, request):
         self.calls.append(request)
-        if self.delay:
-            time.sleep(self.delay)
         return {
             "choices": [{"message": {"content": self.response}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13},
@@ -53,11 +48,6 @@ class TestReasoningEffortPolicy(unittest.TestCase):
             "reasoning_effort_policy_admin_only": True,
             "reasoning_effort_policy_default_effort": "medium",
             "reasoning_effort_policy_quality_effort": "xhigh",
-            "reasoning_effort_policy_classifier_timeout_ms": 50,
-            "reasoning_effort_policy_classifier_timeout_effort": "xhigh",
-            "reasoning_effort_policy_classifier_selected_backend": BACKEND_CAPI,
-            "reasoning_effort_policy_classifier_model": "gpt-5-mini",
-            "reasoning_effort_policy_classifier_reasoning_effort": "",
             "reasoning_effort_policy_audit_enabled": True,
             "reasoning_effort_policy_auto_optimize_enabled": False,
             "llm_backend": {"current_backend": BACKEND_CAPI, "state_path": os.path.join(self.tmp.name, "state.json")},
@@ -69,54 +59,38 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         conf().update(self.old_conf)
         self.tmp.cleanup()
 
-    def test_local_quality_task_uses_xhigh_without_classifier(self):
-        model = FakeClassifierModel()
+    def test_local_quality_task_uses_xhigh(self):
+        model = FakePolicyModel()
         decision = resolve_reasoning_effort_for_task("帮我修复这个 Python 报错并补测试", model)
 
         self.assertEqual(decision.selected_effort, "xhigh")
         self.assertEqual(decision.decision_source, "local")
         self.assertEqual(model.calls, [])
 
-    def test_local_simple_im_uses_medium_without_classifier(self):
+    def test_local_simple_im_uses_medium(self):
         effort, rule = classify_local_task("你好")
 
         self.assertEqual(effort, "medium")
         self.assertEqual(rule, "greeting")
 
-    def test_uncertain_task_uses_configured_same_backend_classifier(self):
-        model = FakeClassifierModel(response='{"effort":"medium","reason":"short"}')
-        decision = resolve_reasoning_effort_for_task("帮我看看这句话有没有问题", model)
-
-        self.assertEqual(decision.selected_effort, "medium")
-        self.assertEqual(decision.decision_source, "classifier")
-        self.assertEqual(model.calls[0].model, "gpt-5-mini")
-
-    def test_backend_mismatch_falls_back_to_xhigh(self):
-        conf()["reasoning_effort_policy_classifier_selected_backend"] = "codex"
-
-        decision = resolve_reasoning_effort_for_task("帮我看看这句话有没有问题", FakeClassifierModel())
+    def test_uncertain_task_defaults_to_local_quality_effort(self):
+        model = FakePolicyModel(response='{"effort":"medium","reason":"short"}')
+        decision = resolve_reasoning_effort_for_task("please look at whether this sentence has issues", model)
 
         self.assertEqual(decision.selected_effort, "xhigh")
-        self.assertEqual(decision.decision_source, "fallback")
-        self.assertEqual(decision.fallback_reason, "classifier_backend_mismatch")
-
-    def test_classifier_timeout_falls_back_to_xhigh(self):
-        model = FakeClassifierModel(delay=0.2)
-
-        decision = resolve_reasoning_effort_for_task("帮我看看这句话有没有问题", model)
-
-        self.assertEqual(decision.selected_effort, "xhigh")
-        self.assertEqual(decision.fallback_reason, "classifier_timeout")
+        self.assertEqual(decision.decision_source, "local")
+        self.assertEqual(decision.reason, "uncertain_default_quality")
+        self.assertEqual(model.calls, [])
 
     def test_non_admin_does_not_apply_policy(self):
-        model = FakeClassifierModel()
+        model = FakePolicyModel()
         model.actor_role = "user"
         model.is_admin = False
 
         self.assertIsNone(resolve_reasoning_effort_for_task("你好", model))
 
     def test_audit_log_is_sanitized(self):
-        model = FakeClassifierModel()
+        model = FakePolicyModel()
         resolve_reasoning_effort_for_task("帮我看看这句话有没有问题 private marker", model)
 
         path = reasoning_effort_policy.audit_log_path()
@@ -124,7 +98,8 @@ class TestReasoningEffortPolicy(unittest.TestCase):
             record = json.loads(f.readline())
         serialized = json.dumps(record, ensure_ascii=False)
 
-        self.assertEqual(record["classifier_model"], "gpt-5-mini")
+        self.assertEqual(record["local_rule"], "uncertain_default_quality")
+        self.assertNotIn("classifier_model", record)
         self.assertIn("session_hash", record)
         self.assertIn("user_hash", record)
         self.assertNotIn("session-secret", serialized)
@@ -132,17 +107,6 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertNotIn("private marker", serialized)
         self.assertNotIn("messages", serialized)
         self.assertNotIn("api_key", serialized)
-
-    def test_rank_mini_models_prefers_latest_numeric_version(self):
-        ranked = rank_mini_models([
-            "gpt-4.1-mini",
-            "gpt-5-mini",
-            "gpt-5.1-codex-mini",
-            "gpt-5.4-mini",
-            "not-mini",
-        ])
-
-        self.assertEqual(ranked[0], "gpt-5.4-mini")
 
     def test_auto_optimizer_triggers_after_threshold_without_blocking(self):
         conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
@@ -155,7 +119,7 @@ class TestReasoningEffortPolicy(unittest.TestCase):
             event.set()
             return {"status": "success"}
 
-        model = FakeClassifierModel()
+        model = FakePolicyModel()
         with patch.object(reasoning_effort_policy, "run_policy_optimizer_once", side_effect=fake_optimizer):
             resolve_reasoning_effort_for_task("你好", model)
             resolve_reasoning_effort_for_task("谢谢", model)

@@ -35,10 +35,6 @@ _REQUEST_SHAPE_TEXT_FIELDS = {
     "reasoning_effort_reason",
     "reasoning_effort_backend",
     "reasoning_effort_main_model",
-    "reasoning_effort_classifier_model",
-    "reasoning_effort_classifier_effort",
-    "reasoning_effort_classifier_status",
-    "reasoning_effort_fallback_reason",
     "reasoning_effort_local_rule",
 }
 _REQUEST_SHAPE_INT_FIELDS = {
@@ -55,7 +51,6 @@ _REQUEST_SHAPE_INT_FIELDS = {
     "tool_duplicate_success_count",
     "tool_memory_rule_hits",
     "tool_compacted_result_count",
-    "reasoning_effort_classifier_latency_ms",
 }
 
 

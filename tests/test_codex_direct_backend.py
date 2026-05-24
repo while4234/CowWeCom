@@ -250,7 +250,7 @@ class TestCodexDirectBot(unittest.TestCase):
         self.assertTrue(result["error"])
         self.assertIn("codex_tools_disabled", result["message"])
 
-    def test_classifier_style_call_can_omit_reasoning_and_max_output_tokens(self):
+    def test_locked_empty_effort_omits_reasoning_and_unsupported_params(self):
         from models.codex.codex_bot import CodexBot
 
         class FakeCredential:

@@ -4,8 +4,7 @@
 
 The policy is intentionally conservative:
 - local rules only decide when the task shape is obvious;
-- uncertain tasks may use one configured, same-backend classifier;
-- failures and timeouts fall back to the configured quality effort.
+- uncertain tasks default to the configured quality effort.
 
 No raw prompt text, session ids, API keys, or tool arguments are persisted by
 the audit log.
@@ -17,14 +16,13 @@ import json
 import os
 import re
 import threading
-import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.protocol.models import LLMRequest
-from common.llm_backend_router import BACKEND_CAPI, BACKEND_CODEX, get_current_backend, get_effective_model
+from common.llm_backend_router import get_current_backend, get_effective_model
 from common.llm_usage_tracker import stable_metadata_hash
 from common.log import logger
 from common.utils import expand_path
@@ -33,7 +31,6 @@ from config import conf
 
 VALID_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
 ROUTED_EFFORTS = {"medium", "xhigh"}
-DEFAULT_TIMEOUT_MS = 700
 DEFAULT_OPTIMIZE_EVERY = 50
 AUDIT_FILENAME = "reasoning_effort_policy_decisions.jsonl"
 OPTIMIZER_REPORT_FILENAME = "reasoning_effort_policy_optimizer_reports.jsonl"
@@ -52,12 +49,6 @@ class ReasoningEffortDecision:
     reason: str
     active_backend: str
     main_model: str
-    classifier_model: str = ""
-    classifier_reasoning_effort: str = ""
-    classifier_success: bool = False
-    classifier_latency_ms: int = 0
-    classifier_result: str = ""
-    fallback_reason: str = ""
     local_rule: str = ""
 
     def usage_metadata(self) -> Dict[str, Any]:
@@ -67,11 +58,6 @@ class ReasoningEffortDecision:
             "reasoning_effort_reason": self.reason,
             "reasoning_effort_backend": self.active_backend,
             "reasoning_effort_main_model": self.main_model,
-            "reasoning_effort_classifier_model": self.classifier_model,
-            "reasoning_effort_classifier_effort": self.classifier_reasoning_effort,
-            "reasoning_effort_classifier_status": "success" if self.classifier_success else "not_success",
-            "reasoning_effort_classifier_latency_ms": self.classifier_latency_ms,
-            "reasoning_effort_fallback_reason": self.fallback_reason,
             "reasoning_effort_local_rule": self.local_rule,
         }
 
@@ -88,34 +74,21 @@ def resolve_reasoning_effort_for_task(user_message: str, model_adapter: Any) -> 
     main_model = get_effective_model()
     quality_effort = _configured_effort("reasoning_effort_policy_quality_effort", "xhigh", routed_only=True)
     default_effort = _configured_effort("reasoning_effort_policy_default_effort", "medium", routed_only=True)
-    fallback_effort = _configured_effort(
-        "reasoning_effort_policy_classifier_timeout_effort",
-        quality_effort,
-        routed_only=True,
-    )
 
     task_id = uuid.uuid4().hex[:12]
     local_effort, local_rule = classify_local_task(user_message, quality_effort, default_effort)
-    if local_effort:
-        decision = ReasoningEffortDecision(
-            task_id=task_id,
-            selected_effort=local_effort,
-            decision_source="local",
-            reason=local_rule,
-            active_backend=active_backend,
-            main_model=main_model,
-            local_rule=local_rule,
-        )
-        record_policy_decision(decision, model_adapter=model_adapter, user_message=user_message)
-        return decision
+    if not local_effort:
+        local_effort = quality_effort
+        local_rule = "uncertain_default_quality"
 
-    decision = _classify_uncertain_task(
+    decision = ReasoningEffortDecision(
         task_id=task_id,
-        user_message=user_message,
-        model_adapter=model_adapter,
+        selected_effort=local_effort,
+        decision_source="local",
+        reason=local_rule,
         active_backend=active_backend,
         main_model=main_model,
-        fallback_effort=fallback_effort,
+        local_rule=local_rule,
     )
     record_policy_decision(decision, model_adapter=model_adapter, user_message=user_message)
     return decision
@@ -157,12 +130,6 @@ def record_policy_decision(
         "decision_source": decision.decision_source,
         "reason": _safe_text(decision.reason, 160),
         "local_rule": _safe_text(decision.local_rule, 96),
-        "classifier_model": _safe_text(decision.classifier_model, 96),
-        "classifier_reasoning_effort": _safe_text(decision.classifier_reasoning_effort, 32),
-        "classifier_success": bool(decision.classifier_success),
-        "classifier_latency_ms": int(decision.classifier_latency_ms or 0),
-        "classifier_result": _safe_text(decision.classifier_result, 32),
-        "fallback_reason": _safe_text(decision.fallback_reason, 96),
         "channel_type": _safe_text(getattr(model_adapter, "channel_type", ""), 64),
         "session_hash": _hash_optional(getattr(model_adapter, "session_id", "")),
         "user_hash": _hash_optional(getattr(model_adapter, "user_id", "")),
@@ -282,201 +249,6 @@ def optimizer_state_path() -> str:
     return os.path.join(_workspace_data_dir(), OPTIMIZER_STATE_FILENAME)
 
 
-def rank_mini_models(model_ids: Iterable[str]) -> List[str]:
-    """Return mini model ids ordered newest-first by numeric version tokens."""
-    minis = []
-    for model_id in model_ids:
-        text = str(model_id or "").strip()
-        lowered = text.lower()
-        if "mini" not in lowered or not lowered.startswith("gpt-"):
-            continue
-        minis.append(text)
-    return sorted(minis, key=_model_sort_key, reverse=True)
-
-
-def benchmark_samples() -> List[Dict[str, str]]:
-    """Small built-in benchmark set; callers can supply a larger JSONL dataset."""
-    return [
-        {"label": "medium", "prompt": "你好，今天状态怎么样？"},
-        {"label": "medium", "prompt": "帮我把这句话翻译成英文：明天上午十点开会。"},
-        {"label": "medium", "prompt": "润色这句短消息：我晚点到。"},
-        {"label": "medium", "prompt": "用一句话解释一下 prompt cache 是什么。"},
-        {"label": "xhigh", "prompt": "帮我分析这个 Python 报错并给出修复方案。"},
-        {"label": "xhigh", "prompt": "请实现一个后端功能并补充单元测试。"},
-        {"label": "xhigh", "prompt": "review 这段代码有没有并发安全问题。"},
-        {"label": "xhigh", "prompt": "设计一个涉及文件写入、Git 提交和发布的开发方案。"},
-        {"label": "xhigh", "prompt": "这个接口涉及权限和数据删除，帮我判断风险。"},
-        {"label": "medium", "prompt": "把下面短句改得更礼貌：快点发我。"},
-    ]
-
-
-def _classify_uncertain_task(
-    *,
-    task_id: str,
-    user_message: str,
-    model_adapter: Any,
-    active_backend: str,
-    main_model: str,
-    fallback_effort: str,
-) -> ReasoningEffortDecision:
-    classifier_model = str(conf().get("reasoning_effort_policy_classifier_model") or "").strip()
-    classifier_effort = _configured_effort(
-        "reasoning_effort_policy_classifier_reasoning_effort",
-        "",
-        routed_only=False,
-    )
-    selected_backend = str(conf().get("reasoning_effort_policy_classifier_selected_backend") or "").strip().lower()
-    if selected_backend and selected_backend != active_backend:
-        return _fallback_decision(
-            task_id,
-            active_backend,
-            main_model,
-            fallback_effort,
-            "classifier_backend_mismatch",
-            classifier_model=classifier_model,
-            classifier_effort=classifier_effort,
-        )
-    if not classifier_model:
-        return _fallback_decision(task_id, active_backend, main_model, fallback_effort, "classifier_not_configured")
-
-    timeout_ms = max(1, _to_int(conf().get("reasoning_effort_policy_classifier_timeout_ms")) or DEFAULT_TIMEOUT_MS)
-    result, latency_ms, error = _classify_with_timeout(
-        model_adapter,
-        user_message=user_message,
-        classifier_model=classifier_model,
-        classifier_effort=classifier_effort,
-        timeout_ms=timeout_ms,
-    )
-    if error:
-        return _fallback_decision(
-            task_id,
-            active_backend,
-            main_model,
-            fallback_effort,
-            error,
-            classifier_model=classifier_model,
-            classifier_effort=classifier_effort,
-            latency_ms=latency_ms,
-        )
-    if result not in ROUTED_EFFORTS:
-        return _fallback_decision(
-            task_id,
-            active_backend,
-            main_model,
-            fallback_effort,
-            "invalid_classifier_result",
-            classifier_model=classifier_model,
-            classifier_effort=classifier_effort,
-            latency_ms=latency_ms,
-        )
-    return ReasoningEffortDecision(
-        task_id=task_id,
-        selected_effort=result,
-        decision_source="classifier",
-        reason="classifier_decision",
-        active_backend=active_backend,
-        main_model=main_model,
-        classifier_model=classifier_model,
-        classifier_reasoning_effort=classifier_effort,
-        classifier_success=True,
-        classifier_latency_ms=latency_ms,
-        classifier_result=result,
-    )
-
-
-def _classify_with_timeout(
-    model_adapter: Any,
-    *,
-    user_message: str,
-    classifier_model: str,
-    classifier_effort: str,
-    timeout_ms: int,
-) -> Tuple[str, int, str]:
-    box: Dict[str, Any] = {}
-    started = time.monotonic()
-
-    def _target() -> None:
-        try:
-            box["result"] = _call_classifier(
-                model_adapter,
-                user_message=user_message,
-                classifier_model=classifier_model,
-                classifier_effort=classifier_effort,
-                timeout_ms=timeout_ms,
-            )
-        except Exception as exc:
-            box["error"] = str(exc)
-
-    thread = threading.Thread(target=_target, name="reasoning-effort-classifier", daemon=True)
-    thread.start()
-    thread.join(timeout=max(timeout_ms / 1000.0, 0.001))
-    latency_ms = int((time.monotonic() - started) * 1000)
-    if thread.is_alive():
-        return "", latency_ms, "classifier_timeout"
-    if box.get("error"):
-        return "", latency_ms, "classifier_error"
-    return str(box.get("result") or ""), latency_ms, ""
-
-
-def _call_classifier(
-    model_adapter: Any,
-    *,
-    user_message: str,
-    classifier_model: str,
-    classifier_effort: str,
-    timeout_ms: int,
-) -> str:
-    system = (
-        "Classify the user's task for reasoning depth. Return only compact JSON: "
-        '{"effort":"medium"|"xhigh","reason":"short"}. '
-        "Use xhigh for coding, debugging, repository/file/system operations, tools, "
-        "multi-step planning, security, permissions, deletion, high-risk advice, or explicit quality-first requests. "
-        "Use medium only for clearly simple IM/chat, short rewrite, short translation, or simple explanation."
-    )
-    request = LLMRequest(
-        messages=[{"role": "user", "content": [{"type": "text", "text": str(user_message or "")[:2000]}]}],
-        temperature=0,
-        max_tokens=80,
-        stream=False,
-        system=system,
-        model=classifier_model,
-        request_timeout=max(timeout_ms / 1000.0, 0.2),
-    )
-    if classifier_effort:
-        setattr(request, "reasoning_effort", classifier_effort)
-    else:
-        setattr(request, "reasoning_effort_locked", True)
-    response = model_adapter.call(request)
-    text = _extract_response_text(response)
-    parsed = _parse_classifier_output(text)
-    if not parsed:
-        raise RuntimeError("invalid_classifier_output")
-    return parsed
-
-
-def _parse_classifier_output(text: str) -> str:
-    raw = str(text or "").strip()
-    if not raw:
-        return ""
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-        if not match:
-            lowered = raw.lower()
-            if "xhigh" in lowered:
-                return "xhigh"
-            if "medium" in lowered:
-                return "medium"
-            return ""
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return ""
-    effort = str(data.get("effort") or "").strip().lower() if isinstance(data, dict) else ""
-    return effort if effort in ROUTED_EFFORTS else ""
-
-
 def _extract_response_text(response: Any) -> str:
     if not isinstance(response, Mapping):
         return ""
@@ -496,31 +268,6 @@ def _extract_response_text(response: Any) -> str:
                 parts.append(str(item))
         return "".join(parts).strip()
     return str(content or "").strip()
-
-
-def _fallback_decision(
-    task_id: str,
-    active_backend: str,
-    main_model: str,
-    fallback_effort: str,
-    fallback_reason: str,
-    *,
-    classifier_model: str = "",
-    classifier_effort: str = "",
-    latency_ms: int = 0,
-) -> ReasoningEffortDecision:
-    return ReasoningEffortDecision(
-        task_id=task_id,
-        selected_effort=fallback_effort,
-        decision_source="fallback",
-        reason=fallback_reason,
-        active_backend=active_backend,
-        main_model=main_model,
-        classifier_model=classifier_model,
-        classifier_reasoning_effort=classifier_effort,
-        classifier_latency_ms=latency_ms,
-        fallback_reason=fallback_reason,
-    )
 
 
 def _match_quality_rule(text: str) -> str:
@@ -678,21 +425,10 @@ def _optimizer_prompt(records: List[Dict[str, Any]]) -> str:
             "decision_source": item.get("decision_source"),
             "reason": item.get("reason"),
             "local_rule": item.get("local_rule"),
-            "classifier_model": item.get("classifier_model"),
-            "classifier_success": item.get("classifier_success"),
-            "classifier_latency_ms": item.get("classifier_latency_ms"),
-            "fallback_reason": item.get("fallback_reason"),
         })
     return (
-        "Analyze these sanitized reasoning-effort routing decisions. Recommend only conservative changes. "
-        "Protect quality-first tasks from being downgraded to medium. Return sections: add_local_xhigh_rules, "
-        "add_local_medium_rules, risky_medium_rules, classifier_health, rebenchmark_needed.\n\n"
+        "Analyze these sanitized local reasoning-effort routing decisions. Recommend only conservative "
+        "local-rule changes. Protect quality-first tasks from being downgraded to medium. Return sections: "
+        "add_local_xhigh_rules, add_local_medium_rules, risky_medium_rules, local_rule_coverage.\n\n"
         + json.dumps(compact_records, ensure_ascii=False, separators=(",", ":"))
     )
-
-
-def _model_sort_key(model_id: str) -> Tuple[int, ...]:
-    lowered = str(model_id or "").lower()
-    codex_bonus = (1,) if "codex" in lowered else (0,)
-    nums = tuple(int(part) for part in re.findall(r"\d+", lowered))
-    return nums + codex_bonus
