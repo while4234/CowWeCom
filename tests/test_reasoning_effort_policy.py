@@ -114,6 +114,7 @@ class TestReasoningEffortPolicy(unittest.TestCase):
             "润色这句话：今天会议我会晚点到。": "short_rewrite",
             "帮我想想怎么回复这条消息": "daily_expression_advice",
             "给这个小项目取名": "daily_expression_advice",
+            "要上班了 都周一了": "casual_daily_chat",
         }
 
         for text, expected_rule in cases.items():
