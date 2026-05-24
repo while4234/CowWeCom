@@ -154,6 +154,26 @@ class TestMultiWeixinInstances(unittest.TestCase):
 
         self.assertFalse(channel.active_send_text("receiver-id", "hello from bridge"))
 
+    def test_reply_image_send_reports_missing_file_as_failure(self):
+        sent = []
+
+        class FakeWeixinApi:
+            def send_text(self, receiver, text, context_token):
+                sent.append((receiver, text, context_token))
+                return {"ret": 0}
+
+        channel = WeixinChannel("weixin_user")
+        channel.channel_type = "weixin_user"
+        channel.api = FakeWeixinApi()
+        context = Context(ContextType.TEXT, "draw")
+        context["receiver"] = "receiver-id"
+        context["msg"] = SimpleNamespace(context_token="ctx-token")
+
+        ok = channel.send(Reply(ReplyType.IMAGE_URL, "file://C:/missing/cowwechat-image.png"), context)
+
+        self.assertFalse(ok)
+        self.assertEqual(sent, [("receiver-id", "[Image send failed: file not found]", "ctx-token")])
+
     def test_active_send_text_result_preserves_ret_minus_2(self):
         class RejectingWeixinApi:
             def send_text(self, receiver, text, context_token):

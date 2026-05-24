@@ -343,6 +343,27 @@ def _start_scheduler_service():
         logger.warning(f"[App] Scheduler service failed to start: {e}")
 
 
+def _start_image_generation_recovery(delay_seconds: float = 5.0):
+    """Recover image jobs that were interrupted by a previous process exit."""
+
+    def _recover():
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+        try:
+            from agent.tools.image_generation.job_manager import get_image_generation_job_manager
+            from bridge.bridge import Bridge
+
+            agent_bridge = Bridge().get_agent_bridge()
+            manager = get_image_generation_job_manager(agent_bridge)
+            recovered = manager.recover_unfinished_jobs(notify=True)
+            if recovered:
+                logger.warning("[App] Recovered %s unfinished image generation job(s)", len(recovered))
+        except Exception as e:
+            logger.warning(f"[App] Image generation recovery failed: {e}")
+
+    threading.Thread(target=_recover, daemon=True, name="image-generation-recovery").start()
+
+
 def run():
     global _channel_mgr
     try:
@@ -392,6 +413,7 @@ def run():
         _channel_mgr = ChannelManager()
         _channel_mgr.start(channel_names, first_start=True)
         _start_scheduler_service()
+        _start_image_generation_recovery()
 
         while True:
             time.sleep(1)

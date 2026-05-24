@@ -10,7 +10,7 @@ from agent.social_bridge.service import ActiveMessageRouter
 from agent.social_bridge.store import BridgeUser
 from agent.user_profiles import resolve_agent_user_profile, safe_actor_slug
 from bridge.agent_bridge import AgentBridge
-from bridge.reply import ReplyType
+from bridge.reply import Reply, ReplyType
 from channel.web.web_channel import ChannelsHandler
 from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
 from config import conf
@@ -433,6 +433,33 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         self.assertEqual(payload["body"]["chat_type"], 1)
         self.assertEqual(payload["body"]["msgtype"], "markdown")
         self.assertEqual(payload["body"]["markdown"]["content"], "hello from bridge")
+
+    def test_active_send_text_result_reports_websocket_send_failure(self):
+        class BrokenWebSocket:
+            def send(self, payload):
+                raise RuntimeError("socket closed")
+
+        self.channel._ws = BrokenWebSocket()
+        self.channel._connected = True
+
+        result = self.channel.active_send_text_result("wecom-user-1", "hello from bridge")
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["delivered"])
+        self.assertEqual(result["reason"], "send_error")
+
+    def test_send_text_returns_false_when_channel_not_ready(self):
+        ws = FakeWebSocket()
+        self.channel._ws = ws
+        self.channel._connected = False
+
+        delivered = self.channel.send(
+            Reply(ReplyType.TEXT, "hello"),
+            {"receiver": "wecom-user-1", "isgroup": False, "msg": None},
+        )
+
+        self.assertFalse(delivered)
+        self.assertEqual(ws.sent, [])
 
     def test_active_message_router_sends_to_running_wecom_bot_channel(self):
         calls = []

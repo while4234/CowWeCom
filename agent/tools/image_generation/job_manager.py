@@ -32,6 +32,13 @@ BROKER_RUNTIMES = {
     "local_broker",
     "local-broker",
 }
+JOB_STATE_FILE = "job_state.json"
+RECOVERABLE_STATUSES = {"queued", "running", "delivery_failed"}
+RESTART_RECOVERY_ERROR = (
+    "\u751f\u56fe\u4efb\u52a1\u5728\u540e\u53f0\u8fd0\u884c\u65f6 CowAgent "
+    "\u91cd\u542f\uff0c\u8fd9\u6b21\u4efb\u52a1\u5df2\u4e2d\u65ad\u3002"
+    "\u8bf7\u91cd\u65b0\u53d1\u9001\u751f\u56fe\u8bf7\u6c42\uff0c\u6211\u4f1a\u91cd\u65b0\u5f00\u59cb\u3002"
+)
 
 
 @dataclass
@@ -153,6 +160,7 @@ class ImageGenerationJobManager:
             q = self._queues.setdefault(actor_id, queue.Queue())
             q.put(job)
             self._jobs[job_id] = job
+            self._persist_job_state(job)
             if self.duplicate_window:
                 self._recent_submissions[dedupe_key] = job_id
             if actor_id not in self._active_workers:
@@ -169,6 +177,9 @@ class ImageGenerationJobManager:
             self._recent_submissions.pop(dedupe_key, None)
             return None
         if now - job.created_at > self.duplicate_window:
+            self._recent_submissions.pop(dedupe_key, None)
+            return None
+        if job.status not in {"queued", "running"}:
             self._recent_submissions.pop(dedupe_key, None)
             return None
         return job
@@ -201,6 +212,41 @@ class ImageGenerationJobManager:
     def shutdown(self, wait: bool = False) -> None:
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
+    def recover_unfinished_jobs(self, *, notify: bool = True) -> list[ImageGenerationJob]:
+        recovered: list[ImageGenerationJob] = []
+        for state_path in self._iter_state_files():
+            state = self._load_state_file(state_path)
+            if not state or state.get("status") not in RECOVERABLE_STATUSES:
+                continue
+
+            job = self._job_from_state(state, state_path)
+            if job is None:
+                continue
+
+            output_path = self._recoverable_output_path(job)
+            if output_path:
+                job.output_path = output_path
+                delivered = self._send_completion(job) if notify else True
+                job.status = "succeeded" if delivered else "delivery_failed"
+                if not delivered:
+                    job.error = "image generation completed, but delivery failed"
+            else:
+                job.status = "failed"
+                job.error = RESTART_RECOVERY_ERROR
+                delivered = self._send_failure(job) if notify else True
+                if not delivered:
+                    job.status = "delivery_failed"
+            job.completed_at = time.time()
+            self._persist_job_state(job)
+            recovered.append(job)
+
+        if recovered:
+            logger.warning(
+                "[ImageGenerationJobManager] recovered %s unfinished image job(s) from previous process",
+                len(recovered),
+            )
+        return recovered
+
     def _run_actor_queue(self, actor_id: str) -> None:
         try:
             while True:
@@ -219,6 +265,9 @@ class ImageGenerationJobManager:
     def _run_job(self, job: ImageGenerationJob) -> None:
         job.status = "running"
         job.started_at = time.time()
+        self._persist_job_state(job)
+        final_status = "failed"
+        final_error: Optional[str] = None
         try:
             result = self._invoke_generator(job)
             images = result.get("images") or []
@@ -227,18 +276,28 @@ class ImageGenerationJobManager:
             if not image_path:
                 raise RuntimeError(result.get("error") or "generator completed without an image")
             job.output_path = os.path.abspath(expand_path(str(image_path)))
-            job.status = "succeeded"
-            self._send_completion(job)
+            self._persist_job_state(job)
+            delivered = self._send_completion(job)
+            final_status = "succeeded" if delivered else "delivery_failed"
+            if not delivered:
+                final_error = "image generation completed, but delivery failed"
         except subprocess.TimeoutExpired:
-            job.status = "failed"
-            job.error = f"生图任务超时（超过 {self.task_timeout} 秒）"
-            self._send_failure(job)
+            final_error = f"生图任务超时（超过 {self.task_timeout} 秒）"
+            job.error = final_error
+            self._persist_job_state(job)
+            if not self._send_failure(job):
+                final_status = "delivery_failed"
         except Exception as e:
-            job.status = "failed"
-            job.error = str(e)
-            self._send_failure(job)
-        finally:
-            job.completed_at = time.time()
+            final_error = str(e)
+            job.error = final_error
+            self._persist_job_state(job)
+            if not self._send_failure(job):
+                final_status = "delivery_failed"
+
+        job.status = final_status
+        job.error = final_error
+        job.completed_at = time.time()
+        self._persist_job_state(job)
 
     def _invoke_generator(self, job: ImageGenerationJob) -> Dict[str, Any]:
         if not os.path.exists(self.script_path):
@@ -275,6 +334,118 @@ class ImageGenerationJobManager:
     def _build_output_dir(self, profile: Any, memory_user_id: str, job_id: str) -> str:
         user_files = os.path.join(self.workspace_root, "users", memory_user_id, "files")
         return os.path.abspath(os.path.join(user_files, "image-generation", job_id))
+
+    def _state_file_path(self, job: ImageGenerationJob) -> str:
+        return os.path.join(job.output_dir, JOB_STATE_FILE)
+
+    def _persist_job_state(self, job: ImageGenerationJob) -> None:
+        try:
+            os.makedirs(job.output_dir, exist_ok=True)
+            state_path = self._state_file_path(job)
+            tmp_path = f"{state_path}.{uuid.uuid4().hex}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(self._job_state_payload(job), f, ensure_ascii=False, indent=2, sort_keys=True)
+            for attempt in range(3):
+                try:
+                    os.replace(tmp_path, state_path)
+                    break
+                except PermissionError:
+                    if attempt == 2:
+                        raise
+                    time.sleep(0.05)
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+        except Exception as e:
+            if "tmp_path" in locals() and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            logger.warning(f"[ImageGenerationJobManager] failed to persist job state {job.job_id}: {e}")
+
+    @staticmethod
+    def _job_state_payload(job: ImageGenerationJob) -> Dict[str, Any]:
+        return {
+            "job_id": job.job_id,
+            "actor_id": job.actor_id,
+            "memory_user_id": job.memory_user_id,
+            "output_dir": job.output_dir,
+            "context_snapshot": job.context_snapshot,
+            "status": job.status,
+            "created_at": job.created_at,
+            "started_at": job.started_at,
+            "completed_at": job.completed_at,
+            "output_path": job.output_path,
+            "error": job.error,
+        }
+
+    def _iter_state_files(self):
+        root = Path(self.workspace_root) / "users"
+        if not root.exists():
+            return
+        yield from (str(path) for path in root.glob(f"*/files/image-generation/*/{JOB_STATE_FILE}") if path.is_file())
+
+    @staticmethod
+    def _load_state_file(state_path: str) -> Optional[Dict[str, Any]]:
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            return state if isinstance(state, dict) else None
+        except Exception as e:
+            logger.warning(f"[ImageGenerationJobManager] failed to read job state {state_path}: {e}")
+            return None
+
+    def _job_from_state(self, state: Dict[str, Any], state_path: str) -> Optional[ImageGenerationJob]:
+        job_id = str(state.get("job_id") or "").strip()
+        actor_id = str(state.get("actor_id") or "").strip()
+        memory_user_id = str(state.get("memory_user_id") or "").strip()
+        output_dir = str(state.get("output_dir") or os.path.dirname(state_path)).strip()
+        context_snapshot = state.get("context_snapshot") or {}
+        if not job_id or not actor_id or not memory_user_id or not isinstance(context_snapshot, dict):
+            logger.warning(f"[ImageGenerationJobManager] invalid job state skipped: {state_path}")
+            return None
+        return ImageGenerationJob(
+            job_id=job_id,
+            actor_id=actor_id,
+            memory_user_id=memory_user_id,
+            args={},
+            output_dir=os.path.abspath(expand_path(output_dir)),
+            context_snapshot=context_snapshot,
+            status=str(state.get("status") or "queued"),
+            created_at=self._optional_float(state.get("created_at")) or time.time(),
+            started_at=self._optional_float(state.get("started_at")),
+            completed_at=self._optional_float(state.get("completed_at")),
+            output_path=state.get("output_path"),
+            error=state.get("error"),
+        )
+
+    def _recoverable_output_path(self, job: ImageGenerationJob) -> Optional[str]:
+        candidates = []
+        if job.output_path:
+            candidates.append(str(job.output_path))
+        try:
+            output_dir = Path(job.output_dir)
+            for pattern in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+                candidates.extend(str(path) for path in output_dir.glob(pattern))
+        except Exception:
+            pass
+        for candidate in candidates:
+            path = os.path.abspath(expand_path(candidate))
+            if os.path.isfile(path):
+                return path
+        return None
+
+    @staticmethod
+    def _optional_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _clean_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
         allowed = ("prompt", "size", "aspect_ratio", "quality", "image_url", "runtime")
@@ -390,29 +561,46 @@ class ImageGenerationJobManager:
 
         return create_channel(channel_type)
 
-    def _send_completion(self, job: ImageGenerationJob) -> None:
+    def _send_completion(self, job: ImageGenerationJob) -> bool:
         text = f"生图完成（任务 {job.job_id}），图片已生成。"
-        self._send_reply(job, Reply(ReplyType.TEXT, text), text)
-        self._send_reply(job, Reply(ReplyType.IMAGE_URL, f"file://{job.output_path}"), "")
-        self._remember_output(job, "生图完成，图片已发送。")
+        text_delivered = self._send_reply(job, Reply(ReplyType.TEXT, text), text)
+        image_delivered = self._send_reply(job, Reply(ReplyType.IMAGE_URL, f"file://{job.output_path}"), "")
+        delivered = text_delivered and image_delivered
+        if delivered:
+            self._remember_output(job, "生图完成，图片已发送。")
+        return delivered
 
-    def _send_failure(self, job: ImageGenerationJob) -> None:
+    def _send_failure(self, job: ImageGenerationJob) -> bool:
         error = job.error or "未知错误"
         text = f"生图失败（任务 {job.job_id}）：{error}\n我不会用相同参数反复重试。"
-        self._send_reply(job, Reply(ReplyType.TEXT, text), text)
-        self._remember_output(job, text)
+        delivered = self._send_reply(job, Reply(ReplyType.TEXT, text), text)
+        if delivered:
+            self._remember_output(job, text)
+        return delivered
 
-    def _send_reply(self, job: ImageGenerationJob, reply: Reply, content: str) -> None:
+    def _send_reply(self, job: ImageGenerationJob, reply: Reply, content: str) -> bool:
         channel_type = str(job.context_snapshot.get("channel_type") or "unknown")
         receiver = job.context_snapshot.get("receiver")
         if not receiver:
             logger.error(f"[ImageGenerationJobManager] missing receiver for job={job.job_id}")
-            return
+            return False
         try:
             channel = self._get_channel(channel_type)
-            channel.send(reply, self._build_send_context(job, content))
+            result = channel.send(reply, self._build_send_context(job, content))
+            if result is False or (isinstance(result, dict) and result.get("ok") is False):
+                logger.error(
+                    "[ImageGenerationJobManager] channel reported delivery failure "
+                    "for job=%s channel=%s receiver=%s result=%s",
+                    job.job_id,
+                    channel_type,
+                    receiver,
+                    result,
+                )
+                return False
+            return True
         except Exception as e:
             logger.error(f"[ImageGenerationJobManager] failed to send job={job.job_id}: {e}", exc_info=True)
+            return False
 
     def _remember_output(self, job: ImageGenerationJob, content: str) -> None:
         if not self.agent_bridge or not content:

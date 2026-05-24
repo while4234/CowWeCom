@@ -675,14 +675,11 @@ class WeixinChannel(ChatChannel):
         if reply.type == ReplyType.TEXT:
             return self._send_text(reply.content, receiver, context_token)
         elif reply.type in (ReplyType.IMAGE_URL, ReplyType.IMAGE):
-            self._send_image(reply.content, receiver, context_token)
-            return True
+            return self._send_image(reply.content, receiver, context_token)
         elif reply.type == ReplyType.FILE:
-            self._send_file(reply.content, receiver, context_token)
-            return True
+            return self._send_file(reply.content, receiver, context_token)
         elif reply.type in (ReplyType.VIDEO, ReplyType.VIDEO_URL):
-            self._send_video(reply.content, receiver, context_token)
-            return True
+            return self._send_video(reply.content, receiver, context_token)
         else:
             logger.warning(f"[Weixin] Unsupported reply type: {reply.type}, fallback to text")
             return self._send_text(str(reply.content), receiver, context_token)
@@ -846,7 +843,7 @@ class WeixinChannel(ChatChannel):
         local_path = self._resolve_media_path(img_path_or_url)
         if not local_path:
             self._send_text("[Image send failed: file not found]", receiver, context_token)
-            return
+            return False
         try:
             result = upload_media_to_cdn(self.api, local_path, receiver, media_type=1)
             self.api.send_image_item(
@@ -857,15 +854,17 @@ class WeixinChannel(ChatChannel):
                 ciphertext_size=result["ciphertext_size"],
             )
             logger.info(f"[Weixin] Image sent to {receiver}")
+            return True
         except Exception as e:
             logger.error(f"[Weixin] Image send failed: {e}")
             self._send_text("[Image send failed]", receiver, context_token)
+            return False
 
     def _send_file(self, file_path_or_url: str, receiver: str, context_token: str):
         local_path = self._resolve_media_path(file_path_or_url)
         if not local_path:
             self._send_text("[File send failed: file not found]", receiver, context_token)
-            return
+            return False
         try:
             result = upload_media_to_cdn(self.api, local_path, receiver, media_type=3)
             self.api.send_file_item(
@@ -877,15 +876,17 @@ class WeixinChannel(ChatChannel):
                 file_size=result["raw_size"],
             )
             logger.info(f"[Weixin] File sent to {receiver}")
+            return True
         except Exception as e:
             logger.error(f"[Weixin] File send failed: {e}")
             self._send_text("[File send failed]", receiver, context_token)
+            return False
 
     def _send_video(self, video_path_or_url: str, receiver: str, context_token: str):
         local_path = self._resolve_media_path(video_path_or_url)
         if not local_path:
             self._send_text("[Video send failed: file not found]", receiver, context_token)
-            return
+            return False
         try:
             result = upload_media_to_cdn(self.api, local_path, receiver, media_type=2)
             self.api.send_video_item(
@@ -896,9 +897,11 @@ class WeixinChannel(ChatChannel):
                 ciphertext_size=result["ciphertext_size"],
             )
             logger.info(f"[Weixin] Video sent to {receiver}")
+            return True
         except Exception as e:
             logger.error(f"[Weixin] Video send failed: {e}")
             self._send_text("[Video send failed]", receiver, context_token)
+            return False
 
     @staticmethod
     def _resolve_media_path(path_or_url: str) -> str:

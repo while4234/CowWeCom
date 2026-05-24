@@ -216,9 +216,19 @@ class WecomBotChannel(ChatChannel):
         self._ws_thread.start()
         self._ws_thread.join()
 
-    def _ws_send(self, data: dict):
-        if self._ws:
+    def _ws_send(self, data: dict) -> bool:
+        if not self._ws:
+            logger.warning("[WecomBot] Cannot send websocket payload: channel is not connected")
+            return False
+        if data.get("cmd") != "aibot_subscribe" and not getattr(self, "_connected", True):
+            logger.warning("[WecomBot] Cannot send websocket payload: channel is not ready")
+            return False
+        try:
             self._ws.send(json.dumps(data, ensure_ascii=False))
+            return True
+        except Exception as e:
+            logger.error(f"[WecomBot] Websocket send failed: {e}", exc_info=True)
+            return False
 
     def _gen_req_id(self) -> str:
         return uuid.uuid4().hex[:16]
@@ -682,19 +692,20 @@ class WecomBotChannel(ChatChannel):
         req_id = getattr(msg, "req_id", None) if msg else None
 
         if reply.type == ReplyType.TEXT:
-            self._send_text(reply.content, receiver, is_group, req_id)
+            return self._send_text(reply.content, receiver, is_group, req_id)
         elif reply.type in (ReplyType.IMAGE_URL, ReplyType.IMAGE):
-            self._send_image(reply.content, receiver, is_group, req_id)
+            return self._send_image(reply.content, receiver, is_group, req_id)
         elif reply.type == ReplyType.FILE:
+            text_sent = True
             if hasattr(reply, "text_content") and reply.text_content:
-                self._send_text(reply.text_content, receiver, is_group, req_id)
+                text_sent = self._send_text(reply.text_content, receiver, is_group, req_id)
                 time.sleep(0.3)
-            self._send_file(reply.content, receiver, is_group, req_id)
+            return text_sent and self._send_file(reply.content, receiver, is_group, req_id)
         elif reply.type == ReplyType.VIDEO or reply.type == ReplyType.VIDEO_URL:
-            self._send_file(reply.content, receiver, is_group, req_id, media_type="video")
+            return self._send_file(reply.content, receiver, is_group, req_id, media_type="video")
         else:
             logger.warning(f"[WecomBot] Unsupported reply type: {reply.type}, falling back to text")
-            self._send_text(str(reply.content), receiver, is_group, req_id)
+            return self._send_text(str(reply.content), receiver, is_group, req_id)
 
     def active_send_text_result(self, receiver: str, text: str, is_group: bool = False, **kwargs) -> dict:
         """Proactively send text to a reachable WeCom chat and return a normalized result."""
@@ -715,7 +726,13 @@ class WecomBotChannel(ChatChannel):
             }
 
         try:
-            self._active_send_markdown(str(text or ""), clean_receiver, bool(is_group))
+            if not self._active_send_markdown(str(text or ""), clean_receiver, bool(is_group)):
+                return {
+                    "ok": False,
+                    "delivered": False,
+                    "reason": "send_error",
+                    "receiver": clean_receiver,
+                }
             return {
                 "ok": True,
                 "delivered": True,
@@ -751,7 +768,7 @@ class WecomBotChannel(ChatChannel):
             # before receiving the finish packet
             time.sleep(0.15)
 
-            self._ws_send({
+            return self._ws_send({
                 "cmd": "aibot_respond_msg",
                 "headers": {"req_id": req_id},
                 "body": {
@@ -764,7 +781,7 @@ class WecomBotChannel(ChatChannel):
                 },
             })
         else:
-            self._active_send_markdown(content, receiver, is_group)
+            return self._active_send_markdown(content, receiver, is_group)
 
     def _send_image(self, img_path_or_url: str, receiver: str, is_group: bool, req_id: str = None):
         """Send image reply. Converts to JPG/PNG and compresses if >2MB."""
@@ -794,23 +811,23 @@ class WecomBotChannel(ChatChannel):
             except Exception as e:
                 logger.error(f"[WecomBot] Failed to download image for sending: {e}")
                 self._send_text("[Image send failed]", receiver, is_group, req_id)
-                return
+                return False
 
         if not os.path.exists(local_path):
             logger.error(f"[WecomBot] Image file not found: {local_path}")
-            return
+            return False
 
         max_image_size = 2 * 1024 * 1024  # 2MB limit for image upload
         local_path = self._ensure_image_format(local_path)
         if not local_path:
             self._send_text("[Image format conversion failed]", receiver, is_group, req_id)
-            return
+            return False
 
         if os.path.getsize(local_path) > max_image_size:
             local_path = self._compress_image(local_path, max_image_size)
             if not local_path:
                 self._send_text("[Image too large]", receiver, is_group, req_id)
-                return
+                return False
 
         file_size = os.path.getsize(local_path)
         logger.info(f"[WecomBot] Uploading image: path={local_path}, size={file_size} bytes")
@@ -818,10 +835,10 @@ class WecomBotChannel(ChatChannel):
         if not media_id:
             logger.error("[WecomBot] Failed to upload image")
             self._send_text("[Image upload failed]", receiver, is_group, req_id)
-            return
+            return False
 
         if req_id:
-            self._ws_send({
+            return self._ws_send({
                 "cmd": "aibot_respond_msg",
                 "headers": {"req_id": req_id},
                 "body": {
@@ -830,7 +847,7 @@ class WecomBotChannel(ChatChannel):
                 },
             })
         else:
-            self._ws_send({
+            return self._ws_send({
                 "cmd": "aibot_send_msg",
                 "headers": {"req_id": self._gen_req_id()},
                 "body": {
@@ -928,19 +945,19 @@ class WecomBotChannel(ChatChannel):
                 local_path = tmp_path
             except Exception as e:
                 logger.error(f"[WecomBot] Failed to download file for sending: {e}")
-                return
+                return False
 
         if not os.path.exists(local_path):
             logger.error(f"[WecomBot] File not found: {local_path}")
-            return
+            return False
 
         media_id = self._upload_media(local_path, media_type)
         if not media_id:
             logger.error(f"[WecomBot] Failed to upload {media_type}")
-            return
+            return False
 
         if req_id:
-            self._ws_send({
+            return self._ws_send({
                 "cmd": "aibot_respond_msg",
                 "headers": {"req_id": req_id},
                 "body": {
@@ -949,7 +966,7 @@ class WecomBotChannel(ChatChannel):
                 },
             })
         else:
-            self._ws_send({
+            return self._ws_send({
                 "cmd": "aibot_send_msg",
                 "headers": {"req_id": self._gen_req_id()},
                 "body": {
@@ -962,7 +979,7 @@ class WecomBotChannel(ChatChannel):
 
     def _active_send_markdown(self, content: str, receiver: str, is_group: bool):
         """Proactively send markdown message (for scheduled tasks, no req_id)."""
-        self._ws_send({
+        return self._ws_send({
             "cmd": "aibot_send_msg",
             "headers": {"req_id": self._gen_req_id()},
             "body": {

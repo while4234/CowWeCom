@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import app
 
@@ -31,6 +31,23 @@ class AppSchedulerStartupTest(unittest.TestCase):
             app._start_scheduler_service()
 
         init_scheduler.assert_not_called()
+
+    def test_start_image_generation_recovery_runs_manager_recovery(self):
+        manager = SimpleNamespace(recover_unfinished_jobs=Mock(return_value=[]))
+        bridge = SimpleNamespace(get_agent_bridge=lambda: object())
+
+        def immediate_thread(target, **kwargs):
+            return SimpleNamespace(start=target)
+
+        with patch("app.threading.Thread", side_effect=immediate_thread), patch(
+            "bridge.bridge.Bridge", return_value=bridge
+        ), patch(
+            "agent.tools.image_generation.job_manager.get_image_generation_job_manager",
+            return_value=manager,
+        ):
+            app._start_image_generation_recovery(delay_seconds=0)
+
+        manager.recover_unfinished_jobs.assert_called_once_with(notify=True)
 
 
 if __name__ == "__main__":

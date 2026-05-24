@@ -1,3 +1,4 @@
+import base64
 import os
 import json
 import sys
@@ -10,7 +11,11 @@ from unittest.mock import patch
 
 from config import conf
 from agent.tools.image_generation.image_generation_task import ImageGenerationTaskTool
-from agent.tools.image_generation.job_manager import ImageGenerationJobManager
+from agent.tools.image_generation.job_manager import (
+    ImageGenerationJobManager,
+    JOB_STATE_FILE,
+    RESTART_RECOVERY_ERROR,
+)
 from bridge.context import Context, ContextType
 
 
@@ -23,6 +28,12 @@ class FakeChannel:
 
     def send(self, reply, context):
         self.sent.append((reply.type.name, reply.content, context.get("receiver")))
+
+
+class FailingChannel(FakeChannel):
+    def send(self, reply, context):
+        super().send(reply, context)
+        return False
 
 
 class CaptureManager:
@@ -96,7 +107,7 @@ def make_context(receiver="receiver"):
 def wait_for(job, timeout=5):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if job.status in ("succeeded", "failed", "cancelled"):
+        if job.status in ("succeeded", "failed", "cancelled", "delivery_failed"):
             return job.status
         time.sleep(0.02)
     raise AssertionError(f"job {job.job_id} did not finish, status={job.status}")
@@ -187,6 +198,34 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
                 self.assertEqual(wait_for(job_1), "succeeded")
                 image_texts = [content for kind, content, _ in channel.sent if kind == "IMAGE_URL"]
                 self.assertEqual(len(image_texts), 1)
+            finally:
+                manager.shutdown(wait=False)
+
+    def test_completed_duplicate_args_start_new_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_generate.py"
+            write_fake_generator(script)
+            channel = FakeChannel()
+            manager = ImageGenerationJobManager(
+                script_path=str(script),
+                workspace_root=tmp,
+                global_workers=1,
+                task_timeout=5,
+                duplicate_window=120,
+            )
+            manager._get_channel = lambda channel_type: channel
+            profile = make_profile("weixin:a", "user_a", tmp)
+            context = make_context("a")
+
+            job_1 = manager.submit({"prompt": "sleep:0", "quality": "medium"}, context, profile)
+            try:
+                self.assertEqual(wait_for(job_1), "succeeded")
+
+                job_2 = manager.submit({"prompt": "sleep:0", "quality": "medium"}, context, profile)
+
+                self.assertIsNot(job_1, job_2)
+                self.assertEqual(len(manager._jobs), 2)
+                self.assertEqual(wait_for(job_2), "succeeded")
             finally:
                 manager.shutdown(wait=False)
 
@@ -291,6 +330,146 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
                 self.assertTrue(os.path.commonpath([job.output_dir, expected_root]) == expected_root)
             finally:
                 manager.shutdown(wait=False)
+
+    def test_job_state_is_persisted_until_completion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_generate.py"
+            write_fake_generator(script)
+            channel = FakeChannel()
+            manager = ImageGenerationJobManager(script_path=str(script), workspace_root=tmp, global_workers=1)
+            manager._get_channel = lambda channel_type: channel
+            job = manager.submit({"prompt": "sleep:0"}, make_context("a"), make_profile("weixin:a", "user_a", tmp))
+            try:
+                state_path = Path(job.output_dir) / JOB_STATE_FILE
+                self.assertTrue(state_path.exists())
+                self.assertNotIn("prompt", json.loads(state_path.read_text(encoding="utf-8")))
+
+                self.assertEqual(wait_for(job), "succeeded")
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                self.assertEqual(state["job_id"], job.job_id)
+                self.assertEqual(state["status"], "succeeded")
+                self.assertTrue(Path(state["output_path"]).exists())
+                self.assertIsNotNone(state["completed_at"])
+            finally:
+                manager.shutdown(wait=False)
+
+    def test_recover_unfinished_job_sends_failure_notice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "users" / "user_a" / "files" / "image-generation" / "orphanjob"
+            output_dir.mkdir(parents=True)
+            state_path = output_dir / JOB_STATE_FILE
+            state_path.write_text(
+                json.dumps({
+                    "job_id": "orphanjob",
+                    "actor_id": "weixin:a",
+                    "memory_user_id": "user_a",
+                    "output_dir": str(output_dir),
+                    "context_snapshot": {
+                        "channel_type": "weixin",
+                        "receiver": "a",
+                        "isgroup": False,
+                        "session_id": "a",
+                        "actor_id": "weixin:a",
+                        "memory_user_id": "user_a",
+                    },
+                    "status": "running",
+                    "created_at": time.time() - 60,
+                }),
+                encoding="utf-8",
+            )
+            channel = FakeChannel()
+            manager = ImageGenerationJobManager(workspace_root=tmp, global_workers=1)
+            manager._get_channel = lambda channel_type: channel
+            try:
+                recovered = manager.recover_unfinished_jobs()
+
+                self.assertEqual(len(recovered), 1)
+                self.assertEqual(recovered[0].status, "failed")
+                failure_texts = [content for kind, content, _ in channel.sent if kind == "TEXT"]
+                self.assertEqual(len(failure_texts), 1)
+                self.assertIn("orphanjob", failure_texts[0])
+                self.assertIn(RESTART_RECOVERY_ERROR, failure_texts[0])
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                self.assertEqual(state["status"], "failed")
+                self.assertIn(RESTART_RECOVERY_ERROR, state["error"])
+            finally:
+                manager.shutdown(wait=False)
+
+    def test_recover_unfinished_job_with_output_resends_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "users" / "user_a" / "files" / "image-generation" / "generatedjob"
+            output_dir.mkdir(parents=True)
+            image_path = output_dir / "out.png"
+            image_path.write_bytes(base64.b64decode(PNG_B64))
+            state_path = output_dir / JOB_STATE_FILE
+            state_path.write_text(
+                json.dumps({
+                    "job_id": "generatedjob",
+                    "actor_id": "weixin:a",
+                    "memory_user_id": "user_a",
+                    "output_dir": str(output_dir),
+                    "output_path": str(image_path),
+                    "context_snapshot": {
+                        "channel_type": "weixin",
+                        "receiver": "a",
+                        "isgroup": False,
+                        "session_id": "a",
+                        "actor_id": "weixin:a",
+                        "memory_user_id": "user_a",
+                    },
+                    "status": "running",
+                    "created_at": time.time() - 60,
+                }),
+                encoding="utf-8",
+            )
+            channel = FakeChannel()
+            manager = ImageGenerationJobManager(workspace_root=tmp, global_workers=1)
+            manager._get_channel = lambda channel_type: channel
+            try:
+                recovered = manager.recover_unfinished_jobs()
+
+                self.assertEqual(len(recovered), 1)
+                self.assertEqual(recovered[0].status, "succeeded")
+                kinds = [kind for kind, _, _ in channel.sent]
+                self.assertIn("TEXT", kinds)
+                self.assertIn("IMAGE_URL", kinds)
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                self.assertEqual(state["status"], "succeeded")
+                self.assertEqual(Path(state["output_path"]), image_path)
+            finally:
+                manager.shutdown(wait=False)
+
+    def test_delivery_failed_job_is_persisted_for_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_generate.py"
+            write_fake_generator(script)
+            manager = ImageGenerationJobManager(script_path=str(script), workspace_root=tmp, global_workers=1)
+            manager._get_channel = lambda channel_type: FailingChannel()
+            job = manager.submit({"prompt": "sleep:0"}, make_context("a"), make_profile("weixin:a", "user_a", tmp))
+            try:
+                self.assertEqual(wait_for(job), "delivery_failed")
+                state_path = Path(job.output_dir) / JOB_STATE_FILE
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                self.assertEqual(state["status"], "delivery_failed")
+                self.assertTrue(Path(state["output_path"]).exists())
+            finally:
+                manager.shutdown(wait=False)
+
+            channel = FakeChannel()
+            recovery_manager = ImageGenerationJobManager(workspace_root=tmp, global_workers=1)
+            recovery_manager._get_channel = lambda channel_type: channel
+            try:
+                recovered = recovery_manager.recover_unfinished_jobs()
+
+                self.assertEqual(len(recovered), 1)
+                self.assertEqual(recovered[0].status, "succeeded")
+                kinds = [kind for kind, _, _ in channel.sent]
+                self.assertIn("TEXT", kinds)
+                self.assertIn("IMAGE_URL", kinds)
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                self.assertEqual(state["status"], "succeeded")
+            finally:
+                recovery_manager.shutdown(wait=False)
 
     def test_manager_defaults_to_codex_auth_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
