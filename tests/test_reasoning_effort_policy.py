@@ -343,7 +343,7 @@ class TestAgentBridgeReasoningEffortMetadata(unittest.TestCase):
         )
         bridge = AgentBridge.__new__(AgentBridge)
         bridge.get_agent = lambda session_id=None, profile=None: fake_agent
-        bridge._try_onboarding_welcome = lambda query, profile=None: None
+        bridge._try_onboarding_welcome = lambda query, profile=None, **kwargs: None
         bridge._persist_messages = lambda *args, **kwargs: None
         bridge._schedule_mcp_hot_reload = lambda agent: None
         context = Context(kwargs={

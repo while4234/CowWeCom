@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from agent.protocol.models import LLMRequest
 from common.llm_backend_router import get_current_backend, get_effective_model
 from common.llm_usage_tracker import stable_metadata_hash
 from common.log import logger
@@ -291,6 +290,8 @@ def run_policy_optimizer_once(
 
     prompt = _optimizer_prompt(records)
     try:
+        from agent.protocol.models import LLMRequest
+
         request = LLMRequest(
             messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
             temperature=0,
