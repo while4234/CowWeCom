@@ -27,6 +27,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 DEFAULT_CONFIG_PATH = "~/.cow-douyin-video-harvester/config.json"
+DEFAULT_BROWSER_PROFILE_DIR = "~/.cow-douyin-video-harvester/browser-profile"
+BROWSER_PROFILE_ENV = "DOUYIN_BROWSER_USER_DATA_DIR"
 WECOM_WS_URL = "wss://openws.work.weixin.qq.com"
 WECOM_MEDIA_CHUNK_SIZE = 512 * 1024
 
@@ -209,7 +211,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "browser_fallback": {
         "enabled": True,
         "use_persistent_profile": True,
-        "user_data_dir": "~/.cow-douyin-video-harvester/browser-profile",
+        "user_data_dir": DEFAULT_BROWSER_PROFILE_DIR,
         "close_locked_profile_processes": True,
         "channel": "chrome",
         "headless": False,
@@ -300,6 +302,18 @@ def expand_path(path: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(path))).resolve()
 
 
+def configure_browser_profile(config: Dict[str, Any], environ: Dict[str, str]) -> None:
+    browser_config = config.setdefault("browser_fallback", {})
+    env_profile = environ.get(BROWSER_PROFILE_ENV)
+    if env_profile:
+        browser_config["user_data_dir"] = env_profile
+        return
+
+    configured_profile = str(browser_config.get("user_data_dir") or "").strip()
+    if not configured_profile:
+        browser_config["user_data_dir"] = DEFAULT_BROWSER_PROFILE_DIR
+
+
 def project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
@@ -366,6 +380,7 @@ def build_config(args: argparse.Namespace, env: Optional[Dict[str, str]] = None)
     config["json"] = bool(args.json)
     config["debug"] = bool(args.debug)
     config["cleanup"] = bool(args.cleanup)
+    configure_browser_profile(config, environ)
     return config
 
 
@@ -1346,7 +1361,7 @@ def collect_douyin_browser_fallback(
         add_warning(config, f"douyin browser fallback unavailable: Playwright import failed: {exc}")
         return []
 
-    user_data_dir = expand_path(str(browser_config.get("user_data_dir") or "~/.codex/playwright-profile"))
+    user_data_dir = expand_path(str(browser_config.get("user_data_dir") or DEFAULT_BROWSER_PROFILE_DIR))
     user_data_dir.mkdir(parents=True, exist_ok=True)
     timeout_ms = int(float(browser_config.get("timeout_seconds", 45)) * 1000)
     wait_ms = int(float(browser_config.get("wait_seconds", 8)) * 1000)
@@ -1526,11 +1541,18 @@ def collect_douyin(config: Dict[str, Any]) -> List[DouyinVideoCandidate]:
     candidates: List[DouyinVideoCandidate] = []
     headers_json = headers_for_douyin(config, "application/json, text/plain, */*")
     headers_html = headers_for_douyin(config, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-    if "Cookie" not in headers_html:
+    collection_mode = str(config.get("collection_mode", "browser")).lower()
+    browser_config = config.get("browser_fallback", {})
+    uses_persistent_browser = (
+        collection_mode == "browser"
+        and browser_config.get("enabled", True)
+        and browser_config.get("use_persistent_profile", False)
+    )
+    if "Cookie" not in headers_html and not uses_persistent_browser:
         add_warning(config, "DOUYIN_COOKIE not set; public Douyin pages may return risk-control shells and be skipped")
 
     max_candidates = int(config.get("max_candidates", 30))
-    if str(config.get("collection_mode", "browser")).lower() == "browser":
+    if collection_mode == "browser":
         queries = build_search_queries([], config)
         browser_candidates = collect_douyin_browser_fallback(config, queries)
         browser_candidates.sort(key=lambda candidate: candidate.score, reverse=True)

@@ -21,6 +21,28 @@ def load_harvester_module():
     return module
 
 
+def make_config_args(config_path, **overrides):
+    values = {
+        "config": str(config_path),
+        "out": None,
+        "max_total": None,
+        "max_candidates": None,
+        "since_hours": None,
+        "delete_after_hours": None,
+        "commentary_style": None,
+        "receiver": None,
+        "group": False,
+        "no_send": False,
+        "send": False,
+        "cleanup": False,
+        "dry_run": True,
+        "json": True,
+        "debug": False,
+    }
+    values.update(overrides)
+    return Namespace(**values)
+
+
 class DailyDouyinVideoHarvesterTest(unittest.TestCase):
     def setUp(self):
         self.module = load_harvester_module()
@@ -319,6 +341,32 @@ class DailyDouyinVideoHarvesterTest(unittest.TestCase):
 
         hot_mock.assert_not_called()
         self.assertEqual(candidates, [candidate])
+
+    def test_persistent_browser_mode_does_not_require_cookie_env_warning(self):
+        candidate = self.module.DouyinVideoCandidate(
+            source_id="browser:video:1",
+            source_url="https://www.douyin.com/video/browser",
+            video_url="https://v26-web.douyinvod.com/browser.mp4",
+            title="browser only",
+            score=100,
+            meme_score=100,
+        )
+        config = {
+            **self.module.DEFAULT_CONFIG,
+            "_env": {},
+            "_warnings": [],
+            "collection_mode": "browser",
+            "browser_fallback": {
+                **self.module.DEFAULT_CONFIG["browser_fallback"],
+                "use_persistent_profile": True,
+            },
+            "max_candidates": 3,
+        }
+
+        with patch.object(self.module, "collect_douyin_browser_fallback", return_value=[candidate]):
+            self.module.collect_douyin(config)
+
+        self.assertNotIn("DOUYIN_COOKIE not set", "\n".join(config["_warnings"]))
 
     def test_same_day_seen_filters_previous_hot_video_before_top_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -744,27 +792,39 @@ class DailyDouyinVideoHarvesterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
             config_path.write_text(json.dumps({"output_dir": str(Path(tmp) / "config-out")}), encoding="utf-8")
-            args = Namespace(
-                config=str(config_path),
-                out=str(Path(tmp) / "cli-out"),
-                max_total=None,
-                max_candidates=None,
-                since_hours=None,
-                delete_after_hours=None,
-                commentary_style=None,
-                receiver=None,
-                group=False,
-                no_send=False,
-                send=False,
-                cleanup=False,
-                dry_run=True,
-                json=True,
-                debug=False,
-            )
+            args = make_config_args(config_path, out=str(Path(tmp) / "cli-out"))
 
             config = self.module.build_config(args, env={"DOUYIN_VIDEO_OUTPUT_DIR": str(Path(tmp) / "env-out")})
 
             self.assertEqual(Path(config["output_dir"]), (Path(tmp) / "cli-out").resolve())
+
+    def test_blank_browser_profile_config_uses_skill_owned_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps({"browser_fallback": {"user_data_dir": ""}}),
+                encoding="utf-8",
+            )
+
+            config = self.module.build_config(make_config_args(config_path), env={})
+
+            self.assertEqual(config["browser_fallback"]["user_data_dir"], self.module.DEFAULT_BROWSER_PROFILE_DIR)
+
+    def test_browser_profile_env_overrides_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps({"browser_fallback": {"user_data_dir": self.module.DEFAULT_BROWSER_PROFILE_DIR}}),
+                encoding="utf-8",
+            )
+            profile_override = str(Path(tmp) / "douyin-profile")
+
+            config = self.module.build_config(
+                make_config_args(config_path),
+                env={self.module.BROWSER_PROFILE_ENV: profile_override},
+            )
+
+            self.assertEqual(config["browser_fallback"]["user_data_dir"], profile_override)
 
 
 if __name__ == "__main__":

@@ -81,7 +81,8 @@ Output directory priority:
 
 Environment variables:
 
-- `DOUYIN_COOKIE`: reused by the default persistent-browser collection path; keep it in the user environment or local config, not in chat or Git.
+- `DOUYIN_COOKIE`: optional fallback cookie header. The default persistent-browser path can rely on the skill-owned browser profile instead; if you set this, keep it in the user environment or local config, not in chat or Git.
+- `DOUYIN_BROWSER_USER_DATA_DIR`: optional persistent Playwright Chrome profile override. By default the script uses its own project-local browser profile at `~/.cow-douyin-video-harvester/browser-profile`.
 - `WECOM_BOT_ID` / `WECOM_BOT_SECRET`: optional override. If missing, the script reads `D:/CowWechat/config.json`.
 - `WECOM_BOT_RECEIVER`: optional receiver userid/chatid. If missing, the script tries to resolve the first WeCom admin profile in CowWechat config.
 - `WECOM_BOT_IS_GROUP`: set `1` or `true` for group chat receivers.
@@ -126,7 +127,7 @@ Important config keys:
 
 If Douyin appears unreachable because Clash Verge subscription updates broke local direct rules, the script runs `D:\CowWechat\scripts\clash_verge_rule_guard.py --json` once and retries once. This repairs local proxy rules only; it does not bypass captcha, login, signatures, or platform risk control.
 
-Default collection uses a dedicated persistent Playwright Chrome profile under `~/.cow-douyin-video-harvester/browser-profile`. This is more stable for Douyin risk-control than a brand-new temporary context because captcha/login state can persist across runs. The script still injects `DOUYIN_COOKIE` at startup and closes the browser when done. If that dedicated profile is locked by a stale browser process, the script may close only Chrome processes whose command line explicitly references that profile path, then retry. It does not close the user's normal Chrome profile.
+Default collection uses the skill-owned persistent Playwright Chrome profile under `~/.cow-douyin-video-harvester/browser-profile`. This keeps the skill portable across machines and independent from Codex-specific paths. The script still injects `DOUYIN_COOKIE` at startup when provided and closes the browser when done. If the skill profile is locked by a stale browser process, the script may close only Chrome processes whose command line explicitly references that profile path, then retry. It does not close the user's normal Chrome profile.
 
 The script extracts candidates from ordinary page responses and DOM content. It does not read/export browser-stored cookies or localStorage, generate `a_bogus` or other signatures, or solve captcha. If a login or security verification page appears, it records a warning and stops; the user should complete the verification in the opened dedicated profile window, then run the skill again.
 
@@ -181,7 +182,7 @@ System cron fallback:
 ## 合规边界
 
 - Use normal public web responses or the user's explicit `DOUYIN_COOKIE`.
-- Browser collection uses a dedicated persistent profile by default; it must close the browser after each run and must not read/export browser-stored cookies or generate platform signatures.
+- Browser collection uses the skill-owned persistent Playwright profile by default; it must close the browser after each run and must not read/export browser-stored cookies or generate platform signatures.
 - Do not bypass captcha, signature checks, login limits, or platform risk controls.
 - Do not repost or publish to Douyin.
 - Keep source attribution and local manifest records.
