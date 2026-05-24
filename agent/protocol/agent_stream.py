@@ -132,6 +132,7 @@ class AgentStreamExecutor:
         self._tool_skip_count = 0
         self._tool_duplicate_success_count = 0
         self._tool_memory_rule_hits = 0
+        self._tool_policy_skip_turn_credit = 0
         self._last_tool_failure_class = ""
         self._request_tool_result_compacted_count = 0
 
@@ -142,7 +143,53 @@ class AgentStreamExecutor:
             "tool_attempt_error_count": int(getattr(self, "_tool_attempt_error_count", 0) or 0),
             "tool_skip_count": int(getattr(self, "_tool_skip_count", 0) or 0),
             "tool_failure_class": getattr(self, "_last_tool_failure_class", "") or "",
+            "tool_policy_skip_turn_credit": int(getattr(self, "_tool_policy_skip_turn_credit", 0) or 0),
         }
+
+    def _effective_max_turns(self) -> int:
+        """Return max turns plus bounded credit for deterministic policy skips."""
+        credit = int(getattr(self, "_tool_policy_skip_turn_credit", 0) or 0)
+        return self.max_turns + min(credit, self._max_policy_skip_turn_credit())
+
+    def _max_policy_skip_turn_credit(self) -> int:
+        try:
+            from config import conf
+
+            configured = int(conf().get("tool_policy_skip_turn_credit_limit", 3) or 3)
+        except Exception:
+            configured = 3
+        return max(0, min(configured, self.max_turns))
+
+    def _credit_policy_skip_turn_if_needed(self, turn: int, tool_results: List[Dict[str, Any]]) -> None:
+        """Refund one decision-step budget when a turn only hit deterministic policy guards."""
+        if not tool_results:
+            return
+        if not all(self._is_policy_skip_result(result) for result in tool_results):
+            return
+        limit = self._max_policy_skip_turn_credit()
+        current = int(getattr(self, "_tool_policy_skip_turn_credit", 0) or 0)
+        if current >= limit:
+            return
+        self._tool_policy_skip_turn_credit = current + 1
+        logger.info(
+            "[ToolAttemptMemory] Refunded decision-step budget for policy skip "
+            "(turn=%s, credit=%s/%s)",
+            turn,
+            self._tool_policy_skip_turn_credit,
+            limit,
+        )
+
+    @staticmethod
+    def _is_policy_skip_result(result: Dict[str, Any]) -> bool:
+        if not isinstance(result, dict):
+            return False
+        if result.get("tool_attempt_skipped"):
+            return True
+        payload = result.get("result")
+        if not isinstance(payload, dict):
+            return False
+        details = payload.get("details")
+        return isinstance(details, dict) and bool(details.get("self_evolution_guard"))
 
     def _record_reasoning_effort_outcome(
             self,
@@ -527,11 +574,12 @@ class AgentStreamExecutor:
 
         final_response = ""
         turn = 0
+        completed_naturally = False
         outcome_status = "success"
         outcome_failure_reason = ""
 
         try:
-            while turn < self.max_turns:
+            while turn < self._effective_max_turns():
                 self._raise_if_cancelled()
                 turn += 1
                 logger.info(f"[Agent] 第 {turn} 轮")
@@ -611,6 +659,7 @@ class AgentStreamExecutor:
                             "turn": turn,
                             "has_tool_calls": False
                         })
+                        completed_naturally = True
                         break
 
                 # Log tool calls with arguments (truncate long values like base64)
@@ -790,13 +839,14 @@ class AgentStreamExecutor:
                             "content": emergency_blocks
                         })
 
+                self._credit_policy_skip_turn_if_needed(turn, tool_results)
                 self._emit_event("turn_end", {
                     "turn": turn,
                     "has_tool_calls": True,
                     "tool_count": len(tool_calls)
                 })
 
-            if turn >= self.max_turns:
+            if not completed_naturally and turn >= self._effective_max_turns():
                 logger.warning(f"⚠️  已达到最大决策步数限制: {self.max_turns}")
                 outcome_status = "max_turns_exhausted"
                 outcome_failure_reason = "max_turns_exhausted"

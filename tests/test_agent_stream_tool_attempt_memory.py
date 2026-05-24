@@ -221,6 +221,34 @@ class TestAgentStreamToolAttemptMemory(unittest.TestCase):
             self.assertEqual(tool.calls, 0)
             self.assertEqual(executor._tool_memory_rule_hits, 1)
 
+    def test_policy_skip_turn_refunds_max_turn_budget(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = ToolAttemptMemory(tmpdir)
+            for index in range(3):
+                memory.record_attempt(
+                    "scheduler",
+                    {"action": "teleport", "task_id": f"old-{index}"},
+                    "error",
+                    "Unknown action: teleport",
+                )
+
+            tool = SchedulerTool()
+            executor = AgentStreamExecutor(
+                agent=FakeAgent(),
+                model=OneSchedulerThenDoneModel(),
+                system_prompt="system",
+                tools=[tool],
+                messages=[],
+                max_turns=1,
+            )
+            executor.tool_attempt_memory = memory
+
+            response = executor.run_stream("bad scheduler action")
+
+            self.assertEqual(response, "done")
+            self.assertEqual(tool.calls, 0)
+            self.assertEqual(executor._tool_policy_skip_turn_credit, 1)
+
     def test_compacts_old_tool_results_in_request_copy_only(self):
         executor = AgentStreamExecutor(
             agent=FakeAgent(),
