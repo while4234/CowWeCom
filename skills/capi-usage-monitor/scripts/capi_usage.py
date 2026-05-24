@@ -336,6 +336,59 @@ def summarize_usage_items(items: list[dict[str, Any]], source: str, extra: dict[
     return summary
 
 
+def format_datetime(value: object) -> str:
+    dt = datetime_from_any(value)
+    return dt.isoformat(timespec="seconds") if dt else ""
+
+
+def format_money(value: object) -> str:
+    number = to_float(value)
+    text = f"{number:.4f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def format_snapshot_text(result: dict[str, Any]) -> str:
+    quota = result.get("quota") if isinstance(result.get("quota"), dict) else {}
+    usage = result.get("usage_summary") if isinstance(result.get("usage_summary"), dict) else {}
+    mode = str(quota.get("mode") or ("total" if quota.get("total_mode") else "daily"))
+    card_label = "daily/monthly card" if mode == "daily" else "quota card"
+    lines = [
+        "CAPI quota status",
+        f"- card_type: {card_label}",
+        f"- account: {result.get('account', '')}",
+    ]
+    expire_at = format_datetime(quota.get("expire_at"))
+    if expire_at:
+        lines.append(f"- expires_at: {expire_at}")
+    if mode == "daily":
+        lines.extend([
+            f"- today_used: {format_money(quota.get('used'))} / {format_money(quota.get('daily') or quota.get('total'))}",
+            f"- today_remaining: {format_money(quota.get('remaining'))}",
+            f"- daily_reset: 00:00",
+            f"- usage_percent_today: {format_money(quota.get('progress'))}%",
+        ])
+    else:
+        lines.extend([
+            f"- total_used: {format_money(quota.get('used'))} / {format_money(quota.get('total'))}",
+            f"- total_remaining: {format_money(quota.get('remaining'))}",
+            f"- usage_percent_total: {format_money(quota.get('progress'))}%",
+        ])
+        if quota.get("daily"):
+            lines.append(f"- daily_reference_quota: {format_money(quota.get('daily'))}")
+
+    period = result.get("period") or ""
+    if period:
+        lines.append(f"- usage_period: {period}")
+    lines.append(f"- period_cost: {format_money(usage.get('total_cost'))}")
+    if usage.get("entries") is not None:
+        lines.append(f"- period_entries: {usage.get('entries')}")
+    by_model = usage.get("by_model") if isinstance(usage.get("by_model"), dict) else {}
+    if by_model:
+        model_text = ", ".join(f"{model}={format_money(cost)}" for model, cost in sorted(by_model.items()))
+        lines.append(f"- by_model: {model_text}")
+    return "\n".join(lines)
+
+
 def usage_summary(args: argparse.Namespace, token: str, start: datetime | None, end: datetime | None) -> tuple[dict[str, Any], int | None]:
     if not args.include_usage:
         return summarize_usage_items([], "disabled"), None
@@ -470,7 +523,11 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
 
 def cmd_snapshot(args: argparse.Namespace) -> None:
-    print(json.dumps(snapshot(args), ensure_ascii=False, indent=2))
+    result = snapshot(args)
+    if args.format == "text":
+        print(format_snapshot_text(result))
+    else:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def cmd_history(args: argparse.Namespace) -> None:
@@ -538,6 +595,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--summary-page-size", type=int, default=DEFAULT_CHATLOG_SUMMARY_PAGE_SIZE, help="Chatlog page size for period summary.")
     s.add_argument("--max-summary-pages", type=int, default=MAX_CHATLOG_SUMMARY_PAGES, help="Maximum chatlog pages to read for period summary.")
     s.add_argument("--include-chatlog", action="store_true")
+    s.add_argument("--format", choices=["json", "text"], default="json")
     s.add_argument("--page", type=int, default=1)
     s.add_argument("--page-size", type=int, default=10)
     s.add_argument("--sort-by", default="create_at")

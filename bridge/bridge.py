@@ -108,7 +108,14 @@ class Bridge(object):
         return self.btype[typename]
 
     def fetch_reply_content(self, query, context: Context) -> Reply:
-        return self.get_bot("chat").reply(query, context)
+        from common.capi_monthly_monitor import maybe_check_capi_monthly_after_task
+        from common.llm_backend_router import get_current_backend
+
+        task_backend = get_current_backend()
+        try:
+            return self.get_bot("chat").reply(query, context)
+        finally:
+            maybe_check_capi_monthly_after_task(task_backend)
 
     def fetch_voice_to_text(self, voiceFile) -> Reply:
         return self.get_bot("voice_to_text").voiceToText(voiceFile)

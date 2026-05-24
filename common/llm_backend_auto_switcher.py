@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
-from common.llm_backend_router import evaluate_auto_switch, get_llm_backend_config, record_auto_check
+from common.llm_backend_router import evaluate_midnight_backend_route, get_llm_backend_config, record_auto_check
 from common.log import logger
 from config import get_root
 
@@ -34,8 +34,7 @@ def start_llm_backend_auto_switcher() -> None:
 
 
 def run_once() -> Dict[str, Any]:
-    payload = _query_codex_quota_json()
-    return evaluate_auto_switch(payload, now=datetime.now())
+    return evaluate_midnight_backend_route(quota_payload_factory=_query_codex_quota_json, now=datetime.now())
 
 
 def _run_loop() -> None:

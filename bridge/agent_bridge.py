@@ -19,7 +19,8 @@ from common.utils import expand_path
 from config import conf
 from agent.access_control import get_resource_leases
 from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile, safe_actor_slug
-from common.llm_backend_router import get_effective_chat_bot_type, get_effective_model
+from common.capi_monthly_monitor import maybe_check_capi_monthly_after_task
+from common.llm_backend_router import get_current_backend, get_effective_chat_bot_type, get_effective_model
 from models.openai_compatible_bot import OpenAICompatibleBot
 
 
@@ -47,15 +48,19 @@ def add_openai_compatible_support(bot_instance):
             Most OpenAI-compatible bots use similar configuration.
             """
             from config import conf
+            from common.llm_backend_router import get_effective_openai_api_config
+
+            routed = get_effective_openai_api_config()
 
             return {
-                'api_key': conf().get("open_ai_api_key"),
-                'api_base': conf().get("open_ai_api_base"),
-                'model': conf().get("model", "gpt-3.5-turbo"),
+                'api_key': routed.get("api_key") or conf().get("open_ai_api_key"),
+                'api_base': routed.get("api_base") or conf().get("open_ai_api_base"),
+                'model': routed.get("model") or conf().get("model", "gpt-3.5-turbo"),
                 'default_temperature': conf().get("temperature", 0.9),
                 'default_top_p': conf().get("top_p", 1.0),
                 'default_frequency_penalty': conf().get("frequency_penalty", 0.0),
                 'default_presence_penalty': conf().get("presence_penalty", 0.0),
+                'wire_api': routed.get("wire_api") or conf().get("open_ai_wire_api") or conf().get("wire_api"),
             }
 
     # Change the bot's class to the enhanced version
@@ -644,6 +649,8 @@ class AgentBridge:
         task_is_development = False
         workspace_root = conf().get("agent_workspace", "~/cow")
         tool_error_lesson_snapshot = None
+        task_backend = get_current_backend()
+        monthly_backend_used = False
         try:
             # Extract session_id from context for user isolation
             if context:
@@ -743,6 +750,7 @@ class AgentBridge:
                     run_max_steps,
                     task_is_development,
                 )
+                monthly_backend_used = True
                 response = agent.run_stream(
                     user_message=query,
                     on_event=event_handler.handle_event,
@@ -851,6 +859,8 @@ class AgentBridge:
         finally:
             if conversation_id:
                 get_resource_leases().release_owner(conversation_id)
+            if monthly_backend_used:
+                maybe_check_capi_monthly_after_task(task_backend)
 
     @staticmethod
     def _friendly_agent_error_text(error: Exception, runtime=None) -> str:

@@ -9,6 +9,8 @@ import time
 from typing import Callable, Optional
 
 from common.agent_task_limits import is_development_task, resolve_agent_max_steps
+from common.capi_monthly_monitor import maybe_check_capi_monthly_after_task
+from common.llm_backend_router import get_current_backend
 from common.log import logger
 
 
@@ -53,6 +55,7 @@ class ChatService:
         # State shared between the event callback and this method
         state = _StreamState()
         task_is_development = is_development_task(query)
+        task_backend = get_current_backend()
 
         def on_event(event: dict):
             """Translate agent events into CHAT protocol chunks."""
@@ -290,6 +293,7 @@ class ChatService:
         )
 
         logger.info(f"[ChatService] Agent run completed: session={session_id}")
+        maybe_check_capi_monthly_after_task(task_backend)
 
 
 

@@ -3,13 +3,19 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from common.codex_quota_logic import decide_codex_auto_switch
 from common.llm_backend_router import (
+    BACKEND_CAPI,
+    BACKEND_CAPI_MONTHLY,
     BACKEND_CODEX,
     evaluate_auto_switch,
+    evaluate_midnight_backend_route,
+    get_effective_openai_api_config,
     get_current_backend,
     load_state,
+    select_backend_after_monthly_quota_low,
     save_state,
 )
 from config import conf
@@ -107,6 +113,54 @@ class TestCodexBackendRouter(unittest.TestCase):
 
         self.assertEqual(state["current_backend"], "capi")
         self.assertEqual(state["auto"]["last_decision"], "kept")
+
+    def test_midnight_prefers_monthly_capi_backend_when_configured(self):
+        conf()["llm_backend"]["providers"]["capi_monthly"] = {"api_key": "TEST-MONTHLY-KEY"}
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+
+        state = evaluate_midnight_backend_route(quota_payload=weekly_payload(used_percent=99), now=now)
+
+        self.assertEqual(state["current_backend"], BACKEND_CAPI_MONTHLY)
+        self.assertFalse(state["manual_override_active"])
+        self.assertEqual(state["auto"]["last_decision"], "switched_to_capi_monthly")
+        self.assertEqual(get_current_backend(), BACKEND_CAPI_MONTHLY)
+
+    def test_monthly_low_quota_falls_back_to_codex_when_under_fair_share(self):
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+
+        state = select_backend_after_monthly_quota_low(weekly_payload(used_percent=5), now=now)
+
+        self.assertEqual(state["current_backend"], BACKEND_CODEX)
+        self.assertEqual(state["auto"]["last_decision"], "monthly_low_switched_to_codex")
+
+    def test_monthly_low_quota_falls_back_to_quota_capi_when_codex_over_average(self):
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+
+        state = select_backend_after_monthly_quota_low(weekly_payload(used_percent=30), now=now)
+
+        self.assertEqual(state["current_backend"], BACKEND_CAPI)
+        self.assertEqual(state["auto"]["last_decision"], "monthly_low_switched_to_capi")
+
+    def test_monthly_backend_uses_monthly_provider_key(self):
+        conf()["llm_backend"]["current_backend"] = BACKEND_CAPI_MONTHLY
+        conf()["llm_backend"]["providers"] = {
+            "capi": {
+                "api_key": "QUOTA-KEY",
+                "api_base": "https://quota.example/v1",
+                "wire_api": "responses",
+            },
+            "capi_monthly": {
+                "api_key": "MONTHLY-KEY",
+                "api_base": "https://monthly.example/v1",
+                "model": "gpt-5.5",
+            },
+        }
+        with patch.dict("os.environ", {}, clear=True):
+            routed = get_effective_openai_api_config()
+
+        self.assertEqual(routed["backend"], BACKEND_CAPI_MONTHLY)
+        self.assertEqual(routed["api_key"], "MONTHLY-KEY")
+        self.assertEqual(routed["api_base"], "https://monthly.example/v1")
 
     def test_missing_quota_payload_records_reason_without_switching(self):
         now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)

@@ -100,6 +100,52 @@ class TestCapiUsageMonitorSkill(unittest.TestCase):
         self.assertEqual(quota["daily"], 90.0)
         self.assertEqual(quota["progress"], 81.7)
 
+    def test_text_output_adapts_daily_monthly_card(self):
+        result = {
+            "account": "650FF3***0997",
+            "period": "today",
+            "quota": {
+                "mode": "daily",
+                "total": 90.0,
+                "daily": 90.0,
+                "used": 9.5,
+                "remaining": 80.5,
+                "progress": 10.6,
+                "expire_at": "2026-07-08T10:41:06+08:00",
+            },
+            "usage_summary": {"entries": 2, "total_cost": 9.5, "by_model": {"gpt-5.5": 9.5}},
+        }
+
+        text = capi_usage.format_snapshot_text(result)
+
+        self.assertIn("card_type: daily/monthly card", text)
+        self.assertIn("today_used: 9.5 / 90", text)
+        self.assertIn("today_remaining: 80.5", text)
+        self.assertIn("daily_reset: 00:00", text)
+        self.assertIn("expires_at: 2026-07-08T10:41:06", text)
+
+    def test_text_output_adapts_total_quota_card(self):
+        result = {
+            "account": "quota-card",
+            "period": "today",
+            "quota": {
+                "mode": "total",
+                "total": 2500.0,
+                "daily": 90.0,
+                "used": 2043.54,
+                "remaining": 456.46,
+                "progress": 81.7,
+            },
+            "usage_summary": {"entries": 1, "total_cost": 3.25, "by_model": {}},
+        }
+
+        text = capi_usage.format_snapshot_text(result)
+
+        self.assertIn("card_type: quota card", text)
+        self.assertIn("total_used: 2043.54 / 2500", text)
+        self.assertIn("total_remaining: 456.46", text)
+        self.assertIn("daily_reference_quota: 90", text)
+
     def test_usages_source_is_still_available_for_backend_debugging(self):
         args = capi_usage.build_parser().parse_args([
             "snapshot",

@@ -322,9 +322,9 @@ class CowCliPlugin(Plugin):
             return describe_status()
 
         sub = parts[0].lower()
-        if sub in {"codex", "capi"}:
+        if sub in {"codex", "capi", "capi_monthly", "capi-monthly", "monthly", "capi-month"}:
             set_current_backend(sub, manual=True, reason="cow_cli")
-            return "LLM backend switched to {}".format(sub)
+            return "LLM backend switched to {}".format(sub.replace("-", "_"))
 
         if sub == "auto" and len(parts) > 1 and parts[1].lower() == "reset":
             clear_manual_override()
@@ -338,6 +338,7 @@ class CowCliPlugin(Plugin):
             "  /backend",
             "  /backend codex",
             "  /backend capi",
+            "  /backend capi-monthly",
             "  /backend auto reset",
             "  /backend quota",
         ])

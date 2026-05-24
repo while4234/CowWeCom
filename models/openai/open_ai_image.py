@@ -4,6 +4,7 @@ import time
 import uuid
 
 from common.log import logger
+from common.llm_backend_router import get_effective_openai_api_config
 from common.token_bucket import TokenBucket
 from config import conf
 from models.openai.openai_compat import RateLimitError, wrap_http_error
@@ -22,8 +23,10 @@ _IMAGE_FORMAT_EXTENSIONS = {
 
 
 def _configured_wire_api():
+    routed = get_effective_openai_api_config()
     return (
-        conf().get("open_ai_wire_api")
+        routed.get("wire_api")
+        or conf().get("open_ai_wire_api")
         or conf().get("openai_wire_api")
         or conf().get("wire_api")
         or "chat_completions"
@@ -102,8 +105,9 @@ class OpenAIImage(object):
     """
 
     def __init__(self):
-        self._image_api_key = conf().get("open_ai_api_key")
-        self._image_api_base = conf().get("open_ai_api_base") or None
+        routed = get_effective_openai_api_config()
+        self._image_api_key = routed.get("api_key") or conf().get("open_ai_api_key")
+        self._image_api_base = routed.get("api_base") or conf().get("open_ai_api_base") or None
         self._image_proxy = conf().get("proxy") or None
         self._image_client = OpenAIHTTPClient(
             api_key=self._image_api_key,

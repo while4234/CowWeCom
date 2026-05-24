@@ -132,7 +132,23 @@
         "tools_enabled": true
       },
       "capi": {
-        "label": "CAPI/OpenAI-compatible"
+        "label": "CAPI/OpenAI-compatible quota card",
+        "api_key": "",
+        "api_key_env": "OPENAI_API_KEY",
+        "api_base": "",
+        "api_base_env": "OPENAI_API_BASE",
+        "wire_api": "",
+        "model": ""
+      },
+      "capi_monthly": {
+        "label": "CAPI monthly card",
+        "api_key": "",
+        "api_key_env": "CAPI_MONTHLY_API_KEY",
+        "api_base": "",
+        "api_base_env": "OPENAI_API_BASE",
+        "wire_api": "",
+        "model": "",
+        "default_daily_quota": 90
       }
     },
     "auto_switch": {
@@ -141,7 +157,10 @@
       "quota_window": "weekly",
       "fair_share_days": 7,
       "min_remaining_percent": 15,
-      "respect_manual_override": true
+      "respect_manual_override": true,
+      "prefer_capi_monthly_at_check_time": true,
+      "monthly_post_task_check_enabled": true,
+      "monthly_min_remaining_percent": 10
     }
   },
   "knowledge_backend": {

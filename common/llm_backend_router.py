@@ -8,7 +8,7 @@ import copy
 import json
 import os
 from datetime import datetime
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 from common import const
 from common.codex_quota_logic import CodexQuotaDecision, decide_codex_auto_switch, decision_to_dict
@@ -16,6 +16,7 @@ from common.log import logger
 
 
 BACKEND_CAPI = "capi"
+BACKEND_CAPI_MONTHLY = "capi_monthly"
 BACKEND_CODEX = "codex"
 
 
@@ -36,6 +37,22 @@ DEFAULT_LLM_BACKEND_CONFIG: Dict[str, Any] = {
         },
         "capi": {
             "label": "CAPI/OpenAI-compatible",
+            "api_key": "",
+            "api_key_env": "OPENAI_API_KEY",
+            "api_base": "",
+            "api_base_env": "OPENAI_API_BASE",
+            "wire_api": "",
+            "model": "",
+        },
+        "capi_monthly": {
+            "label": "CAPI Monthly Card",
+            "api_key": "",
+            "api_key_env": "CAPI_MONTHLY_API_KEY",
+            "api_base": "",
+            "api_base_env": "OPENAI_API_BASE",
+            "wire_api": "",
+            "model": "",
+            "default_daily_quota": 90,
         },
     },
     "auto_switch": {
@@ -45,6 +62,9 @@ DEFAULT_LLM_BACKEND_CONFIG: Dict[str, Any] = {
         "fair_share_days": 7,
         "min_remaining_percent": 15,
         "respect_manual_override": True,
+        "prefer_capi_monthly_at_check_time": True,
+        "monthly_post_task_check_enabled": True,
+        "monthly_min_remaining_percent": 10,
     },
 }
 
@@ -71,6 +91,55 @@ def get_codex_provider_config() -> Dict[str, Any]:
     cfg = get_llm_backend_config()
     providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
     return deep_merge(DEFAULT_LLM_BACKEND_CONFIG["providers"]["codex"], providers.get("codex", {}))
+
+
+def get_capi_provider_config(backend: Optional[str] = None) -> Dict[str, Any]:
+    cfg = get_llm_backend_config()
+    providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+    base = deep_merge(DEFAULT_LLM_BACKEND_CONFIG["providers"]["capi"], providers.get("capi", {}))
+    if normalize_backend(backend or get_current_backend()) == BACKEND_CAPI_MONTHLY:
+        monthly = deep_merge(DEFAULT_LLM_BACKEND_CONFIG["providers"]["capi_monthly"], providers.get("capi_monthly", {}))
+        return deep_merge(base, monthly)
+    return base
+
+
+def resolve_provider_value(provider: Mapping[str, Any], value_key: str, env_key: str) -> str:
+    env_name = str(provider.get(env_key) or "").strip()
+    if env_name:
+        env_value = os.getenv(env_name)
+        if env_value:
+            return str(env_value)
+    value = provider.get(value_key)
+    return str(value) if value else ""
+
+
+def get_effective_openai_api_config() -> Dict[str, Any]:
+    """Return route-aware OpenAI-compatible API settings for the active CAPI backend."""
+    from config import conf
+
+    provider = get_capi_provider_config()
+    api_key = resolve_provider_value(provider, "api_key", "api_key_env") or str(conf().get("open_ai_api_key") or "")
+    api_base = resolve_provider_value(provider, "api_base", "api_base_env") or str(conf().get("open_ai_api_base") or "")
+    wire_api = str(
+        provider.get("wire_api")
+        or conf().get("open_ai_wire_api")
+        or conf().get("openai_wire_api")
+        or conf().get("wire_api")
+        or ""
+    )
+    model = str(provider.get("model") or conf().get("model") or const.GPT_41_MINI)
+    return {
+        "api_key": api_key,
+        "api_base": api_base,
+        "wire_api": wire_api,
+        "model": model,
+        "backend": get_current_backend(),
+    }
+
+
+def has_capi_monthly_credentials() -> bool:
+    provider = get_capi_provider_config(BACKEND_CAPI_MONTHLY)
+    return bool(resolve_provider_value(provider, "api_key", "api_key_env"))
 
 
 def get_codex_model() -> str:
@@ -119,6 +188,8 @@ def normalize_backend(value: str) -> str:
     raw = str(value or "").strip().lower()
     if raw in {BACKEND_CODEX, "openai-codex", "codex-direct"}:
         return BACKEND_CODEX
+    if raw in {BACKEND_CAPI_MONTHLY, "capi-monthly", "capi_month", "capi-month", "monthly", "month"}:
+        return BACKEND_CAPI_MONTHLY
     return BACKEND_CAPI
 
 
@@ -126,9 +197,16 @@ def is_codex_active() -> bool:
     return get_current_backend() == BACKEND_CODEX
 
 
+def is_capi_monthly_active() -> bool:
+    return get_current_backend() == BACKEND_CAPI_MONTHLY
+
+
 def get_effective_model() -> str:
     if is_codex_active():
         return get_codex_model()
+    capi_model = get_capi_provider_config().get("model")
+    if capi_model:
+        return str(capi_model)
     from config import conf
 
     return str(conf().get("model") or const.GPT_41_MINI)
@@ -231,6 +309,7 @@ def status_snapshot() -> Dict[str, Any]:
         "manual_override_active": bool(state.get("manual_override_active", False)),
         "auto_switch_latched": bool(state.get("auto_switch_latched", False)),
         "auto": state.get("auto", {}) if isinstance(state.get("auto"), dict) else {},
+        "monthly_card": state.get("monthly_card", {}) if isinstance(state.get("monthly_card"), dict) else {},
     }
 
 
@@ -248,6 +327,10 @@ def describe_status() -> str:
         lines.append(f"- last_checked_date: {auto.get('last_checked_date', '')}")
         lines.append(f"- last_decision: {auto.get('last_decision', '')}")
         lines.append(f"- last_reason: {auto.get('last_reason', '')}")
+    monthly = snapshot.get("monthly_card") or {}
+    if monthly:
+        lines.append(f"- monthly_remaining: {monthly.get('remaining', '')}/{monthly.get('total', '')}")
+        lines.append(f"- monthly_last_action: {monthly.get('last_action', '')}")
     return "\n".join(lines)
 
 
@@ -257,6 +340,7 @@ def record_auto_check(
     reason: str,
     quota_decision: Optional[CodexQuotaDecision] = None,
     switched: bool = False,
+    switched_backend: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     now = now or datetime.now()
@@ -269,14 +353,99 @@ def record_auto_check(
     state["auto"]["last_reason"] = reason
     if quota_decision is not None:
         state["auto"]["last_quota_decision"] = decision_to_dict(quota_decision)
-    if switched:
-        state["current_backend"] = BACKEND_CODEX
+    target_backend = normalize_backend(switched_backend) if switched_backend else (BACKEND_CODEX if switched else "")
+    if target_backend:
+        state["current_backend"] = target_backend
         state["current_backend_source"] = "auto"
-        state["auto_switch_latched"] = True
+        state["manual_override_active"] = False
+        state["auto_switch_latched"] = target_backend == BACKEND_CODEX
     save_state(state)
-    if switched:
+    if target_backend:
         _reset_bridge_cache()
     return state
+
+
+def record_monthly_quota_check(
+    snapshot: Mapping[str, Any],
+    *,
+    action: str,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    now = now or datetime.now()
+    quota = snapshot.get("quota") if isinstance(snapshot.get("quota"), dict) else {}
+    total = _number_or_zero(quota.get("total"))
+    remaining = _number_or_zero(quota.get("remaining"))
+    remaining_percent = (remaining / total * 100.0) if total > 0 else 0.0
+    state = load_state()
+    state["monthly_card"] = {
+        "last_checked_at": now.isoformat(timespec="seconds"),
+        "mode": quota.get("mode") or ("total" if quota.get("total_mode") else "daily"),
+        "total": total,
+        "used": _number_or_zero(quota.get("used")),
+        "remaining": remaining,
+        "remaining_percent": round(remaining_percent, 2),
+        "progress": _number_or_zero(quota.get("progress")),
+        "expire_at": quota.get("expire_at"),
+        "last_action": action,
+    }
+    state["updated_at"] = now.isoformat(timespec="seconds")
+    save_state(state)
+    return state
+
+
+def evaluate_midnight_backend_route(
+    quota_payload: Optional[Mapping[str, Any]] = None,
+    *,
+    quota_payload_factory: Optional[Callable[[], Mapping[str, Any]]] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    now = now or datetime.now()
+    cfg = get_llm_backend_config()
+    auto_cfg = cfg.get("auto_switch", {}) if isinstance(cfg.get("auto_switch"), dict) else {}
+    state = load_state()
+    auto_state = state.get("auto") if isinstance(state.get("auto"), dict) else {}
+    today = now.date().isoformat()
+
+    if not bool(auto_cfg.get("enabled", True)):
+        return record_auto_check(decision="skipped", reason="auto_disabled", now=now)
+    if auto_state.get("last_checked_date") == today:
+        return state
+    if bool(auto_cfg.get("prefer_capi_monthly_at_check_time", True)) and has_capi_monthly_credentials():
+        return record_auto_check(
+            decision="switched_to_capi_monthly",
+            reason="daily_monthly_card_reset",
+            switched_backend=BACKEND_CAPI_MONTHLY,
+            now=now,
+        )
+
+    payload = quota_payload
+    if payload is None and quota_payload_factory is not None:
+        payload = quota_payload_factory()
+    return evaluate_auto_switch(payload or {}, now=now)
+
+
+def select_backend_after_monthly_quota_low(
+    quota_payload: Mapping[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    now = now or datetime.now()
+    cfg = get_llm_backend_config()
+    auto_cfg = cfg.get("auto_switch", {}) if isinstance(cfg.get("auto_switch"), dict) else {}
+    quota_decision = decide_codex_auto_switch(
+        quota_payload,
+        now=now,
+        fair_share_days=int(auto_cfg.get("fair_share_days", 7) or 7),
+        min_remaining_percent=float(auto_cfg.get("min_remaining_percent", 15) or 15),
+    )
+    target = BACKEND_CODEX if quota_decision.should_switch else BACKEND_CAPI
+    return record_auto_check(
+        decision="monthly_low_switched_to_{}".format(target),
+        reason=quota_decision.reason,
+        quota_decision=quota_decision,
+        switched_backend=target,
+        now=now,
+    )
 
 
 def evaluate_auto_switch(
@@ -322,6 +491,13 @@ def evaluate_auto_switch(
         quota_decision=quota_decision,
         now=now,
     )
+
+
+def _number_or_zero(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _reset_bridge_cache() -> None:

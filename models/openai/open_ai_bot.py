@@ -18,6 +18,7 @@ from models.openai.open_ai_session import OpenAISession
 from models.session_manager import SessionManager
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
+from common.llm_backend_router import get_effective_openai_api_config
 from common.log import logger
 from config import conf
 
@@ -28,8 +29,9 @@ user_session = dict()
 class OpenAIBot(Bot, OpenAIImage, OpenAICompatibleBot):
     def __init__(self):
         super().__init__()
-        self._api_key = conf().get("open_ai_api_key")
-        self._api_base = conf().get("open_ai_api_base") or None
+        routed = get_effective_openai_api_config()
+        self._api_key = routed.get("api_key") or conf().get("open_ai_api_key")
+        self._api_base = routed.get("api_base") or conf().get("open_ai_api_base") or None
         self._proxy = conf().get("proxy") or None
         self._http_client = OpenAIHTTPClient(
             api_key=self._api_key,
@@ -52,16 +54,18 @@ class OpenAIBot(Bot, OpenAIImage, OpenAICompatibleBot):
     
     def get_api_config(self):
         """Get API configuration for OpenAI-compatible base class"""
+        routed = get_effective_openai_api_config()
         return {
-            'api_key': conf().get("open_ai_api_key"),
-            'api_base': conf().get("open_ai_api_base"),
-            'model': conf().get("model", "text-davinci-003"),
+            'api_key': routed.get("api_key") or conf().get("open_ai_api_key"),
+            'api_base': routed.get("api_base") or conf().get("open_ai_api_base"),
+            'model': routed.get("model") or conf().get("model", "text-davinci-003"),
             'default_temperature': conf().get("temperature", 0.9),
             'default_top_p': conf().get("top_p", 1.0),
             'default_frequency_penalty': conf().get("frequency_penalty", 0.0),
             'default_presence_penalty': conf().get("presence_penalty", 0.0),
             'wire_api': (
-                conf().get("open_ai_wire_api")
+                routed.get("wire_api")
+                or conf().get("open_ai_wire_api")
                 or conf().get("openai_wire_api")
                 or conf().get("wire_api")
             ),

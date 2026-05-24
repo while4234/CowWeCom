@@ -76,6 +76,17 @@ Use the default configured key (`OPENAI_API_KEY` in this workspace):
 python "<base_dir>/scripts/capi_usage.py" snapshot --period today
 ```
 
+For user-facing output that adapts to card type, prefer text format:
+
+```bash
+python "<base_dir>/scripts/capi_usage.py" snapshot --period today --format text
+```
+
+Text output labels total quota cards as `quota card` and day/month cards as
+`daily/monthly card`. For day/month cards it emphasizes today's used,
+remaining, 00:00 reset, and expiry; for quota cards it emphasizes total used
+and total remaining.
+
 For `today`, `yesterday`, `month`, or explicit `--start/--end` ranges, the script
 uses `/api/chatgpt/chatlog` as the authoritative source for `usage_summary`.
 The backend `/api/chatgpt/usages` endpoint may return historical aggregate

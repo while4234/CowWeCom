@@ -20,6 +20,7 @@ from models.openai.responses_api_adapter import (
 )
 import requests
 from common import const
+from common.llm_backend_router import get_effective_openai_api_config
 from models.bot import Bot
 from models.openai_compatible_bot import OpenAICompatibleBot
 from models.chatgpt.chat_gpt_session import ChatGPTSession
@@ -41,8 +42,9 @@ class ChatGPTBot(Bot, OpenAIImage, OpenAICompatibleBot):
             self._api_key = conf().get("custom_api_key", "")
             self._api_base = conf().get("custom_api_base") or None
         else:
-            self._api_key = conf().get("open_ai_api_key")
-            self._api_base = conf().get("open_ai_api_base") or None
+            routed = get_effective_openai_api_config()
+            self._api_key = routed.get("api_key") or conf().get("open_ai_api_key")
+            self._api_base = routed.get("api_base") or conf().get("open_ai_api_base") or None
         self._proxy = conf().get("proxy") or None
         self._http_client = OpenAIHTTPClient(
             api_key=self._api_key,
@@ -76,16 +78,18 @@ class ChatGPTBot(Bot, OpenAIImage, OpenAICompatibleBot):
     def get_api_config(self):
         """Get API configuration for OpenAI-compatible base class"""
         is_custom = conf().get("bot_type") == "custom"
+        routed = get_effective_openai_api_config()
         return {
-            'api_key': conf().get("custom_api_key") if is_custom else conf().get("open_ai_api_key"),
-            'api_base': conf().get("custom_api_base") if is_custom else conf().get("open_ai_api_base"),
-            'model': conf().get("model", "gpt-3.5-turbo"),
+            'api_key': conf().get("custom_api_key") if is_custom else routed.get("api_key"),
+            'api_base': conf().get("custom_api_base") if is_custom else routed.get("api_base"),
+            'model': routed.get("model") if not is_custom else conf().get("model", "gpt-3.5-turbo"),
             'default_temperature': conf().get("temperature", 0.9),
             'default_top_p': conf().get("top_p", 1.0),
             'default_frequency_penalty': conf().get("frequency_penalty", 0.0),
             'default_presence_penalty': conf().get("presence_penalty", 0.0),
             'wire_api': (
-                conf().get("open_ai_wire_api")
+                routed.get("wire_api")
+                or conf().get("open_ai_wire_api")
                 or conf().get("openai_wire_api")
                 or conf().get("wire_api")
             ),
@@ -229,9 +233,10 @@ class ChatGPTBot(Bot, OpenAIImage, OpenAICompatibleBot):
             
             # Get model and API config
             is_custom = conf().get("bot_type") == "custom"
+            routed = get_effective_openai_api_config()
             model = context.get("gpt_model") or conf().get("model", "gpt-4o")
-            api_key = context.get("openai_api_key") or (conf().get("custom_api_key") if is_custom else conf().get("open_ai_api_key"))
-            api_base = conf().get("custom_api_base") if is_custom else conf().get("open_ai_api_base")
+            api_key = context.get("openai_api_key") or (conf().get("custom_api_key") if is_custom else routed.get("api_key"))
+            api_base = conf().get("custom_api_base") if is_custom else routed.get("api_base")
             
             # Build vision request
             messages = [

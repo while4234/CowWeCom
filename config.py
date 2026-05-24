@@ -757,6 +757,14 @@ def _sync_llm_backend_config_to_env(llm_backend_section) -> int:
     if model and "CODEX_MODEL" not in os.environ:
         os.environ["CODEX_MODEL"] = str(model)
         injected += 1
+    for provider in providers.values():
+        if not isinstance(provider, dict):
+            continue
+        api_key = provider.get("api_key")
+        api_key_env = str(provider.get("api_key_env") or "").strip()
+        if api_key and api_key_env and api_key_env not in os.environ:
+            os.environ[api_key_env] = str(api_key)
+            injected += 1
     return injected
 
 
