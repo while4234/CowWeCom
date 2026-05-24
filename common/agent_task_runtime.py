@@ -154,7 +154,6 @@ class SessionRuntime:
         self.last_visible_output_source = ""
         self.last_silence_notice_at = 0.0
         self.silence_notice_count = 0
-        self.initial_notice_sent = False
 
     def start_task(self, summary: str, max_turns: int = 0) -> CancellationToken:
         with self.lock:
@@ -181,7 +180,6 @@ class SessionRuntime:
             self.last_visible_output_source = "task_start"
             self.last_silence_notice_at = 0.0
             self.silence_notice_count = 0
-            self.initial_notice_sent = False
             self.last_queue_notice_at = 0.0
             return token
 
@@ -230,27 +228,6 @@ class SessionRuntime:
             self.last_silence_notice_at = now
             self.silence_notice_count += 1
             return self._silence_notice_text(now)
-
-    def claim_initial_notice(self, notice_seconds: float = 6.0) -> Optional[str]:
-        with self.lock:
-            if not self.running_task:
-                return None
-            if self.initial_notice_sent:
-                return None
-            if self.running_task.token.is_cancelled() or self.progress.cancel_requested:
-                return None
-            if self.last_visible_output_source != "task_start":
-                self.initial_notice_sent = True
-                return None
-            required = max(0.0, float(notice_seconds))
-            if required <= 0.0:
-                self.initial_notice_sent = True
-                return None
-            now = monotonic()
-            if now - self.running_task.started_at < required:
-                return None
-            self.initial_notice_sent = True
-            return self._initial_notice_text(now)
 
     def cancel_running(self, reason: str = "user_cancelled") -> bool:
         with self.lock:
@@ -363,20 +340,8 @@ class SessionRuntime:
             return "\n".join(parts)
 
     def _silence_notice_text(self, now: float) -> str:
-        return self._progress_notice_text(
-            now,
-            "还在处理这条需求。刚才一段时间没有新的可见输出，我先同步一下当前进度。",
-        )
-
-    def _initial_notice_text(self, now: float) -> str:
-        return self._progress_notice_text(
-            now,
-            "我已经开始处理这条需求，先同步一下当前状态。",
-        )
-
-    def _progress_notice_text(self, now: float, intro: str) -> str:
         progress = self.progress
-        parts = [intro]
+        parts = ["还在处理这条需求，只是刚才一段时间没有新的可见输出，我先报个进度。"]
         if progress.task_summary:
             parts.append(f"任务：{progress.task_summary}。")
         if progress.started_at:

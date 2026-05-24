@@ -111,7 +111,6 @@
     "state_path": ""
   },
   "long_task_expectation_enabled": true,
-  "long_task_initial_notice_seconds": 6,
   "long_task_silence_first_notice_seconds": 45,
   "long_task_silence_repeat_notice_seconds": 120,
   "enable_thinking": false,

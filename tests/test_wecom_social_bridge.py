@@ -531,6 +531,45 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         self.assertEqual(payload["body"]["msgtype"], "markdown")
         self.assertEqual(payload["body"]["markdown"]["content"], "hello from bridge")
 
+    def test_active_group_send_mentions_target_without_repeating_label(self):
+        ws = FakeWebSocket()
+        self.channel._ws = ws
+        self.channel._connected = True
+
+        result = self.channel.active_send_text_result(
+            "group-alpha",
+            "Riko, 该喝水啦 💧",
+            is_group=True,
+            mention_user_ids=["riko-user"],
+            mention_display_names=["Riko"],
+        )
+
+        self.assertTrue(result["ok"])
+        payload = ws.sent[0]
+        self.assertEqual(payload["body"]["chatid"], "group-alpha")
+        self.assertEqual(payload["body"]["chat_type"], 2)
+        self.assertEqual(payload["body"]["markdown"]["content"], "<@riko-user>\n该喝水啦 💧")
+        self.assertNotIn("riko-user, 该喝水", payload["body"]["markdown"]["content"])
+
+    def test_group_reply_mentions_sender(self):
+        ws = FakeWebSocket()
+        self.channel._ws = ws
+        self.channel._connected = True
+        context = {
+            "receiver": "group-alpha",
+            "isgroup": True,
+            "group_sender_id": "sender-a",
+            "group_sender_label": "Alice",
+            "msg": SimpleNamespace(actual_user_id="sender-a", actual_user_nickname="Alice", req_id=None),
+        }
+
+        delivered = self.channel.send(Reply(ReplyType.TEXT, "好的"), context)
+
+        self.assertTrue(delivered)
+        payload = ws.sent[0]
+        self.assertEqual(payload["body"]["chat_type"], 2)
+        self.assertEqual(payload["body"]["markdown"]["content"], "<@sender-a>\n好的")
+
     def test_active_send_text_result_reports_websocket_send_failure(self):
         class BrokenWebSocket:
             def send(self, payload):

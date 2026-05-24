@@ -2,7 +2,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.tools.scheduler.integration import _execute_agent_task, _execute_tool_call
+from agent.tools.scheduler.integration import _execute_agent_task, _execute_send_message, _execute_tool_call
+from agent.tools.scheduler.scheduler_tool import SchedulerTool
+from bridge.context import Context, ContextType
 
 
 class FakeAgentBridge:
@@ -42,9 +44,20 @@ class FakeWecomChannel:
         self.result = result
         self.active_sends = []
 
-    def active_send_text_result(self, receiver, text, is_group=False):
-        self.active_sends.append((receiver, text, is_group))
+    def active_send_text_result(self, receiver, text, is_group=False, **kwargs):
+        self.active_sends.append((receiver, text, is_group, kwargs))
         return self.result
+
+
+class FakeTaskStore:
+    def __init__(self):
+        self.tasks = []
+
+    def list_tasks(self, enabled_only=False):
+        return list(self.tasks)
+
+    def add_task(self, task):
+        self.tasks.append(task)
 
 
 class TestSchedulerExecutionIdentity(unittest.TestCase):
@@ -167,8 +180,87 @@ class TestSchedulerExecutionIdentity(unittest.TestCase):
 
         create_channel.assert_not_called()
         self.assertTrue(result)
-        self.assertEqual(channel.active_sends, [("normal", "done", False)])
+        self.assertEqual(
+            channel.active_sends,
+            [("normal", "done", False, {"mention_user_ids": None, "mention_display_names": None})],
+        )
         self.assertTrue(hasattr(bridge, "remembered"))
+
+    def test_send_message_wecom_group_passes_mention_metadata(self):
+        bridge = FakeAgentBridge()
+        channel = FakeWecomChannel({"ok": True, "reason": "sent"})
+        task = {
+            "id": "task1",
+            "name": "owner task",
+            "owner_actor_id": "wecom_bot:group:group-alpha",
+            "owner_role": "user",
+            "owner_memory_user_id": "group-memory",
+            "action": {
+                "type": "send_message",
+                "content": "Riko, 该喝水啦",
+                "receiver": "group-alpha",
+                "receiver_name": "Nico 之家",
+                "is_group": True,
+                "channel_type": "wecom_bot",
+                "notify_session_id": "group-alpha",
+                "mention_user_ids": ["riko-user"],
+                "mention_display_names": ["Riko"],
+            },
+        }
+
+        with patch("agent.tools.scheduler.integration._get_running_channel", return_value=channel):
+            result = _execute_send_message(task, bridge)
+
+        self.assertTrue(result)
+        self.assertEqual(
+            channel.active_sends,
+            [
+                (
+                    "group-alpha",
+                    "Riko, 该喝水啦",
+                    True,
+                    {"mention_user_ids": ["riko-user"], "mention_display_names": ["Riko"]},
+                )
+            ],
+        )
+
+    def test_scheduler_create_resolves_wecom_group_mention_target(self):
+        store = FakeTaskStore()
+        tool = SchedulerTool({"channel_type": "wecom_bot"})
+        tool.task_store = store
+        context = Context(ContextType.TEXT, "一分钟后提醒 Riko 喝水")
+        context["isgroup"] = True
+        context["channel_type"] = "wecom_bot"
+        context["receiver"] = "group-alpha"
+        context["session_id"] = "group-alpha"
+        context["actor_id"] = "wecom_bot:group:group-alpha"
+        context["actor_role"] = "user"
+        context["memory_user_id"] = "group-memory"
+        context["conversation_id"] = "wecom_bot:group:group-alpha"
+        context["group_sender_id"] = "sender-a"
+        context["group_sender_label"] = "Alice"
+        context["group_known_members"] = [
+            {"user_id": "riko-user", "name": "Riko"},
+            {"user_id": "sender-a", "name": "Alice"},
+        ]
+        context["msg"] = None
+        tool.current_context = context
+
+        result = tool.execute(
+            {
+                "action": "create",
+                "name": "喝水提醒",
+                "message": "Riko, 该喝水啦",
+                "schedule_type": "once",
+                "schedule_value": "+1m",
+            }
+        )
+
+        self.assertEqual(result.status, "success")
+        action = store.tasks[0]["action"]
+        self.assertEqual(action["mention_user_ids"], ["riko-user"])
+        self.assertEqual(action["mention_display_names"], ["Riko"])
+        self.assertNotIn("riko-user", action["content"])
 
     def test_agent_task_without_owner_does_not_execute(self):
         bridge = FakeAgentBridge()

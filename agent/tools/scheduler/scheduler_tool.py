@@ -27,6 +27,8 @@ class SchedulerTool(BaseTool):
         "- 创建：action='create', name='任务名', message/ai_task='内容', schedule_type='once/interval/cron', schedule_value='...'\n"
         "- 查询：action='list' / action='get', task_id='任务ID'\n"
         "- 管理：action='delete/enable/disable', task_id='任务ID'\n\n"
+        "群聊里给某个成员设置提醒时，如果上下文提供了已知群成员ID，请用 target_user_id/target_user_name "
+        "单独传递被提醒人；message 正文不要写成员ID。\n\n"
         "调度类型：\n"
         "- once: 一次性任务，支持相对时间(+5s,+10m,+1h,+1d)或ISO时间\n"
         "- interval: 固定间隔(秒)，如3600表示每小时\n"
@@ -65,6 +67,14 @@ class SchedulerTool(BaseTool):
             "schedule_value": {
                 "type": "string",
                 "description": "调度值: cron表达式/间隔秒数/时间(+5s,+10m,+1h或ISO格式)"
+            },
+            "target_user_id": {
+                "type": "string",
+                "description": "可选。群聊提醒的目标成员企业微信userid，仅用于@提醒，不要写进message正文。"
+            },
+            "target_user_name": {
+                "type": "string",
+                "description": "可选。群聊提醒目标成员的显示名，用于去除正文开头重复称呼。"
             }
         },
         "required": ["action"]
@@ -192,6 +202,7 @@ class SchedulerTool(BaseTool):
                 "channel_type": self.config.get("channel_type", "unknown"),
                 "notify_session_id": notify_session_id,
             }
+        action.update(self._resolve_group_mention(context, kwargs, message or ai_task or name or ""))
         
         # 针对钉钉单聊，额外存储 sender_staff_id
         msg = context.kwargs.get("msg")
@@ -294,7 +305,15 @@ class SchedulerTool(BaseTool):
 
     @staticmethod
     def _actions_match(existing: dict, candidate: dict) -> bool:
-        fields = ("type", "receiver", "is_group", "channel_type", "notify_session_id")
+        fields = (
+            "type",
+            "receiver",
+            "is_group",
+            "channel_type",
+            "notify_session_id",
+            "mention_user_ids",
+            "mention_display_names",
+        )
         if any(existing.get(field) != candidate.get(field) for field in fields):
             return False
 
@@ -616,3 +635,93 @@ class SchedulerTool(BaseTool):
         except Exception:
             pass
         return "未知"
+
+    @staticmethod
+    def _clean_text(value) -> str:
+        return " ".join(str(value or "").split())
+
+    def _resolve_group_mention(self, context: Context, params: dict, content: str) -> dict:
+        try:
+            if not context.get("isgroup", False):
+                return {}
+            if context.get("channel_type") != "wecom_bot":
+                return {}
+
+            target_user_id = self._clean_text(params.get("target_user_id"))
+            target_user_name = self._clean_text(params.get("target_user_name"))
+            members = self._known_group_members(context)
+            if target_user_id:
+                target_user_name = target_user_name or self._member_name_for_id(members, target_user_id)
+                return self._mention_payload(target_user_id, target_user_name)
+
+            if target_user_name:
+                member = self._match_member_by_name(members, target_user_name)
+                if member:
+                    return self._mention_payload(member["user_id"], member.get("name") or target_user_name)
+
+            text = self._clean_text(content)
+            member = self._infer_member_from_content(members, text)
+            if member:
+                return self._mention_payload(member["user_id"], member.get("name", ""))
+
+            if "提醒我" in text or "叫我" in text or "喊我" in text:
+                sender_id = self._clean_text(context.get("group_sender_id"))
+                sender_name = self._clean_text(context.get("group_sender_label"))
+                return self._mention_payload(sender_id, sender_name)
+        except Exception as e:
+            logger.debug(f"[SchedulerTool] Failed to resolve group mention target: {e}")
+        return {}
+
+    def _known_group_members(self, context: Context) -> list:
+        members = context.get("group_known_members") or []
+        if not isinstance(members, list):
+            members = []
+        sender_id = self._clean_text(context.get("group_sender_id"))
+        sender_name = self._clean_text(context.get("group_sender_label"))
+        if sender_id and not any(self._clean_text(m.get("user_id")) == sender_id for m in members if isinstance(m, dict)):
+            members = [{"user_id": sender_id, "name": sender_name}, *members]
+        return [
+            {
+                "user_id": self._clean_text(member.get("user_id")),
+                "name": self._clean_text(member.get("name")),
+            }
+            for member in members
+            if isinstance(member, dict) and self._clean_text(member.get("user_id"))
+        ]
+
+    @staticmethod
+    def _member_name_for_id(members: list, user_id: str) -> str:
+        for member in members:
+            if member.get("user_id") == user_id:
+                return member.get("name", "")
+        return ""
+
+    def _match_member_by_name(self, members: list, name: str) -> Optional[dict]:
+        normalized = name.casefold()
+        for member in members:
+            member_name = self._clean_text(member.get("name"))
+            if member_name and member_name.casefold() == normalized:
+                return member
+        return None
+
+    def _infer_member_from_content(self, members: list, content: str) -> Optional[dict]:
+        candidates = [
+            member
+            for member in members
+            if self._clean_text(member.get("name")) and self._clean_text(member.get("name")) in content
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: len(self._clean_text(item.get("name"))), reverse=True)
+        return candidates[0]
+
+    @staticmethod
+    def _mention_payload(user_id: str, display_name: str = "") -> dict:
+        user_id = " ".join(str(user_id or "").split())
+        display_name = " ".join(str(display_name or "").split())
+        if not user_id:
+            return {}
+        payload = {"mention_user_ids": [user_id]}
+        if display_name:
+            payload["mention_display_names"] = [display_name]
+        return payload

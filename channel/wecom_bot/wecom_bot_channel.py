@@ -61,6 +61,10 @@ def _read_relative_workspace_file(relative_path: str) -> str:
     return ""
 
 
+def _single_line(value) -> str:
+    return " ".join(str(value or "").split())
+
+
 def _escape_control_chars_inside_json_strings(s: str) -> str:
     """Escape U+0000–U+001F inside JSON string values so json.loads accepts WeCom payloads.
 
@@ -373,7 +377,12 @@ class WecomBotChannel(ChatChannel):
                     if context:
                         self._remember_social_bridge_user(context, wecom_msg)
                         if req_id:
-                            context["on_event"] = self._make_stream_callback(req_id)
+                            mention_user_ids, mention_display_names = self._reply_mention_target(context)
+                            context["on_event"] = self._make_stream_callback(
+                                req_id,
+                                mention_user_ids=mention_user_ids,
+                                mention_display_names=mention_display_names,
+                            )
                         self.produce(context)
                         return
                 file_cache.add(session_id, wecom_msg.image_path, file_type="image")
@@ -413,7 +422,12 @@ class WecomBotChannel(ChatChannel):
         if context:
             self._remember_social_bridge_user(context, wecom_msg)
             if req_id:
-                context["on_event"] = self._make_stream_callback(req_id)
+                mention_user_ids, mention_display_names = self._reply_mention_target(context)
+                context["on_event"] = self._make_stream_callback(
+                    req_id,
+                    mention_user_ids=mention_user_ids,
+                    mention_display_names=mention_display_names,
+                )
             self.produce(context)
 
     def _message_cache_session_id(self, wecom_msg: WecomBotMessage) -> str:
@@ -542,7 +556,7 @@ class WecomBotChannel(ChatChannel):
     # Stream callback (for agent on_event)
     # ------------------------------------------------------------------
 
-    def _make_stream_callback(self, req_id: str):
+    def _make_stream_callback(self, req_id: str, mention_user_ids=None, mention_display_names=None):
         """Build an on_event callback that pushes agent stream deltas to wecom via stream message.
 
         All intermediate segments (thinking before tool calls) and the final answer
@@ -556,6 +570,8 @@ class WecomBotChannel(ChatChannel):
             "current": "",
             "last_push_time": 0,
             "last_push_len": 0,
+            "mention_user_ids": self._as_list(mention_user_ids),
+            "mention_display_names": self._as_list(mention_display_names),
         }
 
         def _push_stream(state: dict, force: bool = False):
@@ -563,7 +579,12 @@ class WecomBotChannel(ChatChannel):
             now = time.time()
             if not force and now - state["last_push_time"] < 0.1:
                 return
-            content = state["committed"] + state["current"]
+            content = self._with_mentions(
+                state["committed"] + state["current"],
+                state.get("mention_user_ids"),
+                state.get("mention_display_names"),
+                enabled=True,
+            )
             if len(content) == state["last_push_len"]:
                 return
             state["last_push_time"] = now
@@ -643,6 +664,8 @@ class WecomBotChannel(ChatChannel):
             group_chat_name = str(getattr(cmsg, "other_user_nickname", "") or "").strip()
             if group_chat_name == chat_id:
                 group_chat_name = ""
+            self._remember_group_member(chat_id, sender_id, sender_label)
+            known_group_members = self._known_group_members(chat_id)
 
             context["session_id"] = chat_id
             context["actor_id"] = group_actor_id
@@ -651,6 +674,7 @@ class WecomBotChannel(ChatChannel):
             context["memory_user_id"] = group_memory_user_id
             context["group_chat_id"] = chat_id
             context["group_chat_name"] = group_chat_name
+            context["group_known_members"] = known_group_members
             context["group_sender_id"] = sender_id
             context["group_sender_label"] = sender_label
             context["group_member_profile_path"] = (
@@ -690,6 +714,16 @@ class WecomBotChannel(ChatChannel):
         if group_chat_name:
             group_lines.append(f"- 群名称: {group_chat_name}")
         group_lines.append(f"- 群会话ID: {context.get('group_chat_id', '')}")
+        known_members = context.get("group_known_members") or []
+        member_lines = []
+        if isinstance(known_members, list):
+            for member in known_members[:20]:
+                if not isinstance(member, dict):
+                    continue
+                user_id = _single_line(member.get("user_id", ""))
+                name = _single_line(member.get("name", "")) or user_id
+                if user_id:
+                    member_lines.append(f"  - {name}: {user_id}")
         return (
             "[群聊消息元信息]\n"
             + "\n".join(group_lines)
@@ -698,11 +732,79 @@ class WecomBotChannel(ChatChannel):
             f"- 发言人企微显示名: {sender_label}\n"
             f"- 发言人成员档案: {member_profile_path}\n"
             f"- 已知成员称呼档案内容: {known_profile_note}\n"
-            "- 如果用户正在告诉你希望怎么称呼TA，请把称呼写入上述成员档案；"
+            + (
+                "- 已知群成员（仅用于创建定时提醒时填写 target_user_id，不要在回复正文中复述ID）:\n"
+                + "\n".join(member_lines)
+                + "\n"
+                if member_lines
+                else ""
+            )
+            + "- 如果用户正在告诉你希望怎么称呼TA，请把称呼写入上述成员档案；"
             "不要写入任何私聊记忆。\n"
             "- 回复时不要复述这段元信息。\n\n"
             f"[群成员: {sender_label}] {content}"
         )
+
+    @staticmethod
+    def _single_line(value) -> str:
+        return _single_line(value)
+
+    @staticmethod
+    def _group_members_path() -> Path:
+        workspace = expand_path(conf().get("agent_workspace", "~/cow"))
+        return Path(workspace) / "data" / "wecom_bot_group_members.json"
+
+    def _remember_group_member(self, chat_id: str, user_id: str, display_name: str) -> None:
+        chat_id = self._single_line(chat_id)
+        user_id = self._single_line(user_id)
+        display_name = self._single_line(display_name) or user_id
+        if not chat_id or not user_id:
+            return
+        try:
+            path = self._group_members_path()
+            data = {}
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        data = loaded
+            groups = data.setdefault("groups", {})
+            group = groups.setdefault(chat_id, {})
+            group[user_id] = {
+                "user_id": user_id,
+                "name": display_name,
+                "last_seen": time.time(),
+            }
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.debug(f"[WecomBot] Failed to remember group member: {e}")
+
+    def _known_group_members(self, chat_id: str, limit: int = 20) -> list:
+        chat_id = self._single_line(chat_id)
+        if not chat_id:
+            return []
+        try:
+            path = self._group_members_path()
+            if not path.exists():
+                return []
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            group = ((data or {}).get("groups") or {}).get(chat_id) or {}
+            members = [m for m in group.values() if isinstance(m, dict)]
+            members.sort(key=lambda m: float(m.get("last_seen") or 0), reverse=True)
+            return [
+                {
+                    "user_id": self._single_line(member.get("user_id", "")),
+                    "name": self._single_line(member.get("name", "")),
+                }
+                for member in members[:limit]
+                if self._single_line(member.get("user_id", ""))
+            ]
+        except Exception as e:
+            logger.debug(f"[WecomBot] Failed to read group members: {e}")
+            return []
 
     # ------------------------------------------------------------------
     # Send reply
@@ -712,25 +814,47 @@ class WecomBotChannel(ChatChannel):
         msg = context.get("msg")
         is_group = context.get("isgroup", False)
         receiver = context.get("receiver", "")
+        mention_user_ids, mention_display_names = self._reply_mention_target(context)
 
         # Determine req_id for responding or use send_msg for scheduled push
         req_id = getattr(msg, "req_id", None) if msg else None
 
         if reply.type == ReplyType.TEXT:
-            return self._send_text(reply.content, receiver, is_group, req_id)
+            return self._send_text(
+                reply.content,
+                receiver,
+                is_group,
+                req_id,
+                mention_user_ids=mention_user_ids,
+                mention_display_names=mention_display_names,
+            )
         elif reply.type in (ReplyType.IMAGE_URL, ReplyType.IMAGE):
             return self._send_image(reply.content, receiver, is_group, req_id)
         elif reply.type == ReplyType.FILE:
             text_sent = True
             if hasattr(reply, "text_content") and reply.text_content:
-                text_sent = self._send_text(reply.text_content, receiver, is_group, req_id)
+                text_sent = self._send_text(
+                    reply.text_content,
+                    receiver,
+                    is_group,
+                    req_id,
+                    mention_user_ids=mention_user_ids,
+                    mention_display_names=mention_display_names,
+                )
                 time.sleep(0.3)
             return text_sent and self._send_file(reply.content, receiver, is_group, req_id)
         elif reply.type == ReplyType.VIDEO or reply.type == ReplyType.VIDEO_URL:
             return self._send_file(reply.content, receiver, is_group, req_id, media_type="video")
         else:
             logger.warning(f"[WecomBot] Unsupported reply type: {reply.type}, falling back to text")
-            return self._send_text(str(reply.content), receiver, is_group, req_id)
+            return self._send_text(
+                str(reply.content),
+                receiver,
+                is_group,
+                req_id,
+                mention_user_ids=mention_user_ids,
+                mention_display_names=mention_display_names,
+            )
 
     def active_send_text_result(self, receiver: str, text: str, is_group: bool = False, **kwargs) -> dict:
         """Proactively send text to a reachable WeCom chat and return a normalized result."""
@@ -751,7 +875,13 @@ class WecomBotChannel(ChatChannel):
             }
 
         try:
-            if not self._active_send_markdown(str(text or ""), clean_receiver, bool(is_group)):
+            content = self._with_mentions(
+                str(text or ""),
+                kwargs.get("mention_user_ids") or kwargs.get("mention_user_id"),
+                kwargs.get("mention_display_names") or kwargs.get("mention_display_name"),
+                enabled=bool(is_group),
+            )
+            if not self._active_send_markdown(content, clean_receiver, bool(is_group)):
                 return {
                     "ok": False,
                     "delivered": False,
@@ -778,7 +908,15 @@ class WecomBotChannel(ChatChannel):
     # Respond message (via websocket)
     # ------------------------------------------------------------------
 
-    def _send_text(self, content: str, receiver: str, is_group: bool, req_id: str = None):
+    def _send_text(
+        self,
+        content: str,
+        receiver: str,
+        is_group: bool,
+        req_id: str = None,
+        mention_user_ids=None,
+        mention_display_names=None,
+    ):
         """Send text/markdown reply. Reuses stream state if available (streaming mode)."""
         if req_id:
             state = self._stream_states.pop(req_id, None)
@@ -788,6 +926,12 @@ class WecomBotChannel(ChatChannel):
             else:
                 final_content = content
                 stream_id = uuid.uuid4().hex[:16]
+            final_content = self._with_mentions(
+                final_content,
+                mention_user_ids,
+                mention_display_names,
+                enabled=bool(is_group),
+            )
 
             # Brief pause so the server finishes processing the last intermediate chunk
             # before receiving the finish packet
@@ -806,7 +950,84 @@ class WecomBotChannel(ChatChannel):
                 },
             })
         else:
+            content = self._with_mentions(
+                content,
+                mention_user_ids,
+                mention_display_names,
+                enabled=bool(is_group),
+            )
             return self._active_send_markdown(content, receiver, is_group)
+
+    @staticmethod
+    def _as_list(value) -> list:
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item or "").strip()]
+        text = str(value or "").strip()
+        return [text] if text else []
+
+    @classmethod
+    def _mention_tokens(cls, mention_user_ids) -> list:
+        return [f"<@{user_id}>" for user_id in cls._as_list(mention_user_ids)]
+
+    @classmethod
+    def _with_mentions(
+        cls,
+        content: str,
+        mention_user_ids=None,
+        mention_display_names=None,
+        enabled: bool = True,
+    ) -> str:
+        text = str(content or "").strip()
+        if not enabled:
+            return text
+        user_ids = cls._as_list(mention_user_ids)
+        names = cls._as_list(mention_display_names)
+        tokens = cls._mention_tokens(user_ids) or [f"@{name}" for name in names]
+        if not tokens:
+            return text
+        if any(text.startswith(token) for token in tokens):
+            return text
+        stripped = cls._strip_leading_target_label(text, user_ids + names)
+        return " ".join(tokens) + ("\n" + stripped if stripped else "")
+
+    @classmethod
+    def _strip_leading_target_label(cls, content: str, labels) -> str:
+        text = str(content or "").lstrip()
+        for _ in range(3):
+            changed = False
+            for label in cls._as_list(labels):
+                candidates = [
+                    f"<@{label}>",
+                    f"@{label}",
+                    label,
+                ]
+                for candidate in candidates:
+                    if not candidate or not text.startswith(candidate):
+                        continue
+                    text = text[len(candidate):].lstrip()
+                    text = text.lstrip("，,：:、-— ")
+                    changed = True
+                    break
+                if changed:
+                    break
+            if not changed:
+                break
+        return text
+
+    @classmethod
+    def _reply_mention_target(cls, context: Context):
+        if not context or not context.get("isgroup", False):
+            return [], []
+        user_id = cls._single_line(context.get("group_sender_id", ""))
+        display_name = cls._single_line(context.get("group_sender_label", ""))
+        msg = context.get("msg")
+        if not user_id and msg is not None:
+            user_id = cls._single_line(getattr(msg, "actual_user_id", ""))
+        if not display_name and msg is not None:
+            display_name = cls._single_line(getattr(msg, "actual_user_nickname", ""))
+        return ([user_id] if user_id else []), ([display_name] if display_name else [])
 
     def _send_image(self, img_path_or_url: str, receiver: str, is_group: bool, req_id: str = None):
         """Send image reply. Converts to JPG/PNG and compresses if >2MB."""

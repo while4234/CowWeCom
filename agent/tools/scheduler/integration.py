@@ -236,6 +236,7 @@ def _send_scheduler_reply(task: dict, channel_type: str, receiver: str, reply: R
         if not channel:
             logger.error(f"[Scheduler] Failed to create channel: {channel_type}")
             return False
+        action = task.get("action", {}) or {}
 
         if channel_type == "web" and hasattr(channel, "request_to_session"):
             request_id = context.get("request_id")
@@ -253,6 +254,8 @@ def _send_scheduler_reply(task: dict, channel_type: str, receiver: str, reply: R
                     receiver,
                     str(reply.content or ""),
                     is_group=bool(context.get("isgroup", False)),
+                    mention_user_ids=action.get("mention_user_ids"),
+                    mention_display_names=action.get("mention_display_names"),
                 )
             else:
                 result = channel.active_send_text_result(receiver, str(reply.content or ""))
