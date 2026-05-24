@@ -640,6 +640,9 @@ class WecomBotChannel(ChatChannel):
                 or str(getattr(cmsg, "from_user_nickname", "") or "").strip()
                 or sender_id
             )
+            group_chat_name = str(getattr(cmsg, "other_user_nickname", "") or "").strip()
+            if group_chat_name == chat_id:
+                group_chat_name = ""
 
             context["session_id"] = chat_id
             context["actor_id"] = group_actor_id
@@ -647,6 +650,7 @@ class WecomBotChannel(ChatChannel):
             context["conversation_id"] = group_actor_id
             context["memory_user_id"] = group_memory_user_id
             context["group_chat_id"] = chat_id
+            context["group_chat_name"] = group_chat_name
             context["group_sender_id"] = sender_id
             context["group_sender_label"] = sender_label
             context["group_member_profile_path"] = (
@@ -666,6 +670,7 @@ class WecomBotChannel(ChatChannel):
             else:
                 context.type = ContextType.TEXT
             content = content.strip()
+            context["_visible_task_summary"] = content
             if cmsg.is_group and context.type == ContextType.TEXT:
                 context.content = self._format_group_member_query(context, content)
             else:
@@ -677,12 +682,18 @@ class WecomBotChannel(ChatChannel):
     def _format_group_member_query(context: Context, content: str) -> str:
         sender_id = context.get("group_sender_id", "")
         sender_label = context.get("group_sender_label", "") or sender_id or "未知成员"
+        group_chat_name = str(context.get("group_chat_name", "") or "").strip()
         member_profile_path = context.get("group_member_profile_path", "")
         known_profile = _read_relative_workspace_file(member_profile_path)
         known_profile_note = known_profile.strip() if known_profile.strip() else "暂无明确称呼"
+        group_lines = []
+        if group_chat_name:
+            group_lines.append(f"- 群名称: {group_chat_name}")
+        group_lines.append(f"- 群会话ID: {context.get('group_chat_id', '')}")
         return (
             "[群聊消息元信息]\n"
-            f"- 群ID: {context.get('group_chat_id', '')}\n"
+            + "\n".join(group_lines)
+            + "\n"
             f"- 发言人ID: {sender_id}\n"
             f"- 发言人企微显示名: {sender_label}\n"
             f"- 发言人成员档案: {member_profile_path}\n"

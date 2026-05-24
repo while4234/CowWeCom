@@ -740,25 +740,35 @@ class ChatChannel(Channel):
         repeat = _safe_float(conf().get("long_task_silence_repeat_notice_seconds", 120), 120.0)
         return max(0.0, first), max(0.0, repeat)
 
+    @staticmethod
+    def _long_task_initial_notice_seconds():
+        seconds = _safe_float(conf().get("long_task_initial_notice_seconds", 6), 6.0)
+        return max(0.0, seconds)
+
     def _start_silence_watchdog(self, context: Context, runtime: SessionRuntime, token):
         if not self._long_task_expectation_enabled():
             return
 
         first_notice_seconds, repeat_notice_seconds = self._long_task_notice_seconds()
+        initial_notice_seconds = self._long_task_initial_notice_seconds()
 
         def _watch():
             while runtime.has_running() and not token.is_cancelled():
-                notice = runtime.claim_silence_notice(
-                    first_notice_seconds=first_notice_seconds,
-                    repeat_notice_seconds=repeat_notice_seconds,
-                )
+                notice = runtime.claim_initial_notice(initial_notice_seconds)
+                visible_source = "initial_notice"
+                if not notice:
+                    notice = runtime.claim_silence_notice(
+                        first_notice_seconds=first_notice_seconds,
+                        repeat_notice_seconds=repeat_notice_seconds,
+                    )
+                    visible_source = "silence_notice"
                 if notice:
                     control_pool.submit(
                         self._send_plain_text,
                         context,
                         notice,
                         True,
-                        "silence_notice",
+                        visible_source,
                     )
                 time.sleep(1.0)
 
@@ -842,8 +852,9 @@ class ChatChannel(Channel):
                         context["_latency_dequeued_at"] = dequeued_at
                         agent_max_steps = resolve_agent_max_steps(context.content, conf())
                         context["_agent_max_steps"] = agent_max_steps
+                        task_summary = context.get("_visible_task_summary") or context.content
                         token = runtime.start_task(
-                            context.content,
+                            task_summary,
                             max_turns=agent_max_steps,
                         )
                         context["_session_runtime"] = runtime

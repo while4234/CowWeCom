@@ -140,6 +140,31 @@ class TestFastLaneProgress(unittest.TestCase):
             repeat = runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0)
             self.assertIsNotNone(repeat)
 
+    def test_initial_notice_fires_once_before_first_silence_notice(self):
+        runtime = SessionRuntime()
+        runtime.start_task("long task")
+        runtime.running_task.started_at = 100.0
+        runtime.progress.started_at = 100.0
+        runtime.last_visible_output_at = 100.0
+
+        with patch("common.agent_task_runtime.monotonic", side_effect=[105.9, 106.0, 107.0]):
+            self.assertIsNone(runtime.claim_initial_notice(notice_seconds=6.0))
+            first = runtime.claim_initial_notice(notice_seconds=6.0)
+            self.assertIsNotNone(first)
+            self.assertIn("我已经开始处理这条需求", first)
+            self.assertIsNone(runtime.claim_initial_notice(notice_seconds=6.0))
+
+    def test_initial_notice_is_suppressed_after_visible_output(self):
+        runtime = SessionRuntime()
+        runtime.start_task("long task")
+        runtime.running_task.started_at = 100.0
+        runtime.progress.started_at = 100.0
+        runtime.last_visible_output_at = 102.0
+        runtime.last_visible_output_source = "message_update"
+
+        with patch("common.agent_task_runtime.monotonic", return_value=110.0):
+            self.assertIsNone(runtime.claim_initial_notice(notice_seconds=6.0))
+
     def test_visible_output_resets_silence_notice_timer(self):
         runtime = SessionRuntime()
         runtime.start_task("long task")

@@ -69,7 +69,17 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         conf().clear()
         conf().update(self._config_backup)
 
-    def _dispatch_text_message(self, *, msgid, chattype, sender, content="hello", chatid=None, sender_name=None):
+    def _dispatch_text_message(
+        self,
+        *,
+        msgid,
+        chattype,
+        sender,
+        content="hello",
+        chatid=None,
+        chatname=None,
+        sender_name=None,
+    ):
         produced = []
         self.channel.produce = produced.append
         from_info = {"userid": sender}
@@ -85,6 +95,8 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         }
         if chatid is not None:
             body["chatid"] = chatid
+        if chatname is not None:
+            body["chatname"] = chatname
 
         with patch("agent.social_bridge.get_bridge_store", return_value=FakeBridgeStore()), patch(
             "agent.social_bridge.get_social_bridge_service",
@@ -99,7 +111,7 @@ class TestWecomBotSocialBridge(unittest.TestCase):
             )
         return produced
 
-    def _dispatch_group_text(self, *, msgid, chatid, sender, sender_name=None, content="hello"):
+    def _dispatch_group_text(self, *, msgid, chatid, sender, chatname=None, sender_name=None, content="hello"):
         produced = self._dispatch_text_message(
             msgid=msgid,
             chattype="group",
@@ -107,6 +119,7 @@ class TestWecomBotSocialBridge(unittest.TestCase):
             sender_name=sender_name,
             content=content,
             chatid=chatid,
+            chatname=chatname,
         )
         self.assertEqual(len(produced), 1)
         return produced[0]
@@ -260,6 +273,7 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         first_context = self._dispatch_group_text(
             msgid="msg-group-alpha-a",
             chatid="group-alpha",
+            chatname="Nico 之家",
             sender="sender-a",
             sender_name="Alice",
             content="请记住我在群里的偏好",
@@ -289,6 +303,11 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         )
         self.assertEqual(first_context["group_sender_id"], "sender-a")
         self.assertEqual(first_context["group_sender_label"], "Alice")
+        self.assertEqual(first_context["group_chat_name"], "Nico 之家")
+        self.assertEqual(first_context["_visible_task_summary"], "请记住我在群里的偏好")
+        self.assertIn("- 群名称: Nico 之家", first_context.content)
+        self.assertIn("- 群会话ID: group-alpha", first_context.content)
+        self.assertNotIn("- 群ID:", first_context.content)
         self.assertIn("[群成员: Alice]", first_context.content)
         self.assertNotEqual(first_profile.memory_user_id, "private-sender-a-memory")
         self.assertEqual(first_profile.role, "user")
