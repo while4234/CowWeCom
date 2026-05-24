@@ -62,6 +62,8 @@ class TestLLMUsageTracker(unittest.TestCase):
                         "turn_count": 6,
                         "tool_count": 3,
                         "runtime_context_chars": 80,
+                        "self_evolution_context_chars": 220,
+                        "self_evolution_context_hash": "selfevohash",
                         "retrieved_knowledge_chars": 900,
                         "retrieved_knowledge_hash": "knowledgehash",
                         "tool_result_chars": 0,
@@ -93,6 +95,8 @@ class TestLLMUsageTracker(unittest.TestCase):
 
         self.assertEqual(record["request_kind"], "knowledge_auto")
         self.assertEqual(record["message_count"], 12)
+        self.assertEqual(record["self_evolution_context_chars"], 220)
+        self.assertEqual(record["self_evolution_context_hash"], "selfevohash")
         self.assertEqual(record["retrieved_knowledge_chars"], 900)
         self.assertEqual(record["tool_result_hash"], "toolhash")
         self.assertEqual(record["tool_attempt_count"], 4)

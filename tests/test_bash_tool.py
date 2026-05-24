@@ -53,8 +53,10 @@ class TestBashTool(unittest.TestCase):
                 patch.object(Bash, "_record_reusable_failure") as record_failure:
             result = Bash({"cwd": "."}).execute({"command": 'python -c "print(1)\nprint(2)"'})
 
-        self.assertEqual(result.status, "error")
+        self.assertEqual(result.status, "skipped")
         self.assertTrue(result.result["details"]["self_evolution_guard"])
+        self.assertTrue(result.ext_data["tool_attempt_skipped"])
+        self.assertEqual(result.ext_data["tool_failure_class"], "shell_dialect")
         self.assertIn("temporary .py", result.result["output"])
         run.assert_not_called()
         record_failure.assert_called_once()

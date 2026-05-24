@@ -97,7 +97,13 @@ class ProgressSnapshot:
         elif event_type == "tool_execution_end":
             self.phase = "llm_waiting"
             self.last_tool_name = sanitize_identifier(data.get("tool_name", self.last_tool_name))
-            self.last_tool_status = sanitize_identifier(data.get("status", "done"))
+            display_status = (
+                data.get("tool_display_status")
+                or data.get("tool_policy_status")
+                or data.get("status")
+                or "done"
+            )
+            self.last_tool_status = sanitize_identifier(display_status)
             self.tool_call_count += 1
         elif event_type == "llm_usage":
             usage = data.get("usage") or {}

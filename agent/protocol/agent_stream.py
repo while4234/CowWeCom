@@ -739,7 +739,7 @@ class AgentStreamExecutor:
                             return final_response
                         
                         # Log tool result in compact format
-                        status_emoji = "✅" if result.get("status") == "success" else "❌"
+                        status_emoji = "✅" if result.get("status") in ("success", "skipped") else "❌"
                         result_data = result.get('result', '')
                         # Format result string with proper Chinese character support
                         if isinstance(result_data, (dict, list)):
@@ -751,10 +751,16 @@ class AgentStreamExecutor:
                         # Build tool result block (Claude format)
                         # Format content in a way that's easy for LLM to understand
                         is_error = result.get("status") == "error"
+                        is_skipped = result.get("status") == "skipped" or bool(result.get("tool_attempt_skipped"))
 
                         if is_error:
                             # For errors, provide clear error message
                             result_content = f"Error: {result.get('result', 'Unknown error')}"
+                        elif is_skipped:
+                            result_content = (
+                                "Policy skip: "
+                                + self._tool_result_text(result.get("result", "Skipped by local policy"))
+                            )
                         elif isinstance(result.get('result'), dict):
                             # For dict results, use JSON format
                             result_content = json.dumps(result.get('result'), ensure_ascii=False)
@@ -1507,15 +1513,23 @@ class AgentStreamExecutor:
                 "result": result.result,
                 "execution_time": execution_time
             }
+            if isinstance(result.ext_data, dict):
+                result_dict.update(result.ext_data)
 
             # Record tool result for failure tracking
             success = result.status == "success"
+            skipped = result.status == "skipped" or bool(result_dict.get("tool_attempt_skipped"))
             if success:
                 self._tool_attempt_success_count += 1
+            elif skipped:
+                self._tool_skip_count += 1
+                self._last_tool_failure_class = str(result_dict.get("tool_failure_class") or "policy_skip")
+                result_dict.setdefault("tool_policy_status", "guarded")
+                result_dict.setdefault("tool_display_status", result_dict["tool_policy_status"])
             else:
                 self._tool_attempt_error_count += 1
-            self._record_tool_result(tool_name, arguments, success)
-            self._record_safe_tool_attempt(tool_name, arguments, result.status, result.result)
+            self._record_tool_result(tool_name, arguments, success or skipped)
+            self._record_safe_tool_attempt(tool_name, arguments, result.status, result.result, skipped=skipped)
             if success:
                 self._remember_readonly_tool_result(tool_name, arguments, result_dict)
             if is_mutating_tool(tool_name):
@@ -2183,7 +2197,9 @@ class AgentStreamExecutor:
         if not guidance:
             return ""
         lines = [
-            "[Background execution policy for this request. Apply before choosing tools; do not mention unless asked.]"
+            "[Mandatory execution policy for this request. Apply these rules before choosing tools. "
+            "If a planned tool call conflicts with a rule, choose a compliant alternative before calling the tool. "
+            "Do not mention this policy unless asked.]"
         ]
         lines.extend(f"- {item}" for item in guidance)
         return "\n".join(lines)

@@ -55,6 +55,34 @@ class SchedulerTool(BaseTool):
         return ToolResult.success("scheduled")
 
 
+class GuardedBashTool(BaseTool):
+    name = "bash"
+    description = "bash"
+    params = {
+        "type": "object",
+        "properties": {"command": {"type": "string"}},
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def execute(self, params):
+        self.calls += 1
+        return ToolResult.skipped(
+            {
+                "output": "Use a temporary .py file instead.",
+                "exit_code": 0,
+                "details": {"self_evolution_guard": True},
+            },
+            {
+                "tool_attempt_skipped": True,
+                "tool_failure_class": "shell_dialect",
+                "skip_reason": "self_evolution_guard",
+            },
+        )
+
+
 class RepeatedReadModel(LLMModel):
     def __init__(self):
         super().__init__(model="test-model")
@@ -133,6 +161,36 @@ class OneSchedulerThenDoneModel(LLMModel):
                             "function": {
                                 "name": "scheduler",
                                 "arguments": '{"action":"teleport","task_id":"new-id"}',
+                            },
+                        }]
+                    }
+                }]
+            }
+            yield {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+            return
+
+        yield {"choices": [{"delta": {"content": "done"}}]}
+        yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+
+class OneBashThenDoneModel(LLMModel):
+    def __init__(self):
+        super().__init__(model="test-model")
+        self.calls = 0
+
+    def call_stream(self, request):
+        self.calls += 1
+        if self.calls == 1:
+            yield {
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_bash",
+                            "type": "function",
+                            "function": {
+                                "name": "bash",
+                                "arguments": '{"command":"python -c \\"print(1)\\\\nprint(2)\\""}',
                             },
                         }]
                     }
@@ -250,6 +308,31 @@ class TestAgentStreamToolAttemptMemory(unittest.TestCase):
             self.assertEqual(tool.calls, 0)
             self.assertEqual(executor._tool_policy_skip_turn_credit, 1)
 
+    def test_self_evolution_guard_is_reported_as_guarded_skip(self):
+        events = []
+        tool = GuardedBashTool()
+        executor = AgentStreamExecutor(
+            agent=FakeAgent(),
+            model=OneBashThenDoneModel(),
+            system_prompt="system",
+            tools=[tool],
+            messages=[],
+            max_turns=1,
+            on_event=events.append,
+        )
+
+        response = executor.run_stream("run fragile command")
+
+        self.assertEqual(response, "done")
+        self.assertEqual(tool.calls, 1)
+        self.assertEqual(executor._tool_policy_skip_turn_credit, 1)
+        self.assertEqual(executor._tool_skip_count, 1)
+        self.assertEqual(executor._tool_attempt_error_count, 0)
+        end_events = [event for event in events if event["type"] == "tool_execution_end"]
+        self.assertEqual(end_events[-1]["data"]["status"], "skipped")
+        self.assertEqual(end_events[-1]["data"]["tool_policy_status"], "guarded")
+        self.assertTrue(end_events[-1]["data"]["tool_attempt_skipped"])
+
     def test_self_evolution_guidance_is_request_context_not_system_prompt(self):
         executor = AgentStreamExecutor(
             agent=FakeAgent(),
@@ -265,7 +348,7 @@ class TestAgentStreamToolAttemptMemory(unittest.TestCase):
         ):
             context = executor._build_self_evolution_context_text()
 
-        self.assertIn("Background execution policy for this request", context)
+        self.assertIn("Mandatory execution policy for this request", context)
         self.assertIn('set "PYTHONUTF8=1"', context)
 
     def test_request_context_tracks_self_evolution_guidance_separately(self):

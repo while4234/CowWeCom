@@ -128,7 +128,12 @@ class ChatService:
                 # Retrieve cached arguments from the matching tool_execution_start event
                 arguments = state.pending_tool_arguments.pop(tool_call_id, data.get("arguments", {}))
                 result = data.get("result", "")
-                status = data.get("status", "unknown")
+                status = (
+                    data.get("tool_display_status")
+                    or data.get("tool_policy_status")
+                    or data.get("status")
+                    or "unknown"
+                )
                 execution_time = data.get("execution_time", 0)
                 elapsed_str = f"{execution_time:.2f}s"
 
@@ -147,6 +152,10 @@ class ChatService:
                     "status": status,
                     "elapsed": elapsed_str,
                 }
+                if data.get("tool_attempt_skipped"):
+                    tool_info["tool_attempt_skipped"] = True
+                if data.get("tool_policy_status"):
+                    tool_info["tool_policy_status"] = data.get("tool_policy_status")
 
                 if state.pending_tool_results is not None:
                     state.pending_tool_results.append(tool_info)

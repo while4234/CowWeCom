@@ -184,6 +184,24 @@ class TestFastLaneProgress(unittest.TestCase):
         self.assertNotIn("C:\\secret", progress.last_visible_preview)
         self.assertNotIn("abc", progress.last_visible_preview)
 
+    def test_policy_guard_progress_status_is_not_plain_error(self):
+        runtime = SessionRuntime()
+        runtime.start_task("run guarded command", max_turns=5)
+        runtime.update_progress("tool_execution_start", {"tool_name": "bash"})
+        runtime.update_progress(
+            "tool_execution_end",
+            {
+                "tool_name": "bash",
+                "status": "skipped",
+                "tool_policy_status": "guarded",
+                "tool_attempt_skipped": True,
+            },
+        )
+
+        self.assertEqual(runtime.progress.last_tool_name, "bash")
+        self.assertEqual(runtime.progress.last_tool_status, "guarded")
+        self.assertIn("最近工具：bash（guarded）", runtime.status_text())
+
     def test_status_text_sanitizes_summary_preview_and_error(self):
         runtime = SessionRuntime()
         runtime.start_task(r"read C:\secret\plan.txt token=summary-secret")

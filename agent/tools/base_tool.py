@@ -26,6 +26,10 @@ class ToolResult:
     def fail(result, ext_data: Any = None):
         return ToolResult(status="error", result=result, ext_data=ext_data)
 
+    @staticmethod
+    def skipped(result, ext_data: Any = None):
+        return ToolResult(status="skipped", result=result, ext_data=ext_data)
+
 
 class BaseTool:
     """Base class for all tools."""

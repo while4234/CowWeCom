@@ -90,10 +90,14 @@ SAFETY:
                 self._record_policy_application(rule_id, original_command, "windows shell guard")
             if guard.block_reason:
                 self._record_reusable_failure(original_command, guard.block_reason, 1)
-                return ToolResult.fail({
+                return ToolResult.skipped({
                     "output": guard.block_reason,
-                    "exit_code": 1,
+                    "exit_code": 0,
                     "details": {"self_evolution_guard": True},
+                }, {
+                    "tool_attempt_skipped": True,
+                    "tool_failure_class": "shell_dialect",
+                    "skip_reason": "self_evolution_guard",
                 })
             command = guard.command
 
