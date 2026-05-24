@@ -74,6 +74,16 @@ class TestLLMUsageTracker(unittest.TestCase):
                         "tool_memory_rule_hits": 1,
                         "tool_compacted_result_count": 3,
                         "tool_failure_class": "non_retryable_args",
+                        "reasoning_effort_selected": "xhigh",
+                        "reasoning_effort_decision_source": "local",
+                        "reasoning_effort_reason": "coding",
+                        "reasoning_effort_backend": "capi",
+                        "reasoning_effort_main_model": "gpt-5.5",
+                        "reasoning_effort_classifier_model": "gpt-5-mini",
+                        "reasoning_effort_classifier_effort": "low",
+                        "reasoning_effort_classifier_status": "success",
+                        "reasoning_effort_classifier_latency_ms": 123,
+                        "reasoning_effort_local_rule": "coding",
                         "prompt": "raw prompt must not be persisted",
                         "messages": [{"role": "user", "content": "secret"}],
                         "tool_arguments": {"path": "secret.txt"},
@@ -93,6 +103,10 @@ class TestLLMUsageTracker(unittest.TestCase):
         self.assertEqual(record["tool_attempt_error_count"], 1)
         self.assertEqual(record["tool_skip_count"], 2)
         self.assertEqual(record["tool_failure_class"], "non_retryable_args")
+        self.assertEqual(record["reasoning_effort_selected"], "xhigh")
+        self.assertEqual(record["reasoning_effort_decision_source"], "local")
+        self.assertEqual(record["reasoning_effort_classifier_model"], "gpt-5-mini")
+        self.assertEqual(record["reasoning_effort_classifier_latency_ms"], 123)
         self.assertNotIn("prompt", record)
         self.assertNotIn("messages", record)
         self.assertNotIn("tool_arguments", record)

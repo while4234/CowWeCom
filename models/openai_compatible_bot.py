@@ -122,6 +122,10 @@ class OpenAICompatibleBot:
             # Add max_tokens if specified
             if kwargs.get("max_tokens"):
                 request_params["max_tokens"] = kwargs["max_tokens"]
+            if kwargs.get("request_timeout") is not None:
+                request_params["request_timeout"] = kwargs["request_timeout"]
+            elif kwargs.get("timeout") is not None:
+                request_params["timeout"] = kwargs["timeout"]
 
             reasoning_effort = self._resolve_reasoning_effort(kwargs)
             if reasoning_effort:

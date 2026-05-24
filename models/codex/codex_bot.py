@@ -130,10 +130,14 @@ class CodexBot(Bot, OpenAICompatibleBot):
             request_id = uuid4().hex[:12]
             tokens = self._credential_source.resolve_access_tokens()
             metadata = self._usage_metadata(kwargs)
+            client_config = self._client_config()
+            request_timeout = kwargs.get("request_timeout") or kwargs.get("timeout")
+            if request_timeout is not None:
+                client_config["request_timeout"] = request_timeout
             events = self._transport.stream_responses(
                 payload,
                 tokens,
-                config=self._client_config(),
+                config=client_config,
                 request_id=request_id,
             )
             chunks = self._chat_chunks(events, allow_tools=allow_tools)

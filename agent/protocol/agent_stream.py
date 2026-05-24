@@ -14,6 +14,7 @@ from common.agent_task_runtime import TaskCancelled
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common.log import logger
 from common.llm_usage_tracker import normalize_usage, stable_metadata_hash
+from common.reasoning_effort_policy import resolve_reasoning_effort_for_task
 from common.tool_attempt_memory import ToolAttemptMemory, is_mutating_tool, is_readonly_reusable_tool
 
 
@@ -102,6 +103,7 @@ class AgentStreamExecutor:
         self.tool_attempt_memory = ToolAttemptMemory()
         self._tool_attempt_memory_snapshot = {}
         self._readonly_tool_result_cache = {}
+        self._reasoning_effort_decision = None
         self._reset_request_tool_counters()
         
         # Track files to send (populated by read tool)
@@ -460,8 +462,15 @@ class AgentStreamExecutor:
         
         thinking_enabled = self._is_thinking_enabled()
         self._request_runtime_context = self._build_request_context_text(user_message)
+        self._reasoning_effort_decision = resolve_reasoning_effort_for_task(user_message, self.model)
         thinking_label = " | 💭 thinking" if thinking_enabled else ""
-        logger.info(f"🤖 {self.model.model}{thinking_label} | 👤 {user_message}")        
+        effort_label = ""
+        if self._reasoning_effort_decision:
+            effort_label = (
+                f" | effort={self._reasoning_effort_decision.selected_effort}"
+                f"/{self._reasoning_effort_decision.decision_source}"
+            )
+        logger.info(f"🤖 {self.model.model}{thinking_label}{effort_label} | 👤 {user_message}")
         
         # Add user message (Claude format - use content blocks for consistency)
         self.messages.append({
@@ -874,6 +883,10 @@ class AgentStreamExecutor:
             system=self.system_prompt,  # Pass system prompt separately for Claude API
             cache_shape_metadata=cache_shape_metadata,
         )
+        if self._reasoning_effort_decision:
+            request.reasoning_effort = self._reasoning_effort_decision.selected_effort
+            request.reasoning_effort_locked = True
+            request.reasoning_effort_decision_source = self._reasoning_effort_decision.decision_source
 
         self._emit_event("message_start", {"role": "assistant"})
 
@@ -2206,7 +2219,7 @@ class AgentStreamExecutor:
         request_kind = self._classify_request_kind(messages, tool_result_chars)
         prefix_messages = self._messages_prefix_for_cache_hash(messages)
         tool_results_for_hash = self._tool_results_for_cache_hash(messages)
-        return {
+        metadata = {
             "request_kind": request_kind,
             "system_hash": stable_metadata_hash(self.system_prompt or ""),
             "tools_hash": stable_metadata_hash(tools_schema or []),
@@ -2228,6 +2241,9 @@ class AgentStreamExecutor:
             "tool_compacted_result_count": int(getattr(self, "_request_tool_result_compacted_count", 0) or 0),
             "tool_failure_class": getattr(self, "_last_tool_failure_class", "") or "",
         }
+        if self._reasoning_effort_decision:
+            metadata.update(self._reasoning_effort_decision.usage_metadata())
+        return metadata
 
     def _classify_request_kind(self, messages: List[Dict[str, Any]], tool_result_chars: int) -> str:
         channel_type = str(getattr(self.model, "channel_type", "") or "")

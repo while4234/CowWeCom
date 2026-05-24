@@ -91,6 +91,8 @@ class AgentLLMModel(LLMModel):
         self.bot_type = bot_type
         self._bot = None
         self._bot_model = None
+        self.actor_role = ""
+        self.is_admin = False
 
     @property
     def model(self):
@@ -158,11 +160,14 @@ class AgentLLMModel(LLMModel):
                     'messages': request.messages,
                     'tools': getattr(request, 'tools', None),
                     'stream': False,
-                    'model': self.model  # Pass model parameter
+                    'model': getattr(request, 'model', None) or self.model
                 }
                 # Only pass max_tokens if it's explicitly set
                 if request.max_tokens is not None:
                     kwargs['max_tokens'] = request.max_tokens
+                request_timeout = getattr(request, 'request_timeout', None)
+                if request_timeout is not None:
+                    kwargs['request_timeout'] = request_timeout
 
                 # Extract system prompt if present
                 system_prompt = getattr(request, 'system', None)
@@ -198,10 +203,16 @@ class AgentLLMModel(LLMModel):
                 )
                 # Reasoning effort is only meaningful when thinking is on.
                 # Bots that don't understand the kwarg drop it silently.
-                if thinking_enabled:
-                    effort = conf().get("model_reasoning_effort") or conf().get("reasoning_effort", "high")
-                    if effort in ("low", "medium", "high", "xhigh", "max"):
-                        kwargs['reasoning_effort'] = effort
+                request_effort = getattr(request, 'reasoning_effort', None)
+                effort_locked = bool(getattr(request, 'reasoning_effort_locked', False))
+                if effort_locked:
+                    effort = request_effort
+                elif thinking_enabled or request_effort:
+                    effort = request_effort or conf().get("model_reasoning_effort") or conf().get("reasoning_effort", "high")
+                else:
+                    effort = None
+                if effort in ("none", "low", "medium", "high", "xhigh", "max"):
+                    kwargs['reasoning_effort'] = effort
 
                 response = self.bot.call_with_tools(**kwargs)
                 return self._format_response(response)
@@ -229,12 +240,15 @@ class AgentLLMModel(LLMModel):
                     'messages': request.messages,
                     'tools': getattr(request, 'tools', None),
                     'stream': True,
-                    'model': self.model  # Pass model parameter
+                    'model': getattr(request, 'model', None) or self.model
                 }
 
                 # Only pass max_tokens if explicitly set, let the bot use its default
                 if request.max_tokens is not None:
                     kwargs['max_tokens'] = request.max_tokens
+                request_timeout = getattr(request, 'request_timeout', None)
+                if request_timeout is not None:
+                    kwargs['request_timeout'] = request_timeout
 
                 # Add system prompt if present
                 if system_prompt:
@@ -269,10 +283,16 @@ class AgentLLMModel(LLMModel):
                 )
                 # Reasoning effort is only meaningful when thinking is on.
                 # Bots that don't understand the kwarg drop it silently.
-                if thinking_enabled:
-                    effort = conf().get("model_reasoning_effort") or conf().get("reasoning_effort", "high")
-                    if effort in ("low", "medium", "high", "xhigh", "max"):
-                        kwargs['reasoning_effort'] = effort
+                request_effort = getattr(request, 'reasoning_effort', None)
+                effort_locked = bool(getattr(request, 'reasoning_effort_locked', False))
+                if effort_locked:
+                    effort = request_effort
+                elif thinking_enabled or request_effort:
+                    effort = request_effort or conf().get("model_reasoning_effort") or conf().get("reasoning_effort", "high")
+                else:
+                    effort = None
+                if effort in ("none", "low", "medium", "high", "xhigh", "max"):
+                    kwargs['reasoning_effort'] = effort
 
                 stream = self.bot.call_with_tools(**kwargs)
                 
@@ -611,6 +631,8 @@ class AgentBridge:
                     agent.model.user_id = profile.actor_id
                     agent.model.user_label = profile.display_name
                     agent.model.memory_user_id = profile.memory_user_id
+                    agent.model.actor_role = profile.role
+                    agent.model.is_admin = bool(profile.is_admin)
 
             # Store session_id on agent so executor can clear DB on fatal errors
             agent._current_session_id = conversation_id or session_id
