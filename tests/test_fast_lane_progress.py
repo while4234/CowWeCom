@@ -232,18 +232,45 @@ class TestFastLaneProgress(unittest.TestCase):
         self.assertNotIn("bridge-secret", reply.content)
         self.assertNotIn("C:\\secret", reply.content)
 
-    def test_cancel_marks_progress_and_clears_pending(self):
+    def test_cancel_marks_progress_without_clearing_pending(self):
         runtime = SessionRuntime()
         token = runtime.start_task("long task")
         runtime.queue.put(make_text_context("queued"))
 
         self.assertTrue(runtime.cancel_running())
-        cleared = runtime.clear_pending()
 
         self.assertTrue(token.is_cancelled())
-        self.assertEqual(cleared, 1)
+        self.assertEqual(runtime.queue.qsize(), 1)
         self.assertEqual(runtime.progress.phase, "cancel_requested")
         self.assertIn("取消", runtime.status_text())
+
+    def test_cancel_control_preserves_pending_messages(self):
+        channel = make_channel_without_thread()
+        sent = []
+        channel._send_plain_text = lambda context, text, track_visible=True: sent.append(text)
+        runtime = SessionRuntime()
+        token = runtime.start_task("long task")
+        runtime.queue.put(make_text_context("queued"))
+        channel.sessions["wechat-session"] = runtime
+
+        channel._handle_control_cancel(make_text_context("/取消"), runtime)
+
+        self.assertTrue(token.is_cancelled())
+        self.assertEqual(runtime.queue.qsize(), 1)
+        self.assertIn("队列中还有 1 条消息", sent[0])
+        self.assertNotIn("已清空排队消息", sent[0])
+
+    def test_skip_control_clears_pending_messages(self):
+        channel = make_channel_without_thread()
+        sent = []
+        channel._send_plain_text = lambda context, text, track_visible=True: sent.append(text)
+        runtime = SessionRuntime()
+        runtime.queue.put(make_text_context("queued"))
+
+        channel._handle_control_skip(make_text_context("/跳过"), runtime)
+
+        self.assertEqual(runtime.queue.qsize(), 0)
+        self.assertIn("已清空排队消息 1 条", sent[0])
 
 
 if __name__ == "__main__":

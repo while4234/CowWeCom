@@ -120,7 +120,11 @@ class DailyDouyinVideoHarvesterTest(unittest.TestCase):
 
         self.assertNotIn("安卓人", query_text)
         self.assertNotIn("黄仁勋 空军一号", query_text)
-        self.assertTrue(all(("今日" in item["query"] or "热" in item["query"] or "全网" in item["query"] or "网友" in item["query"]) for item in queries))
+        self.assertFalse(self.module.DEFAULT_CONFIG["douyin"]["use_hot_terms"])
+        self.assertIn("轻擦边舞蹈", query_text)
+        self.assertIn("氛围感美女跳舞", query_text)
+        self.assertIn("情侣搞笑日常", query_text)
+        self.assertNotIn("今日热榜", query_text)
 
     def test_parse_search_html_extracts_video_candidate_and_scores(self):
         html_text = """

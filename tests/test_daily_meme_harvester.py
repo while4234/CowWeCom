@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import importlib.util
 import json
@@ -140,6 +141,16 @@ class DailyMemeHarvesterTest(unittest.TestCase):
         self.assertEqual(candidates[0].provider, "xiaohongshu")
         self.assertTrue(candidates[0].image_url.startswith("https://sns-webpic-qc.xhscdn.com/"))
 
+    def test_xiaohongshu_extensionless_note_images_are_content(self):
+        image_url = (
+            "https://sns-webpic-qc.xhscdn.com/202605241517/hash/"
+            "notes_pre_post/1040g3k0320fui27nls005pcr2b183t9ft271318!nc_n_webp_mw_1"
+        )
+        avatar_url = "https://sns-avatar-qc.xhscdn.com/avatar/1040.jpg?imageView2/2/w/80/format/jpg"
+
+        self.assertTrue(self.module.looks_like_xiaohongshu_content_image_url(image_url))
+        self.assertFalse(self.module.looks_like_xiaohongshu_content_image_url(avatar_url))
+
     def test_xiaohongshu_search_params_default_to_today_image_notes(self):
         params = self.module.xiaohongshu_search_params(self.module.DEFAULT_CONFIG["xiaohongshu"], "今日热梗")
 
@@ -186,6 +197,17 @@ class DailyMemeHarvesterTest(unittest.TestCase):
         queries = self.module.build_hot_driven_queries(provider_config, config)
 
         self.assertEqual(queries, ["热点事件", "热点事件 名场面", "热点事件 表情包", "今日热梗"])
+
+    def test_default_xiaohongshu_queries_are_interest_seeded(self):
+        queries = self.module.build_hot_driven_queries(
+            self.module.DEFAULT_CONFIG["xiaohongshu"],
+            {"max_per_provider": 30},
+        )
+
+        self.assertFalse(self.module.DEFAULT_CONFIG["xiaohongshu"]["use_hot_terms"])
+        self.assertIn("抽象名场面", queries)
+        self.assertIn("氛围感美女", queries)
+        self.assertNotIn("今日热梗", queries)
 
     def test_select_candidates_limits_each_provider_to_top_three(self):
         candidates = []
@@ -240,7 +262,13 @@ class DailyMemeHarvesterTest(unittest.TestCase):
             "_failed_providers": set(),
             "max_per_provider": 10,
             "weibo": {
+                "use_hot_terms": True,
                 "max_search_terms": 2,
+                "max_search_queries": 2,
+                "search_patterns": ["{term}"],
+                "fallback_keywords": [],
+                "browser": {"enabled": False},
+                "http_fallback_enabled": True,
                 "search_time_budget_seconds": 30,
                 "request_interval_seconds": 0,
             },
@@ -256,6 +284,45 @@ class DailyMemeHarvesterTest(unittest.TestCase):
 
         self.assertEqual(candidates, [])
         self.assertEqual(search_mock.call_count, 2)
+
+    def test_collect_weibo_defaults_to_profile_interest_queries(self):
+        config = copy.deepcopy(self.module.DEFAULT_CONFIG)
+        config.update({"_env": {}, "_warnings": [], "_failed_providers": set(), "max_per_provider": 5})
+
+        with patch.object(self.module, "fetch_weibo_hot_terms") as hot_terms_mock, patch.object(
+            self.module,
+            "collect_weibo_browser",
+            return_value=[],
+        ) as browser_mock, patch.object(self.module, "search_weibo_images_for_term") as http_search_mock:
+            candidates = self.module.collect_weibo(config)
+
+        self.assertEqual(candidates, [])
+        hot_terms_mock.assert_not_called()
+        http_search_mock.assert_not_called()
+        browser_terms = browser_mock.call_args.args[1]
+        self.assertIn("抽象名场面", [item["query"] for item in browser_terms])
+        self.assertTrue(config["weibo"]["browser"]["use_persistent_profile"])
+
+    def test_weibo_recent_filter_skips_stale_created_at(self):
+        old_candidate = self.module.MemeCandidate(
+            provider="weibo",
+            source_id="old",
+            source_url="https://weibo.com/old",
+            image_url="https://wx1.sinaimg.cn/old.jpg",
+            created_at="Mon Jan 01 00:00:00 +0800 2024",
+        )
+        unknown_candidate = self.module.MemeCandidate(
+            provider="weibo",
+            source_id="unknown",
+            source_url="https://weibo.com/unknown",
+            image_url="https://wx1.sinaimg.cn/unknown.jpg",
+        )
+        config = {"since_hours": 24, "timezone": "Asia/Shanghai", "_warnings": []}
+
+        kept = self.module.filter_recent_weibo_candidates([old_candidate, unknown_candidate], config)
+
+        self.assertEqual([item.source_id for item in kept], ["unknown"])
+        self.assertTrue(any("weibo skipped 1 stale candidates" in warning for warning in config["_warnings"]))
 
     def test_filter_candidates_dedupes_same_weibo_content_before_images(self):
         candidates = [
@@ -743,6 +810,43 @@ class DailyMemeHarvesterTest(unittest.TestCase):
                 self.module.XIAOHONGSHU_BROWSER_PROFILE_DIR,
             )
             self.assertTrue(any("legacy xiaohongshu HTTP defaults detected" in warning for warning in config["_warnings"]))
+
+    def test_legacy_xiaohongshu_corrupt_search_filter_migrates_to_today_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "config_version": 4,
+                        "providers": ["xiaohongshu"],
+                        "xiaohongshu": {
+                            "search_filters": {
+                                "enabled": True,
+                                "sort_type": "time_descending",
+                                "note_type": "????",
+                                "time_filter": "???",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = Namespace(
+                config=str(config_path),
+                providers=None,
+                max_total=None,
+                max_per_provider=None,
+                since_hours=None,
+                dry_run=True,
+                json=True,
+                debug=False,
+                out=None,
+            )
+
+            config = self.module.build_config(args, env={})
+
+            self.assertEqual(config["xiaohongshu"]["search_filters"]["note_type"], "普通笔记")
+            self.assertEqual(config["xiaohongshu"]["search_filters"]["time_filter"], "一天内")
 
     def test_legacy_block_keywords_are_extended_with_serious_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:

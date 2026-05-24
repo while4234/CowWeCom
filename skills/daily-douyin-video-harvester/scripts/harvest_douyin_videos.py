@@ -33,6 +33,7 @@ WECOM_WS_URL = "wss://openws.work.weixin.qq.com"
 WECOM_MEDIA_CHUNK_SIZE = 512 * 1024
 
 DEFAULT_CONFIG: Dict[str, Any] = {
+    "config_version": 2,
     "output_dir": "~/cow/douyin-videos",
     "timezone": "Asia/Shanghai",
     "max_total": 3,
@@ -55,6 +56,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "freshness_bonus": 1000,
     "douyin": {
         "cookie_env": "DOUYIN_COOKIE",
+        "use_hot_terms": False,
         "endpoint_hotsearch": [
             "https://www.douyin.com/aweme/v1/web/hot/search/list/",
             "https://www.douyin.com/aweme/v1/hot/search/list/",
@@ -63,11 +65,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "endpoint_search": "https://www.douyin.com/search/{keyword}",
         "search_patterns": ["{term}", "{term} 名场面", "{term} 反转", "{term} 笑死", "{term} 二创"],
         "fallback_keywords": [
-            "今日热榜 热梗",
-            "全网热议 名场面",
-            "今日离谱热点",
-            "网友锐评 热点",
-            "互联网热梗",
+            "轻擦边舞蹈",
+            "氛围感美女跳舞",
+            "甜妹变装",
+            "辣妹热舞",
+            "美女热舞名场面",
+            "情侣搞笑日常",
+            "显眼包名场面",
+            "离谱整活",
+            "评论区笑死",
+            "抽象短视频",
+            "反转名场面",
+            "上头舞蹈",
         ],
         "max_hot_terms": 25,
         "max_search_queries": 30,
@@ -111,6 +120,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "偷感",
             "逆天",
             "锐评",
+            "搞笑",
+            "擦边",
+            "轻擦边",
+            "氛围感",
+            "美女",
+            "甜妹",
+            "辣妹",
+            "热舞",
+            "舞蹈",
+            "变装",
+            "纯欲",
+            "钓系",
         ],
         "hotspot_keywords": [
             "热榜",
@@ -201,6 +222,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "违法",
             "犯罪",
             "辟谣",
+            "裸露",
+            "露骨",
+            "色情",
+            "成人",
+            "约炮",
+            "成人视频",
+            "未成年",
+            "nsfw",
         ],
     },
     "proxy_guard": {
@@ -344,7 +373,48 @@ def load_config(config_path: Path) -> Dict[str, Any]:
         raise SystemExit(f"Invalid config JSON: {config_path}: {exc}") from exc
     if not isinstance(raw, dict):
         raise SystemExit(f"Config must be a JSON object: {config_path}")
-    return deep_merge(DEFAULT_CONFIG, raw)
+    merged = deep_merge(DEFAULT_CONFIG, raw)
+    merged["_raw_config"] = raw
+    return merged
+
+
+def raw_config_version(config: Dict[str, Any]) -> int:
+    raw_config = config.get("_raw_config", {})
+    if not isinstance(raw_config, dict):
+        return 0
+    try:
+        return int(raw_config.get("config_version", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def maybe_migrate_interest_seed_defaults(config: Dict[str, Any]) -> None:
+    if raw_config_version(config) >= 2:
+        return
+    raw_config = config.get("_raw_config", {})
+    if not isinstance(raw_config, dict):
+        raw_config = {}
+    raw_douyin = raw_config.get("douyin", {})
+    if not isinstance(raw_douyin, dict):
+        raw_douyin = {}
+    default_douyin = DEFAULT_CONFIG["douyin"]
+    douyin_config = config.setdefault("douyin", {})
+    old_fallbacks = [
+        "今日热榜 热梗",
+        "全网热议 名场面",
+        "今日离谱热点",
+        "网友锐评 热点",
+        "互联网热梗",
+    ]
+    changed = False
+    if raw_douyin.get("use_hot_terms", True) is True:
+        douyin_config["use_hot_terms"] = default_douyin["use_hot_terms"]
+        changed = True
+    if raw_douyin.get("fallback_keywords", old_fallbacks) == old_fallbacks:
+        douyin_config["fallback_keywords"] = copy.deepcopy(default_douyin["fallback_keywords"])
+        changed = True
+    if changed:
+        add_warning(config, "legacy douyin hot-board defaults replaced with interest-seeded profile search for this run")
 
 
 def build_config(args: argparse.Namespace, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
@@ -355,6 +425,7 @@ def build_config(args: argparse.Namespace, env: Optional[Dict[str, str]] = None)
     config["_env"] = environ
     config["_warnings"] = []
     config["_failed"] = False
+    maybe_migrate_interest_seed_defaults(config)
     config["output_dir"] = str(expand_path(args.out or environ.get("DOUYIN_VIDEO_OUTPUT_DIR") or config["output_dir"]))
     config["max_total"] = args.max_total if args.max_total is not None else int(config.get("max_total", 3))
     config["max_candidates"] = (
@@ -1370,19 +1441,21 @@ def collect_douyin_browser_fallback(
     candidate_artifacts: List[Dict[str, Any]] = []
     fallback_query_specs: List[Dict[str, Any]] = []
     discovery_specs: List[Dict[str, Any]] = []
+    use_hot_terms = bool(config.get("douyin", {}).get("use_hot_terms", False))
     hot_endpoints = config.get("douyin", {}).get("endpoint_hotsearch") or []
-    if isinstance(hot_endpoints, str):
-        hot_endpoints = [hot_endpoints]
-    for endpoint in hot_endpoints:
-        discovery_specs.append(
-            {
-                "phase": "discovery",
-                "query": "",
-                "term": "",
-                "base_score": 0.0,
-                "url": build_url(str(endpoint), config.get("douyin", {}).get("hotsearch_params") or {}),
-            }
-        )
+    if use_hot_terms:
+        if isinstance(hot_endpoints, str):
+            hot_endpoints = [hot_endpoints]
+        for endpoint in hot_endpoints:
+            discovery_specs.append(
+                {
+                    "phase": "discovery",
+                    "query": "",
+                    "term": "",
+                    "base_score": 0.0,
+                    "url": build_url(str(endpoint), config.get("douyin", {}).get("hotsearch_params") or {}),
+                }
+            )
     for spec in list(queries)[:max_queries]:
         keyword = str(spec.get("query") or spec.get("term") or "").strip()
         if not keyword:
@@ -1395,22 +1468,23 @@ def collect_douyin_browser_fallback(
                 "url": f"https://www.douyin.com/search/{urllib.parse.quote(keyword, safe='')}?type=general",
             }
         )
-    for start_url in browser_config.get("start_urls") or []:
-        url_text = str(start_url)
-        label = ""
-        if "/search/" in url_text:
-            encoded_label = urllib.parse.urlsplit(url_text).path.rsplit("/", 1)[-1]
-            label = urllib.parse.unquote(encoded_label).strip()
-        label_score, _reasons = score_meme_potential(label, config) if label else (0.0, [])
-        discovery_specs.append(
-            {
-                "phase": "discovery",
-                "query": label,
-                "term": label,
-                "base_score": max(label_score, 0.0),
-                "url": url_text,
-            }
-        )
+    if use_hot_terms:
+        for start_url in browser_config.get("start_urls") or []:
+            url_text = str(start_url)
+            label = ""
+            if "/search/" in url_text:
+                encoded_label = urllib.parse.urlsplit(url_text).path.rsplit("/", 1)[-1]
+                label = urllib.parse.unquote(encoded_label).strip()
+            label_score, _reasons = score_meme_potential(label, config) if label else (0.0, [])
+            discovery_specs.append(
+                {
+                    "phase": "discovery",
+                    "query": label,
+                    "term": label,
+                    "base_score": max(label_score, 0.0),
+                    "url": url_text,
+                }
+            )
     if not discovery_specs and not fallback_query_specs:
         return []
 
@@ -1494,7 +1568,11 @@ def collect_douyin_browser_fallback(
                     if result == "challenge":
                         return []
 
-                hot_terms = rank_hot_terms_for_search(browser_hot_terms_from_artifacts(term_artifacts, config), config)
+                hot_terms = (
+                    rank_hot_terms_for_search(browser_hot_terms_from_artifacts(term_artifacts, config), config)
+                    if use_hot_terms
+                    else []
+                )
                 search_specs: List[Dict[str, Any]] = []
                 seen_queries = set()
                 for spec in build_search_queries(hot_terms, config) + fallback_query_specs:
@@ -1514,6 +1592,8 @@ def collect_douyin_browser_fallback(
                         break
                 if hot_terms:
                     add_warning(config, f"douyin hot-board discovery produced {len(hot_terms)} meme-worthy terms")
+                elif fallback_query_specs and not use_hot_terms:
+                    add_warning(config, "douyin browser collection is using interest-seeded profile search")
                 elif fallback_query_specs:
                     add_warning(config, "douyin hot-board discovery produced no usable terms; using fallback meme queries")
 
@@ -1558,12 +1638,13 @@ def collect_douyin(config: Dict[str, Any]) -> List[DouyinVideoCandidate]:
         browser_candidates.sort(key=lambda candidate: candidate.score, reverse=True)
         return browser_candidates[:max_candidates]
 
-    hot_payloads = fetch_hot_payloads(config)
     terms: List[HotTerm] = []
-    for payload in hot_payloads:
-        terms.extend(parse_douyin_hot_terms(payload, max_terms=int(douyin_config.get("max_hot_terms", 25))))
-        candidates.extend(extract_candidates_from_payload(payload, "https://www.douyin.com/hot", None, 0.0, config=config))
-    terms = rank_hot_terms_for_search(terms, config)
+    if douyin_config.get("use_hot_terms", False):
+        hot_payloads = fetch_hot_payloads(config)
+        for payload in hot_payloads:
+            terms.extend(parse_douyin_hot_terms(payload, max_terms=int(douyin_config.get("max_hot_terms", 25))))
+            candidates.extend(extract_candidates_from_payload(payload, "https://www.douyin.com/hot", None, 0.0, config=config))
+        terms = rank_hot_terms_for_search(terms, config)
     queries = build_search_queries(terms, config)
     endpoint_template = douyin_config.get("endpoint_search", "https://www.douyin.com/search/{keyword}")
 

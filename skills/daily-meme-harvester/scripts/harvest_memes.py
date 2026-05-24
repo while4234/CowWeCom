@@ -5,6 +5,7 @@ import copy
 import dataclasses
 import datetime as dt
 import email.message
+import email.utils
 import hashlib
 import html
 import importlib.util
@@ -38,7 +39,7 @@ WEIBO_BROWSER_PROFILE_ENV = "WEIBO_BROWSER_USER_DATA_DIR"
 XIAOHONGSHU_BROWSER_PROFILE_DIR = "~/.cow-meme-harvester/xiaohongshu-browser-profile"
 XIAOHONGSHU_BROWSER_PROFILE_ENV = "XHS_BROWSER_USER_DATA_DIR"
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "config_version": 4,
+    "config_version": 5,
     "output_dir": "~/cow/memes",
     "timezone": "Asia/Shanghai",
     "providers": ["weibo", "xiaohongshu"],
@@ -57,30 +58,71 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "send_after_download": False,
     "weibo": {
         "enabled": True,
+        "use_hot_terms": False,
         "max_hot_terms": 20,
         "max_search_terms": 5,
-        "max_search_suffixes": 3,
+        "max_search_queries": 8,
+        "max_search_suffixes": 1,
         "search_time_budget_seconds": 45,
         "request_timeout_seconds": 6,
-        "search_suffixes": ["", "名场面", "表情包", "梗", "搞笑图", "meme"],
+        "search_suffixes": ["", "名场面", "表情包"],
+        "search_patterns": ["{term}", "{term} 名场面", "{term} 表情包"],
+        "fallback_keywords": [
+            "抽象名场面",
+            "离谱名场面",
+            "评论区翻车",
+            "情侣日常搞笑",
+            "擦边但不低俗",
+            "氛围感美女",
+            "搞笑聊天截图",
+            "网友锐评名场面",
+            "整活视频截图",
+            "显眼包名场面",
+            "辣妹变装",
+            "甜妹跳舞",
+        ],
         "request_interval_seconds": 2,
         "endpoint_hotsearch": "https://weibo.com/ajax/side/hotSearch",
+        "endpoint_search": "https://m.weibo.cn/api/container/getIndex",
         "cookie_env": "WEIBO_COOKIE",
+        "http_fallback_enabled": False,
         "browser": {
             "enabled": True,
             "use_persistent_profile": True,
             "user_data_dir": WEIBO_BROWSER_PROFILE_DIR,
-            "warmup_url": "https://weibo.com/",
+            "launch_mode": "system_chrome_cdp",
+            "remote_debugging_port": 0,
+            "channel": "chrome",
+            "headless": False,
+            "timeout_seconds": 18,
+            "wait_seconds": 2,
+            "max_queries": 5,
+            "time_budget_seconds": 60,
+            "manual_login_wait_seconds": 0,
+            "warmup_urls": ["https://weibo.com/", "https://m.weibo.cn/"],
         },
     },
     "xiaohongshu": {
         "enabled": True,
         "cookie_env": "XHS_COOKIE",
         "search_keywords": ["梗图", "表情包", "搞笑图", "meme"],
-        "fallback_keywords": ["今日热梗", "热门表情包", "名场面", "搞笑图"],
-        "use_hot_terms": True,
+        "fallback_keywords": [
+            "抽象名场面",
+            "离谱名场面",
+            "评论区笑死",
+            "情侣日常搞笑",
+            "擦边穿搭",
+            "氛围感美女",
+            "甜妹变装",
+            "搞笑聊天截图",
+            "显眼包日常",
+            "整活名场面",
+            "辣妹穿搭",
+            "纯欲氛围感",
+        ],
+        "use_hot_terms": False,
         "max_hot_terms": 8,
-        "max_search_queries": 6,
+        "max_search_queries": 8,
         "search_patterns": ["{term}", "{term} 名场面", "{term} 表情包", "{term} 梗"],
         "request_interval_seconds": 0.5,
         "endpoint_search": "https://www.xiaohongshu.com/search_result",
@@ -108,7 +150,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "wait_seconds": 3,
             "manual_login_wait_seconds": 0,
             "warmup_url": "https://www.xiaohongshu.com/explore",
-            "max_queries": 3,
+            "max_queries": 5,
             "time_budget_seconds": 70,
         },
     },
@@ -138,8 +180,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "nsfw",
         "血腥",
         "露骨",
+        "裸露",
         "成人",
         "色情",
+        "约炮",
+        "成人视频",
         "事故",
         "爆炸",
         "遇难",
@@ -285,14 +330,68 @@ def maybe_migrate_legacy_xiaohongshu_defaults(config: Dict[str, Any]) -> None:
 
 
 def maybe_migrate_default_block_keywords(config: Dict[str, Any]) -> None:
-    if raw_config_version(config) >= 4:
+    if raw_config_version(config) >= 5:
         return
     configured = [str(keyword) for keyword in (config.get("block_keywords") or []) if str(keyword).strip()]
     default_keywords = [str(keyword) for keyword in DEFAULT_CONFIG["block_keywords"]]
     merged = list(dict.fromkeys(configured + default_keywords))
     if merged != configured:
         config["block_keywords"] = merged
-        add_warning(config, "legacy block keyword defaults extended with serious accident/disaster filters for this run")
+        add_warning(config, "legacy block keyword defaults extended with serious-news and explicit-content filters for this run")
+
+
+def maybe_migrate_interest_seed_defaults(config: Dict[str, Any]) -> None:
+    if raw_config_version(config) >= 5:
+        return
+    raw_config = config.get("_raw_config", {})
+    if not isinstance(raw_config, dict):
+        raw_config = {}
+
+    old_xhs_fallbacks = ["今日热梗", "热门表情包", "名场面", "搞笑图"]
+    raw_xhs = raw_config.get("xiaohongshu", {})
+    if not isinstance(raw_xhs, dict):
+        raw_xhs = {}
+    xhs_config = config.setdefault("xiaohongshu", {})
+    default_xhs = DEFAULT_CONFIG["xiaohongshu"]
+    changed = False
+    if raw_xhs.get("use_hot_terms", True) is True:
+        xhs_config["use_hot_terms"] = default_xhs["use_hot_terms"]
+        changed = True
+    if raw_xhs.get("fallback_keywords", old_xhs_fallbacks) == old_xhs_fallbacks:
+        xhs_config["fallback_keywords"] = copy.deepcopy(default_xhs["fallback_keywords"])
+        changed = True
+    raw_filters = raw_xhs.get("search_filters", {})
+    if not isinstance(raw_filters, dict):
+        raw_filters = {}
+    if any(set(str(raw_filters.get(key) or "")) == {"?"} for key in ("note_type", "time_filter")):
+        xhs_config["search_filters"] = copy.deepcopy(default_xhs["search_filters"])
+        changed = True
+    if changed:
+        add_warning(config, "legacy xiaohongshu hot-search defaults replaced with interest-seeded queries for this run")
+
+    raw_weibo = raw_config.get("weibo", {})
+    if not isinstance(raw_weibo, dict):
+        raw_weibo = {}
+    weibo_config = config.setdefault("weibo", {})
+    default_weibo = DEFAULT_CONFIG["weibo"]
+    changed = False
+    if raw_weibo.get("use_hot_terms", True) is True:
+        weibo_config["use_hot_terms"] = default_weibo["use_hot_terms"]
+        changed = True
+    for key in ("fallback_keywords", "search_patterns", "max_search_queries", "http_fallback_enabled"):
+        if key not in raw_weibo:
+            weibo_config[key] = copy.deepcopy(default_weibo[key])
+            changed = True
+    browser_config = weibo_config.setdefault("browser", {})
+    raw_browser = raw_weibo.get("browser", {})
+    if not isinstance(raw_browser, dict):
+        raw_browser = {}
+    for key, value in default_weibo["browser"].items():
+        if key not in raw_browser:
+            browser_config[key] = copy.deepcopy(value)
+            changed = True
+    if changed:
+        add_warning(config, "legacy weibo hot-search defaults replaced with a persistent-profile interest search for this run")
 
 
 def configure_provider_browser_profile(
@@ -372,7 +471,11 @@ def launch_system_chrome_cdp(
     chrome_path = find_chrome_executable()
     configured_port = int(browser_config.get("remote_debugging_port") or 0)
     port = configured_port if configured_port > 0 else find_free_local_port()
-    warmup_url = str(browser_config.get("warmup_url") or "https://www.xiaohongshu.com/explore")
+    warmup_url = browser_config.get("warmup_url")
+    warmup_urls = browser_config.get("warmup_urls") or []
+    if not warmup_url and isinstance(warmup_urls, list) and warmup_urls:
+        warmup_url = warmup_urls[0]
+    warmup_url = str(warmup_url or "https://www.xiaohongshu.com/explore")
     arguments = [
         str(chrome_path),
         "--new-window",
@@ -484,6 +587,7 @@ def build_config(args: argparse.Namespace, env: Optional[Dict[str, str]] = None)
         )
     else:
         config["providers"] = config.get("providers") or DEFAULT_CONFIG["providers"]
+    maybe_migrate_interest_seed_defaults(config)
     if "xiaohongshu" in set(config.get("providers", [])) or getattr(args, "open_xiaohongshu_profile", False):
         maybe_migrate_legacy_xiaohongshu_defaults(config)
     maybe_migrate_default_block_keywords(config)
@@ -583,6 +687,42 @@ def now_for_config(config: Dict[str, Any]) -> dt.datetime:
     else:
         tzinfo = dt.datetime.now().astimezone().tzinfo or dt.timezone.utc
     return dt.datetime.now(tzinfo)
+
+
+def parse_created_at(value: Optional[str]) -> Optional[dt.datetime]:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            parsed = email.utils.parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed
+
+
+def filter_recent_weibo_candidates(candidates: Sequence[MemeCandidate], config: Dict[str, Any]) -> List[MemeCandidate]:
+    since_hours = int(config.get("since_hours", 24))
+    if since_hours <= 0:
+        return list(candidates)
+    cutoff = now_for_config(config) - dt.timedelta(hours=since_hours)
+    kept: List[MemeCandidate] = []
+    skipped = 0
+    for candidate in candidates:
+        timestamp = parse_created_at(candidate.created_at)
+        if timestamp is None or timestamp.astimezone(cutoff.tzinfo) >= cutoff:
+            kept.append(candidate)
+        else:
+            skipped += 1
+    if skipped:
+        add_warning(config, f"weibo skipped {skipped} stale candidates older than {since_hours}h")
+    return kept
 
 
 def normalize_headers(headers: Any) -> Dict[str, str]:
@@ -1032,6 +1172,209 @@ def parse_weibo_search_cards(payload: Dict[str, Any], term: Dict[str, Any], quer
     return candidates
 
 
+def weibo_search_params(query: str) -> Dict[str, Any]:
+    return {
+        "containerid": "100103type=1&q=" + query,
+        "page_type": "searchall",
+        "page": 1,
+    }
+
+
+def weibo_queries_for_term(term: Dict[str, Any], config: Dict[str, Any]) -> List[str]:
+    direct_query = str(term.get("query") or "").strip()
+    if direct_query:
+        return [direct_query]
+    weibo_config = config.get("weibo", {})
+    word = term_word(term)
+    if not word:
+        return []
+    suffixes = weibo_config.get("search_suffixes") or ["", "名场面", "表情包"]
+    max_suffixes = int(weibo_config.get("max_search_suffixes", len(suffixes)))
+    return [f"{word} {suffix}".strip() for suffix in list(suffixes)[: max(1, max_suffixes)]]
+
+
+def build_weibo_search_terms(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    weibo_config = config.get("weibo", {})
+    use_hot_terms = bool(weibo_config.get("use_hot_terms", False))
+    search_terms_limit = min(
+        int(config.get("max_per_provider", 30)),
+        int(weibo_config.get("max_search_terms", config.get("max_per_provider", 30))),
+    )
+    hot_terms: List[Dict[str, Any]] = []
+    if use_hot_terms:
+        hot_terms = fetch_weibo_hot_terms(config)[: max(1, search_terms_limit)]
+        cache_hot_terms(config, hot_terms)
+
+    specs = build_hot_driven_search_specs(weibo_config, config, hot_terms=hot_terms if use_hot_terms else [])
+    if specs:
+        terms: List[Dict[str, Any]] = []
+        for spec in specs:
+            query = str(spec.get("query") or "").strip()
+            if not query:
+                continue
+            terms.append(
+                {
+                    "word": str(spec.get("term") or query),
+                    "query": query,
+                    "score": float(spec.get("base_score") or 0.0),
+                    "direct_query": True,
+                }
+            )
+        return terms[: max(1, int(weibo_config.get("max_search_queries", len(terms))))]
+    return hot_terms[: max(1, search_terms_limit)]
+
+
+def looks_like_weibo_challenge(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(
+        token in lowered
+        for token in (
+            "扫码登录",
+            "登录后",
+            "请先登录",
+            "安全验证",
+            "访问异常",
+            "账号异常",
+            "账号存在风险",
+            "验证身份",
+            "weibo login",
+        )
+    )
+
+
+def collect_weibo_browser(config: Dict[str, Any], terms: Sequence[Dict[str, Any]]) -> List[MemeCandidate]:
+    weibo_config = config.get("weibo", {})
+    browser_config = weibo_config.get("browser") if isinstance(weibo_config.get("browser"), dict) else {}
+    if not browser_config or not browser_config.get("enabled", False):
+        return []
+    try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        add_warning(config, f"weibo browser collection unavailable: playwright is not installed ({exc})")
+        return []
+
+    endpoint = str(weibo_config.get("endpoint_search") or "https://m.weibo.cn/api/container/getIndex")
+    user_data_dir = expand_path(str(browser_config.get("user_data_dir") or WEIBO_BROWSER_PROFILE_DIR))
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+    timeout_seconds = max(1.0, float(browser_config.get("timeout_seconds", 18)))
+    timeout_ms = int(timeout_seconds * 1000)
+    wait_seconds = max(0.0, float(browser_config.get("wait_seconds", 2)))
+    max_queries = max(1, int(browser_config.get("max_queries", 5)))
+    time_budget_seconds = max(5.0, float(browser_config.get("time_budget_seconds", 60)))
+    manual_login_wait_seconds = max(0.0, float(browser_config.get("manual_login_wait_seconds", 0)))
+    started = time.monotonic()
+    candidates: List[MemeCandidate] = []
+    query_count = 0
+
+    launch_mode = str(browser_config.get("launch_mode") or "system_chrome_cdp")
+    add_warning(config, f"weibo collection is using persistent browser profile: {user_data_dir}")
+    try:
+        with sync_playwright() as playwright:
+            chrome_process: Optional[subprocess.Popen] = None
+            browser = None
+            if launch_mode == "system_chrome_cdp":
+                cdp_port, chrome_process = launch_system_chrome_cdp(browser_config, user_data_dir, timeout_seconds)
+                browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}", timeout=timeout_ms)
+                context = browser.contexts[0] if browser.contexts else browser.new_context()
+            else:
+                launch_options = {
+                    "headless": bool(browser_config.get("headless", False)),
+                    "viewport": {"width": 1280, "height": 900},
+                    "user_agent": config.get("user_agent", DEFAULT_CONFIG["user_agent"]),
+                    "locale": "zh-CN",
+                    "timeout": timeout_ms,
+                }
+                channel = str(browser_config.get("channel") or "").strip()
+                if channel:
+                    launch_options["channel"] = channel
+                context = playwright.chromium.launch_persistent_context(str(user_data_dir), **launch_options)
+            try:
+                page = context.pages[-1] if context.pages else context.new_page()
+                try:
+                    page.set_viewport_size({"width": 1280, "height": 900})
+                except Exception:
+                    pass
+                warmup_urls = browser_config.get("warmup_urls")
+                if not isinstance(warmup_urls, list):
+                    warmup_url = str(browser_config.get("warmup_url") or "").strip()
+                    warmup_urls = [warmup_url] if warmup_url else []
+                for warmup_url in [str(item).strip() for item in warmup_urls if str(item).strip()]:
+                    try:
+                        page.goto(warmup_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                        if wait_seconds:
+                            page.wait_for_timeout(int(wait_seconds * 1000))
+                        warmup_text = page.locator("body").inner_text(timeout=3000)
+                    except PlaywrightTimeoutError as exc:
+                        add_warning(config, f"weibo browser warm-up timed out: {exc}")
+                        warmup_text = ""
+                    except Exception as exc:
+                        add_warning(config, f"weibo browser warm-up failed: {exc}")
+                        warmup_text = ""
+                    if looks_like_weibo_challenge(warmup_text):
+                        add_warning(
+                            config,
+                            "weibo browser profile needs login or verification; complete it in the dedicated profile and rerun",
+                        )
+                        if manual_login_wait_seconds:
+                            page.wait_for_timeout(int(manual_login_wait_seconds * 1000))
+                        return []
+
+                for term_index, term in enumerate(terms):
+                    for query in weibo_queries_for_term(term, config):
+                        if query_count >= max_queries:
+                            return candidates
+                        remaining = time_budget_seconds - (time.monotonic() - started)
+                        if remaining <= 1:
+                            add_warning(config, "weibo browser collection stopped at its time budget")
+                            return candidates
+                        if query_count:
+                            time.sleep(min(float(weibo_config.get("request_interval_seconds", 2)), max(0.0, remaining)))
+                        source_url = build_url(endpoint, weibo_search_params(query))
+                        query_count += 1
+                        try:
+                            response = page.goto(source_url, wait_until="domcontentloaded", timeout=int(min(timeout_ms, remaining * 1000)))
+                            if wait_seconds:
+                                page.wait_for_timeout(int(min(wait_seconds, max(0.0, remaining)) * 1000))
+                            body_text = response.text() if response is not None else ""
+                            if not body_text:
+                                body_text = page.locator("body").inner_text(timeout=3000)
+                        except PlaywrightTimeoutError as exc:
+                            add_warning(config, f"weibo browser search timed out for {query}: {exc}")
+                            continue
+                        except Exception as exc:
+                            add_warning(config, f"weibo browser search failed for {query}: {exc}")
+                            continue
+                        if looks_like_weibo_challenge(body_text):
+                            add_warning(
+                                config,
+                                "weibo browser profile needs login or verification; complete it in the dedicated profile and rerun",
+                            )
+                            if manual_login_wait_seconds:
+                                page.wait_for_timeout(int(manual_login_wait_seconds * 1000))
+                            return candidates
+                        try:
+                            payload = json.loads(body_text)
+                        except json.JSONDecodeError as exc:
+                            add_warning(config, f"weibo browser search returned non-JSON content for {query}: {exc}")
+                            continue
+                        candidates.extend(parse_weibo_search_cards(payload, term, query))
+                        if len(candidates) >= int(config.get("max_per_provider", 30)):
+                            return candidates
+                return candidates
+            finally:
+                try:
+                    if browser is not None:
+                        browser.close()
+                    else:
+                        context.close()
+                finally:
+                    stop_process_quietly(chrome_process)
+    except Exception as exc:
+        add_warning(config, f"weibo browser collection unavailable: {exc}")
+        return []
+
+
 def search_weibo_images_for_term(term: Dict[str, Any], config: Dict[str, Any]) -> List[MemeCandidate]:
     if config.get("_weibo_search_blocked"):
         return []
@@ -1040,23 +1383,14 @@ def search_weibo_images_for_term(term: Dict[str, Any], config: Dict[str, Any]) -
     cookie = config.get("_env", os.environ).get(weibo_config.get("cookie_env", "WEIBO_COOKIE"))
     if cookie:
         headers["Cookie"] = cookie
-    suffixes = weibo_config.get("search_suffixes") or ["", "名场面", "表情包", "梗", "搞笑图"]
-    max_suffixes = int(weibo_config.get("max_search_suffixes", len(suffixes)))
-    suffixes = list(suffixes)[: max(1, max_suffixes)]
     candidates: List[MemeCandidate] = []
-    for suffix_index, suffix in enumerate(suffixes):
-        if suffix_index:
+    for query_index, query in enumerate(weibo_queries_for_term(term, config)):
+        if query_index:
             time.sleep(float(weibo_config.get("request_interval_seconds", 2)))
-        query = f"{term.get('word', '')} {suffix}".strip()
-        params = {
-            "containerid": "100103type=1&q=" + query,
-            "page_type": "searchall",
-            "page": 1,
-        }
         try:
             payload, _headers = http_get_json(
-                "https://m.weibo.cn/api/container/getIndex",
-                params=params,
+                str(weibo_config.get("endpoint_search") or "https://m.weibo.cn/api/container/getIndex"),
+                params=weibo_search_params(query),
                 headers=headers,
                 timeout=int(weibo_config.get("request_timeout_seconds", 6)),
             )
@@ -1074,9 +1408,14 @@ def search_weibo_images_for_term(term: Dict[str, Any], config: Dict[str, Any]) -
 def collect_weibo(config: Dict[str, Any]) -> List[MemeCandidate]:
     max_per_provider = int(config.get("max_per_provider", 30))
     weibo_config = config.get("weibo", {})
-    search_terms_limit = min(max_per_provider, int(weibo_config.get("max_search_terms", max_per_provider)))
-    terms = fetch_weibo_hot_terms(config)[: max(1, search_terms_limit)]
-    cache_hot_terms(config, terms)
+    terms = build_weibo_search_terms(config)
+    browser_candidates = filter_recent_weibo_candidates(collect_weibo_browser(config, terms), config)
+    if browser_candidates:
+        return browser_candidates[:max_per_provider]
+    if not weibo_config.get("http_fallback_enabled", False):
+        return []
+    if not config.get("_env", os.environ).get(weibo_config.get("cookie_env", "WEIBO_COOKIE")):
+        add_warning(config, "WEIBO_COOKIE not set; using bounded Weibo HTTP fallback after browser collection")
     candidates: List[MemeCandidate] = []
     limit = max_per_provider
     started = time.monotonic()
@@ -1090,7 +1429,7 @@ def collect_weibo(config: Dict[str, Any]) -> List[MemeCandidate]:
         candidates.extend(search_weibo_images_for_term(term, config))
         if len(candidates) >= limit or config.get("_weibo_search_blocked"):
             break
-    return candidates
+    return filter_recent_weibo_candidates(candidates, config)
 
 
 def unescape_url(value: str) -> str:
@@ -1114,9 +1453,15 @@ def looks_like_xiaohongshu_content_image_url(url: str) -> bool:
     parsed = urllib.parse.urlsplit(url)
     host = parsed.netloc.lower()
     path = parsed.path.lower()
+    query = parsed.query.lower()
     blocked_tokens = ("avatar", "fe-static", "favicon", "icon", "sprite", "/as/")
     if any(token in host or token in path for token in blocked_tokens):
         return False
+    if "xhscdn.com" in host and any(
+        token in path or token in query
+        for token in ("notes_pre_post", "nc_n_webp", "imageview2", "format/webp", "format/jpg")
+    ):
+        return True
     return looks_like_image_asset_url(url, host_keywords=("xhscdn.com",))
 
 
@@ -1390,6 +1735,28 @@ def collect_xiaohongshu_browser(
                                 page.wait_for_timeout(int(manual_login_wait_seconds * 1000))
                             artifacts.append(artifact)
                             break
+                        try:
+                            dom_image_urls = page.evaluate(
+                                """() => {
+                                    const urls = [];
+                                    for (const img of Array.from(document.images || [])) {
+                                        const src = img.currentSrc || img.src || img.getAttribute('data-src') || '';
+                                        if (src) urls.push(src);
+                                    }
+                                    for (const node of Array.from(document.querySelectorAll('[style*="background-image"]'))) {
+                                        const style = window.getComputedStyle(node).backgroundImage || '';
+                                        const matches = style.matchAll(/url\\(["']?([^"')]+)["']?\\)/g);
+                                        for (const match of matches) {
+                                            if (match[1]) urls.push(match[1]);
+                                        }
+                                    }
+                                    return Array.from(new Set(urls));
+                                }"""
+                            )
+                            if isinstance(dom_image_urls, list):
+                                artifact.setdefault("image_urls", []).extend(str(url) for url in dom_image_urls if url)
+                        except Exception:
+                            pass
                     except PlaywrightTimeoutError as exc:
                         add_warning(config, f"xiaohongshu browser search timed out for {keyword}: {exc}")
                     except Exception as exc:

@@ -12,10 +12,10 @@ metadata:
 
 ## 功能说明
 
-This skill collects high-engagement images that are likely to become memes or reaction material. It is hot-topic driven: it first gathers current trend terms, then searches each platform for images around those topics instead of only searching the literal keyword "梗图".
+This skill collects high-engagement images that are likely to become memes or reaction material. The default strategy is interest-seeded, not raw hot-search driven: it searches recent platform content for funny, relationship, comment-section, light-suggestive but non-explicit, and meme-friendly themes. Raw hot-search terms are optional because Weibo/Douyin top lists often duplicate hard news the user already sees.
 
-- Weibo: fetches hot-search terms from the public hotSearch endpoint, searches a bounded number of related image posts, ranks by hot-term score plus engagement, then downloads public images. A dedicated browser profile is available for manual login/risk verification.
-- Xiaohongshu: uses a skill-owned persistent Chrome profile by default, searches around shared hot topics plus fallback terms such as 今日热梗 and 名场面, applies the default search filters `sort_type=time_descending`, `note_type=普通笔记`, and `time_filter=一天内`, then downloads image URLs exposed in normal web responses. A short bounded HTTP path remains as fallback when the browser path produces no candidates.
+- Weibo: uses a skill-owned persistent Chrome profile by default, searches bounded interest seeds through normal logged-in browser traffic, ranks by engagement and query score, then downloads public images. Public HTTP search is disabled by default and only used when explicitly enabled as fallback.
+- Xiaohongshu: uses a skill-owned persistent Chrome profile by default, searches bounded interest seeds such as 抽象名场面, 评论区笑死, 擦边穿搭, 氛围感美女, applies the default search filters `sort_type=time_descending`, `note_type=普通笔记`, and `time_filter=一天内`, then downloads image URLs exposed in normal web responses. A short bounded HTTP path remains as fallback when the browser path produces no candidates.
 - Optional Reddit support remains available when explicitly requested, but the default deployment for this project is Weibo and Xiaohongshu.
 - Each provider is isolated: if one platform returns 403, 429, captcha, risk-control shells, or empty data, the script records a warning and continues with the other providers.
 - The script ranks candidates, filters obvious sensitive content, deduplicates by URL and SHA-256, downloads images atomically, and writes `index.md`, `manifest.jsonl`, and state files.
@@ -116,7 +116,9 @@ Important config keys:
 
 Provider notes:
 
-- Weibo has its own dedicated persistent browser profile at `~/.cow-meme-harvester/weibo-browser-profile`. The current Weibo collector still uses public endpoints plus optional `WEIBO_COOKIE`; the profile is there for manual login/risk verification and future browser fallback without sharing Xiaohongshu or Codex state. Weibo HTTP search is bounded by `max_search_terms`, `max_search_suffixes`, `request_timeout_seconds`, and `search_time_budget_seconds`.
+- Weibo has its own dedicated persistent browser profile at `~/.cow-meme-harvester/weibo-browser-profile`. The default Weibo collector opens this profile, warms up `weibo.com` and `m.weibo.cn`, then searches the bounded interest-seeded query list through the browser profile. Closing Chrome does not delete this profile; login state persists until the directory is deleted or the platform expires the session.
+- Weibo candidates with parseable timestamps older than `since_hours` (default 24) are skipped, so interest-seeded search does not backfill old celebrity or meme archive posts just because they rank high.
+- Weibo HTTP fallback is off by default (`weibo.http_fallback_enabled=false`) so the skill does not silently behave like a background HTTP scraper. Turn it on only for diagnostics or controlled fallback; it remains bounded by `max_search_terms`, `max_search_suffixes`, `request_timeout_seconds`, and `search_time_budget_seconds`.
 - Xiaohongshu defaults to a dedicated persistent browser profile at `~/.cow-meme-harvester/xiaohongshu-browser-profile`. This keeps the skill independent from Codex profiles and portable to another machine. Closing Chrome does not delete this profile; login state persists until the directory is deleted or the platform expires the session.
 - If the dedicated Xiaohongshu profile is not logged in or shows risk verification, run `--open-xiaohongshu-profile --json`, complete login or verification in the opened normal Chrome window, close it, then run the normal command again.
 - Collection uses normal system Chrome with this profile and connects briefly through local CDP to read page responses. The older Playwright-managed launch path is still available by setting `xiaohongshu.browser.launch_mode` away from `system_chrome_cdp`, but the default avoids creating a fresh automation-looking profile.
@@ -148,7 +150,7 @@ Xiaohongshu browser config:
       "timeout_seconds": 18,
       "wait_seconds": 3,
       "manual_login_wait_seconds": 0,
-      "max_queries": 3,
+      "max_queries": 5,
       "time_budget_seconds": 70
     },
     "http_fallback_enabled": true,
@@ -158,20 +160,27 @@ Xiaohongshu browser config:
 }
 ```
 
-Weibo profile and HTTP budget config:
+Weibo profile and search budget config:
 
 ```json
 {
   "weibo": {
+    "use_hot_terms": false,
     "max_search_terms": 5,
-    "max_search_suffixes": 3,
+    "max_search_queries": 8,
+    "max_search_suffixes": 1,
     "request_timeout_seconds": 6,
     "search_time_budget_seconds": 45,
+    "http_fallback_enabled": false,
+    "fallback_keywords": ["抽象名场面", "离谱名场面", "搞笑聊天截图", "情侣日常搞笑", "擦边但不低俗", "氛围感美女"],
     "browser": {
       "enabled": true,
       "use_persistent_profile": true,
       "user_data_dir": "~/.cow-meme-harvester/weibo-browser-profile",
-      "warmup_url": "https://weibo.com/"
+      "launch_mode": "system_chrome_cdp",
+      "warmup_urls": ["https://weibo.com/", "https://m.weibo.cn/"],
+      "max_queries": 5,
+      "time_budget_seconds": 60
     }
   }
 }

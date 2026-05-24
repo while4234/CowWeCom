@@ -167,14 +167,14 @@ class ChatChannel(Channel):
 
     def _handle_control_cancel(self, context: Context, runtime: SessionRuntime):
         running_cancelled = runtime.cancel_running()
-        pending_cleared = runtime.clear_pending()
+        pending_count = runtime.queue.qsize()
         self.cancel_session(context.get("session_id"), clear_pending=False)
         if running_cancelled:
             text = "已收到取消请求，当前任务会在下一次可取消点停止。"
         else:
             text = "当前没有运行中的任务。"
-        if pending_cleared:
-            text += f"\n已清空排队消息 {pending_cleared} 条。"
+        if pending_count:
+            text += f"\n队列中还有 {pending_count} 条消息，当前任务停止后会继续处理；如需清空队列请发送 /跳过。"
         self._send_plain_text(context, text)
 
     def _handle_control_skip(self, context: Context, runtime: SessionRuntime):
