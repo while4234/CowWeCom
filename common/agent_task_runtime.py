@@ -143,7 +143,7 @@ class SessionRuntime:
         self.lock = threading.RLock()
         self.running_task: Optional[RunningTask] = None
         self.progress = ProgressSnapshot()
-        self.last_notice_at = 0.0
+        self.last_queue_notice_at = 0.0
         self.last_visible_output_at = 0.0
         self.last_visible_output_source = ""
         self.last_silence_notice_at = 0.0
@@ -174,6 +174,7 @@ class SessionRuntime:
             self.last_visible_output_source = "task_start"
             self.last_silence_notice_at = 0.0
             self.silence_notice_count = 0
+            self.last_queue_notice_at = 0.0
             return token
 
     def finish_task(self, phase: str = "done") -> None:
@@ -193,7 +194,6 @@ class SessionRuntime:
         with self.lock:
             self.last_visible_output_at = monotonic()
             self.last_visible_output_source = sanitize_identifier(source or "visible_output")
-            self.last_notice_at = self.last_visible_output_at
             if self.last_visible_output_source != "silence_notice":
                 self.last_silence_notice_at = 0.0
                 self.silence_notice_count = 0
@@ -252,9 +252,9 @@ class SessionRuntime:
             if not self.running_task:
                 return False
             now = monotonic()
-            if now - self.last_notice_at < interval_seconds:
+            if now - self.last_queue_notice_at < interval_seconds:
                 return False
-            self.last_notice_at = now
+            self.last_queue_notice_at = now
             return True
 
     def status_text(self, include_eta_note: bool = False) -> str:

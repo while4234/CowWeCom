@@ -105,6 +105,27 @@ class TestFastLaneProgress(unittest.TestCase):
         self.assertEqual(len(pool.calls), 1)
         self.assertIn("当前没有运行中的任务", sent[0])
 
+    def test_normal_message_gets_queue_notice_after_recent_visible_output(self):
+        channel = make_channel_without_thread()
+        runtime = SessionRuntime()
+        runtime.start_task("long task")
+        runtime.mark_visible_output("control_progress")
+        channel.sessions["wechat-session"] = runtime
+        sent = []
+        channel._send_plain_text = (
+            lambda context, text, track_visible=True, visible_source="send": sent.append(text)
+        )
+        pool = ImmediatePool()
+
+        with patch("channel.chat_channel.control_pool", pool):
+            channel.produce(make_text_context("next normal task"))
+            channel.produce(make_text_context("/状态"))
+
+        self.assertEqual(runtime.queue.qsize(), 1)
+        self.assertEqual(len(pool.calls), 2)
+        self.assertIn("已排队", sent[0])
+        self.assertIn("队列中还有 1 条消息", sent[1])
+
     def test_silence_notice_is_thresholded_while_task_runs(self):
         runtime = SessionRuntime()
         runtime.start_task("long task")
