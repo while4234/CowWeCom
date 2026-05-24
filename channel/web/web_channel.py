@@ -1039,6 +1039,14 @@ class ConfigHandler:
             "api_base_placeholder": _PLACEHOLDER_V1,
             "models": [const.GPT_54, const.GPT_54_MINI, const.GPT_54_NANO, const.GPT_5, const.GPT_41, const.GPT_4o],
         }),
+        ("codex", {
+            "label": "Codex",
+            "api_key_field": None,
+            "api_base_key": None,
+            "api_base_default": None,
+            "api_base_placeholder": "",
+            "models": ["gpt-5.5", const.GPT_54, const.GPT_54_MINI, const.GPT_5, const.GPT_41],
+        }),
         ("zhipu", {
             "label": "智谱AI",
             "api_key_field": "zhipu_ai_api_key",
@@ -1155,13 +1163,19 @@ class ConfigHandler:
 
             raw_pwd = local_config.get("web_password", "")
             masked_pwd = ("*" * len(raw_pwd)) if raw_pwd else ""
+            from common.llm_backend_router import status_snapshot
+            backend_status = status_snapshot()
+            display_model = backend_status.get("effective_model") if backend_status.get("current_backend") == "codex" else local_config.get("model", "")
+            display_bot_type = "codex" if backend_status.get("current_backend") == "codex" else (
+                "openai" if local_config.get("bot_type") == "chatGPT" else local_config.get("bot_type", "")
+            )
 
             return json.dumps({
                 "status": "success",
                 "use_agent": use_agent,
                 "title": title,
-                "model": local_config.get("model", ""),
-                "bot_type": "openai" if local_config.get("bot_type") == "chatGPT" else local_config.get("bot_type", ""),
+                "model": display_model,
+                "bot_type": display_bot_type,
                 "use_linkai": bool(local_config.get("use_linkai", False)),
                 "channel_type": local_config.get("channel_type", ""),
                 "agent_max_context_tokens": local_config.get("agent_max_context_tokens", 50000),
@@ -1171,6 +1185,7 @@ class ConfigHandler:
                 "api_bases": api_bases,
                 "api_keys": api_keys_masked,
                 "providers": providers,
+                "llm_backend": backend_status,
                 "web_password_masked": masked_pwd,
             }, ensure_ascii=False)
         except Exception as e:
@@ -1188,6 +1203,12 @@ class ConfigHandler:
 
             local_config = conf()
             applied = {}
+            codex_selected = str(updates.get("bot_type") or "").strip().lower() == const.CODEX
+            codex_model = updates.get("model") if codex_selected else None
+            if codex_selected:
+                updates = dict(updates)
+                updates.pop("bot_type", None)
+                updates.pop("model", None)
             for key, value in updates.items():
                 if key not in self.EDITABLE_KEYS:
                     continue
@@ -1198,7 +1219,7 @@ class ConfigHandler:
                 local_config[key] = value
                 applied[key] = value
 
-            if not applied:
+            if not applied and not codex_selected:
                 return json.dumps({"status": "error", "message": "no valid keys to update"})
 
             config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -1208,7 +1229,23 @@ class ConfigHandler:
                     file_cfg = json.load(f)
             else:
                 file_cfg = {}
+            if codex_selected:
+                from common.llm_backend_router import get_llm_backend_config, set_current_backend
+
+                llm_cfg = get_llm_backend_config()
+                providers = llm_cfg.setdefault("providers", {})
+                codex_cfg = providers.setdefault("codex", {})
+                if codex_model:
+                    codex_cfg["model"] = codex_model
+                local_config["llm_backend"] = llm_cfg
+                file_cfg["llm_backend"] = llm_cfg
+                set_current_backend("codex", manual=True, reason="web_config")
+                applied["llm_backend_current"] = "codex"
+                if codex_model:
+                    applied["codex_model"] = codex_model
             file_cfg.update(applied)
+            file_cfg.pop("llm_backend_current", None)
+            file_cfg.pop("codex_model", None)
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(file_cfg, f, indent=4, ensure_ascii=False)
 
@@ -1217,7 +1254,7 @@ class ConfigHandler:
             # Reset Bridge so that bot routing reflects the new config.
             # Without this, Bridge keeps its cached bot instance (e.g. LinkAIBot)
             # even after the user switches bot_type / use_linkai / model in UI.
-            bridge_routing_keys = {"bot_type", "use_linkai", "model"}
+            bridge_routing_keys = {"bot_type", "use_linkai", "model", "llm_backend_current"}
             if any(k in applied for k in bridge_routing_keys):
                 try:
                     from bridge.bridge import Bridge
@@ -1226,7 +1263,12 @@ class ConfigHandler:
                 except Exception as reset_err:
                     logger.warning(f"[WebChannel] Failed to reset bridge: {reset_err}")
 
-            return json.dumps({"status": "success", "applied": applied}, ensure_ascii=False)
+            from common.llm_backend_router import status_snapshot
+
+            return json.dumps(
+                {"status": "success", "applied": applied, "llm_backend": status_snapshot()},
+                ensure_ascii=False,
+            )
         except Exception as e:
             logger.error(f"Error updating config: {e}")
             return json.dumps({"status": "error", "message": str(e)})

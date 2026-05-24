@@ -29,6 +29,10 @@ def create_bot(bot_type):
         from models.chatgpt.chat_gpt_bot import ChatGPTBot
         return ChatGPTBot()
 
+    elif bot_type == const.CODEX:
+        from models.codex.codex_bot import CodexBot
+        return CodexBot()
+
     elif bot_type == const.OPEN_AI:
         # OpenAI 官方对话模型API
         from models.openai.open_ai_bot import OpenAIBot

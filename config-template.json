@@ -14,6 +14,11 @@
   "claude_api_base": "https://api.anthropic.com/v1",
   "open_ai_api_key": "",
   "open_ai_api_base": "https://api.openai.com/v1",
+  "codex_auth_file": "",
+  "codex_base_url": "https://chatgpt.com/backend-api/codex",
+  "codex_endpoint_path": "/responses",
+  "codex_timeout_seconds": 60,
+  "codex_reasoning_effort": "",
   "open_ai_wire_api": "chat_completions",
   "openai_wire_api": "",
   "wire_api": "",
@@ -88,6 +93,34 @@
   "enable_thinking": false,
   "reasoning_effort": "high",
   "knowledge": true,
+  "llm_backend": {
+    "current_backend": "capi",
+    "state_path": "",
+    "providers": {
+      "codex": {
+        "auth_file": "",
+        "model": "gpt-5.5",
+        "reasoning_effort": "xhigh",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "endpoint_path": "/responses",
+        "timeout_seconds": 120,
+        "retry_count": 1,
+        "retry_delay_seconds": 1.0,
+        "tools_enabled": true
+      },
+      "capi": {
+        "label": "CAPI/OpenAI-compatible"
+      }
+    },
+    "auto_switch": {
+      "enabled": true,
+      "check_time": "00:00",
+      "quota_window": "weekly",
+      "fair_share_days": 7,
+      "min_remaining_percent": 15,
+      "respect_manual_override": true
+    }
+  },
   "knowledge_backend": {
     "enabled": false,
     "mode": "backend_subsystem",

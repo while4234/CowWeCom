@@ -17,6 +17,7 @@ MiniMax = "minimax"
 DEEPSEEK = "deepseek"
 CUSTOM = "custom"  # custom OpenAI-compatible API, bot_type won't auto-switch on model change
 MODELSCOPE = "modelscope"
+CODEX = "codex"
 
 # 模型列表
 # Claude (Anthropic)
@@ -74,6 +75,14 @@ GPT_5_NANO = "gpt-5-nano"
 GPT_54 = "gpt-5.4"  # GPT-5.4 - Agent recommended model
 GPT_54_MINI = "gpt-5.4-mini"
 GPT_54_NANO = "gpt-5.4-nano"
+GPT_55 = "gpt-5.5"
+GPT_53_CODEX = "gpt-5.3-codex"
+GPT_52_CODEX = "gpt-5.2-codex"
+GPT_52 = "gpt-5.2"
+GPT_51 = "gpt-5.1"
+O4_MINI = "o4-mini"
+O3 = "o3"
+O3_MINI = "o3-mini"
 O1 = "o1-preview"
 O1_MINI = "o1-mini"
 WHISPER_1 = "whisper-1"
@@ -194,7 +203,8 @@ MODEL_LIST = [
               GPT_41, GPT_41_MINI, GPT_41_NANO,
               GPT_5, GPT_5_MINI, GPT_5_NANO,
               GPT_54, GPT_54_MINI, GPT_54_NANO,
-              O1, O1_MINI,
+              GPT_55, GPT_53_CODEX, GPT_52_CODEX, GPT_52, GPT_51,
+              O4_MINI, O3, O3_MINI, O1, O1_MINI, CODEX,
 
               # GLM (智谱AI)
               ZHIPU_AI, GLM_5_1, GLM_5_TURBO, GLM_5, GLM_4, GLM_4_PLUS, GLM_4_flash, GLM_4_LONG, GLM_4_ALLTOOLS,

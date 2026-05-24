@@ -355,6 +355,12 @@ def run():
         # Sync builtin skills to workspace before channels start
         _sync_builtin_skills()
 
+        try:
+            from common.llm_backend_auto_switcher import start_llm_backend_auto_switcher
+            start_llm_backend_auto_switcher()
+        except Exception as e:
+            logger.warning(f"[App] LLM backend auto-switcher failed to start: {e}")
+
         # Kick off MCP server loading in the background so first-message
         # latency isn't dominated by npx package downloads.
         _warmup_mcp_tools()

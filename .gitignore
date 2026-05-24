@@ -62,6 +62,8 @@ ref/
 .playwright-mcp/
 local/
 node_modules/
+data/llm-backend-router/
+data/codex-quota-query/
 
 # cow cli
 dist/

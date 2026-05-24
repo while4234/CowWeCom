@@ -5,6 +5,7 @@ from common import const
 from common.log import logger
 from common.singleton import singleton
 from config import conf
+from common.llm_backend_router import get_effective_chat_bot_type
 from translate.factory import create_translator
 from voice.factory import create_voice
 
@@ -13,14 +14,16 @@ from voice.factory import create_voice
 class Bridge(object):
     def __init__(self):
         self.btype = {
-            "chat": const.OPENAI,
+            "chat": get_effective_chat_bot_type(),
             "voice_to_text": conf().get("voice_to_text", "openai"),
             "text_to_voice": conf().get("text_to_voice", "google"),
             "translate": conf().get("translate", "baidu"),
         }
         # 这边取配置的模型
         bot_type = conf().get("bot_type")
-        if bot_type:
+        if self.btype["chat"] == const.CODEX:
+            pass
+        elif bot_type and str(bot_type).strip().lower() != const.CODEX:
             self.btype["chat"] = bot_type
         else:
             model_type = conf().get("model") or const.GPT_41_MINI
@@ -72,6 +75,9 @@ class Bridge(object):
             # MiniMax models
             if model_type and (model_type in ["abab6.5-chat", "abab6.5"] or model_type.lower().startswith("minimax")):
                 self.btype["chat"] = const.MiniMax
+
+            if model_type and (model_type == const.CODEX or model_type.lower().startswith("codex/")):
+                self.btype["chat"] = const.CODEX
 
             if conf().get("use_linkai") and conf().get("linkai_api_key"):
                 self.btype["chat"] = const.LINKAI

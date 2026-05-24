@@ -16,6 +16,8 @@ Does NOT match:
 """
 
 import os
+import subprocess
+import sys
 import threading
 
 import plugins
@@ -31,7 +33,7 @@ KNOWN_COMMANDS = {
     "help", "version", "status", "logs",
     "start", "stop", "restart",
     "skill", "context", "config",
-    "knowledge", "memory",
+    "knowledge", "memory", "backend",
     "install-browser",
 }
 
@@ -40,6 +42,13 @@ CLI_ONLY_COMMANDS = {"start", "stop", "restart"}
 
 # Commands that can only run from chat (need access to in-process memory)
 CHAT_ONLY_COMMANDS = set()  # context is allowed in both, but behaves differently
+
+QUOTA_ALIASES = {
+    "查询codex额度",
+    "查询gpt额度",
+    "查询openai额度",
+    "查询codex登录",
+}
 
 
 @plugins.register(
@@ -106,6 +115,10 @@ class CowCliPlugin(Plugin):
         caller can offer a typo hint instead of silently passing the message
         through to the agent.
         """
+        normalized = "".join(content.lower().split())
+        if normalized in QUOTA_ALIASES:
+            return "backend", "quota"
+
         if content.startswith("/"):
             rest = content[1:].strip()
             if not rest:
@@ -225,6 +238,7 @@ class CowCliPlugin(Plugin):
             "  /help          显示此帮助",
             "  /version       查看版本",
             "  /status        查看运行状态",
+            "  /backend       查看/切换 LLM backend",
             "  /logs [N]      查看最近N条日志 (默认20)",
             "  /context       查看当前对话上下文信息",
             "  /context clear 清除当前对话上下文",
@@ -294,6 +308,57 @@ class CowCliPlugin(Plugin):
             lines.append(f"  Agent: 未初始化 (首次对话后自动创建)")
 
         return "\n".join(lines)
+
+    def _cmd_backend(self, args: str, e_context, **_) -> str:
+        from common.llm_backend_router import clear_manual_override, describe_status, set_current_backend
+
+        parts = args.strip().split()
+        if not parts or parts[0].lower() in {"status", "show"}:
+            return describe_status()
+
+        sub = parts[0].lower()
+        if sub in {"codex", "capi"}:
+            set_current_backend(sub, manual=True, reason="cow_cli")
+            return "LLM backend switched to {}".format(sub)
+
+        if sub == "auto" and len(parts) > 1 and parts[1].lower() == "reset":
+            clear_manual_override()
+            return "LLM backend auto-switch has been reset."
+
+        if sub in {"quota", "gpt-quota", "codex-quota"}:
+            return self._backend_quota()
+
+        return "\n".join([
+            "Usage:",
+            "  /backend",
+            "  /backend codex",
+            "  /backend capi",
+            "  /backend auto reset",
+            "  /backend quota",
+        ])
+
+    def _backend_quota(self) -> str:
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        script = os.path.join(project_root, "skills", "codex-quota-query", "scripts", "codex_quota.py")
+        if not os.path.isfile(script):
+            return "Codex quota skill is not installed."
+        try:
+            proc = subprocess.run(
+                [sys.executable, script, "snapshot"],
+                cwd=project_root,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return "Codex quota query timed out."
+        text = (proc.stdout or proc.stderr or "").strip()
+        if proc.returncode != 0:
+            return "Codex quota query failed:\n{}".format(text[:1200])
+        return text or "Codex quota query returned no content."
 
     # ------------------------------------------------------------------
     # logs
@@ -515,6 +580,7 @@ class CowCliPlugin(Plugin):
             "xunfei": const.XUNFEI, const.QWEN: const.QWEN_DASHSCOPE,
             const.QIANFAN: const.QIANFAN,
             const.MODELSCOPE: const.MODELSCOPE,
+            const.CODEX: const.CODEX,
             const.MOONSHOT: const.MOONSHOT,
             "moonshot-v1-8k": const.MOONSHOT, "moonshot-v1-32k": const.MOONSHOT,
             "moonshot-v1-128k": const.MOONSHOT,
@@ -534,6 +600,8 @@ class CowCliPlugin(Plugin):
             return _EXACT[model_name]
         if model_name.lower().startswith("minimax") or model_name in ["abab6.5-chat"]:
             return const.MiniMax
+        if model_name == const.CODEX or model_name.lower().startswith("codex/"):
+            return const.CODEX
         if model_name in [const.QWEN_TURBO, const.QWEN_PLUS, const.QWEN_MAX]:
             return const.QWEN_DASHSCOPE
         lowered_model = model_name.lower()

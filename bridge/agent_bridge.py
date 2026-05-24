@@ -18,6 +18,7 @@ from common.utils import expand_path
 from config import conf
 from agent.access_control import get_resource_leases
 from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile
+from common.llm_backend_router import get_effective_chat_bot_type, get_effective_model
 from models.openai_compatible_bot import OpenAICompatibleBot
 
 
@@ -74,6 +75,7 @@ class AgentLLMModel(LLMModel):
         "xunfei": const.XUNFEI, const.QWEN: const.QWEN_DASHSCOPE,
         const.QIANFAN: const.QIANFAN,
         const.MODELSCOPE: const.MODELSCOPE,
+        const.CODEX: const.CODEX,
     }
     _MODEL_PREFIX_MAP = [
         ("qwen", const.QWEN_DASHSCOPE), ("qwq", const.QWEN_DASHSCOPE), ("qvq", const.QWEN_DASHSCOPE),
@@ -92,7 +94,7 @@ class AgentLLMModel(LLMModel):
 
     @property
     def model(self):
-        return conf().get("model", const.GPT_41)
+        return get_effective_model()
 
     @model.setter
     def model(self, value):
@@ -100,11 +102,14 @@ class AgentLLMModel(LLMModel):
 
     def _resolve_bot_type(self, model_name: str) -> str:
         """Resolve bot type from model name, matching Bridge.__init__ logic."""
+        effective = get_effective_chat_bot_type(model_name)
+        if effective == const.CODEX:
+            return effective
         if conf().get("use_linkai", False) and conf().get("linkai_api_key"):
             return const.LINKAI
         # Support custom bot type configuration
         configured_bot_type = conf().get("bot_type")
-        if configured_bot_type:
+        if configured_bot_type and str(configured_bot_type).strip().lower() != const.CODEX:
             return configured_bot_type
        
         if not model_name or not isinstance(model_name, str):
@@ -113,6 +118,8 @@ class AgentLLMModel(LLMModel):
             return self._MODEL_BOT_TYPE_MAP[model_name]
         if model_name.lower().startswith("minimax") or model_name in ["abab6.5-chat"]:
             return const.MiniMax
+        if model_name == const.CODEX or model_name.lower().startswith("codex/"):
+            return const.CODEX
         if model_name in [const.QWEN_TURBO, const.QWEN_PLUS, const.QWEN_MAX]:
             return const.QWEN_DASHSCOPE
         if model_name in [const.MOONSHOT, "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"]:

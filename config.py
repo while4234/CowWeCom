@@ -7,6 +7,7 @@ import os
 import pickle
 
 from common.log import logger
+from common.llm_backend_router import DEFAULT_LLM_BACKEND_CONFIG
 
 
 _DEFAULT_KNOWLEDGE_BACKEND_CONFIG = {
@@ -126,6 +127,15 @@ available_setting = {
     "gemini_api_base": "https://generativelanguage.googleapis.com",  # gemini api base
     "custom_api_key": "",  # custom OpenAI-compatible provider api key (used when bot_type is "custom")
     "custom_api_base": "",  # custom OpenAI-compatible provider api base (used when bot_type is "custom")
+    "codex_auth_file": "",  # Optional Codex auth.json path; defaults to CODEX_AUTH_FILE or ~/.codex/auth.json
+    "codex_base_url": "https://chatgpt.com/backend-api/codex",
+    "codex_endpoint_path": "/responses",
+    "codex_timeout_seconds": 60,
+    "codex_max_response_bytes": 5000000,
+    "codex_max_error_response_bytes": 200000,
+    "codex_user_agent": "codex_cli/0.126.0-alpha.8",
+    "codex_originator": "codex_vscode",
+    "codex_reasoning_effort": "",
     "proxy": "",  # openai使用的代理
     # chatgpt模型， 当use_azure_chatgpt为true时，其名称为Azure上model deployment名称
     "model": "gpt-3.5-turbo",  # 可选择: gpt-4o, pt-4o-mini, gpt-4-turbo, claude-3-sonnet, wenxin, moonshot, qwen-turbo, xunfei, glm-4, minimax, gemini等模型，全部可选模型详见common/const.py文件
@@ -349,6 +359,7 @@ available_setting = {
     "enable_thinking": False,  # Enable deep-thinking mode for thinking-capable models
     "reasoning_effort": "high",  # Reasoning depth under thinking mode: "high" or "max"
     "knowledge": True,  # 是否开启知识库功能
+    "llm_backend": copy.deepcopy(DEFAULT_LLM_BACKEND_CONFIG),
     "knowledge_backend": copy.deepcopy(_DEFAULT_KNOWLEDGE_BACKEND_CONFIG),
     "skill": {
         "image-generation": {
@@ -519,6 +530,11 @@ def _normalize_knowledge_backend_config():
     config["knowledge_backend"] = normalized
 
 
+def _normalize_llm_backend_config():
+    raw = config.get("llm_backend", {})
+    config["llm_backend"] = _deep_merge_dict(DEFAULT_LLM_BACKEND_CONFIG, raw)
+
+
 def load_config():
     global config
 
@@ -562,6 +578,7 @@ def load_config():
                     config[name] = value
 
     _normalize_knowledge_backend_config()
+    _normalize_llm_backend_config()
 
     if config.get("debug", False):
         logger.setLevel(logging.DEBUG)
@@ -654,6 +671,7 @@ def load_config():
                 injected += 1
 
     injected += _sync_skill_config_to_env(config.get("skill", {}))
+    injected += _sync_llm_backend_config_to_env(config.get("llm_backend", {}))
     if "SKILL_IMAGE_GENERATION_MODEL" not in os.environ:
         image_model = config.get("text_to_image", "")
         if image_model:
@@ -693,6 +711,27 @@ def _sync_skill_config_to_env(skill_section) -> int:
                 continue
             os.environ[env_key] = str(val)
             injected += 1
+    return injected
+
+
+def _sync_llm_backend_config_to_env(llm_backend_section) -> int:
+    if not isinstance(llm_backend_section, dict):
+        return 0
+    providers = llm_backend_section.get("providers")
+    if not isinstance(providers, dict):
+        return 0
+    codex = providers.get("codex")
+    if not isinstance(codex, dict):
+        return 0
+    injected = 0
+    auth_file = codex.get("auth_file")
+    if auth_file and "CODEX_AUTH_FILE" not in os.environ:
+        os.environ["CODEX_AUTH_FILE"] = str(auth_file)
+        injected += 1
+    model = codex.get("model")
+    if model and "CODEX_MODEL" not in os.environ:
+        os.environ["CODEX_MODEL"] = str(model)
+        injected += 1
     return injected
 
 

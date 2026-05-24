@@ -2574,6 +2574,7 @@ function initConfigView(data) {
     configApiBases = data.api_bases || {};
     configApiKeys = data.api_keys || {};
     configCurrentModel = data.model || '';
+    renderBackendStatus(data.llm_backend);
 
     const providerEl = document.getElementById('cfg-provider');
     const providerOpts = Object.entries(configProviders).map(([pid, p]) => ({ value: pid, label: p.label }));
@@ -2620,6 +2621,30 @@ function initConfigView(data) {
         });
         pwdInput._cfgBound = true;
     }
+}
+
+function renderBackendStatus(status) {
+    const wrap = document.getElementById('cfg-backend-status');
+    if (!wrap) return;
+    const backend = status || {};
+    const current = backend.current_backend || '';
+    const model = backend.effective_model || '';
+    const auto = backend.auto || {};
+    const autoLabel = backend.auto_switch_latched
+        ? 'latched'
+        : (backend.manual_override_active ? 'manual' : (auto.last_decision || 'ready'));
+
+    if (!current && !model) {
+        wrap.classList.add('hidden');
+        return;
+    }
+    const currentEl = document.getElementById('cfg-backend-current');
+    const modelEl = document.getElementById('cfg-backend-model');
+    const autoEl = document.getElementById('cfg-backend-auto');
+    if (currentEl) currentEl.textContent = current || '--';
+    if (modelEl) modelEl.textContent = model || '--';
+    if (autoEl) autoEl.textContent = autoLabel || '--';
+    wrap.classList.remove('hidden');
 }
 
 function detectProvider(model) {
@@ -2799,6 +2824,9 @@ function saveModelConfig() {
     .then(data => {
         if (data.status === 'success') {
             configCurrentModel = model;
+            if (data.llm_backend) {
+                renderBackendStatus(data.llm_backend);
+            }
             if (data.applied) {
                 const keyInput = document.getElementById('cfg-api-key');
                 Object.entries(data.applied).forEach(([k, v]) => {
