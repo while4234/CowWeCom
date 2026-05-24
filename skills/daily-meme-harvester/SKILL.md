@@ -22,6 +22,13 @@ This skill collects high-engagement images that are likely to become memes or re
 
 The implementation intentionally does not generate anti-bot signatures, bypass captcha, automate login, repost content, or perform high-frequency scraping.
 
+## Agent routing guard
+
+- For Xiaohongshu and Weibo diagnostics, do not call the generic `browser` tool and do not open Bing/Baidu/search-engine fallbacks. CowAgent's generic browser uses `~/.cow/browser_profile`, which is separate from this skill's platform profiles and can falsely appear logged out.
+- To test collection, run this skill's `harvest_memes.py` commands only. If a human login or risk check is needed, open the matching dedicated profile with `--open-xiaohongshu-profile --json` or `--open-weibo-profile --json`.
+- A login wall seen in the generic browser is not evidence that the skill-owned profile lost login state. Verify the active path by checking the script warning line that includes `persistent browser profile: ...`.
+- If dry-run returns too few candidates, report the thin result and warnings from the script. Do not broaden the task into web search unless the user explicitly asks for public-web research.
+
 ## 一次性运行命令
 
 ```bash
