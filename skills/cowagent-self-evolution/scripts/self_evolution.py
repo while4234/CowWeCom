@@ -27,6 +27,7 @@ def _load_api():
             list_active_rules,
             record_reusable_learning,
             record_windows_shell_failure,
+            run_post_task_reflection_once,
         )
         from common.tool_attempt_memory import (
             get_data_dir as get_tool_attempt_data_dir,
@@ -43,6 +44,7 @@ def _load_api():
         "list_active_rules": list_active_rules,
         "record_reusable_learning": record_reusable_learning,
         "record_windows_shell_failure": record_windows_shell_failure,
+        "run_post_task_reflection_once": run_post_task_reflection_once,
         "get_tool_attempt_data_dir": get_tool_attempt_data_dir,
         "list_tool_attempt_rules": list_tool_attempt_rules,
     }
@@ -78,6 +80,23 @@ def main() -> int:
     log_learning.add_argument("--summary", required=True)
     log_learning.add_argument("--next", dest="next_action", required=True)
     log_learning.add_argument("--details", default="")
+
+    reflect_task = sub.add_parser(
+        "reflect-task",
+        help="Run one post-task reflection from assistant process text without a model call.",
+    )
+    reflect_task.add_argument("--workspace-root", default=None, help=workspace_help)
+    reflect_task.add_argument(
+        "--process-text",
+        action="append",
+        default=[],
+        help="Assistant process/progress text that preceded tool calls. May be repeated.",
+    )
+    reflect_task.add_argument(
+        "--process-text-file",
+        default="",
+        help="Optional UTF-8 file containing one or more assistant process statements.",
+    )
 
     args = parser.parse_args()
     api = _load_api()
@@ -132,6 +151,20 @@ def main() -> int:
             workspace_root=workspace_root,
         )
         print(json.dumps(result or {"recorded": False}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.action == "reflect-task":
+        texts = list(args.process_text or [])
+        if args.process_text_file:
+            path = Path(args.process_text_file)
+            texts.append(path.read_text(encoding="utf-8"))
+        result = api["run_post_task_reflection_once"](
+            model_adapter=None,
+            intermediate_texts=texts,
+            workspace_root=workspace_root,
+            reason="cli",
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
     parser.error(f"unknown command: {args.action}")

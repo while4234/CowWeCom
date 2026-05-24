@@ -127,6 +127,10 @@ available_setting = {
     "llm_usage_tracking": True,  # Persist token/cache usage counters for the web dashboard
     "llm_usage_history_limit": 2000,  # Max local usage records to keep
     "llm_usage_user_labels": {},  # Optional usage-dashboard display labels keyed by actor id, raw id, or telemetry hash
+    "cowagent_self_evolution_post_task_enabled": True,  # Run background lesson mining after completed Agent tasks
+    "cowagent_self_evolution_post_task_max_texts": 12,  # Max assistant process statements per reflection
+    "cowagent_self_evolution_post_task_max_chars": 6000,  # Max process-text chars per reflection
+    "cowagent_self_evolution_post_task_queue_size": 10,  # Bounded background reflection queue
     "prompt_cache_stable_runtime_info": True,  # Keep volatile runtime time out of the reusable prompt prefix
     "runtime_time_in_user_message": True,  # Add exact current time only to the active user request
     "knowledge_index_in_system_prompt": False,  # Keep changing knowledge index out of the stable prompt prefix

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import queue
 import re
 import threading
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from common.utils import expand_path
 DATA_DIR_NAME = "cowagent-self-evolution"
 ERRORS_FILE = "reusable_errors.jsonl"
 ACTIVE_RULES_FILE = "active_rules.json"
+REFLECTIONS_FILE = "post_task_reflections.jsonl"
 RULE_ID_WINDOWS_SHELL = "windows-shell-dialect"
 RULE_ID_WINDOWS_CMD_SET_QUOTING = "windows-cmd-env-set-quoting"
 RULE_ID_WINDOWS_PYTHON_C_QUOTING = "windows-python-c-quoting"
@@ -107,9 +109,14 @@ _SECRET_PATTERNS = [
         ),
         r"\1=<redacted>",
     ),
+    (re.compile(r"(?i)\b[A-Z]:\\(?:[^\\/:*?\"<>|\s]+\\)*[^\\/:*?\"<>|\s]*"), "<path>"),
+    (re.compile(r"(?i)(?:/Users|/home|/mnt|/tmp)/[^\s'\";]+"), "<path>"),
 ]
 _ACTIVE_RULES_CACHE: Dict[str, Tuple[float, Dict[str, Dict[str, Any]]]] = {}
 _ACTIVE_RULES_LOCK = threading.Lock()
+_REFLECTION_QUEUE: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=10)
+_REFLECTION_WORKER_LOCK = threading.Lock()
+_REFLECTION_WORKER_STARTED = False
 
 _UNIX_COMMAND_RE = re.compile(
     r"(^|[\s&|;()])(?:grep|sed|awk|head|tail|cat|touch|chmod|which)\b",
@@ -299,6 +306,156 @@ def record_reusable_learning(
     return rule
 
 
+def extract_intermediate_process_texts(
+    messages: Optional[List[Dict[str, Any]]] = None,
+    final_response: str = "",
+    *,
+    extra_texts: Optional[List[str]] = None,
+    max_items: int = 12,
+    max_chars: int = 6000,
+) -> List[str]:
+    """Extract assistant progress text that preceded tool calls in this run."""
+    texts: List[str] = []
+    final_normalized = _normalize_text_for_compare(final_response)
+
+    for message in messages or []:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        text, has_tool_use = _assistant_text_and_tool_use(message)
+        if not text or not has_tool_use:
+            continue
+        if final_normalized and _normalize_text_for_compare(text) == final_normalized:
+            continue
+        texts.append(text)
+
+    for text in extra_texts or []:
+        clean = str(text or "").strip()
+        if clean:
+            texts.append(clean)
+
+    return _dedupe_and_bound_texts(texts, max_items=max_items, max_chars=max_chars)
+
+
+def schedule_post_task_reflection(
+    *,
+    model_adapter: Any = None,
+    new_messages: Optional[List[Dict[str, Any]]] = None,
+    final_response: str = "",
+    intermediate_texts: Optional[List[str]] = None,
+    workspace_root: Optional[str] = None,
+) -> bool:
+    """Queue post-task self-evolution reflection without blocking the reply path."""
+    if not _config_bool("cowagent_self_evolution_post_task_enabled", True):
+        return False
+
+    max_items = _config_int("cowagent_self_evolution_post_task_max_texts", 12, minimum=1, maximum=30)
+    max_chars = _config_int("cowagent_self_evolution_post_task_max_chars", 6000, minimum=500, maximum=20000)
+    texts = extract_intermediate_process_texts(
+        new_messages,
+        final_response,
+        extra_texts=intermediate_texts,
+        max_items=max_items,
+        max_chars=max_chars,
+    )
+    payload = {
+        "model_adapter": model_adapter,
+        "intermediate_texts": texts,
+        "workspace_root": workspace_root,
+        "reason": "post_task",
+    }
+    try:
+        _reflection_queue().put_nowait(payload)
+    except queue.Full:
+        logger.debug("[SelfEvolution] Post-task reflection queue is full; skipping this run")
+        return False
+    _ensure_reflection_worker()
+    return True
+
+
+def run_post_task_reflection_once(
+    *,
+    model_adapter: Any = None,
+    intermediate_texts: Optional[List[str]] = None,
+    workspace_root: Optional[str] = None,
+    reason: str = "manual",
+) -> Dict[str, Any]:
+    """
+    Refresh tool-attempt lessons, then mine assistant process text for lessons.
+
+    The input is already reduced to assistant progress statements; tool args,
+    tool outputs, final answers, and user prompts are intentionally excluded.
+    """
+    started = _utc_now()
+    texts = _dedupe_and_bound_texts(
+        intermediate_texts or [],
+        max_items=_config_int("cowagent_self_evolution_post_task_max_texts", 12, minimum=1, maximum=30),
+        max_chars=_config_int("cowagent_self_evolution_post_task_max_chars", 6000, minimum=500, maximum=20000),
+    )
+    report: Dict[str, Any] = {
+        "timestamp": started,
+        "event": "post_task_reflection",
+        "reason": _preview(reason, limit=80),
+        "status": "skipped",
+        "process_text_count": len(texts),
+        "process_text_hash": _hash_texts(texts),
+    }
+
+    tool_rule_count = 0
+    try:
+        ensure_seed_rules(workspace_root)
+        from common.tool_attempt_memory import list_active_rules as list_tool_attempt_rules
+
+        tool_rule_count = len(list_tool_attempt_rules(workspace_root))
+    except Exception as exc:
+        report["tool_error_refresh_status"] = "failed"
+        report["tool_error_refresh_error"] = _preview(str(exc), limit=180)
+    else:
+        report["tool_error_refresh_status"] = "ok"
+    report["tool_attempt_rule_count"] = tool_rule_count
+
+    if not texts:
+        _append_reflection_report(workspace_root, report)
+        return report
+
+    try:
+        existing_ids = {str(rule.get("id") or "") for rule in list_active_rules(workspace_root, include_seed=True)}
+        lessons = _infer_process_lessons(texts)
+        lessons.extend(_ask_model_for_process_lessons(model_adapter, texts, workspace_root))
+        lessons = _normalize_reflection_lessons(lessons)
+
+        recorded: List[Dict[str, Any]] = []
+        for lesson in lessons:
+            rule = record_reusable_learning(
+                lesson["id"],
+                lesson["summary"],
+                lesson["next_action"],
+                details=lesson.get("details", ""),
+                workspace_root=workspace_root,
+            )
+            if not rule:
+                continue
+            recorded.append({
+                "id": rule.get("id"),
+                "count": rule.get("count"),
+                "new": str(rule.get("id") or "") not in existing_ids,
+            })
+            existing_ids.add(str(rule.get("id") or ""))
+
+        if recorded:
+            report["status"] = "success"
+            report["recorded_lessons"] = recorded
+            report["guidance_after"] = get_active_prompt_guidance(limit=8, workspace_root=workspace_root)
+        else:
+            report["status"] = "skipped"
+            report["skip_reason"] = "no_reusable_process_lessons"
+    except Exception as exc:
+        report["status"] = "failed"
+        report["failure_reason"] = _preview(str(exc), limit=240)
+
+    _append_reflection_report(workspace_root, report)
+    return report
+
+
 def ensure_seed_rules(workspace_root: Optional[str] = None) -> List[Dict[str, Any]]:
     """Persist default active rules that should be visible before first failure."""
     if platform.system().lower() != "windows":
@@ -329,13 +486,13 @@ def list_active_rules(
     return _sorted_rules(active)
 
 
-def get_active_prompt_guidance(limit: int = 8) -> List[str]:
+def get_active_prompt_guidance(limit: int = 8, workspace_root: Optional[str] = None) -> List[str]:
     """Return stable compact guidance lines for request-scoped model context."""
     guidance: List[str] = []
     seen = set()
 
     own_rules = sorted(
-        list_active_rules(include_seed=True),
+        list_active_rules(workspace_root, include_seed=True),
         key=lambda item: str(item.get("id") or ""),
     )
     for rule in own_rules:
@@ -349,7 +506,7 @@ def get_active_prompt_guidance(limit: int = 8) -> List[str]:
     try:
         from common.tool_attempt_memory import get_active_prompt_guidance as get_tool_prompt_guidance
 
-        tool_guidance = get_tool_prompt_guidance(limit=max(0, limit - len(guidance)))
+        tool_guidance = get_tool_prompt_guidance(limit=max(0, limit - len(guidance)), workspace_root=workspace_root)
     except Exception as e:
         logger.debug("[SelfEvolution] Tool-attempt prompt guidance skipped: %s", e)
         tool_guidance = []
@@ -362,6 +519,308 @@ def get_active_prompt_guidance(limit: int = 8) -> List[str]:
         if len(guidance) >= limit:
             break
     return guidance
+
+
+def _reflection_queue() -> "queue.Queue[Dict[str, Any]]":
+    global _REFLECTION_QUEUE
+    configured_size = _config_int("cowagent_self_evolution_post_task_queue_size", 10, minimum=1, maximum=100)
+    if _REFLECTION_QUEUE.maxsize == configured_size:
+        return _REFLECTION_QUEUE
+    with _REFLECTION_WORKER_LOCK:
+        if _REFLECTION_QUEUE.maxsize != configured_size and _REFLECTION_QUEUE.empty():
+            _REFLECTION_QUEUE = queue.Queue(maxsize=configured_size)
+    return _REFLECTION_QUEUE
+
+
+def _ensure_reflection_worker() -> None:
+    global _REFLECTION_WORKER_STARTED
+    with _REFLECTION_WORKER_LOCK:
+        if _REFLECTION_WORKER_STARTED:
+            return
+        thread = threading.Thread(
+            target=_reflection_worker_loop,
+            name="cowagent-self-evolution-reflection",
+            daemon=True,
+        )
+        _REFLECTION_WORKER_STARTED = True
+        thread.start()
+
+
+def _reflection_worker_loop() -> None:
+    global _REFLECTION_WORKER_STARTED
+    try:
+        while True:
+            try:
+                payload = _reflection_queue().get(timeout=3)
+            except queue.Empty:
+                with _REFLECTION_WORKER_LOCK:
+                    if _reflection_queue().empty():
+                        _REFLECTION_WORKER_STARTED = False
+                        return
+                continue
+            try:
+                run_post_task_reflection_once(**payload)
+            except Exception as exc:
+                logger.debug("[SelfEvolution] Post-task reflection failed: %s", exc)
+            finally:
+                try:
+                    _reflection_queue().task_done()
+                except Exception:
+                    pass
+    finally:
+        with _REFLECTION_WORKER_LOCK:
+            if _reflection_queue().empty():
+                _REFLECTION_WORKER_STARTED = False
+
+
+def _assistant_text_and_tool_use(message: Dict[str, Any]) -> Tuple[str, bool]:
+    content = message.get("content")
+    parts: List[str] = []
+    has_tool_use = False
+    if isinstance(content, str):
+        parts.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "tool_use":
+                has_tool_use = True
+            elif block_type == "text":
+                parts.append(str(block.get("text") or ""))
+    text = "\n".join(part.strip() for part in parts if str(part or "").strip()).strip()
+    return text, has_tool_use
+
+
+def _dedupe_and_bound_texts(texts: List[str], *, max_items: int, max_chars: int) -> List[str]:
+    bounded: List[str] = []
+    seen = set()
+    remaining = max(0, int(max_chars or 0))
+    for item in texts:
+        if len(bounded) >= max_items or remaining <= 0:
+            break
+        text = _preview(str(item or ""), limit=min(1000, remaining)).strip()
+        if not text:
+            continue
+        key = _normalize_text_for_compare(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        bounded.append(text)
+        remaining -= len(text)
+    return bounded
+
+
+def _hash_texts(texts: List[str]) -> str:
+    if not texts:
+        return ""
+    return sha256(json.dumps(texts, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _infer_process_lessons(texts: List[str]) -> List[Dict[str, str]]:
+    joined = "\n".join(texts)
+    lower = joined.lower()
+    lessons: List[Dict[str, str]] = []
+
+    if "clawhub" in lower and (
+        "inspect --file" in lower
+        or ("install" in lower and ("no files" in lower or "staging" in lower))
+    ):
+        lessons.append({
+            "id": "clawhub-inspect-file-staging",
+            "summary": "ClawHub install may not stage files in temporary directories",
+            "next_action": (
+                "When localizing ClawHub skills, verify install output and fall back "
+                "to inspect --file into a staging directory before scanning."
+            ),
+            "details": "Detected from assistant process text after a task, not from a tool error.",
+        })
+
+    if "powershell" in lower and "execution policy" in lower:
+        lessons.append({
+            "id": "powershell-execution-policy-scripts",
+            "summary": "PowerShell script execution policy can block local CLI shims",
+            "next_action": (
+                "If PowerShell blocks a trusted local CLI shim during skill staging, use "
+                "the .cmd shim or an explicit cmd.exe invocation and keep the safety scan."
+            ),
+            "details": "Detected from assistant process text after a task.",
+        })
+
+    if "skill" in lower and "windows" in lower and "bash" in lower:
+        lessons.append({
+            "id": "community-skill-windows-localization",
+            "summary": "Community skills with Bash scripts need Windows localization",
+            "next_action": (
+                "When installing community skills for CowWechat on Windows, inspect "
+                "Bash-only scripts and provide Python or cmd/PowerShell-compatible "
+                "entrypoints before enabling the runtime copy."
+            ),
+            "details": "Detected from assistant process text after a task.",
+        })
+
+    if "skill" in lower and ("security gate" in lower or "safety scan" in lower or "safe scan" in lower):
+        lessons.append({
+            "id": "community-skill-security-gate",
+            "summary": "Community skill installs need staging and safety review",
+            "next_action": (
+                "Stage community skill files in a temporary directory, run the skill "
+                "security scanner, and manually inspect scripts before syncing repo "
+                "and runtime copies."
+            ),
+            "details": "Detected from assistant process text after a task.",
+        })
+
+    return lessons
+
+
+def _ask_model_for_process_lessons(
+    model_adapter: Any,
+    texts: List[str],
+    workspace_root: Optional[str],
+) -> List[Dict[str, str]]:
+    if model_adapter is None or not hasattr(model_adapter, "call"):
+        return []
+    try:
+        from agent.protocol.models import LLMRequest
+    except Exception:
+        return []
+
+    prompt = _build_reflection_prompt(texts, workspace_root)
+    request = LLMRequest(
+        messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+        temperature=0,
+        max_tokens=900,
+        stream=False,
+        system=(
+            "You mine reusable execution lessons from assistant progress text. "
+            "Return strict JSON only. Never include secrets, raw paths, user text, "
+            "tool outputs, or final-answer content."
+        ),
+    )
+    try:
+        response = model_adapter.call(request)
+        text = _extract_model_response_text(response)
+        return _parse_reflection_lessons(text)
+    except Exception as exc:
+        logger.debug("[SelfEvolution] Model post-task reflection skipped: %s", exc)
+        return []
+
+
+def _build_reflection_prompt(texts: List[str], workspace_root: Optional[str]) -> str:
+    existing_guidance = get_active_prompt_guidance(limit=8, workspace_root=workspace_root)
+    payload = {
+        "assistant_process_text": texts,
+        "existing_guidance": existing_guidance,
+    }
+    return (
+        "Analyze the assistant process/progress statements from one completed task.\n"
+        "These statements are not the final answer. Identify only durable, reusable "
+        "operational lessons that are not already covered by existing_guidance. "
+        "Ignore ordinary status narration, plans, and task-specific details. "
+        "Prefer zero lessons unless a future similar task should behave differently.\n\n"
+        "Return strict JSON with this schema:\n"
+        "{\"lessons\":[{\"id\":\"kebab-case-id\",\"summary\":\"short\","
+        "\"next_action\":\"specific future behavior\",\"details\":\"optional safe context\"}]}\n"
+        "Use at most 3 lessons. Do not include raw local paths, credentials, tokens, "
+        "tool outputs, private user content, or the final answer.\n\n"
+        f"Input JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _extract_model_response_text(response: Any) -> str:
+    if not isinstance(response, dict):
+        return ""
+    if response.get("error"):
+        raise RuntimeError(str(response.get("message") or response.get("error")))
+    choices = response.get("choices") or []
+    if not choices or not isinstance(choices[0], dict):
+        return ""
+    message = choices[0].get("message") if isinstance(choices[0].get("message"), dict) else {}
+    content = message.get("content") if message else ""
+    if isinstance(content, list):
+        return "".join(
+            str(item.get("text") or item.get("content") or "")
+            if isinstance(item, dict) else str(item)
+            for item in content
+        ).strip()
+    return str(content or "").strip()
+
+
+def _parse_reflection_lessons(text: str) -> List[Dict[str, str]]:
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+    if match:
+        raw = match.group(1)
+    elif "{" in raw and "}" in raw:
+        raw = raw[raw.find("{"): raw.rfind("}") + 1]
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.debug("[SelfEvolution] Reflection response was not JSON: %s", raw[:200])
+        return []
+    lessons = payload.get("lessons") if isinstance(payload, dict) else payload
+    if not isinstance(lessons, list):
+        return []
+    return [lesson for lesson in lessons if isinstance(lesson, dict)]
+
+
+def _normalize_reflection_lessons(lessons: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    normalized: List[Dict[str, str]] = []
+    seen = set()
+    for item in lessons:
+        rule_id = _normalize_rule_id(str(item.get("id") or item.get("summary") or ""))
+        summary = _preview(str(item.get("summary") or ""), limit=180)
+        next_action = _preview(str(item.get("next_action") or item.get("next") or ""), limit=500)
+        details = _preview(str(item.get("details") or ""), limit=500)
+        if not rule_id or not summary or not next_action:
+            continue
+        if rule_id in seen:
+            continue
+        seen.add(rule_id)
+        normalized.append({
+            "id": rule_id,
+            "summary": summary,
+            "next_action": next_action,
+            "details": details,
+        })
+        if len(normalized) >= 5:
+            break
+    return normalized
+
+
+def _append_reflection_report(workspace_root: Optional[str], report: Dict[str, Any]) -> None:
+    try:
+        data_dir = get_data_dir(workspace_root)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        _append_jsonl(data_dir / REFLECTIONS_FILE, report)
+    except Exception as exc:
+        logger.debug("[SelfEvolution] Failed to write reflection report: %s", exc)
+
+
+def _config_bool(key: str, default: bool) -> bool:
+    try:
+        from config import conf
+
+        return bool(conf().get(key, default))
+    except Exception:
+        return default
+
+
+def _config_int(key: str, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        from config import conf
+
+        value = int(conf().get(key, default) or default)
+    except Exception:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+def _normalize_text_for_compare(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
 def _configured_workspace() -> str:

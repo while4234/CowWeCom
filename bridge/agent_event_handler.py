@@ -30,6 +30,7 @@ class AgentEventHandler:
         self.current_content = ""
         self.turn_number = 0
         self._max_steps_notice_sent = False
+        self.intermediate_texts = []
     
     def handle_event(self, event):
         """
@@ -95,6 +96,9 @@ class AgentEventHandler:
         
         if tool_calls:
             if self.current_content.strip():
+                self.intermediate_texts.append(self.current_content.strip())
+                if len(self.intermediate_texts) > 20:
+                    self.intermediate_texts = self.intermediate_texts[-20:]
                 logger.info(f"💭 {self.current_content.strip()[:200]}{'...' if len(self.current_content) > 200 else ''}")
                 self._send_to_channel(self.current_content.strip())
         else:
@@ -147,3 +151,7 @@ class AgentEventHandler:
         # Summary removed as per user request
         # Real-time logging during execution is sufficient
         pass
+
+    def get_intermediate_texts(self):
+        """Return bounded assistant progress text emitted before tool calls."""
+        return list(self.intermediate_texts)

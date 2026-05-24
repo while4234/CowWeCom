@@ -14,13 +14,16 @@ from common.self_evolution import (
     ACTIVE_RULES_FILE,
     DATA_DIR_NAME,
     ERRORS_FILE,
+    REFLECTIONS_FILE,
     apply_windows_shell_policies,
     classify_windows_shell_failure,
+    extract_intermediate_process_texts,
     get_data_dir,
     get_active_prompt_guidance as get_self_evolution_prompt_guidance,
     record_reusable_learning,
     record_windows_shell_policy_application,
     record_windows_shell_failure,
+    run_post_task_reflection_once,
 )
 from common.tool_attempt_memory import ToolAttemptMemory
 
@@ -181,6 +184,85 @@ class SelfEvolutionPromptCacheTest(unittest.TestCase):
         joined = "\n".join(guidance)
         self.assertNotIn("count", joined)
         self.assertNotIn("last_seen", joined)
+
+
+class _ReflectionFakeModel:
+    def __init__(self, content):
+        self.content = content
+        self.calls = []
+
+    def call(self, request):
+        self.calls.append(request)
+        return {"choices": [{"message": {"content": self.content}}]}
+
+
+class PostTaskReflectionTest(unittest.TestCase):
+    def test_extracts_only_assistant_text_before_tool_calls(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I will inspect the temporary install first."},
+                    {"type": "tool_use", "id": "call_1", "name": "bash", "input": {"command": "x"}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "call_1", "content": "ok"}],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Final answer should not be mined."}],
+            },
+        ]
+
+        texts = extract_intermediate_process_texts(messages, "Final answer should not be mined.")
+
+        self.assertEqual(texts, ["I will inspect the temporary install first."])
+
+    def test_post_task_reflection_records_model_lessons_and_refreshes_guidance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = _ReflectionFakeModel(json.dumps({
+                "lessons": [
+                    {
+                        "id": "community-skill-windows-localization",
+                        "summary": "Community skills with Bash scripts need Windows localization",
+                        "next_action": "Localize Bash-only community skill scripts before enabling CowWechat runtime copies.",
+                        "details": r"Do not keep C:\Users\Name\secret.txt in memory.",
+                    }
+                ]
+            }))
+
+            report = run_post_task_reflection_once(
+                model_adapter=model,
+                intermediate_texts=[
+                    "The upstream community skill is mainly bash scripts, so I will localize it for Windows."
+                ],
+                workspace_root=tmp,
+            )
+
+            self.assertEqual(report["status"], "success")
+            self.assertEqual(len(model.calls), 1)
+            active = json.loads((get_data_dir(tmp) / ACTIVE_RULES_FILE).read_text(encoding="utf-8"))
+            rule = next(item for item in active["rules"] if item["id"] == "community-skill-windows-localization")
+            self.assertIn("Bash-only", rule["next_action"])
+            self.assertNotIn("C:\\Users", json.dumps(rule, ensure_ascii=False))
+            reflection_events = (get_data_dir(tmp) / REFLECTIONS_FILE).read_text(encoding="utf-8")
+            self.assertIn("post_task_reflection", reflection_events)
+
+    def test_post_task_reflection_fallback_detects_clawhub_staging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_post_task_reflection_once(
+                model_adapter=None,
+                intermediate_texts=[
+                    "ClawHub install produced no files in the staging directory, so I used inspect --file."
+                ],
+                workspace_root=tmp,
+            )
+
+            self.assertEqual(report["status"], "success")
+            active = json.loads((get_data_dir(tmp) / ACTIVE_RULES_FILE).read_text(encoding="utf-8"))
+            self.assertTrue(any(rule["id"] == "clawhub-inspect-file-staging" for rule in active["rules"]))
 
 
 class BashSelfEvolutionHookTest(unittest.TestCase):

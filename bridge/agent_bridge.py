@@ -635,6 +635,8 @@ class AgentBridge:
         conversation_id = None
         profile = None
         agent = None
+        event_handler = None
+        new_messages = []
         reply_start = monotonic()
         get_agent_elapsed = None
         run_stream_elapsed = None
@@ -786,6 +788,13 @@ class AgentBridge:
             # background. Off the critical path so user latency is unaffected;
             # changes take effect on the user's next message.
             self._schedule_mcp_hot_reload(agent)
+            self._stage_post_task_self_evolution(
+                context=context,
+                agent=agent,
+                new_messages=list(new_messages or []),
+                final_response=response,
+                event_handler=event_handler,
+            )
 
             # Check if there are files to send (from send/read tool)
             if hasattr(agent, 'stream_executor') and hasattr(agent.stream_executor, 'files_to_send'):
@@ -902,6 +911,36 @@ class AgentBridge:
                 logger.warning(f"[AgentBridge] MCP hot-reload failed (non-fatal): {e}")
 
         threading.Thread(target=_run, daemon=True, name="mcp-hot-reload").start()
+
+    def _stage_post_task_self_evolution(
+        self,
+        *,
+        context,
+        agent,
+        new_messages: list,
+        final_response: str,
+        event_handler,
+    ) -> None:
+        try:
+            intermediate_texts = []
+            if event_handler and hasattr(event_handler, "get_intermediate_texts"):
+                intermediate_texts = event_handler.get_intermediate_texts()
+            payload = {
+                "model_adapter": getattr(agent, "model", None),
+                "new_messages": new_messages,
+                "final_response": final_response or "",
+                "intermediate_texts": intermediate_texts,
+                "workspace_root": conf().get("agent_workspace", "~/cow"),
+            }
+            if context is not None and context.get("_session_runtime") is not None:
+                context["_self_evolution_post_task"] = payload
+                return
+
+            from common.self_evolution import schedule_post_task_reflection
+
+            schedule_post_task_reflection(**payload)
+        except Exception as e:
+            logger.debug(f"[SelfEvolution] Failed to stage post-task reflection: {e}")
 
     @staticmethod
     def _ensure_tools_guarded(agent) -> None:

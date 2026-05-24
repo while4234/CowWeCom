@@ -255,6 +255,7 @@ class ChatService:
 
         # Execute post-process tools
         agent._execute_post_process_tools()
+        self._schedule_post_task_self_evolution(agent, new_messages, response)
 
         logger.info(f"[ChatService] Agent run completed: session={session_id}")
 
@@ -277,6 +278,21 @@ class ChatService:
             logger.warning(
                 f"[ChatService] Failed to persist messages for session={session_id}: {e}"
             )
+
+    @staticmethod
+    def _schedule_post_task_self_evolution(agent, new_messages: list, final_response: str):
+        try:
+            from config import conf
+            from common.self_evolution import schedule_post_task_reflection
+
+            schedule_post_task_reflection(
+                model_adapter=getattr(agent, "model", None),
+                new_messages=list(new_messages or []),
+                final_response=final_response or "",
+                workspace_root=conf().get("agent_workspace", "~/cow"),
+            )
+        except Exception as e:
+            logger.debug(f"[SelfEvolution] Failed to schedule chat-service reflection: {e}")
 
 
 class _StreamState:

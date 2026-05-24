@@ -455,6 +455,7 @@ class ChatChannel(Channel):
         finally:
             if runtime:
                 runtime.finish_task(final_phase)
+            self._schedule_post_task_self_evolution(context)
             content = getattr(reply, "content", "") if reply else ""
             logger.info(
                 "[Latency][Handle] session=%s total=%s queue_wait=%s generate=%s decorate=%s send=%s "
@@ -469,6 +470,20 @@ class ChatChannel(Channel):
                 getattr(reply, "type", "none") if reply else "none",
                 len(content) if isinstance(content, str) else 0,
             )
+
+    @staticmethod
+    def _schedule_post_task_self_evolution(context: Context):
+        if not context:
+            return
+        payload = context.pop("_self_evolution_post_task", None)
+        if not payload:
+            return
+        try:
+            from common.self_evolution import schedule_post_task_reflection
+
+            schedule_post_task_reflection(**payload)
+        except Exception as e:
+            logger.debug(f"[SelfEvolution] Failed to schedule post-task reflection: {e}")
 
     def _generate_reply(self, context: Context, reply: Reply = Reply()) -> Reply:
         e_context = PluginManager().emit_event(
