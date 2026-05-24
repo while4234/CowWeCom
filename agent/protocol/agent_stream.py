@@ -14,7 +14,10 @@ from common.agent_task_runtime import TaskCancelled
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common.log import logger
 from common.llm_usage_tracker import normalize_usage, stable_metadata_hash
-from common.reasoning_effort_policy import resolve_reasoning_effort_for_task
+from common.reasoning_effort_policy import (
+    record_policy_task_outcome,
+    resolve_reasoning_effort_for_task,
+)
 from common.tool_attempt_memory import ToolAttemptMemory, is_mutating_tool, is_readonly_reusable_tool
 
 
@@ -131,6 +134,33 @@ class AgentStreamExecutor:
         self._tool_memory_rule_hits = 0
         self._last_tool_failure_class = ""
         self._request_tool_result_compacted_count = 0
+
+    def _reasoning_effort_runtime_stats(self) -> Dict[str, Any]:
+        return {
+            "tool_attempt_count": int(getattr(self, "_tool_attempt_count", 0) or 0),
+            "tool_attempt_success_count": int(getattr(self, "_tool_attempt_success_count", 0) or 0),
+            "tool_attempt_error_count": int(getattr(self, "_tool_attempt_error_count", 0) or 0),
+            "tool_skip_count": int(getattr(self, "_tool_skip_count", 0) or 0),
+            "tool_failure_class": getattr(self, "_last_tool_failure_class", "") or "",
+        }
+
+    def _record_reasoning_effort_outcome(
+            self,
+            status: str,
+            turn_count: int,
+            failure_reason: str,
+            final_response: str,
+    ) -> None:
+        record_policy_task_outcome(
+            self._reasoning_effort_decision,
+            status=status,
+            turn_count=turn_count,
+            max_turns=self.max_turns,
+            model_adapter=self.model,
+            runtime_stats=self._reasoning_effort_runtime_stats(),
+            failure_reason=failure_reason,
+            final_response=final_response,
+        )
 
     def _raise_if_cancelled(self):
         if self.cancellation_token and self.cancellation_token.is_cancelled():
@@ -497,6 +527,8 @@ class AgentStreamExecutor:
 
         final_response = ""
         turn = 0
+        outcome_status = "success"
+        outcome_failure_reason = ""
 
         try:
             while turn < self.max_turns:
@@ -653,6 +685,8 @@ class AgentStreamExecutor:
                         if result.get("status") == "critical_error":
                             logger.error(f"💥 检测到严重错误，终止对话")
                             final_response = result.get('result', '任务执行失败')
+                            outcome_status = "critical_error"
+                            outcome_failure_reason = "tool_critical_error"
                             return final_response
                         
                         # Log tool result in compact format
@@ -764,6 +798,8 @@ class AgentStreamExecutor:
 
             if turn >= self.max_turns:
                 logger.warning(f"⚠️  已达到最大决策步数限制: {self.max_turns}")
+                outcome_status = "max_turns_exhausted"
+                outcome_failure_reason = "max_turns_exhausted"
                 
                 # Force model to summarize without tool calls
                 logger.info(f"[Agent] Requesting summary from LLM after reaching max steps...")
@@ -814,14 +850,24 @@ class AgentStreamExecutor:
         except TaskCancelled as e:
             logger.info(f"[Agent] Task cancelled: {e}")
             self._emit_event("cancelled", {"reason": str(e)})
+            outcome_status = "cancelled"
+            outcome_failure_reason = str(e)
             raise
         except Exception as e:
             logger.error(f"❌ Agent执行错误: {e}")
             self._emit_event("error", {"error": str(e)})
+            outcome_status = "failed"
+            outcome_failure_reason = type(e).__name__
             raise
 
         finally:
             final_response = final_response.strip() if final_response else final_response
+            self._record_reasoning_effort_outcome(
+                outcome_status,
+                turn,
+                outcome_failure_reason,
+                final_response or "",
+            )
             logger.info(f"[Agent] 🏁 完成 ({turn}轮)")
             self._emit_event("agent_end", {"final_response": final_response})
 

@@ -79,6 +79,7 @@ class TestLLMUsageTracker(unittest.TestCase):
                         "reasoning_effort_reason": "coding",
                         "reasoning_effort_backend": "capi",
                         "reasoning_effort_main_model": "gpt-5.5",
+                        "reasoning_effort_chat_scope": "group",
                         "reasoning_effort_local_rule": "coding",
                         "prompt": "raw prompt must not be persisted",
                         "messages": [{"role": "user", "content": "secret"}],
@@ -101,6 +102,7 @@ class TestLLMUsageTracker(unittest.TestCase):
         self.assertEqual(record["tool_failure_class"], "non_retryable_args")
         self.assertEqual(record["reasoning_effort_selected"], "xhigh")
         self.assertEqual(record["reasoning_effort_decision_source"], "local")
+        self.assertEqual(record["reasoning_effort_chat_scope"], "group")
         self.assertEqual(record["reasoning_effort_local_rule"], "coding")
         self.assertNotIn("prompt", record)
         self.assertNotIn("messages", record)

@@ -35,6 +35,7 @@ _REQUEST_SHAPE_TEXT_FIELDS = {
     "reasoning_effort_reason",
     "reasoning_effort_backend",
     "reasoning_effort_main_model",
+    "reasoning_effort_chat_scope",
     "reasoning_effort_local_rule",
 }
 _REQUEST_SHAPE_INT_FIELDS = {

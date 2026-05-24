@@ -34,7 +34,7 @@
   "llm_usage_history_limit": 2000,
   "llm_usage_user_labels": {},
   "reasoning_effort_policy_enabled": false,
-  "reasoning_effort_policy_admin_only": true,
+  "reasoning_effort_policy_admin_only": false,
   "reasoning_effort_policy_default_effort": "medium",
   "reasoning_effort_policy_quality_effort": "xhigh",
   "reasoning_effort_policy_audit_enabled": true,

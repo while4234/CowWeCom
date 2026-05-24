@@ -32,9 +32,19 @@ from config import conf
 VALID_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
 ROUTED_EFFORTS = {"medium", "xhigh"}
 DEFAULT_OPTIMIZE_EVERY = 50
+CHAT_SCOPE_PRIVATE = "private"
+CHAT_SCOPE_GROUP = "group"
 AUDIT_FILENAME = "reasoning_effort_policy_decisions.jsonl"
+PRIVATE_AUDIT_FILENAME = "reasoning_effort_policy_decisions_private.jsonl"
+GROUP_AUDIT_FILENAME = "reasoning_effort_policy_decisions_group.jsonl"
 OPTIMIZER_REPORT_FILENAME = "reasoning_effort_policy_optimizer_reports.jsonl"
+OPTIMIZER_ATTEMPT_FILENAME = "reasoning_effort_policy_optimizer_attempts.jsonl"
 OPTIMIZER_STATE_FILENAME = "reasoning_effort_policy_optimizer_state.json"
+
+_AUDIT_FILENAMES = {
+    CHAT_SCOPE_PRIVATE: PRIVATE_AUDIT_FILENAME,
+    CHAT_SCOPE_GROUP: GROUP_AUDIT_FILENAME,
+}
 
 _AUDIT_LOCK = threading.Lock()
 _OPTIMIZER_LOCK = threading.Lock()
@@ -49,6 +59,7 @@ class ReasoningEffortDecision:
     reason: str
     active_backend: str
     main_model: str
+    chat_scope: str = CHAT_SCOPE_PRIVATE
     local_rule: str = ""
 
     def usage_metadata(self) -> Dict[str, Any]:
@@ -58,6 +69,7 @@ class ReasoningEffortDecision:
             "reasoning_effort_reason": self.reason,
             "reasoning_effort_backend": self.active_backend,
             "reasoning_effort_main_model": self.main_model,
+            "reasoning_effort_chat_scope": self.chat_scope,
             "reasoning_effort_local_rule": self.local_rule,
         }
 
@@ -72,6 +84,7 @@ def resolve_reasoning_effort_for_task(user_message: str, model_adapter: Any) -> 
 
     active_backend = get_current_backend()
     main_model = get_effective_model()
+    chat_scope = _chat_scope(model_adapter)
     quality_effort = _configured_effort("reasoning_effort_policy_quality_effort", "xhigh", routed_only=True)
     default_effort = _configured_effort("reasoning_effort_policy_default_effort", "medium", routed_only=True)
 
@@ -88,6 +101,7 @@ def resolve_reasoning_effort_for_task(user_message: str, model_adapter: Any) -> 
         reason=local_rule,
         active_backend=active_backend,
         main_model=main_model,
+        chat_scope=chat_scope,
         local_rule=local_rule,
     )
     record_policy_decision(decision, model_adapter=model_adapter, user_message=user_message)
@@ -123,22 +137,26 @@ def record_policy_decision(
 
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event_type": "decision",
         "task_id": decision.task_id,
         "active_backend": decision.active_backend,
         "main_model": decision.main_model,
+        "chat_scope": _normalize_chat_scope(decision.chat_scope),
         "selected_effort": decision.selected_effort,
         "decision_source": decision.decision_source,
+        "decision_status": "success",
         "reason": _safe_text(decision.reason, 160),
         "local_rule": _safe_text(decision.local_rule, 96),
         "channel_type": _safe_text(getattr(model_adapter, "channel_type", ""), 64),
         "session_hash": _hash_optional(getattr(model_adapter, "session_id", "")),
         "user_hash": _hash_optional(getattr(model_adapter, "user_id", "")),
         "message_hash": stable_metadata_hash(str(user_message or "")),
+        "message_features": _message_features(user_message),
     }
     record = {key: value for key, value in record.items() if value not in ("", None)}
 
     try:
-        path = audit_log_path()
+        path = audit_log_path(decision.chat_scope)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with _AUDIT_LOCK:
             with open(path, "a", encoding="utf-8") as f:
@@ -150,13 +168,68 @@ def record_policy_decision(
     maybe_trigger_policy_optimizer_async(model_adapter)
 
 
+def record_policy_task_outcome(
+    decision: Optional[ReasoningEffortDecision],
+    *,
+    status: str,
+    turn_count: int,
+    max_turns: int,
+    model_adapter: Any = None,
+    runtime_stats: Optional[Mapping[str, Any]] = None,
+    failure_reason: str = "",
+    final_response: str = "",
+) -> None:
+    """Append sanitized post-run outcome data for a previously routed task."""
+    if decision is None or not bool(conf().get("reasoning_effort_policy_audit_enabled", True)):
+        return
+
+    response_text = str(final_response or "")
+    runtime_stats = runtime_stats if isinstance(runtime_stats, Mapping) else {}
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event_type": "task_outcome",
+        "task_id": decision.task_id,
+        "active_backend": decision.active_backend,
+        "main_model": decision.main_model,
+        "chat_scope": _normalize_chat_scope(decision.chat_scope),
+        "selected_effort": decision.selected_effort,
+        "decision_source": decision.decision_source,
+        "local_rule": _safe_text(decision.local_rule, 96),
+        "task_status": _safe_text(status, 64),
+        "turn_count": max(0, int(turn_count or 0)),
+        "max_turns": max(0, int(max_turns or 0)),
+        "max_turns_exhausted": bool(max_turns and turn_count >= max_turns),
+        "failure_reason": _safe_text(failure_reason, 180),
+        "final_response_chars": len(response_text.strip()),
+        "final_response_hash": stable_metadata_hash(response_text) if response_text else "",
+        "tool_attempt_count": _safe_int(runtime_stats.get("tool_attempt_count")),
+        "tool_attempt_success_count": _safe_int(runtime_stats.get("tool_attempt_success_count")),
+        "tool_attempt_error_count": _safe_int(runtime_stats.get("tool_attempt_error_count")),
+        "tool_skip_count": _safe_int(runtime_stats.get("tool_skip_count")),
+        "tool_failure_class": _safe_text(runtime_stats.get("tool_failure_class"), 96),
+    }
+    record = {key: value for key, value in record.items() if value not in ("", None)}
+
+    try:
+        path = audit_log_path(decision.chat_scope)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with _AUDIT_LOCK:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except Exception as exc:
+        logger.debug(f"[ReasoningPolicy] Failed to record task outcome: {exc}")
+        return
+
+    maybe_trigger_policy_optimizer_async(model_adapter)
+
+
 def maybe_trigger_policy_optimizer_async(model_adapter: Any = None) -> bool:
     """Start a non-blocking optimizer pass when enough new decisions exist."""
     if not bool(conf().get("reasoning_effort_policy_auto_optimize_enabled", False)):
         return False
 
     threshold = max(1, _to_int(conf().get("reasoning_effort_policy_auto_optimize_every_tasks")) or DEFAULT_OPTIMIZE_EVERY)
-    total_count = _count_jsonl_records(audit_log_path())
+    total_count = _count_policy_decision_records()
     state = _read_optimizer_state()
     last_count = _to_int(state.get("last_optimized_record_count"))
     if total_count - last_count < threshold:
@@ -188,13 +261,15 @@ def run_policy_optimizer_once(
     reason: str = "manual",
 ) -> Dict[str, Any]:
     """Analyze recent routing decisions with same-backend gpt-5.5+xhigh."""
-    records = _read_jsonl_tail(audit_log_path(), limit=200)
-    record_count = record_count if record_count is not None else _count_jsonl_records(audit_log_path())
+    records = _read_policy_decision_records_tail(limit=200)
+    record_count = record_count if record_count is not None else _count_policy_decision_records()
     active_backend = get_current_backend()
     started = datetime.now(timezone.utc).isoformat()
+    attempt_id = uuid.uuid4().hex[:12]
 
     report: Dict[str, Any] = {
         "timestamp": started,
+        "attempt_id": attempt_id,
         "status": "skipped",
         "reason": reason,
         "active_backend": active_backend,
@@ -203,8 +278,14 @@ def run_policy_optimizer_once(
         "analyzed_records": len(records),
     }
     if not records or model_adapter is None:
-        report["failure_reason"] = "no_records_or_model_adapter"
+        missing = []
+        if not records:
+            missing.append("no_records")
+        if model_adapter is None:
+            missing.append("no_model_adapter")
+        report["failure_reason"] = "_and_".join(missing) or "optimizer_prerequisite_missing"
         _append_optimizer_report(report)
+        _append_optimizer_attempt(report, record_count)
         _write_optimizer_state(record_count, report["status"])
         return report
 
@@ -233,16 +314,36 @@ def run_policy_optimizer_once(
         report["failure_reason"] = _safe_text(str(exc), 240)
 
     _append_optimizer_report(report)
+    _append_optimizer_attempt(report, record_count)
     _write_optimizer_state(record_count, report["status"])
     return report
 
 
-def audit_log_path() -> str:
+def audit_log_path(chat_scope: str = CHAT_SCOPE_PRIVATE) -> str:
+    scope = _normalize_chat_scope(chat_scope)
+    return os.path.join(_workspace_data_dir(), _AUDIT_FILENAMES[scope])
+
+
+def legacy_audit_log_path() -> str:
     return os.path.join(_workspace_data_dir(), AUDIT_FILENAME)
+
+
+def audit_log_paths(*, include_legacy: bool = True) -> List[str]:
+    paths = [
+        audit_log_path(CHAT_SCOPE_PRIVATE),
+        audit_log_path(CHAT_SCOPE_GROUP),
+    ]
+    if include_legacy:
+        paths.append(legacy_audit_log_path())
+    return paths
 
 
 def optimizer_report_path() -> str:
     return os.path.join(_workspace_data_dir(), OPTIMIZER_REPORT_FILENAME)
+
+
+def optimizer_attempt_path() -> str:
+    return os.path.join(_workspace_data_dir(), OPTIMIZER_ATTEMPT_FILENAME)
 
 
 def optimizer_state_path() -> str:
@@ -305,7 +406,7 @@ def _policy_enabled() -> bool:
 
 
 def _admin_only() -> bool:
-    return bool(conf().get("reasoning_effort_policy_admin_only", True))
+    return bool(conf().get("reasoning_effort_policy_admin_only", False))
 
 
 def _is_admin_model(model_adapter: Any) -> bool:
@@ -326,6 +427,33 @@ def _configured_effort(key: str, default: str, *, routed_only: bool) -> str:
 
 def _normalize_task_text(value: str) -> str:
     return " ".join(str(value or "").strip().split()).lower()
+
+
+def _normalize_chat_scope(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return CHAT_SCOPE_GROUP if text in {"group", "group_chat", "room"} else CHAT_SCOPE_PRIVATE
+
+
+def _chat_scope(model_adapter: Any) -> str:
+    if bool(getattr(model_adapter, "is_group", False)):
+        return CHAT_SCOPE_GROUP
+    return _normalize_chat_scope(getattr(model_adapter, "chat_scope", CHAT_SCOPE_PRIVATE))
+
+
+def _message_features(user_message: str) -> Dict[str, Any]:
+    text = str(user_message or "")
+    stripped = text.strip()
+    lowered = stripped.lower()
+    code_markers = ("```", "traceback", "exception", "def ", "class ", "function ", "git ", "python", "typescript")
+    return {
+        "char_count": len(stripped),
+        "line_count": text.count("\n") + (1 if stripped else 0),
+        "has_question_mark": "?" in stripped or "？" in stripped,
+        "has_code_signal": any(marker in lowered for marker in code_markers),
+        "has_url": bool(re.search(r"https?://|www\.", lowered)),
+        "has_file_path_signal": bool(re.search(r"([a-zA-Z]:\\|/[^/\s]+/|\\[^\\\s]+\\)", stripped)),
+        "is_short": len(stripped) <= 80,
+    }
 
 
 def _safe_text(value: Any, max_len: int = 120) -> str:
@@ -349,6 +477,10 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+def _safe_int(value: Any) -> int:
+    return max(0, _to_int(value))
+
+
 def _count_jsonl_records(path: str) -> int:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -358,6 +490,31 @@ def _count_jsonl_records(path: str) -> int:
     except Exception as exc:
         logger.debug(f"[ReasoningPolicy] Failed to count records: {exc}")
         return 0
+
+
+def _count_policy_decision_records() -> int:
+    return sum(_count_decision_events(path) for path in audit_log_paths(include_legacy=True))
+
+
+def _count_decision_events(path: str) -> int:
+    count = 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                if item.get("event_type") in (None, "", "decision"):
+                    count += 1
+    except FileNotFoundError:
+        return 0
+    except Exception as exc:
+        logger.debug(f"[ReasoningPolicy] Failed to count decision events: {exc}")
+        return 0
+    return count
 
 
 def _read_jsonl_tail(path: str, limit: int) -> List[Dict[str, Any]]:
@@ -378,6 +535,18 @@ def _read_jsonl_tail(path: str, limit: int) -> List[Dict[str, Any]]:
         except json.JSONDecodeError:
             continue
     return rows
+
+
+def _read_policy_decision_records_tail(limit: int) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for path in audit_log_paths(include_legacy=True):
+        scoped_rows = _read_jsonl_tail(path, limit)
+        if path == legacy_audit_log_path():
+            for item in scoped_rows:
+                item.setdefault("chat_scope", CHAT_SCOPE_PRIVATE)
+        rows.extend(scoped_rows)
+    rows.sort(key=lambda item: str(item.get("timestamp") or ""))
+    return rows[-max(1, limit):]
 
 
 def _read_optimizer_state() -> Dict[str, Any]:
@@ -417,14 +586,53 @@ def _append_optimizer_report(report: Mapping[str, Any]) -> None:
         logger.debug(f"[ReasoningPolicy] Failed to write optimizer report: {exc}")
 
 
+def _append_optimizer_attempt(report: Mapping[str, Any], record_count: int) -> None:
+    attempt = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "attempt_id": report.get("attempt_id"),
+        "trigger_reason": report.get("reason"),
+        "status": report.get("status"),
+        "active_backend": report.get("active_backend"),
+        "optimizer_model": report.get("optimizer_model"),
+        "optimizer_reasoning_effort": report.get("optimizer_reasoning_effort"),
+        "analyzed_records": report.get("analyzed_records"),
+        "record_count": int(record_count or 0),
+    }
+    failure_reason = report.get("failure_reason")
+    if failure_reason:
+        attempt["failure_reason"] = _safe_text(failure_reason, 240)
+    try:
+        path = optimizer_attempt_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(attempt, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except Exception as exc:
+        logger.debug(f"[ReasoningPolicy] Failed to write optimizer attempt: {exc}")
+
+
 def _optimizer_prompt(records: List[Dict[str, Any]]) -> str:
     compact_records = []
     for item in records[-200:]:
         compact_records.append({
+            "event_type": item.get("event_type") or "decision",
+            "task_id": item.get("task_id"),
+            "chat_scope": item.get("chat_scope"),
+            "active_backend": item.get("active_backend"),
+            "main_model": item.get("main_model"),
             "selected_effort": item.get("selected_effort"),
             "decision_source": item.get("decision_source"),
+            "decision_status": item.get("decision_status"),
             "reason": item.get("reason"),
             "local_rule": item.get("local_rule"),
+            "message_features": item.get("message_features"),
+            "task_status": item.get("task_status"),
+            "turn_count": item.get("turn_count"),
+            "max_turns": item.get("max_turns"),
+            "max_turns_exhausted": item.get("max_turns_exhausted"),
+            "tool_attempt_count": item.get("tool_attempt_count"),
+            "tool_attempt_error_count": item.get("tool_attempt_error_count"),
+            "tool_skip_count": item.get("tool_skip_count"),
+            "tool_failure_class": item.get("tool_failure_class"),
         })
     return (
         "Analyze these sanitized local reasoning-effort routing decisions. Recommend only conservative "

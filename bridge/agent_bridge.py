@@ -93,6 +93,7 @@ class AgentLLMModel(LLMModel):
         self._bot_model = None
         self.actor_role = ""
         self.is_admin = False
+        self.is_group = False
 
     @property
     def model(self):
@@ -631,6 +632,7 @@ class AgentBridge:
             if context and hasattr(agent, 'model'):
                 agent.model.channel_type = context.get("channel_type", "")
                 agent.model.session_id = conversation_id or session_id or ""
+                agent.model.is_group = bool(context.get("isgroup", False))
                 if profile is not None:
                     agent.model.user_id = profile.actor_id
                     agent.model.user_label = profile.display_name

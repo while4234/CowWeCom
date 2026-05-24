@@ -3,11 +3,14 @@ import os
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.protocol.agent_stream import AgentStreamExecutor
 from agent.protocol.models import LLMRequest
-from bridge.agent_bridge import AgentLLMModel
+from bridge.agent_bridge import AgentBridge, AgentLLMModel
+from bridge.context import Context
+from bridge.reply import ReplyType
 from common import reasoning_effort_policy
 from common.llm_backend_router import BACKEND_CAPI
 from common.reasoning_effort_policy import (
@@ -24,6 +27,7 @@ class FakePolicyModel:
     user_id = "user-secret"
     actor_role = "admin"
     is_admin = True
+    is_group = False
 
     def __init__(self, response='{"effort":"medium","reason":"simple"}'):
         self.response = response
@@ -37,6 +41,12 @@ class FakePolicyModel:
         }
 
 
+class FailingPolicyModel(FakePolicyModel):
+    def call(self, request):
+        self.calls.append(request)
+        return {"error": True, "message": "optimizer failed because test"}
+
+
 class TestReasoningEffortPolicy(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -45,7 +55,7 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         conf().update({
             "agent_workspace": self.tmp.name,
             "reasoning_effort_policy_enabled": True,
-            "reasoning_effort_policy_admin_only": True,
+            "reasoning_effort_policy_admin_only": False,
             "reasoning_effort_policy_default_effort": "medium",
             "reasoning_effort_policy_quality_effort": "xhigh",
             "reasoning_effort_policy_audit_enabled": True,
@@ -82,7 +92,18 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertEqual(decision.reason, "uncertain_default_quality")
         self.assertEqual(model.calls, [])
 
-    def test_non_admin_does_not_apply_policy(self):
+    def test_non_admin_applies_policy_when_admin_only_disabled(self):
+        model = FakePolicyModel()
+        model.actor_role = "user"
+        model.is_admin = False
+
+        decision = resolve_reasoning_effort_for_task("你好", model)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.selected_effort, "medium")
+
+    def test_non_admin_does_not_apply_policy_when_admin_only_enabled(self):
+        conf()["reasoning_effort_policy_admin_only"] = True
         model = FakePolicyModel()
         model.actor_role = "user"
         model.is_admin = False
@@ -93,12 +114,15 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         model = FakePolicyModel()
         resolve_reasoning_effort_for_task("帮我看看这句话有没有问题 private marker", model)
 
-        path = reasoning_effort_policy.audit_log_path()
+        path = reasoning_effort_policy.audit_log_path("private")
         with open(path, "r", encoding="utf-8") as f:
             record = json.loads(f.readline())
         serialized = json.dumps(record, ensure_ascii=False)
 
+        self.assertEqual(record["event_type"], "decision")
+        self.assertEqual(record["chat_scope"], "private")
         self.assertEqual(record["local_rule"], "uncertain_default_quality")
+        self.assertIn("message_features", record)
         self.assertNotIn("classifier_model", record)
         self.assertIn("session_hash", record)
         self.assertIn("user_hash", record)
@@ -107,6 +131,60 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertNotIn("private marker", serialized)
         self.assertNotIn("messages", serialized)
         self.assertNotIn("api_key", serialized)
+
+    def test_group_and_private_decisions_use_separate_logs(self):
+        private_model = FakePolicyModel()
+        group_model = FakePolicyModel()
+        group_model.is_group = True
+
+        resolve_reasoning_effort_for_task("你好", private_model)
+        resolve_reasoning_effort_for_task("你好", group_model)
+
+        with open(reasoning_effort_policy.audit_log_path("private"), "r", encoding="utf-8") as f:
+            private_record = json.loads(f.readline())
+        with open(reasoning_effort_policy.audit_log_path("group"), "r", encoding="utf-8") as f:
+            group_record = json.loads(f.readline())
+
+        self.assertEqual(private_record["chat_scope"], "private")
+        self.assertEqual(group_record["chat_scope"], "group")
+        self.assertNotEqual(
+            reasoning_effort_policy.audit_log_path("private"),
+            reasoning_effort_policy.audit_log_path("group"),
+        )
+
+    def test_task_outcome_records_turns_and_max_turn_exhaustion(self):
+        model = FakePolicyModel()
+        decision = resolve_reasoning_effort_for_task("write a python script", model)
+
+        reasoning_effort_policy.record_policy_task_outcome(
+            decision,
+            status="max_turns_exhausted",
+            turn_count=3,
+            max_turns=3,
+            model_adapter=model,
+            runtime_stats={
+                "tool_attempt_count": 4,
+                "tool_attempt_success_count": 2,
+                "tool_attempt_error_count": 2,
+                "tool_skip_count": 1,
+                "tool_failure_class": "repeat_error",
+            },
+            failure_reason="max_turns_exhausted",
+            final_response="partial result",
+        )
+
+        with open(reasoning_effort_policy.audit_log_path("private"), "r", encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f]
+        outcome = rows[-1]
+
+        self.assertEqual(outcome["event_type"], "task_outcome")
+        self.assertEqual(outcome["task_id"], decision.task_id)
+        self.assertEqual(outcome["task_status"], "max_turns_exhausted")
+        self.assertEqual(outcome["turn_count"], 3)
+        self.assertEqual(outcome["max_turns"], 3)
+        self.assertTrue(outcome["max_turns_exhausted"])
+        self.assertEqual(outcome["tool_attempt_count"], 4)
+        self.assertEqual(outcome["tool_failure_class"], "repeat_error")
 
     def test_auto_optimizer_triggers_after_threshold_without_blocking(self):
         conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
@@ -127,6 +205,54 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertTrue(event.wait(1))
         self.assertEqual(len(calls), 1)
         self.assertGreaterEqual(calls[0]["record_count"], 2)
+
+    def test_optimizer_reads_group_and_private_logs_together(self):
+        private_model = FakePolicyModel()
+        group_model = FakePolicyModel()
+        group_model.is_group = True
+        resolve_reasoning_effort_for_task("你好", private_model)
+        resolve_reasoning_effort_for_task("你好", group_model)
+
+        report = reasoning_effort_policy.run_policy_optimizer_once(
+            model_adapter=FakePolicyModel(response='{"ok":true}'),
+            reason="manual",
+        )
+
+        self.assertEqual(report["status"], "success")
+        self.assertEqual(report["analyzed_records"], 2)
+
+    def test_optimizer_attempt_log_records_success_model_and_effort(self):
+        model = FakePolicyModel()
+        resolve_reasoning_effort_for_task("你好", model)
+
+        reasoning_effort_policy.run_policy_optimizer_once(
+            model_adapter=FakePolicyModel(response='{"ok":true}'),
+            reason="manual",
+        )
+
+        with open(reasoning_effort_policy.optimizer_attempt_path(), "r", encoding="utf-8") as f:
+            attempt = json.loads(f.readline())
+
+        self.assertEqual(attempt["status"], "success")
+        self.assertEqual(attempt["optimizer_model"], "gpt-5.5")
+        self.assertEqual(attempt["optimizer_reasoning_effort"], "xhigh")
+        self.assertNotIn("failure_reason", attempt)
+
+    def test_optimizer_attempt_log_records_failure_reason(self):
+        model = FakePolicyModel()
+        resolve_reasoning_effort_for_task("你好", model)
+
+        reasoning_effort_policy.run_policy_optimizer_once(
+            model_adapter=FailingPolicyModel(),
+            reason="manual",
+        )
+
+        with open(reasoning_effort_policy.optimizer_attempt_path(), "r", encoding="utf-8") as f:
+            attempt = json.loads(f.readline())
+
+        self.assertEqual(attempt["status"], "failed")
+        self.assertEqual(attempt["optimizer_model"], "gpt-5.5")
+        self.assertIn("optimizer failed", attempt["failure_reason"])
 
 
 class FakeStreamingModel:
@@ -194,6 +320,48 @@ class TestAgentStreamReasoningEffort(unittest.TestCase):
         metadata = model.requests[-1].cache_shape_metadata
         self.assertEqual(metadata["reasoning_effort_selected"], "xhigh")
         self.assertEqual(metadata["reasoning_effort_decision_source"], "local")
+        self.assertEqual(metadata["reasoning_effort_chat_scope"], "private")
+
+
+class TestAgentBridgeReasoningEffortMetadata(unittest.TestCase):
+    def test_agent_bridge_passes_group_scope_to_model_adapter(self):
+        fake_agent = SimpleNamespace(
+            model=SimpleNamespace(),
+            tools=[],
+            messages=[{"role": "assistant", "content": "ok"}],
+            messages_lock=threading.Lock(),
+            _last_run_new_messages=[],
+            run_stream=lambda **kwargs: "ok",
+        )
+        profile = SimpleNamespace(
+            actor_id="wecom:user",
+            display_name="User",
+            memory_user_id="wecom:user",
+            role="user",
+            is_admin=False,
+            conversation_id="wecom:user",
+        )
+        bridge = AgentBridge.__new__(AgentBridge)
+        bridge.get_agent = lambda session_id=None, profile=None: fake_agent
+        bridge._try_onboarding_welcome = lambda query, profile=None: None
+        bridge._persist_messages = lambda *args, **kwargs: None
+        bridge._schedule_mcp_hot_reload = lambda agent: None
+        context = Context(kwargs={
+            "session_id": "raw-session",
+            "channel_type": "wecom_bot",
+            "isgroup": True,
+        })
+
+        with (
+            patch("bridge.agent_bridge.resolve_agent_user_profile", return_value=profile),
+            patch("bridge.agent_bridge.apply_profile_to_context"),
+        ):
+            reply = bridge.agent_reply("hello", context)
+
+        self.assertEqual(reply.type, ReplyType.TEXT)
+        self.assertTrue(fake_agent.model.is_group)
+        self.assertEqual(fake_agent.model.channel_type, "wecom_bot")
+        self.assertEqual(fake_agent.model.session_id, "wecom:user")
 
 
 class FakeBot:
