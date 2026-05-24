@@ -362,6 +362,20 @@ class WecomBotChannel(ChatChannel):
 
         if wecom_msg.ctype == ContextType.IMAGE:
             if hasattr(wecom_msg, "image_path") and wecom_msg.image_path:
+                if not is_group and self._single_chat_image_recognition_enabled():
+                    context = self._compose_context(
+                        ContextType.IMAGE,
+                        wecom_msg.image_path,
+                        isgroup=False,
+                        msg=wecom_msg,
+                        no_need_at=True,
+                    )
+                    if context:
+                        self._remember_social_bridge_user(context, wecom_msg)
+                        if req_id:
+                            context["on_event"] = self._make_stream_callback(req_id)
+                        self.produce(context)
+                        return
                 file_cache.add(session_id, wecom_msg.image_path, file_type="image")
                 logger.info(f"[WecomBot] Image cached for session {session_id}")
             return

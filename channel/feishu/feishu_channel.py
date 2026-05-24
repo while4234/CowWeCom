@@ -537,6 +537,20 @@ class FeiShuChanel(ChatChannel):
         # 如果是单张图片消息，缓存起来
         if feishu_msg.ctype == ContextType.IMAGE:
             if hasattr(feishu_msg, 'image_path') and feishu_msg.image_path:
+                if not is_group and self._single_chat_image_recognition_enabled():
+                    context = self._compose_context(
+                        ContextType.IMAGE,
+                        feishu_msg.image_path,
+                        isgroup=False,
+                        msg=feishu_msg,
+                        receive_id_type=receive_id_type,
+                        no_need_at=True,
+                    )
+                    if context:
+                        if conf().get("feishu_stream_reply", True):
+                            context["on_event"] = self._make_feishu_stream_callback(context, feishu_msg.access_token)
+                        self.produce(context)
+                        return
                 file_cache.add(session_id, feishu_msg.image_path, file_type='image')
                 logger.info(f"[FeiShu] Image cached for session {session_id}, waiting for user query...")
             # 单张图片不直接处理，等待用户提问

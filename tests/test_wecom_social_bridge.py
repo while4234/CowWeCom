@@ -10,10 +10,14 @@ from agent.social_bridge.service import ActiveMessageRouter
 from agent.social_bridge.store import BridgeUser
 from agent.user_profiles import resolve_agent_user_profile, safe_actor_slug
 from bridge.agent_bridge import AgentBridge
+from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
+from channel.file_cache import get_file_cache
 from channel.web.web_channel import ChannelsHandler
 from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
 from config import conf
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 
 
 class FakeBridgeStore:
@@ -171,6 +175,80 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         self.assertEqual(profile.actor_id, "wecom_bot:wecom-user-private")
         self.assertEqual(profile.conversation_id, "wecom_bot:wecom-user-private")
         self.assertEqual(context["actor_id"], "wecom_bot:wecom-user-private")
+
+    def test_private_image_queues_background_recognition_context(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            conf()["agent_workspace"] = workspace
+            conf()["single_chat_image_recognition"] = True
+            produced = []
+            self.channel.produce = produced.append
+            get_file_cache().clear("wecom-user-image")
+
+            with patch("channel.wecom_bot.wecom_bot_message._decrypt_media", return_value=PNG_BYTES):
+                self.channel._handle_msg_callback(
+                    {
+                        "cmd": "aibot_msg_callback",
+                        "headers": {"req_id": "req-image-private"},
+                        "body": {
+                            "msgid": "msg-image-private",
+                            "chattype": "single",
+                            "msgtype": "image",
+                            "from": {"userid": "wecom-user-image"},
+                            "aibotid": "bot-1",
+                            "image": {"url": "https://example.test/image", "aeskey": "unused"},
+                        },
+                    }
+                )
+
+            self.assertEqual(len(produced), 1)
+            context = produced[0]
+            self.assertEqual(context.type, ContextType.IMAGE)
+            self.assertEqual(context["session_id"], "wecom-user-image")
+            self.assertEqual(context["receiver"], "wecom-user-image")
+            self.assertEqual(context["actor_id"], "wecom_bot:wecom-user-image")
+            self.assertTrue(Path(context.content).exists())
+            self.assertEqual(get_file_cache().get("wecom-user-image"), [])
+
+            auto_context = self.channel._compose_private_image_recognition_context(context)
+            self.assertEqual(auto_context.type, ContextType.TEXT)
+            self.assertEqual(auto_context["origin_ctype"], ContextType.IMAGE)
+            self.assertIn("请先识别这张图片", auto_context.content)
+            self.assertIn("短期对话上下文", auto_context.content)
+            self.assertIn("长期记忆", auto_context.content)
+            self.assertIn("[图片:", auto_context.content)
+            self.assertIn(str(context.content), auto_context.content)
+
+    def test_group_image_stays_cached_for_explicit_followup(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            conf()["agent_workspace"] = workspace
+            conf()["single_chat_image_recognition"] = True
+            produced = []
+            self.channel.produce = produced.append
+            get_file_cache().clear("group-image-chat")
+
+            with patch("channel.wecom_bot.wecom_bot_message._decrypt_media", return_value=PNG_BYTES):
+                self.channel._handle_msg_callback(
+                    {
+                        "cmd": "aibot_msg_callback",
+                        "headers": {"req_id": "req-image-group"},
+                        "body": {
+                            "msgid": "msg-image-group",
+                            "chattype": "group",
+                            "chatid": "group-image-chat",
+                            "msgtype": "image",
+                            "from": {"userid": "sender-a", "name": "Alice"},
+                            "aibotid": "bot-1",
+                            "image": {"url": "https://example.test/image", "aeskey": "unused"},
+                        },
+                    }
+                )
+
+            self.assertEqual(produced, [])
+            cached_files = get_file_cache().get("group-image-chat")
+            self.assertEqual(len(cached_files), 1)
+            self.assertEqual(cached_files[0]["type"], "image")
+            self.assertTrue(Path(cached_files[0]["path"]).exists())
+            get_file_cache().clear("group-image-chat")
 
     def test_group_messages_share_group_level_session_conversation_and_memory(self):
         conf()["agent_user_profiles"] = {

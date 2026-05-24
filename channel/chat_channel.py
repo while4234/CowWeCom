@@ -57,6 +57,41 @@ class ChatChannel(Channel):
             return True
         return content.startswith(command + " ")
 
+    @staticmethod
+    def _single_chat_image_recognition_enabled() -> bool:
+        return bool(conf().get("single_chat_image_recognition", True))
+
+    @staticmethod
+    def _private_image_recognition_prompt() -> str:
+        default_prompt = (
+            "请先识别这张图片，再结合当前短期对话上下文和可用的长期记忆来回答用户。"
+            "不要只给图片说明；如果图片与已知偏好、任务、人物或正在讨论的事情相关，"
+            "请把这些上下文一起用于回复。图中文字请提取关键内容；看不清时说明不确定之处。"
+        )
+        prompt = conf().get("single_chat_image_recognition_prompt", default_prompt)
+        if not isinstance(prompt, str) or not prompt.strip():
+            return default_prompt
+        return prompt.strip()
+
+    def _build_private_image_recognition_content(self, image_path: str) -> str:
+        return f"{self._private_image_recognition_prompt()}\n[图片: {image_path}]"
+
+    def _compose_private_image_recognition_context(self, context: Context):
+        if context.get("isgroup", False) or not self._single_chat_image_recognition_enabled():
+            return None
+
+        image_path = str(context.content or "").strip()
+        if not image_path:
+            return None
+
+        kwargs = dict(context.kwargs)
+        kwargs["origin_ctype"] = ContextType.IMAGE
+        return self._compose_context(
+            ContextType.TEXT,
+            self._build_private_image_recognition_content(image_path),
+            **kwargs,
+        )
+
     def _classify_fast_lane(self, context: Context, runtime: SessionRuntime):
         if context.type != ContextType.TEXT:
             return TaskPolicy.NORMAL, {}
@@ -359,7 +394,7 @@ class ChatChannel(Channel):
                 match_prefix = check_prefix(content, conf().get("single_chat_prefix", [""]))
                 if match_prefix is not None:  # 判断如果匹配到自定义前缀，则返回过滤掉前缀+空格后的内容
                     content = content.replace(match_prefix, "", 1).strip()
-                elif context["origin_ctype"] == ContextType.VOICE:  # 如果源消息是私聊的语音消息，允许不匹配前缀，放宽条件
+                elif context["origin_ctype"] in (ContextType.VOICE, ContextType.IMAGE):  # 如果源消息是私聊的语音或图片消息，允许不匹配前缀，放宽条件
                     pass
                 else:
                     logger.info("[chat_channel]receive single chat msg, but checkprefix didn't match")
@@ -474,7 +509,14 @@ class ChatChannel(Channel):
                         reply = self._generate_reply(new_context)
                     else:
                         return
-            elif context.type == ContextType.IMAGE:  # 图片消息，当前仅做下载保存到本地的逻辑
+            elif context.type == ContextType.IMAGE:  # 图片消息
+                auto_context = self._compose_private_image_recognition_context(context)
+                if auto_context:
+                    logger.info(
+                        "[chat_channel]auto private image recognition, session=%s",
+                        hash_id(auto_context.get("session_id")),
+                    )
+                    return self._generate_reply(auto_context)
                 memory.USER_IMAGE_CACHE[context["session_id"]] = {
                     "path": context.content,
                     "msg": context.get("msg")

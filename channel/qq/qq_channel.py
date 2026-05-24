@@ -377,6 +377,17 @@ class QQChannel(ChatChannel):
 
         if qq_msg.ctype == ContextType.IMAGE:
             if hasattr(qq_msg, "image_path") and qq_msg.image_path:
+                if not is_group and self._single_chat_image_recognition_enabled():
+                    context = self._compose_context(
+                        ContextType.IMAGE,
+                        qq_msg.image_path,
+                        isgroup=False,
+                        msg=qq_msg,
+                        no_need_at=True,
+                    )
+                    if context:
+                        self.produce(context)
+                        return
                 file_cache.add(session_id, qq_msg.image_path, file_type="image")
                 logger.info(f"[QQ] Image cached for session {session_id}")
             return

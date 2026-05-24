@@ -628,6 +628,16 @@ class DingTalkChanel(ChatChannel, dingtalk_stream.ChatbotHandler):
         # 如果是单张图片消息，缓存起来
         if cmsg.ctype == ContextType.IMAGE:
             if hasattr(cmsg, 'image_path') and cmsg.image_path:
+                if self._single_chat_image_recognition_enabled():
+                    context = self._compose_context(
+                        ContextType.IMAGE,
+                        cmsg.image_path,
+                        isgroup=False,
+                        msg=cmsg,
+                    )
+                    if context:
+                        self.produce(context)
+                        return
                 file_cache.add(session_id, cmsg.image_path, file_type='image')
                 logger.info(f"[DingTalk] Image cached for session {session_id}, waiting for user query...")
             # 单张图片不直接处理，等待用户提问
