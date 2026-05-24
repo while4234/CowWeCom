@@ -15,6 +15,7 @@ import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -260,6 +261,44 @@ def record_windows_shell_failure(
     return rule
 
 
+def record_reusable_learning(
+    rule_id: str,
+    summary: str,
+    next_action: str,
+    details: str = "",
+    workspace_root: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Record a manual reusable workflow lesson as an active compact rule."""
+    normalized_id = _normalize_rule_id(rule_id or summary)
+    summary = _preview(summary, limit=240)
+    next_action = _preview(next_action, limit=600)
+    details = _preview(details, limit=800)
+    if not normalized_id or not summary or not next_action:
+        return None
+
+    data_dir = get_data_dir(workspace_root)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    now = _utc_now()
+
+    lesson = {
+        "id": normalized_id,
+        "summary": summary,
+        "next_action": next_action,
+    }
+    event = {
+        **lesson,
+        "event": "manual_learning",
+        "seen_at": now,
+    }
+    if details:
+        event["details_preview"] = details
+
+    _append_jsonl(data_dir / ERRORS_FILE, event)
+    rule = _upsert_active_rule(data_dir / ACTIVE_RULES_FILE, lesson, event, now)
+    logger.info("[SelfEvolution] Recorded reusable manual lesson: %s", normalized_id)
+    return rule
+
+
 def ensure_seed_rules(workspace_root: Optional[str] = None) -> List[Dict[str, Any]]:
     """Persist default active rules that should be visible before first failure."""
     if platform.system().lower() != "windows":
@@ -413,7 +452,7 @@ def _upsert_active_rule(
             "first_seen": first_seen,
             "last_seen": now,
         }
-        for key in ("command_preview", "output_preview", "action"):
+        for key in ("command_preview", "output_preview", "action", "details_preview"):
             if event.get(key):
                 rule[key] = event[key]
         active[lesson["id"]] = rule
@@ -490,6 +529,14 @@ def _looks_like_missing_npm_shim(command: str, output: str) -> bool:
 def _lesson(rule_id: str) -> Optional[Dict[str, str]]:
     lesson = _LESSONS_BY_ID.get(rule_id)
     return dict(lesson) if lesson else None
+
+
+def _normalize_rule_id(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    normalized = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+    if not normalized and raw:
+        normalized = "manual-learning-" + sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return normalized[:96]
 
 
 def _preview(text: str, limit: int = 800) -> str:

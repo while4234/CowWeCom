@@ -42,6 +42,7 @@ python "<base_dir>/scripts/self_evolution.py" list
 python "<base_dir>/scripts/self_evolution.py" list --source tools
 python "<base_dir>/scripts/self_evolution.py" seed
 python "<base_dir>/scripts/self_evolution.py" log-shell --command "<failed command>" --output "<stderr/stdout>" --exit-code 1
+python "<base_dir>/scripts/self_evolution.py" log-learning --id "<stable-rule-id>" --summary "<short lesson>" --next "<what to do next time>" --details "<optional context>"
 ```
 
 Commands:
@@ -52,6 +53,7 @@ Commands:
 - `list --source tools` prints all generic tool-attempt policy rules.
 - `seed` writes the built-in Windows shell dialect rule if it is not already present.
 - `log-shell` manually records a failed shell command when it matches a reusable Windows dialect mistake.
+- `log-learning` manually records a reusable workflow or tool-behavior lesson when the issue is not a failed shell command.
 
 All commands accept `--workspace-root <path>` after the command name for diagnostics against a specific agent workspace.
 

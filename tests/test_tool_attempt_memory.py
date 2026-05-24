@@ -87,6 +87,34 @@ class TestToolAttemptMemory(unittest.TestCase):
 
         self.assertEqual(failure, FAILURE_SHELL_DIALECT)
 
+    def test_clawhub_no_files_install_is_exact_reusable_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = ToolAttemptMemory(tmpdir)
+            args = {"command": "clawhub install fund-invest-advisor --dir skills"}
+            for _ in range(3):
+                record = memory.record_attempt(
+                    "bash",
+                    args,
+                    "success",
+                    "Install completed but created no files.",
+                )
+
+            self.assertEqual(record["failure_class"], FAILURE_NON_RETRYABLE_ARGS)
+            self.assertEqual(record["failure_signature"], "no_files_created")
+
+            decision = memory.should_skip("bash", args)
+            self.assertTrue(decision.should_skip)
+            self.assertIn("inspect --file", decision.reason)
+
+            unrelated = memory.should_skip("bash", {"command": "clawhub search fund"})
+            self.assertFalse(unrelated.should_skip)
+
+            rules = list_active_rules(tmpdir)
+            self.assertFalse(
+                any(rule.get("rule_type") == "policy_shape" for rule in rules),
+                "no-files install should not create a broad bash policy-shape rule",
+            )
+
     def test_active_rules_do_not_store_raw_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             memory = ToolAttemptMemory(tmpdir)

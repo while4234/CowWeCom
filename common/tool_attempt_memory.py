@@ -160,7 +160,7 @@ class ToolAttemptMemory:
                 "count": count,
                 "first_seen": first_seen,
                 "last_seen": now,
-                "next_action": _next_action(record.get("failure_class")),
+                "next_action": _next_action(record.get("failure_class"), str(record.get("failure_signature") or "")),
             }
             _write_active_rules(self.data_dir / ACTIVE_RULES_FILE, rules)
 
@@ -235,12 +235,15 @@ def classify_tool_failure(
     result_text: str,
 ) -> str:
     status = str(result_status or "").lower()
-    if status in ("success", "ok"):
-        return ""
-
     text = str(result_text or "")
     lower = text.lower()
     tool_name = str(tool_name or "")
+
+    if _looks_like_no_files_created(tool_name, args, text):
+        return FAILURE_NON_RETRYABLE_ARGS
+
+    if status in ("success", "ok"):
+        return ""
 
     if tool_name == "bash":
         try:
@@ -382,6 +385,8 @@ def _policy_label(value: Any) -> str:
 
 def _failure_signature(result_text: str) -> str:
     lower = str(result_text or "").lower()
+    if _contains_no_files_created_marker(lower):
+        return "no_files_created"
     if "invalid json" in lower or "failed to parse tool arguments" in lower:
         return "invalid_json"
     if "unknown action" in lower or "unknown command" in lower:
@@ -423,6 +428,11 @@ def _decision_from_rule(tool_name: str, args: Dict[str, Any], rule: Dict[str, An
 
 
 def _next_action(failure_class: Any, failure_signature: str = "") -> str:
+    if failure_signature == "no_files_created":
+        return (
+            "Verify the expected artifact exists; for ClawHub skill staging, "
+            "use inspect --file to fetch files into a staging directory before scanning."
+        )
     if failure_signature == "missing_required":
         return "Provide the missing required field or choose a different tool shape before retrying."
     if failure_signature in {"unknown_action", "unsupported_action"}:
@@ -434,6 +444,29 @@ def _next_action(failure_class: Any, failure_signature: str = "") -> str:
     if failure_class == FAILURE_NON_RETRYABLE_ARGS:
         return "Change the tool arguments or choose a different tool before retrying."
     return "Try a different approach."
+
+
+def _looks_like_no_files_created(tool_name: str, args: Dict[str, Any], result_text: str) -> bool:
+    if tool_name != "bash" or not isinstance(args, dict):
+        return False
+    command = str(args.get("command") or "").lower()
+    if not ("clawhub" in command and "install" in command):
+        return False
+    return _contains_no_files_created_marker(result_text)
+
+
+def _contains_no_files_created_marker(value: str) -> bool:
+    lower = str(value or "").lower()
+    markers = (
+        "created no files",
+        "no files were written",
+        "installed 0 files",
+        "0 files installed",
+        "no skill files created",
+        "no files created",
+        "did not create files",
+    )
+    return any(marker in lower for marker in markers)
 
 
 def _path_now_exists_for_retry(tool_name: str, args: Dict[str, Any]) -> bool:

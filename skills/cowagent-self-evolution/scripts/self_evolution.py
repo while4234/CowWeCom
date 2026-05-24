@@ -25,6 +25,7 @@ def _load_api():
             ensure_seed_rules,
             get_data_dir,
             list_active_rules,
+            record_reusable_learning,
             record_windows_shell_failure,
         )
         from common.tool_attempt_memory import (
@@ -40,6 +41,7 @@ def _load_api():
         "ensure_seed_rules": ensure_seed_rules,
         "get_data_dir": get_data_dir,
         "list_active_rules": list_active_rules,
+        "record_reusable_learning": record_reusable_learning,
         "record_windows_shell_failure": record_windows_shell_failure,
         "get_tool_attempt_data_dir": get_tool_attempt_data_dir,
         "list_tool_attempt_rules": list_tool_attempt_rules,
@@ -69,6 +71,13 @@ def main() -> int:
     log_shell.add_argument("--command", dest="shell_command", required=True)
     log_shell.add_argument("--output", default="")
     log_shell.add_argument("--exit-code", type=int, default=None)
+
+    log_learning = sub.add_parser("log-learning", help="Record a reusable manual workflow lesson.")
+    log_learning.add_argument("--workspace-root", default=None, help=workspace_help)
+    log_learning.add_argument("--id", dest="rule_id", required=True)
+    log_learning.add_argument("--summary", required=True)
+    log_learning.add_argument("--next", dest="next_action", required=True)
+    log_learning.add_argument("--details", default="")
 
     args = parser.parse_args()
     api = _load_api()
@@ -109,6 +118,17 @@ def main() -> int:
             args.shell_command,
             args.output,
             exit_code=args.exit_code,
+            workspace_root=workspace_root,
+        )
+        print(json.dumps(result or {"recorded": False}, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.action == "log-learning":
+        result = api["record_reusable_learning"](
+            args.rule_id,
+            args.summary,
+            args.next_action,
+            details=args.details,
             workspace_root=workspace_root,
         )
         print(json.dumps(result or {"recorded": False}, ensure_ascii=False, indent=2))

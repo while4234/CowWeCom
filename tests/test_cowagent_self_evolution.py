@@ -18,6 +18,7 @@ from common.self_evolution import (
     classify_windows_shell_failure,
     get_data_dir,
     get_active_prompt_guidance as get_self_evolution_prompt_guidance,
+    record_reusable_learning,
     record_windows_shell_policy_application,
     record_windows_shell_failure,
 )
@@ -104,6 +105,23 @@ class SelfEvolutionDetectionTest(unittest.TestCase):
             self.assertEqual(rule["id"], "windows-cmd-env-set-quoting")
             self.assertEqual(rule["count"], 1)
             self.assertNotIn("sk-secret123456", rule["command_preview"])
+
+    def test_records_manual_reusable_learning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rule = record_reusable_learning(
+                "clawhub-inspect-file-staging",
+                "ClawHub install may not stage files in temp dirs",
+                "When localizing ClawHub skills, verify install output and fall back to inspect --file into a staging directory before scanning.",
+                details="Do not store sk-secret123456 in memory.",
+                workspace_root=tmp,
+            )
+
+            self.assertEqual(rule["id"], "clawhub-inspect-file-staging")
+            self.assertIn("inspect --file", rule["next_action"])
+            self.assertNotIn("sk-secret123456", rule["details_preview"])
+
+            active = json.loads((get_data_dir(tmp) / ACTIVE_RULES_FILE).read_text(encoding="utf-8"))
+            self.assertEqual(active["rules"][0]["id"], "clawhub-inspect-file-staging")
 
 
 class SelfEvolutionPromptCacheTest(unittest.TestCase):
@@ -236,6 +254,35 @@ class CowAgentSelfEvolutionSkillTest(unittest.TestCase):
 
             payload = json.loads(result.stdout)
             self.assertTrue(any(rule.get("rule_type") == "policy_shape" for rule in payload))
+
+    def test_skill_cli_logs_manual_learning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path("skills") / "cowagent-self-evolution" / "scripts" / "self_evolution.py"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "log-learning",
+                    "--workspace-root",
+                    tmp,
+                    "--id",
+                    "clawhub-inspect-file-staging",
+                    "--summary",
+                    "ClawHub install may not stage files in temp dirs",
+                    "--next",
+                    "Use inspect --file into a staging directory before scanning.",
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                text=True,
+                encoding="utf-8",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+
+            payload = json.loads(result.stdout[result.stdout.find("{"):])
+            self.assertEqual(payload["id"], "clawhub-inspect-file-staging")
+            self.assertIn("inspect --file", payload["next_action"])
 
 
 if __name__ == "__main__":
