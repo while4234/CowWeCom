@@ -32,6 +32,9 @@ from channel.weixin.weixin_identity import (
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
+_FILE_SERVE_TOKEN_TTL_SECONDS = 3600
+_file_serve_lock = threading.Lock()
+_file_serve_tokens = {}
 
 def _is_password_enabled():
     return bool(conf().get("web_password", ""))
@@ -96,6 +99,75 @@ def _get_upload_dir() -> str:
     tmp_dir = os.path.join(ws_root, "tmp")
     os.makedirs(tmp_dir, exist_ok=True)
     return tmp_dir
+
+
+def _get_web_admin_profile():
+    """Resolve the single configured admin for privacy-scoped web APIs."""
+    try:
+        from agent.user_profiles import resolve_single_admin_profile
+        return resolve_single_admin_profile()
+    except Exception as e:
+        logger.warning(f"[WebChannel] Failed to resolve admin profile: {e}")
+        return None
+
+
+def _register_web_file(file_path: str) -> str:
+    token = uuid.uuid4().hex
+    expires_at = time.time() + _FILE_SERVE_TOKEN_TTL_SECONDS
+    with _file_serve_lock:
+        now = time.time()
+        for existing, (_, expiry) in list(_file_serve_tokens.items()):
+            if expiry <= now:
+                _file_serve_tokens.pop(existing, None)
+        _file_serve_tokens[token] = (os.path.realpath(os.path.abspath(file_path)), expires_at)
+    return f"/api/file?token={token}"
+
+
+def _resolve_web_file_token(token: str) -> str:
+    if not token:
+        return ""
+    with _file_serve_lock:
+        item = _file_serve_tokens.get(token)
+        if not item:
+            return ""
+        file_path, expires_at = item
+        if expires_at <= time.time():
+            _file_serve_tokens.pop(token, None)
+            return ""
+        return file_path
+
+
+def _is_within_path(path: str, root: str) -> bool:
+    path = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+    root = os.path.normcase(os.path.realpath(os.path.abspath(root)))
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def _is_allowed_web_file_path(file_path: str) -> bool:
+    from common.utils import expand_path
+
+    workspace = _get_workspace_root()
+    allowed_roots = [
+        _get_upload_dir(),
+        os.path.join(workspace, "tmp"),
+        os.path.join(workspace, "downloads"),
+        os.path.join(workspace, "attachments"),
+        expand_path("~/.cow/browser_downloads"),
+    ]
+    if any(_is_within_path(file_path, root) for root in allowed_roots):
+        return True
+
+    users_root = os.path.join(workspace, "users")
+    if _is_within_path(file_path, users_root):
+        rel_parts = os.path.relpath(
+            os.path.realpath(os.path.abspath(file_path)),
+            os.path.realpath(os.path.abspath(users_root)),
+        ).replace("\\", "/").split("/")
+        return "files" in rel_parts
+    return False
 
 
 def _sanitize_upload_relative_path(relative_path: str) -> str:
@@ -428,8 +500,7 @@ class WebChannel(ChatChannel):
                 file_path = data.get("path", "")
                 file_name = data.get("file_name", os.path.basename(file_path))
                 file_type = data.get("file_type", "file")
-                from urllib.parse import quote
-                web_url = f"/api/file?path={quote(file_path)}"
+                web_url = _register_web_file(file_path)
                 is_image = file_type == "image"
                 q.put({
                     "type": "image" if is_image else "file",
@@ -915,11 +986,13 @@ class FileServeHandler:
     def GET(self):
         _require_auth()
         try:
-            params = web.input(path="")
-            file_path = params.path
+            params = web.input(path="", token="")
+            file_path = _resolve_web_file_token(params.token) if params.token else params.path
             if not file_path or not os.path.isabs(file_path):
                 raise web.notfound()
             file_path = os.path.normpath(file_path)
+            if not params.token and not _is_allowed_web_file_path(file_path):
+                raise web.notfound()
             if not os.path.isfile(file_path):
                 raise web.notfound()
             content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
@@ -2594,7 +2667,12 @@ class MemoryHandler:
             from agent.memory.service import MemoryService
             params = web.input(page='1', page_size='20', category='memory')
             workspace_root = _get_workspace_root()
-            service = MemoryService(workspace_root)
+            profile = _get_web_admin_profile()
+            service = MemoryService(
+                workspace_root,
+                user_id=getattr(profile, "memory_user_id", None),
+                include_shared_memory=False,
+            )
             result = service.list_files(
                 page=int(params.page), page_size=int(params.page_size),
                 category=params.category,
@@ -2615,7 +2693,12 @@ class MemoryContentHandler:
             if not params.filename:
                 return json.dumps({"status": "error", "message": "filename required"})
             workspace_root = _get_workspace_root()
-            service = MemoryService(workspace_root)
+            profile = _get_web_admin_profile()
+            service = MemoryService(
+                workspace_root,
+                user_id=getattr(profile, "memory_user_id", None),
+                include_shared_memory=False,
+            )
             result = service.get_content(params.filename, category=params.category)
             return json.dumps({"status": "success", **result}, ensure_ascii=False)
         except ValueError:
@@ -2636,7 +2719,8 @@ class SchedulerHandler:
             workspace_root = _get_workspace_root()
             store_path = os.path.join(workspace_root, "scheduler", "tasks.json")
             store = TaskStore(store_path)
-            tasks = store.list_tasks()
+            profile = _get_web_admin_profile()
+            tasks = store.list_tasks_for_owner(getattr(profile, "actor_id", ""))
             return json.dumps({"status": "success", "tasks": tasks}, ensure_ascii=False)
         except Exception as e:
             logger.error(f"[WebChannel] Scheduler API error: {e}")

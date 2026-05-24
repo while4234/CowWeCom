@@ -192,6 +192,52 @@ def _configured_role(actor_id: str, raw_user_id: str, profile: Dict[str, Any]) -
     return _normalise_role(conf().get("agent_default_role", ROLE_USER))
 
 
+def _configured_admin_user_ids() -> list:
+    from config import conf, global_config
+
+    configured_admin_users = conf().get("agent_admin_users", []) or []
+    if isinstance(configured_admin_users, str):
+        admin_users = [item.strip() for item in configured_admin_users.split(",") if item.strip()]
+    else:
+        admin_users = [str(item).strip() for item in configured_admin_users if str(item).strip()]
+    admin_users.extend(
+        str(item).strip()
+        for item in (global_config.get("admin_users", []) or [])
+        if str(item).strip()
+    )
+    return admin_users
+
+
+def resolve_single_admin_profile() -> Optional[AgentUserProfile]:
+    """Resolve the configured single administrator for non-chat admin surfaces."""
+    from config import conf
+
+    candidates = []
+    candidates.extend(_configured_admin_user_ids())
+
+    profiles = conf().get("agent_user_profiles", {}) or {}
+    if isinstance(profiles, dict):
+        for key, profile in profiles.items():
+            if not isinstance(profile, dict):
+                continue
+            if _normalise_role(str(profile.get("role") or "")) == ROLE_ADMIN:
+                candidates.append(str(key))
+
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        context = {
+            "actor_id": candidate,
+            "actor_role": ROLE_ADMIN,
+            "channel_type": candidate.split(":", 1)[0] if ":" in candidate else "admin",
+        }
+        return resolve_agent_user_profile(context)
+
+    return None
+
+
 def resolve_agent_user_profile(context: Any = None) -> AgentUserProfile:
     """Resolve the current chat actor into an isolated agent profile."""
     from config import conf

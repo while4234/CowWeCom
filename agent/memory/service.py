@@ -22,12 +22,19 @@ class MemoryService:
     Operates directly on the filesystem — no MemoryManager dependency.
     """
 
-    def __init__(self, workspace_root: str):
+    def __init__(
+        self,
+        workspace_root: str,
+        user_id: Optional[str] = None,
+        include_shared_memory: bool = True,
+    ):
         """
         :param workspace_root: Workspace root directory (e.g. ~/cow)
         """
         self.workspace_root = workspace_root
         self.memory_dir = os.path.join(workspace_root, "memory")
+        self.user_id = self._sanitize_user_id(user_id)
+        self.include_shared_memory = include_shared_memory
 
     # ------------------------------------------------------------------
     # list — paginated file metadata
@@ -58,6 +65,11 @@ class MemoryService:
 
     def _list_memory_files(self) -> List[dict]:
         """MEMORY.md + memory/*.md (newest first)."""
+        if not self.include_shared_memory and not self.user_id:
+            return []
+        if self.user_id and not self.include_shared_memory:
+            return self._list_user_memory_files(self.user_id)
+
         files: List[dict] = []
 
         global_path = os.path.join(self.workspace_root, "MEMORY.md")
@@ -76,10 +88,36 @@ class MemoryService:
 
         return files
 
+    def _list_user_memory_files(self, user_id: str) -> List[dict]:
+        """memory/users/<user_id>/MEMORY.md + daily files (newest first)."""
+        files: List[dict] = []
+        user_dir = self._user_memory_dir(user_id)
+
+        main_path = os.path.join(user_dir, "MEMORY.md")
+        if os.path.isfile(main_path):
+            files.append(self._file_info(main_path, "MEMORY.md", "global"))
+
+        if os.path.isdir(user_dir):
+            daily_files = []
+            for name in os.listdir(user_dir):
+                full = os.path.join(user_dir, name)
+                if os.path.isfile(full) and name.endswith(".md") and name != "MEMORY.md":
+                    daily_files.append((name, full))
+            daily_files.sort(key=lambda x: x[0], reverse=True)
+            for name, full in daily_files:
+                files.append(self._file_info(full, name, "daily"))
+
+        return files
+
     def _list_dream_files(self) -> List[dict]:
         """memory/dreams/*.md (newest first)."""
         files: List[dict] = []
-        dreams_dir = os.path.join(self.memory_dir, "dreams")
+        if not self.include_shared_memory and not self.user_id:
+            return files
+        if self.user_id and not self.include_shared_memory:
+            dreams_dir = os.path.join(self._user_memory_dir(self.user_id), "dreams")
+        else:
+            dreams_dir = os.path.join(self.memory_dir, "dreams")
 
         if os.path.isdir(dreams_dir):
             entries = []
@@ -169,7 +207,15 @@ class MemoryService:
 
         Raises ValueError if the resolved path escapes the allowed directory.
         """
-        if filename == "MEMORY.md":
+        if not self.include_shared_memory and not self.user_id:
+            raise ValueError("user_id is required when shared memory is disabled")
+        if self.user_id and not self.include_shared_memory:
+            user_dir = self._user_memory_dir(self.user_id)
+            if category == "dream":
+                base_dir = os.path.join(user_dir, "dreams")
+            else:
+                base_dir = user_dir
+        elif filename == "MEMORY.md":
             base_dir = self.workspace_root
         elif category == "dream":
             base_dir = os.path.join(self.memory_dir, "dreams")
@@ -183,6 +229,20 @@ class MemoryService:
             raise ValueError(f"Invalid filename: path traversal detected")
 
         return resolved
+
+    def _user_memory_dir(self, user_id: str) -> str:
+        return os.path.join(self.memory_dir, "users", user_id)
+
+    @staticmethod
+    def _sanitize_user_id(user_id: Optional[str]) -> Optional[str]:
+        if user_id is None:
+            return None
+        value = str(user_id).strip()
+        if not value:
+            return None
+        if value in (".", "..") or os.path.isabs(value) or any(ch in value for ch in ("/", "\\", ":")):
+            raise ValueError("invalid user_id")
+        return value
 
     @staticmethod
     def _file_info(path: str, filename: str, file_type: str) -> dict:

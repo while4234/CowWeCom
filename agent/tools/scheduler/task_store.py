@@ -11,6 +11,19 @@ from pathlib import Path
 from common.utils import expand_path
 
 
+def task_owner_actor_id(task: dict) -> Optional[str]:
+    """Return the stored task owner, including the legacy notify-session format."""
+    owner = task.get("owner_actor_id")
+    if owner:
+        return str(owner)
+    action = task.get("action", {}) or {}
+    channel_type = action.get("channel_type")
+    legacy_user_id = action.get("notify_session_id")
+    if channel_type and legacy_user_id:
+        return f"{channel_type}:{legacy_user_id}"
+    return None
+
+
 class TaskStore:
     """
     Manages persistent storage of scheduled tasks
@@ -186,6 +199,15 @@ class TaskStore:
         task_list.sort(key=lambda t: t.get("next_run_at", float('inf')))
         
         return task_list
+
+    def list_tasks_for_owner(self, owner_actor_id: str, enabled_only: bool = False) -> List[dict]:
+        """List tasks visible to one actor only."""
+        if not owner_actor_id:
+            return []
+        return [
+            task for task in self.list_tasks(enabled_only=enabled_only)
+            if task_owner_actor_id(task) == owner_actor_id
+        ]
     
     def enable_task(self, task_id: str, enabled: bool = True) -> bool:
         """

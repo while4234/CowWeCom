@@ -60,6 +60,10 @@ def get_resource_leases() -> ResourceLeaseManager:
     return _lease_manager
 
 
+def _security_project_root() -> str:
+    return os.path.realpath(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir)))
+
+
 def _norm_path(path: Any, cwd: str) -> str:
     value = expand_path(str(path))
     if os.path.isabs(value):
@@ -97,6 +101,18 @@ class ToolAccessPolicy:
     BLOCKED_WITHOUT_OPT_IN = {"bash", "terminal", "env_config"}
     ADMIN_ONLY_TOOLS = {"git_code_update"}
     PATH_KEYS = ("path", "location", "file_path", "image", "input_path", "output_path")
+    SECURITY_CRITICAL_FILES = (
+        "agent/access_control.py",
+        "agent/user_profiles.py",
+        "agent/tools/memory/memory_get.py",
+        "agent/tools/memory/memory_search.py",
+        "agent/tools/scheduler/scheduler_tool.py",
+        "agent/tools/scheduler/task_store.py",
+        "bridge/agent_initializer.py",
+        "channel/web/web_channel.py",
+        "config.py",
+        "config-template.json",
+    )
 
     def __init__(self, profile: AgentUserProfile):
         self.profile = profile
@@ -139,6 +155,56 @@ class ToolAccessPolicy:
                     for item in value
                 ]
         return prepared
+
+    def snapshot_security_files(self, tool_name: str) -> Optional[Dict[str, Optional[bytes]]]:
+        if self.profile.is_admin or tool_name != "bash":
+            return None
+
+        root = _security_project_root()
+        snapshot: Dict[str, Optional[bytes]] = {}
+        for rel_path in self.SECURITY_CRITICAL_FILES:
+            path = os.path.join(root, *rel_path.split("/"))
+            try:
+                with open(path, "rb") as f:
+                    snapshot[path] = f.read()
+            except FileNotFoundError:
+                snapshot[path] = None
+            except OSError:
+                snapshot[path] = None
+        return snapshot
+
+    def restore_changed_security_files(
+        self,
+        snapshot: Optional[Dict[str, Optional[bytes]]],
+    ) -> Tuple[str, ...]:
+        if not snapshot:
+            return tuple()
+
+        changed = []
+        for path, before in snapshot.items():
+            try:
+                with open(path, "rb") as f:
+                    after = f.read()
+            except FileNotFoundError:
+                after = None
+            except OSError:
+                after = None
+
+            if after == before:
+                continue
+
+            if before is None:
+                try:
+                    if os.path.isfile(path):
+                        os.remove(path)
+                except OSError:
+                    pass
+            else:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(before)
+            changed.append(path)
+        return tuple(changed)
 
     def _authorize_browser(self) -> Tuple[bool, str]:
         from config import conf
@@ -348,7 +414,14 @@ class GuardedTool(BaseTool):
         self.inner.model = getattr(self, "model", getattr(self.inner, "model", None))
         if hasattr(self, "context"):
             self.inner.context = self.context
-        return self.inner.execute_tool(prepared)
+        snapshot = self.policy.snapshot_security_files(self.name)
+        try:
+            result = self.inner.execute_tool(prepared)
+        finally:
+            changed = self.policy.restore_changed_security_files(snapshot)
+        if changed:
+            return ToolResult.fail(self.policy._deny("normal-user bash cannot modify security policy files"))
+        return result
 
     def should_auto_execute(self, context) -> bool:
         return self.inner.should_auto_execute(context)

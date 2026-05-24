@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from croniter import croniter
 
 from agent.tools.base_tool import BaseTool, ToolResult
+from agent.tools.scheduler.task_store import task_owner_actor_id
 from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
 from common.log import logger
@@ -439,15 +440,7 @@ class SchedulerTool(BaseTool):
 
     @staticmethod
     def _task_owner(task: dict) -> Optional[str]:
-        owner = task.get("owner_actor_id")
-        if owner:
-            return owner
-        action = task.get("action", {}) or {}
-        channel_type = action.get("channel_type")
-        legacy_user_id = action.get("notify_session_id")
-        if channel_type and legacy_user_id:
-            return f"{channel_type}:{legacy_user_id}"
-        return None
+        return task_owner_actor_id(task)
 
     def _parse_schedule(self, schedule_type: str, schedule_value: str) -> Optional[dict]:
         """Parse and validate schedule configuration"""
