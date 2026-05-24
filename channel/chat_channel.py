@@ -736,8 +736,8 @@ class ChatChannel(Channel):
 
     @staticmethod
     def _long_task_notice_seconds():
-        first = _safe_float(conf().get("long_task_silence_first_notice_seconds", 45), 45.0)
-        repeat = _safe_float(conf().get("long_task_silence_repeat_notice_seconds", 120), 120.0)
+        first = _safe_float(conf().get("long_task_silence_first_notice_seconds", 10), 10.0)
+        repeat = _safe_float(conf().get("long_task_silence_repeat_notice_seconds", 90), 90.0)
         return max(0.0, first), max(0.0, repeat)
 
     def _start_silence_watchdog(self, context: Context, runtime: SessionRuntime, token):

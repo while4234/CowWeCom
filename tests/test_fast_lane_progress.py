@@ -48,6 +48,10 @@ def make_channel_without_thread():
 
 
 class TestFastLaneProgress(unittest.TestCase):
+    def test_long_task_notice_defaults_start_at_ten_seconds_then_sparse_repeat(self):
+        with patch("channel.chat_channel.conf", return_value={}):
+            self.assertEqual(ChatChannel._long_task_notice_seconds(), (10.0, 90.0))
+
     def test_progress_queries_are_classified_as_control(self):
         channel = make_channel_without_thread()
         runtime = SessionRuntime()
@@ -131,13 +135,13 @@ class TestFastLaneProgress(unittest.TestCase):
         runtime.start_task("long task")
         runtime.last_visible_output_at = 100.0
 
-        with patch("common.agent_task_runtime.monotonic", side_effect=[144.0, 145.0, 200.0, 265.0]):
-            self.assertIsNone(runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0))
-            first = runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0)
+        with patch("common.agent_task_runtime.monotonic", side_effect=[109.0, 110.0, 199.0, 200.0]):
+            self.assertIsNone(runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0))
+            first = runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0)
             self.assertIsNotNone(first)
             self.assertIn("还在处理", first)
-            self.assertIsNone(runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0))
-            repeat = runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0)
+            self.assertIsNone(runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0))
+            repeat = runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0)
             self.assertIsNotNone(repeat)
 
     def test_visible_output_resets_silence_notice_timer(self):
@@ -145,11 +149,11 @@ class TestFastLaneProgress(unittest.TestCase):
         runtime.start_task("long task")
         runtime.last_visible_output_at = 100.0
 
-        with patch("common.agent_task_runtime.monotonic", side_effect=[145.0, 160.0, 204.0, 205.0]):
-            self.assertIsNotNone(runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0))
+        with patch("common.agent_task_runtime.monotonic", side_effect=[110.0, 150.0, 159.0, 160.0]):
+            self.assertIsNotNone(runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0))
             runtime.mark_visible_output("message_update")
-            self.assertIsNone(runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0))
-            self.assertIsNotNone(runtime.claim_silence_notice(first_notice_seconds=45.0, repeat_notice_seconds=120.0))
+            self.assertIsNone(runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0))
+            self.assertIsNotNone(runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0))
 
     def test_silence_notice_is_suppressed_after_finish_or_cancel(self):
         finished_runtime = SessionRuntime()
