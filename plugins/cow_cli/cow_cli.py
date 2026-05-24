@@ -26,6 +26,7 @@ from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
 from common.log import logger
 from cli import __version__
+from plugins.cow_cli.backend_nl import parse_backend_natural_command
 
 
 # Known top-level subcommands that cow supports
@@ -118,6 +119,10 @@ class CowCliPlugin(Plugin):
         normalized = "".join(content.lower().split())
         if normalized in QUOTA_ALIASES:
             return "backend", "quota"
+
+        backend_command = parse_backend_natural_command(content)
+        if backend_command is not None:
+            return backend_command
 
         if content.startswith("/"):
             rest = content[1:].strip()
