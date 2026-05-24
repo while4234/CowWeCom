@@ -341,6 +341,7 @@ def record_auto_check(
     quota_decision: Optional[CodexQuotaDecision] = None,
     switched: bool = False,
     switched_backend: Optional[str] = None,
+    clear_manual_override: bool = False,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     now = now or datetime.now()
@@ -359,8 +360,12 @@ def record_auto_check(
         state["current_backend_source"] = "auto"
         state["manual_override_active"] = False
         state["auto_switch_latched"] = target_backend == BACKEND_CODEX
+    elif clear_manual_override:
+        state["current_backend_source"] = "auto"
+        state["manual_override_active"] = False
+        state["auto_switch_latched"] = False
     save_state(state)
-    if target_backend:
+    if target_backend or clear_manual_override:
         _reset_bridge_cache()
     return state
 
@@ -421,7 +426,12 @@ def evaluate_midnight_backend_route(
     payload = quota_payload
     if payload is None and quota_payload_factory is not None:
         payload = quota_payload_factory()
-    return evaluate_auto_switch(payload or {}, now=now)
+    return evaluate_auto_switch(
+        payload or {},
+        ignore_manual_override=True,
+        clear_manual_override_on_check=True,
+        now=now,
+    )
 
 
 def select_backend_after_monthly_quota_low(
@@ -451,6 +461,8 @@ def select_backend_after_monthly_quota_low(
 def evaluate_auto_switch(
     quota_payload: Mapping[str, Any],
     *,
+    ignore_manual_override: bool = False,
+    clear_manual_override_on_check: bool = False,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     now = now or datetime.now()
@@ -464,12 +476,26 @@ def evaluate_auto_switch(
         return record_auto_check(decision="skipped", reason="auto_disabled", now=now)
     if auto_state.get("last_checked_date") == today:
         return state
-    if bool(state.get("manual_override_active")) and bool(auto_cfg.get("respect_manual_override", True)):
+    if (
+        bool(state.get("manual_override_active"))
+        and bool(auto_cfg.get("respect_manual_override", True))
+        and not ignore_manual_override
+    ):
         return record_auto_check(decision="skipped", reason="manual_override_active", now=now)
     if bool(state.get("auto_switch_latched")):
-        return record_auto_check(decision="skipped", reason="auto_switch_latched", now=now)
+        return record_auto_check(
+            decision="skipped",
+            reason="auto_switch_latched",
+            clear_manual_override=clear_manual_override_on_check,
+            now=now,
+        )
     if get_current_backend() == BACKEND_CODEX:
-        return record_auto_check(decision="kept", reason="already_codex", now=now)
+        return record_auto_check(
+            decision="kept",
+            reason="already_codex",
+            clear_manual_override=clear_manual_override_on_check,
+            now=now,
+        )
 
     quota_decision = decide_codex_auto_switch(
         quota_payload,
@@ -489,6 +515,7 @@ def evaluate_auto_switch(
         decision="kept",
         reason=quota_decision.reason,
         quota_decision=quota_decision,
+        clear_manual_override=clear_manual_override_on_check,
         now=now,
     )
 
@@ -507,3 +534,17 @@ def _reset_bridge_cache() -> None:
         Bridge().reset_bot()
     except Exception as e:
         logger.debug(f"[LLMBackend] Bridge cache reset skipped: {e}")
+    _reset_cloud_chat_service()
+
+
+def _reset_cloud_chat_service() -> None:
+    """Drop cloud ChatService so existing cloud sessions bind the current Bridge."""
+    try:
+        import sys
+
+        cloud_module = sys.modules.get("common.cloud_client")
+        client = getattr(cloud_module, "chat_client", None) if cloud_module else None
+        if client is not None and hasattr(client, "_chat_service"):
+            client._chat_service = None
+    except Exception as e:
+        logger.debug(f"[LLMBackend] Cloud chat service reset skipped: {e}")

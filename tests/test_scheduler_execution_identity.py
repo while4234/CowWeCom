@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.tools.scheduler.integration import _execute_agent_task, _execute_send_message, _execute_tool_call
+from agent.tools.scheduler.integration import _current_agent_bridge, _execute_agent_task, _execute_send_message, _execute_tool_call
 from agent.tools.scheduler.scheduler_tool import SchedulerTool
 from bridge.context import Context, ContextType
 
@@ -19,6 +19,14 @@ class FakeAgentBridge:
 
     def remember_scheduled_output(self, *args, **kwargs):
         self.remembered = (args, kwargs)
+
+
+class FakeBridgeSingleton:
+    def __init__(self, agent_bridge):
+        self._agent_bridge = agent_bridge
+
+    def get_agent_bridge(self):
+        return self._agent_bridge
 
 
 class FakeChannel:
@@ -61,6 +69,13 @@ class FakeTaskStore:
 
 
 class TestSchedulerExecutionIdentity(unittest.TestCase):
+    def test_current_agent_bridge_prefers_latest_bridge_singleton(self):
+        captured = FakeAgentBridge()
+        latest = FakeAgentBridge()
+
+        with patch("bridge.bridge.Bridge", return_value=FakeBridgeSingleton(latest)):
+            self.assertIs(_current_agent_bridge(captured), latest)
+
     def test_agent_task_preserves_owner_identity_and_scheduler_session(self):
         bridge = FakeAgentBridge()
         channel = FakeChannel()

@@ -567,7 +567,9 @@ class AgentInitializer:
                 f"- 当天记忆写入: {os.path.join(profile.shared_workspace, 'memory', 'users', profile.memory_user_id, '<YYYY-MM-DD>.md')}\n"
                 "- 普通聊天记忆只写入和读取本用户自己的 memory/users/<memory_user_id>/ 目录。\n"
                 "- 共享 knowledge/ 可以读取并写入通用知识；项目目录、配置、凭证和其他用户记忆不可访问。\n"
-                "- 普通用户默认不能删除文件，也不能修改本项目代码或配置。"
+                "- 普通用户默认不能删除文件，也不能修改本项目代码或配置。\n"
+                "- 例外：/backend 是所有用户可用的聊天命令，可查看或切换全局模型后端，"
+                "包括私聊和群聊；支持 CAPI 额度卡、CAPI 月卡和 Codex。"
             )
         ))
 

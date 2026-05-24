@@ -96,6 +96,15 @@ _BACKEND_USAGE_CONTEXT = (
     "route",
 )
 
+_MONTHLY_CARD_MARKERS = (
+    "月卡",
+    "月度",
+    "包月",
+    "capi_monthly",
+    "capimonthly",
+    "capimonth",
+)
+
 _STATUS_MARKERS = (
     "状态",
     "当前",
@@ -147,11 +156,24 @@ def _compact(text: str) -> str:
 
 
 def _target_backend(normalized: str, compact: str) -> Optional[str]:
+    if _looks_like_capi_monthly(normalized, compact):
+        return "capi_monthly"
     if _CAPI_RE.search(normalized) or "capi" in compact:
         return "capi"
     if _CODEX_RE.search(normalized) or "codex" in compact:
         return "codex"
     return None
+
+
+def _looks_like_capi_monthly(normalized: str, compact: str) -> bool:
+    if "capi-monthly" in normalized or "capi monthly" in normalized:
+        return True
+    if any(marker in compact for marker in _MONTHLY_CARD_MARKERS):
+        return True
+    capi_requested = _CAPI_RE.search(normalized) or "capi" in compact
+    if not capi_requested:
+        return False
+    return "monthly" in normalized or "month card" in normalized
 
 
 def _has_request_marker(compact: str) -> bool:

@@ -38,6 +38,21 @@ class TestCowCliBackendNaturalLanguage(unittest.TestCase):
         )
         self.assertIsNone(parse_backend_natural_command("用 CAPI 写一个调用示例"))
 
+    def test_switches_to_capi_monthly_for_monthly_card_request(self):
+        self.assertEqual(
+            parse_backend_natural_command("Capi 切换成月卡"),
+            ("backend", "capi_monthly"),
+        )
+        self.assertEqual(
+            parse_backend_natural_command("切换到 CAPI 月卡"),
+            ("backend", "capi_monthly"),
+        )
+        self.assertEqual(
+            parse_backend_natural_command("switch to capi monthly"),
+            ("backend", "capi_monthly"),
+        )
+        self.assertIsNone(parse_backend_natural_command("CAPI 月卡和额度卡有什么区别"))
+
     def test_switches_to_codex_for_explicit_request(self):
         self.assertEqual(
             parse_backend_natural_command("请切回 Codex backend"),
@@ -102,6 +117,16 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertEqual(result, "LLM backend switched to capi")
         self.assertEqual(get_current_backend(), "capi")
+
+    def test_execute_switches_to_monthly_card_before_agent_path(self):
+        from common.llm_backend_router import get_current_backend
+
+        plugin = _load_cow_cli_plugin()
+
+        result = plugin.execute("Capi 切换成月卡", session_id="test")
+
+        self.assertEqual(result, "LLM backend switched to capi_monthly")
+        self.assertEqual(get_current_backend(), "capi_monthly")
 
     def test_execute_returns_none_for_information_query(self):
         plugin = _load_cow_cli_plugin()

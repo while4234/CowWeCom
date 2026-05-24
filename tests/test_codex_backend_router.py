@@ -99,6 +99,35 @@ class TestCodexBackendRouter(unittest.TestCase):
         self.assertEqual(state["auto"]["last_decision"], "skipped")
         self.assertEqual(state["auto"]["last_reason"], "manual_override_active")
 
+    def test_midnight_auto_ignores_manual_override_for_global_daily_switch(self):
+        save_state({
+            "current_backend": "capi",
+            "manual_override_active": True,
+            "auto_switch_latched": False,
+        })
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+
+        state = evaluate_midnight_backend_route(quota_payload=weekly_payload(used_percent=5), now=now)
+
+        self.assertEqual(state["current_backend"], BACKEND_CODEX)
+        self.assertFalse(state["manual_override_active"])
+        self.assertEqual(state["auto"]["last_decision"], "switched_to_codex")
+
+    def test_midnight_kept_route_clears_manual_override_for_all_sessions(self):
+        save_state({
+            "current_backend": "capi",
+            "manual_override_active": True,
+            "auto_switch_latched": False,
+        })
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+
+        state = evaluate_midnight_backend_route(quota_payload=weekly_payload(used_percent=30), now=now)
+
+        self.assertEqual(state["current_backend"], BACKEND_CAPI)
+        self.assertFalse(state["manual_override_active"])
+        self.assertEqual(state["current_backend_source"], "auto")
+        self.assertEqual(state["auto"]["last_decision"], "kept")
+
     def test_auto_switch_runs_only_once_per_day(self):
         now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
         save_state({

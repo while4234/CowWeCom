@@ -18,6 +18,17 @@ _task_store = None
 _init_lock = threading.Lock()
 
 
+def _current_agent_bridge(fallback_agent_bridge):
+    """Resolve the latest process AgentBridge after global backend/cache resets."""
+    try:
+        from bridge.bridge import Bridge
+
+        return Bridge().get_agent_bridge() or fallback_agent_bridge
+    except Exception as e:
+        logger.debug(f"[Scheduler] Falling back to captured AgentBridge: {e}")
+        return fallback_agent_bridge
+
+
 def init_scheduler(agent_bridge) -> bool:
     """
     Initialize scheduler service (idempotent).
@@ -61,20 +72,21 @@ def init_scheduler(agent_bridge) -> bool:
             def execute_task_callback(task: dict):
                 """Callback to execute a scheduled task"""
                 try:
+                    current_agent_bridge = _current_agent_bridge(agent_bridge)
                     action = task.get("action", {})
                     action_type = action.get("type")
 
                     if action_type == "agent_task":
-                        return _execute_agent_task(task, agent_bridge)
+                        return _execute_agent_task(task, current_agent_bridge)
                     elif action_type == "send_message":
                         # Legacy support for old tasks
-                        return _execute_send_message(task, agent_bridge)
+                        return _execute_send_message(task, current_agent_bridge)
                     elif action_type == "tool_call":
                         # Legacy support for old tasks
-                        return _execute_tool_call(task, agent_bridge)
+                        return _execute_tool_call(task, current_agent_bridge)
                     elif action_type == "skill_call":
                         # Legacy support for old tasks
-                        return _execute_skill_call(task, agent_bridge)
+                        return _execute_skill_call(task, current_agent_bridge)
                     else:
                         logger.warning(f"[Scheduler] Unknown action type: {action_type}")
                         return False

@@ -243,7 +243,7 @@ class CowCliPlugin(Plugin):
             "  /help          显示此帮助",
             "  /version       查看版本",
             "  /status        查看运行状态",
-            "  /backend       查看/切换 LLM backend",
+            "  /backend       查看/切换 LLM backend（所有用户可用，影响全局私聊和群聊）",
             "  /logs [N]      查看最近N条日志 (默认20)",
             "  /context       查看当前对话上下文信息",
             "  /context clear 清除当前对话上下文",
@@ -315,7 +315,7 @@ class CowCliPlugin(Plugin):
         return "\n".join(lines)
 
     def _cmd_backend(self, args: str, e_context, **_) -> str:
-        from common.llm_backend_router import clear_manual_override, describe_status, set_current_backend
+        from common.llm_backend_router import clear_manual_override, describe_status, normalize_backend, set_current_backend
 
         parts = args.strip().split()
         if not parts or parts[0].lower() in {"status", "show"}:
@@ -323,8 +323,9 @@ class CowCliPlugin(Plugin):
 
         sub = parts[0].lower()
         if sub in {"codex", "capi", "capi_monthly", "capi-monthly", "monthly", "capi-month"}:
-            set_current_backend(sub, manual=True, reason="cow_cli")
-            return "LLM backend switched to {}".format(sub.replace("-", "_"))
+            backend = normalize_backend(sub)
+            set_current_backend(backend, manual=True, reason="cow_cli")
+            return "LLM backend switched to {}".format(backend)
 
         if sub == "auto" and len(parts) > 1 and parts[1].lower() == "reset":
             clear_manual_override()
@@ -337,8 +338,8 @@ class CowCliPlugin(Plugin):
             "Usage:",
             "  /backend",
             "  /backend codex",
-            "  /backend capi",
-            "  /backend capi-monthly",
+            "  /backend capi            切换到 CAPI 额度卡",
+            "  /backend capi-monthly    切换到 CAPI 月卡",
             "  /backend auto reset",
             "  /backend quota",
         ])
@@ -1475,4 +1476,9 @@ class CowCliPlugin(Plugin):
             return None
 
     def get_help_text(self, **kwargs):
-        return "在对话中使用 /help 或 cow help 查看可用命令"
+        return (
+            "在对话中使用 /help 或 cow help 查看可用命令。\n"
+            "模型后端命令所有用户可用，影响全局私聊和群聊：\n"
+            "/backend 查看状态；/backend capi 切到 CAPI 额度卡；"
+            "/backend capi-monthly 切到 CAPI 月卡；/backend codex 切到 Codex。"
+        )
