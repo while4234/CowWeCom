@@ -83,14 +83,73 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertEqual(effort, "medium")
         self.assertEqual(rule, "greeting")
 
-    def test_uncertain_task_defaults_to_local_quality_effort(self):
+    def test_general_non_development_task_defaults_to_medium(self):
         model = FakePolicyModel(response='{"effort":"medium","reason":"short"}')
         decision = resolve_reasoning_effort_for_task("please look at whether this sentence has issues", model)
 
-        self.assertEqual(decision.selected_effort, "xhigh")
+        self.assertEqual(decision.selected_effort, "medium")
         self.assertEqual(decision.decision_source, "local")
-        self.assertEqual(decision.reason, "uncertain_default_quality")
+        self.assertEqual(decision.reason, "general_default_medium")
         self.assertEqual(model.calls, [])
+
+    def test_chinese_simple_explain_uses_medium(self):
+        effort, rule = classify_local_task("简单解释一下 token 是什么")
+
+        self.assertEqual(effort, "medium")
+        self.assertEqual(rule, "simple_explain")
+
+    def test_chinese_summary_uses_medium(self):
+        effort, rule = classify_local_task("总结一下这段话的重点")
+
+        self.assertEqual(effort, "medium")
+        self.assertEqual(rule, "short_summary")
+
+    def test_simple_chinese_non_development_tasks_use_medium(self):
+        cases = {
+            "帮我看看这句话有没有语病：我明天去上海。": "sentence_check",
+            "帮我写一条请假短信，说我今天身体不舒服。": "short_writing",
+            "给我起三个中文标题，主题是周末整理房间。": "short_writing",
+            "这句话是什么意思？": "simple_explain",
+            "把这句话翻译成英文：我明天到。": "short_translation",
+            "润色这句话：今天会议我会晚点到。": "short_rewrite",
+        }
+
+        for text, expected_rule in cases.items():
+            with self.subTest(text=text):
+                effort, rule = classify_local_task(text)
+                self.assertEqual(effort, "medium")
+                self.assertEqual(rule, expected_rule)
+
+    def test_simple_chinese_sentence_check_resolves_medium_without_model_call(self):
+        model = FakePolicyModel()
+        decision = resolve_reasoning_effort_for_task("帮我看看这句话有没有问题", model)
+
+        self.assertEqual(decision.selected_effort, "medium")
+        self.assertEqual(decision.decision_source, "local")
+        self.assertEqual(decision.reason, "sentence_check")
+        self.assertEqual(model.calls, [])
+
+    def test_chinese_coding_and_debugging_stay_xhigh(self):
+        self.assertEqual(classify_local_task("帮我开发一个新功能")[0], "xhigh")
+        self.assertEqual(classify_local_task("帮我修复这个报错")[0], "xhigh")
+
+    def test_high_risk_and_quality_first_stay_xhigh(self):
+        self.assertEqual(classify_local_task("详细分析这个架构方案")[0], "xhigh")
+        self.assertEqual(classify_local_task("删除这个账号的权限")[0], "xhigh")
+
+    def test_quality_first_rules_win_over_simple_medium_rules(self):
+        cases = [
+            "请翻译这段 Python 代码",
+            "简单解释这个 bug 报错",
+            "检查这个仓库的文件并提交 commit",
+            "请评估这个法律和财务风险",
+            "多步骤调用工具检查后台任务",
+            "请做详细分析并给出实现方案",
+        ]
+
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(classify_local_task(text)[0], "xhigh")
 
     def test_non_admin_applies_policy_when_admin_only_disabled(self):
         model = FakePolicyModel()
@@ -121,7 +180,7 @@ class TestReasoningEffortPolicy(unittest.TestCase):
 
         self.assertEqual(record["event_type"], "decision")
         self.assertEqual(record["chat_scope"], "private")
-        self.assertEqual(record["local_rule"], "uncertain_default_quality")
+        self.assertEqual(record["local_rule"], "sentence_check")
         self.assertIn("message_features", record)
         self.assertNotIn("classifier_model", record)
         self.assertIn("session_hash", record)
@@ -343,6 +402,25 @@ class TestAgentStreamReasoningEffort(unittest.TestCase):
         self.assertEqual(metadata["reasoning_effort_decision_source"], "local")
         self.assertEqual(metadata["reasoning_effort_chat_scope"], "private")
 
+    def test_stream_request_gets_sticky_medium_effort(self):
+        model = FakeStreamingModel()
+        executor = AgentStreamExecutor(
+            agent=FakeAgent(),
+            model=model,
+            system_prompt="system",
+            tools=[],
+            max_turns=1,
+        )
+
+        self.assertEqual(executor.run_stream("帮我总结一下这句话：今天很好"), "done")
+
+        self.assertEqual(len(model.requests), 2)
+        self.assertTrue(all(request.reasoning_effort == "medium" for request in model.requests))
+        self.assertTrue(all(request.reasoning_effort_locked for request in model.requests))
+        metadata = model.requests[-1].cache_shape_metadata
+        self.assertEqual(metadata["reasoning_effort_selected"], "medium")
+        self.assertEqual(metadata["reasoning_effort_decision_source"], "local")
+
 
 class TestAgentBridgeReasoningEffortMetadata(unittest.TestCase):
     def test_agent_bridge_passes_group_scope_to_model_adapter(self):
@@ -444,6 +522,26 @@ class TestAgentLLMModelReasoningEffort(unittest.TestCase):
         self.assertEqual(fake_bot.kwargs["model"], "gpt-5-mini")
         self.assertNotIn("reasoning_effort", fake_bot.kwargs)
 
+    def test_locked_medium_effort_overrides_global_xhigh(self):
+        conf()["enable_thinking"] = True
+        conf()["model_reasoning_effort"] = "xhigh"
+        adapter = AgentLLMModel(None)
+        fake_bot = FakeBot()
+        adapter._bot = fake_bot
+        adapter._bot_model = adapter.model
+        adapter._bot_type = adapter._resolve_bot_type(adapter.model)
+
+        request = LLMRequest(
+            messages=[{"role": "user", "content": "x"}],
+            model="gpt-5-mini",
+            reasoning_effort="medium",
+        )
+        request.reasoning_effort_locked = True
+        adapter.call(request)
+
+        self.assertEqual(fake_bot.kwargs["model"], "gpt-5-mini")
+        self.assertEqual(fake_bot.kwargs["reasoning_effort"], "medium")
+
 
 class FakeOpenAICompatibleBot(OpenAICompatibleBot):
     def get_api_config(self):
@@ -482,6 +580,13 @@ class TestOpenAICompatibleReasoningEffort(unittest.TestCase):
                 "reasoning_effort": "low",
             }),
             "low",
+        )
+        self.assertEqual(
+            bot._resolve_reasoning_effort({
+                "reasoning_effort_locked": True,
+                "reasoning_effort": "medium",
+            }),
+            "medium",
         )
 
 

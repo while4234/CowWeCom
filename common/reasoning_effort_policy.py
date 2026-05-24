@@ -2,9 +2,9 @@
 
 """Task-level reasoning-effort routing for Agent conversations.
 
-The policy is intentionally conservative:
-- local rules only decide when the task shape is obvious;
-- uncertain tasks default to the configured quality effort.
+The policy keeps development and high-risk work on quality effort while routing
+ordinary non-development chat to the configured default effort for lower
+latency.
 
 No raw prompt text, session ids, API keys, or tool arguments are persisted by
 the audit log.
@@ -90,8 +90,8 @@ def resolve_reasoning_effort_for_task(user_message: str, model_adapter: Any) -> 
     task_id = uuid.uuid4().hex[:12]
     local_effort, local_rule = classify_local_task(user_message, quality_effort, default_effort)
     if not local_effort:
-        local_effort = quality_effort
-        local_rule = "uncertain_default_quality"
+        local_effort = default_effort
+        local_rule = "general_default_medium"
 
     decision = ReasoningEffortDecision(
         task_id=task_id,
@@ -374,12 +374,18 @@ def _extract_response_text(response: Any) -> str:
 
 def _match_quality_rule(text: str) -> str:
     quality_patterns = {
-        "coding": r"(代码|编程|函数|类|接口|脚本|python|typescript|javascript|java|sql|docker|api|backend|frontend|code|function|class|script)",
-        "debugging": r"(报错|错误|异常|调试|修复|bug|traceback|stack trace|exception|debug|fix|failing test)",
+        "coding": (
+            r"(代码|编程|程序|函数|类|接口|脚本|开发|实现|新功能|功能开发|写.*?(代码|程序|脚本)|"
+            r"python|typescript|javascript|java|sql|docker|api|backend|frontend|code|function|class|script|feature)"
+        ),
+        "debugging": r"(报错|错误|异常|调试|修复|排查|失败|不生效|bug|traceback|stack trace|exception|debug|fix|failing test)",
         "repo_work": r"(仓库|文件|目录|路径|git|commit|push|部署|发布|迁移|测试|单元测试|repo|file|directory|deploy|migration|unit test)",
-        "quality_first": r"(深入分析|详细分析|方案设计|架构|重构|code review|review|质量优先|开发方案|实现方案)",
-        "high_risk": r"(权限|安全|删除|移除|合规|财务|法律|医疗|credential|secret|permission|security|delete|remove|legal|medical|finance)",
-        "multi_step": r"(多步骤|自动优化|后台任务|定时任务|工具调用|multi-step|background job|scheduler|tool call)",
+        "quality_first": r"(深入分析|详细分析|全面分析|方案设计|架构|重构|代码审查|代码走读|code review|review|质量优先|开发方案|实现方案)",
+        "high_risk": (
+            r"(权限|安全|删除|移除|合规|财务|法律|医疗|账号|密码|密钥|credential|secret|"
+            r"permission|security|delete|remove|legal|medical|finance)"
+        ),
+        "multi_step": r"(多步骤|自动优化|后台任务|定时任务|工具调用|批量|长期任务|multi-step|background job|scheduler|tool call)",
     }
     for rule, pattern in quality_patterns.items():
         if re.search(pattern, text, re.IGNORECASE):
@@ -391,9 +397,12 @@ def _match_medium_rule(text: str) -> str:
     if len(text) > 180:
         return ""
     medium_patterns = {
-        "greeting": r"^(你好|您好|早上好|晚上好|hi|hello|hey|thanks|谢谢|好的|ok|嗯|收到)[\s!！。,.，]*$",
+        "greeting": r"^(你好|您好|早上好|晚上好|hi|hello|hey|thanks|谢谢|好的|ok|嗯|收到)[\s!！。?.？,，]*$",
         "short_translation": r"(翻译|translate).{0,120}$",
         "short_rewrite": r"(改写|润色|polish|rewrite).{0,120}$",
+        "short_summary": r"(总结|摘要|概括|summari[sz]e).{0,120}$",
+        "sentence_check": r"(语病|错别字|有没有问题|看看这句话|检查这句话).{0,120}$",
+        "short_writing": r"(写一条|写一封|起.*?标题|取.*?标题|拟.*?标题|短信|文案|标题|祝福语|邮件).{0,120}$",
         "simple_explain": r"^(简单)?(解释|说明).{0,120}$|是什么[？?]?$|什么意思[？?]?$",
     }
     for rule, pattern in medium_patterns.items():
