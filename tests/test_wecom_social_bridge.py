@@ -312,6 +312,26 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         self.assertNotEqual(first_profile.memory_user_id, "private-sender-a-memory")
         self.assertEqual(first_profile.role, "user")
 
+    def test_group_sender_label_uses_fixed_alias_config(self):
+        conf()["wecom_bot_group_member_aliases"] = {
+            "group-alpha": {
+                "LiuHao": "刘昊",
+            }
+        }
+
+        context = self._dispatch_group_text(
+            msgid="msg-group-alias",
+            chatid="group-alpha",
+            chatname="Nico 之家",
+            sender="LiuHao",
+            sender_name="LiuHao",
+            content="1分钟后提醒我喝水",
+        )
+
+        self.assertEqual(context["group_sender_label"], "刘昊")
+        self.assertIn("[群成员: 刘昊]", context.content)
+        self.assertIn({"user_id": "LiuHao", "name": "刘昊"}, context["group_known_members"])
+
     def test_different_group_messages_use_distinct_group_level_keys(self):
         alpha_context = self._dispatch_group_text(
             msgid="msg-group-alpha-distinct",
@@ -550,6 +570,29 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         self.assertEqual(payload["body"]["chat_type"], 2)
         self.assertEqual(payload["body"]["markdown"]["content"], "@Riko\n该喝水啦 💧")
         self.assertNotIn("riko-user, 该喝水", payload["body"]["markdown"]["content"])
+
+    def test_active_group_send_uses_fixed_alias_for_mention_name(self):
+        ws = FakeWebSocket()
+        self.channel._ws = ws
+        self.channel._connected = True
+        conf()["wecom_bot_group_member_aliases"] = {
+            "group-alpha": {
+                "LiuHao": "刘昊",
+            }
+        }
+
+        result = self.channel.active_send_text_result(
+            "group-alpha",
+            "LiuHao, drink water",
+            is_group=True,
+            mention_user_ids=["LiuHao"],
+            mention_display_names=["LiuHao"],
+        )
+
+        self.assertTrue(result["ok"])
+        payload = ws.sent[0]
+        self.assertEqual(payload["body"]["markdown"]["content"], "@刘昊\ndrink water")
+        self.assertNotIn("LiuHao, drink water", payload["body"]["markdown"]["content"])
 
     def test_group_reply_mentions_sender(self):
         ws = FakeWebSocket()

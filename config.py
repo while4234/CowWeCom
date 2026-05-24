@@ -304,6 +304,8 @@ available_setting = {
     "wecom_bot_id": "",  # 企微智能机器人BotID
     "wecom_bot_secret": "",  # 企微智能机器人长连接Secret
     "wecom_bot_auth_source": "cowagent",  # WeCom QR creation auth source
+    "wecom_bot_member_aliases": {},
+    "wecom_bot_group_member_aliases": {},
     # 微信配置
     "weixin_token": "",  # 微信登录后获取的bot_token，留空则启动时自动扫码登录
     "weixin_base_url": "https://ilinkai.weixin.qq.com",  # Weixin ilink API base URL

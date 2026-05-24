@@ -656,16 +656,19 @@ class WecomBotChannel(ChatChannel):
             group_actor_id = _wecom_group_actor_id(self.channel_type, chat_id)
             group_memory_user_id = _wecom_group_memory_user_id(self.channel_type, chat_id)
             sender_id = str(cmsg.actual_user_id or cmsg.from_user_id or "").strip()
-            sender_label = (
+            raw_sender_label = (
                 str(getattr(cmsg, "actual_user_nickname", "") or "").strip()
                 or str(getattr(cmsg, "from_user_nickname", "") or "").strip()
                 or sender_id
             )
+            sender_label = self._configured_member_display_name(sender_id, raw_sender_label, chat_id)
             group_chat_name = str(getattr(cmsg, "other_user_nickname", "") or "").strip()
             if group_chat_name == chat_id:
                 group_chat_name = ""
             self._remember_group_member(chat_id, sender_id, sender_label)
             known_group_members = self._known_group_members(chat_id)
+            if sender_id and not any(member.get("user_id") == sender_id for member in known_group_members):
+                known_group_members.insert(0, {"user_id": sender_id, "name": sender_label})
 
             context["session_id"] = chat_id
             context["actor_id"] = group_actor_id
@@ -749,6 +752,45 @@ class WecomBotChannel(ChatChannel):
     def _single_line(value) -> str:
         return _single_line(value)
 
+    @classmethod
+    def _configured_member_display_name(cls, user_id: str, display_name: str = "", chat_id: str = "") -> str:
+        user_id = cls._single_line(user_id)
+        display_name = cls._single_line(display_name)
+        chat_id = cls._single_line(chat_id)
+        for aliases in cls._member_alias_sources(chat_id):
+            for key in (user_id, display_name):
+                alias = cls._single_line(aliases.get(key, ""))
+                if alias:
+                    return alias
+        profiles = conf().get("agent_user_profiles", {}) or {}
+        if isinstance(profiles, dict) and user_id:
+            for key in (f"wecom_bot:{user_id}", user_id):
+                profile = profiles.get(key)
+                if not isinstance(profile, dict):
+                    continue
+                alias = cls._single_line(
+                    profile.get("display_name")
+                    or profile.get("name")
+                    or profile.get("llm_usage_label")
+                    or ""
+                )
+                if alias and alias not in {user_id, display_name}:
+                    return alias
+        return display_name or user_id
+
+    @classmethod
+    def _member_alias_sources(cls, chat_id: str) -> list:
+        sources = []
+        group_aliases = conf().get("wecom_bot_group_member_aliases", {}) or {}
+        if chat_id and isinstance(group_aliases, dict):
+            aliases = group_aliases.get(chat_id, {})
+            if isinstance(aliases, dict):
+                sources.append(aliases)
+        global_aliases = conf().get("wecom_bot_member_aliases", {}) or {}
+        if isinstance(global_aliases, dict):
+            sources.append(global_aliases)
+        return sources
+
     @staticmethod
     def _group_members_path() -> Path:
         workspace = expand_path(conf().get("agent_workspace", "~/cow"))
@@ -757,7 +799,7 @@ class WecomBotChannel(ChatChannel):
     def _remember_group_member(self, chat_id: str, user_id: str, display_name: str) -> None:
         chat_id = self._single_line(chat_id)
         user_id = self._single_line(user_id)
-        display_name = self._single_line(display_name) or user_id
+        display_name = self._configured_member_display_name(user_id, display_name, chat_id)
         if not chat_id or not user_id:
             return
         try:
@@ -797,7 +839,11 @@ class WecomBotChannel(ChatChannel):
             return [
                 {
                     "user_id": self._single_line(member.get("user_id", "")),
-                    "name": self._single_line(member.get("name", "")),
+                    "name": self._configured_member_display_name(
+                        member.get("user_id", ""),
+                        member.get("name", ""),
+                        chat_id,
+                    ),
                 }
                 for member in members[:limit]
                 if self._single_line(member.get("user_id", ""))
@@ -875,10 +921,16 @@ class WecomBotChannel(ChatChannel):
             }
 
         try:
+            mention_user_ids = kwargs.get("mention_user_ids") or kwargs.get("mention_user_id")
+            mention_display_names = self._configured_mention_display_names(
+                clean_receiver if is_group else "",
+                mention_user_ids,
+                kwargs.get("mention_display_names") or kwargs.get("mention_display_name"),
+            )
             content = self._with_mentions(
                 str(text or ""),
-                kwargs.get("mention_user_ids") or kwargs.get("mention_user_id"),
-                kwargs.get("mention_display_names") or kwargs.get("mention_display_name"),
+                mention_user_ids,
+                mention_display_names,
                 enabled=bool(is_group),
             )
             if not self._active_send_markdown(content, clean_receiver, bool(is_group)):
@@ -967,6 +1019,19 @@ class WecomBotChannel(ChatChannel):
         text = str(value or "").strip()
         return [text] if text else []
 
+    def _configured_mention_display_names(self, chat_id: str, mention_user_ids=None, mention_display_names=None) -> list:
+        user_ids = self._as_list(mention_user_ids)
+        names = self._as_list(mention_display_names)
+        count = max(len(user_ids), len(names))
+        resolved = []
+        for index in range(count):
+            user_id = user_ids[index] if index < len(user_ids) else ""
+            name = names[index] if index < len(names) else ""
+            display_name = self._configured_member_display_name(user_id, name, chat_id)
+            if display_name:
+                resolved.append(display_name)
+        return resolved or names
+
     @classmethod
     def _mention_tokens(cls, mention_user_ids=None, mention_display_names=None) -> list:
         display_tokens = [f"@{name}" for name in cls._as_list(mention_display_names)]
@@ -1030,6 +1095,11 @@ class WecomBotChannel(ChatChannel):
             user_id = cls._single_line(getattr(msg, "actual_user_id", ""))
         if not display_name and msg is not None:
             display_name = cls._single_line(getattr(msg, "actual_user_nickname", ""))
+        display_name = cls._configured_member_display_name(
+            user_id,
+            display_name,
+            context.get("group_chat_id", "") or context.get("receiver", "") or context.get("session_id", ""),
+        )
         return ([user_id] if user_id else []), ([display_name] if display_name else [])
 
     def _send_image(self, img_path_or_url: str, receiver: str, is_group: bool, req_id: str = None):

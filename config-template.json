@@ -76,6 +76,8 @@
   "wecom_bot_id": "",
   "wecom_bot_secret": "",
   "wecom_bot_auth_source": "cowagent",
+  "wecom_bot_member_aliases": {},
+  "wecom_bot_group_member_aliases": {},
   "weixin_instances": {},
   "web_host": "",
   "web_password": "",
