@@ -67,6 +67,17 @@ _DEFAULT_KNOWLEDGE_BACKEND_CONFIG = {
 }
 
 
+_DEFAULT_MEMORY_DEEP_DREAM_CONFIG = {
+    "enabled": True,
+    "check_time": "00:00",
+    "catch_up_on_startup": True,
+    "catch_up_days": 1,
+    "flush_active_agents": True,
+    "include_user_memories": True,
+    "state_path": "",
+}
+
+
 _KNOWLEDGE_BACKEND_ENV_MAP = {
     "KNOWLEDGE_BACKEND_ENABLED": ("enabled", "bool"),
     "KNOWLEDGE_BACKEND_FAIL_OPEN": ("fail_open", "bool"),
@@ -356,6 +367,7 @@ available_setting = {
     "agent_max_context_tokens": 50000,  # Agent模式下最大上下文tokens
     "agent_max_context_turns": 20,  # Agent模式下最大上下文记忆轮次
     "agent_max_steps": 20,  # Agent模式下单次运行最大决策步数
+    "memory_deep_dream": copy.deepcopy(_DEFAULT_MEMORY_DEEP_DREAM_CONFIG),
     "enable_thinking": False,  # Enable deep-thinking mode for thinking-capable models
     "reasoning_effort": "high",  # Reasoning depth under thinking mode: "high" or "max"
     "knowledge": True,  # 是否开启知识库功能
@@ -535,6 +547,11 @@ def _normalize_llm_backend_config():
     config["llm_backend"] = _deep_merge_dict(DEFAULT_LLM_BACKEND_CONFIG, raw)
 
 
+def _normalize_memory_deep_dream_config():
+    raw = config.get("memory_deep_dream", {})
+    config["memory_deep_dream"] = _deep_merge_dict(_DEFAULT_MEMORY_DEEP_DREAM_CONFIG, raw)
+
+
 def load_config():
     global config
 
@@ -579,6 +596,7 @@ def load_config():
 
     _normalize_knowledge_backend_config()
     _normalize_llm_backend_config()
+    _normalize_memory_deep_dream_config()
 
     if config.get("debug", False):
         logger.setLevel(logging.DEBUG)

@@ -361,6 +361,12 @@ def run():
         except Exception as e:
             logger.warning(f"[App] LLM backend auto-switcher failed to start: {e}")
 
+        try:
+            from agent.memory.daily_dream_scheduler import start_daily_memory_dream_scheduler
+            start_daily_memory_dream_scheduler()
+        except Exception as e:
+            logger.warning(f"[App] Daily memory dream scheduler failed to start: {e}")
+
         # Kick off MCP server loading in the background so first-message
         # latency isn't dominated by npx package downloads.
         _warmup_mcp_tools()

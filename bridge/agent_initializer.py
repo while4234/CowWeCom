@@ -143,7 +143,9 @@ class AgentInitializer:
         if session_id:
             self._restore_conversation_history(agent, session_id)
 
-        # Start daily memory flush timer (once, on first agent init regardless of session)
+        # Ensure the app-level daily memory dream scheduler exists. It is no
+        # longer owned by lazy Agent initialization, but this keeps alternate
+        # entry points covered.
         self._start_daily_flush_timer()
 
         return agent
@@ -830,84 +832,21 @@ class AgentInitializer:
                 logger.warning(f"[AgentInitializer] Failed to sync API keys: {e}")
 
     def _start_daily_flush_timer(self):
-        """Start a background thread that flushes all agents' memory daily at 23:55."""
-        if getattr(self.agent_bridge, '_daily_flush_started', False):
-            return
-        self.agent_bridge._daily_flush_started = True
-
-        import threading
-
-        def _daily_flush_loop():
-            import random
-            last_run_date = None  # Track last successful run date to prevent same-day re-trigger
-            while True:
-                try:
-                    now = datetime.datetime.now()
-                    jitter_min = random.randint(50, 55)
-                    jitter_sec = random.randint(0, 59)
-                    target = now.replace(hour=23, minute=jitter_min, second=jitter_sec, microsecond=0)
-                    # Always schedule for tomorrow if we already ran today, or if target time has passed
-                    if target <= now or (last_run_date == now.date()):
-                        target += datetime.timedelta(days=1)
-                    wait_seconds = (target - now).total_seconds()
-                    logger.info(f"[DailyFlush] Next flush at {target.strftime('%Y-%m-%d %H:%M:%S')} (in {wait_seconds/3600:.1f}h)")
-                    time.sleep(wait_seconds)
-
-                    self._flush_all_agents()
-                    last_run_date = datetime.datetime.now().date()
-                except Exception as e:
-                    logger.warning(f"[DailyFlush] Error in daily flush loop: {e}")
-                    time.sleep(3600)
-
-        t = threading.Thread(target=_daily_flush_loop, daemon=True)
-        t.start()
+        """Ensure the app-level daily Deep Dream scheduler is running."""
+        try:
+            from agent.memory.daily_dream_scheduler import start_daily_memory_dream_scheduler
+            start_daily_memory_dream_scheduler()
+        except Exception as e:
+            logger.warning(f"[DailyFlush] Failed to ensure app-level scheduler: {e}")
+        return
 
     def _flush_all_agents(self):
         """Flush memory for all active agent sessions, then run Deep Dream."""
-        agents = []
-        if self.agent_bridge.default_agent:
-            agents.append(("default", self.agent_bridge.default_agent))
-        for sid, agent in self.agent_bridge.agents.items():
-            agents.append((sid, agent))
-
-        if not agents:
-            return
-
-        # Phase 1: flush daily summaries
-        flushed = 0
-        flush_threads = []
-        dream_candidate = None
-        for label, agent in agents:
-            try:
-                if not agent.memory_manager:
-                    continue
-                with agent.messages_lock:
-                    messages = list(agent.messages)
-                if not messages:
-                    continue
-                result = agent.memory_manager.flush_manager.create_daily_summary(messages)
-                if result:
-                    flushed += 1
-                    t = agent.memory_manager.flush_manager._last_flush_thread
-                    if t:
-                        flush_threads.append(t)
-                if dream_candidate is None:
-                    dream_candidate = agent.memory_manager.flush_manager
-            except Exception as e:
-                logger.warning(f"[DailyFlush] Failed for session {label}: {e}")
-
-        if flushed:
-            logger.info(f"[DailyFlush] Flushed {flushed}/{len(agents)} agent session(s)")
-
-        # Wait for all flush threads to finish before dreaming
-        for t in flush_threads:
-            t.join(timeout=60)
+        try:
+            from agent.memory.daily_dream_scheduler import run_daily_memory_dream_once
+            return run_daily_memory_dream_once(force=True, reason="legacy_manual_flush")
+        except Exception as e:
+            logger.warning(f"[DailyFlush] Failed: {e}")
+            return None
 
         # Phase 2: Deep Dream — distill daily memories → MEMORY.md + dream diary
-        if dream_candidate:
-            try:
-                result = dream_candidate.deep_dream()
-                if result:
-                    logger.info("[DeepDream] Memory distillation completed successfully")
-            except Exception as e:
-                logger.warning(f"[DeepDream] Failed: {e}")

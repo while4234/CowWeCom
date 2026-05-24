@@ -12,7 +12,7 @@ Handles memory persistence when conversation context is trimmed or overflows:
 import threading
 from typing import Optional, Callable, Any, List, Dict
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date
 from common.log import logger
 
 
@@ -135,6 +135,16 @@ class MemoryFlushManager:
             today_file.write_text(f"# Daily Memory: {today}\n\n")
         
         return today_file
+
+    @staticmethod
+    def _coerce_date(value: Optional[Any]) -> date:
+        if value is None:
+            return datetime.now().date()
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        return datetime.strptime(str(value), "%Y-%m-%d").date()
     
     def get_main_memory_file(self, user_id: Optional[str] = None) -> Path:
         """Get main memory file path: MEMORY.md (workspace root)"""
@@ -161,6 +171,7 @@ class MemoryFlushManager:
         reason: str = "trim",
         max_messages: int = 0,
         context_summary_callback: Optional[Callable[[str], None]] = None,
+        target_date: Optional[Any] = None,
     ) -> bool:
         """
         Asynchronously summarize and flush messages to daily memory.
@@ -201,7 +212,7 @@ class MemoryFlushManager:
             snapshot = copy.deepcopy(deduped)
             thread = threading.Thread(
                 target=self._flush_worker,
-                args=(snapshot, user_id, reason, max_messages, context_summary_callback),
+                args=(snapshot, user_id, reason, max_messages, context_summary_callback, target_date),
                 daemon=True,
             )
             thread.start()
@@ -220,6 +231,7 @@ class MemoryFlushManager:
         reason: str,
         max_messages: int,
         context_summary_callback: Optional[Callable[[str], None]] = None,
+        target_date: Optional[Any] = None,
     ):
         """Background worker: summarize with LLM, write daily memory file."""
         try:
@@ -234,7 +246,7 @@ class MemoryFlushManager:
                 return
 
             # --- Write daily memory ---
-            daily_file = ensure_daily_memory_file(self.workspace_dir, user_id)
+            daily_file = ensure_daily_memory_file(self.workspace_dir, user_id, target_date=target_date)
 
             headers = {
                 "overflow": f"## Context Overflow Recovery ({datetime.now().strftime('%H:%M')})",
@@ -285,18 +297,20 @@ class MemoryFlushManager:
     def create_daily_summary(
         self,
         messages: List[Dict],
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        target_date: Optional[Any] = None,
     ) -> bool:
         """
         Generate end-of-day summary. Called by daily timer.
         Skips if messages haven't changed since last flush.
         """
         import hashlib
+        date_key = self._coerce_date(target_date).isoformat() if target_date is not None else ""
         content = "".join(
             self._extract_text_from_content(m.get("content", ""))
             for m in messages
         )
-        content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+        content_hash = hashlib.md5(f"{date_key}:{content}".encode("utf-8")).hexdigest()
         if content_hash == self._last_flushed_content_hash:
             logger.debug("[MemoryFlush] Daily summary skipped: no new content since last flush")
             return False
@@ -306,11 +320,19 @@ class MemoryFlushManager:
             user_id=user_id,
             reason="daily_summary",
             max_messages=0,
+            target_date=target_date,
         )
 
     # ---- Deep Dream (memory distillation) ----
 
-    def deep_dream(self, user_id: Optional[str] = None, lookback_days: int = 1, force: bool = False) -> bool:
+    def deep_dream(
+        self,
+        user_id: Optional[str] = None,
+        lookback_days: int = 1,
+        force: bool = False,
+        end_date: Optional[Any] = None,
+        diary_date: Optional[Any] = None,
+    ) -> bool:
         """
         Distill recent daily memories into MEMORY.md and generate a dream diary.
 
@@ -322,11 +344,18 @@ class MemoryFlushManager:
             logger.warning("[DeepDream] No LLM model available, skipping")
             return False
 
-        logger.info(f"[DeepDream] Starting memory distillation (lookback={lookback_days} days)")
+        anchor_date = self._coerce_date(end_date)
+        output_date = self._coerce_date(diary_date) if diary_date is not None else anchor_date
+        logger.info(
+            f"[DeepDream] Starting memory distillation "
+            f"(lookback={lookback_days} days, end_date={anchor_date.isoformat()})"
+        )
 
         # Collect materials
         memory_content = self._read_main_memory(user_id)
-        daily_content, has_content = self._read_recent_dailies(user_id, lookback_days)
+        daily_content, has_content = self._read_recent_dailies(
+            user_id, lookback_days, end_date=anchor_date
+        )
 
         if not has_content:
             logger.info("[DeepDream] No recent daily records, skipping to preserve existing MEMORY.md")
@@ -338,8 +367,7 @@ class MemoryFlushManager:
         # invalidate the hash on every subsequent call within the same window.
         import hashlib
         daily_hash = hashlib.md5(daily_content.encode("utf-8")).hexdigest()
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        dedup_key = f"{today_str}:{daily_hash}"
+        dedup_key = f"{output_date.isoformat()}:{daily_hash}"
         if not force and dedup_key == self._last_dream_input_hash:
             logger.info("[DeepDream] Already dreamed today with same daily content, skipping")
             return False
@@ -406,7 +434,7 @@ class MemoryFlushManager:
         # Write dream diary
         if dream_diary:
             try:
-                self._write_dream_diary(dream_diary, user_id)
+                self._write_dream_diary(dream_diary, user_id, diary_date=output_date)
             except Exception as e:
                 logger.warning(f"[DeepDream] Failed to write dream diary: {e}")
 
@@ -421,7 +449,10 @@ class MemoryFlushManager:
         return ""
 
     def _read_recent_dailies(
-        self, user_id: Optional[str] = None, lookback_days: int = 1
+        self,
+        user_id: Optional[str] = None,
+        lookback_days: int = 1,
+        end_date: Optional[Any] = None,
     ) -> tuple:
         """
         Read recent daily memory files.
@@ -433,7 +464,7 @@ class MemoryFlushManager:
 
         parts = []
         has_content = False
-        today = datetime.now().date()
+        today = self._coerce_date(end_date)
 
         for offset in range(lookback_days):
             day = today - timedelta(days=offset)
@@ -471,17 +502,22 @@ class MemoryFlushManager:
 
         return new_memory, dream_diary
 
-    def _write_dream_diary(self, content: str, user_id: Optional[str] = None):
+    def _write_dream_diary(
+        self,
+        content: str,
+        user_id: Optional[str] = None,
+        diary_date: Optional[Any] = None,
+    ):
         """Write dream diary to memory/dreams/YYYY-MM-DD.md."""
         dreams_dir = self.memory_dir / "dreams"
         if user_id:
             dreams_dir = self.memory_dir / "users" / user_id / "dreams"
         dreams_dir.mkdir(parents=True, exist_ok=True)
 
-        today = datetime.now().strftime("%Y-%m-%d")
-        diary_file = dreams_dir / f"{today}.md"
+        day = self._coerce_date(diary_date).isoformat()
+        diary_file = dreams_dir / f"{day}.md"
         diary_file.write_text(
-            f"# Dream Diary: {today}\n\n{content}\n",
+            f"# Dream Diary: {day}\n\n{content}\n",
             encoding="utf-8",
         )
         logger.info(f"[DeepDream] Wrote dream diary to {diary_file}")
@@ -715,7 +751,11 @@ def create_memory_files_if_needed(workspace_dir: Path, user_id: Optional[str] = 
         main_memory.write_text("")
 
 
-def ensure_daily_memory_file(workspace_dir: Path, user_id: Optional[str] = None) -> Path:
+def ensure_daily_memory_file(
+    workspace_dir: Path,
+    user_id: Optional[str] = None,
+    target_date: Optional[Any] = None,
+) -> Path:
     """
     Ensure today's daily memory file exists, creating it only when actually needed.
     Called lazily before first write to daily memory.
@@ -730,17 +770,25 @@ def ensure_daily_memory_file(workspace_dir: Path, user_id: Optional[str] = None)
     memory_dir = workspace_dir / "memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
     
-    today = datetime.now().strftime("%Y-%m-%d")
+    if target_date is None:
+        day = datetime.now().date()
+    elif isinstance(target_date, datetime):
+        day = target_date.date()
+    elif isinstance(target_date, date):
+        day = target_date
+    else:
+        day = datetime.strptime(str(target_date), "%Y-%m-%d").date()
+    date_str = day.isoformat()
     if user_id:
         user_dir = memory_dir / "users" / user_id
         user_dir.mkdir(parents=True, exist_ok=True)
-        today_memory = user_dir / f"{today}.md"
+        today_memory = user_dir / f"{date_str}.md"
     else:
-        today_memory = memory_dir / f"{today}.md"
+        today_memory = memory_dir / f"{date_str}.md"
     
     if not today_memory.exists():
         today_memory.write_text(
-            f"# Daily Memory: {today}\n\n"
+            f"# Daily Memory: {date_str}\n\n"
         )
     
     return today_memory
