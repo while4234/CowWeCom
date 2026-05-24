@@ -184,9 +184,9 @@ class CodexBot(Bot, OpenAICompatibleBot):
             "model": model,
             "messages": request_messages,
         }
-        max_tokens = kwargs.get("max_tokens")
-        if max_tokens is not None:
-            request["max_tokens"] = max_tokens
+        # ChatGPT Codex rejects the Responses max_output_tokens field that the
+        # shared adapter derives from Chat-style max_tokens, so this backend
+        # intentionally leaves short-output control to the prompt.
         if tools and allow_tools:
             request["tools"] = self._convert_tools_to_openai_format(tools)
             request["tool_choice"] = kwargs.get("tool_choice", "auto")
@@ -204,6 +204,7 @@ class CodexBot(Bot, OpenAICompatibleBot):
                 self._usage_metadata(kwargs),
             )
         )
+        payload.pop("prompt_cache_retention", None)
         payload["stream"] = True
         payload["store"] = False
         if allow_tools:
@@ -320,6 +321,8 @@ class CodexBot(Bot, OpenAICompatibleBot):
 
     @staticmethod
     def _resolve_codex_reasoning_effort(kwargs: Mapping[str, Any]) -> Optional[str]:
+        if kwargs.get("reasoning_effort_locked"):
+            return normalize_codex_reasoning_effort(kwargs.get("reasoning_effort"))
         thinking = kwargs.get("thinking")
         if isinstance(thinking, Mapping) and str(thinking.get("type") or "").lower() == "disabled":
             explicit = (

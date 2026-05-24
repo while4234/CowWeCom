@@ -250,6 +250,51 @@ class TestCodexDirectBot(unittest.TestCase):
         self.assertTrue(result["error"])
         self.assertIn("codex_tools_disabled", result["message"])
 
+    def test_classifier_style_call_can_omit_reasoning_and_max_output_tokens(self):
+        from models.codex.codex_bot import CodexBot
+
+        class FakeCredential:
+            def resolve_access_tokens(self):
+                return {"access_token": "test-token", "account_id": "acc_test"}
+
+        class FakeTransport:
+            payload = None
+
+            def stream_responses(self, payload, tokens, *, config=None, request_id=""):
+                self.payload = payload
+                yield {"type": "response.output_text.delta", "delta": '{"effort":"medium"}'}
+                yield {
+                    "type": "response.completed",
+                    "response": {
+                        "model": payload["model"],
+                        "output": [],
+                        "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+                    },
+                }
+
+        fake_transport = FakeTransport()
+        provider = {
+            "model": "gpt-5.5",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "endpoint_path": "/responses",
+            "reasoning_effort": "xhigh",
+            "tools_enabled": True,
+        }
+        with patch.object(CodexBot, "_provider_config", staticmethod(lambda: provider)):
+            with patch.object(CodexBot, "_record_prompt_cache_usage", lambda *_, **__: None):
+                bot = CodexBot(credential_source=FakeCredential(), transport=fake_transport)
+                bot.call_with_tools(
+                    [{"role": "user", "content": "classify this"}],
+                    stream=False,
+                    max_tokens=80,
+                    reasoning_effort_locked=True,
+                    thinking={"type": "enabled"},
+                )
+
+        self.assertNotIn("reasoning", fake_transport.payload)
+        self.assertNotIn("max_output_tokens", fake_transport.payload)
+        self.assertNotIn("prompt_cache_retention", fake_transport.payload)
+
 
 if __name__ == "__main__":
     unittest.main()

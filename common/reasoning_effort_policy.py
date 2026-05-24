@@ -695,4 +695,4 @@ def _model_sort_key(model_id: str) -> Tuple[int, ...]:
     lowered = str(model_id or "").lower()
     codex_bonus = (1,) if "codex" in lowered else (0,)
     nums = tuple(int(part) for part in re.findall(r"\d+", lowered))
-    return codex_bonus + nums
+    return nums + codex_bonus

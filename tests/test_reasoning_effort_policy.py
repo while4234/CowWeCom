@@ -17,6 +17,7 @@ from common.reasoning_effort_policy import (
     resolve_reasoning_effort_for_task,
 )
 from config import conf
+from models.openai_compatible_bot import OpenAICompatibleBot
 
 
 class FakeClassifierModel:
@@ -133,7 +134,13 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertNotIn("api_key", serialized)
 
     def test_rank_mini_models_prefers_latest_numeric_version(self):
-        ranked = rank_mini_models(["gpt-4.1-mini", "gpt-5-mini", "gpt-5.4-mini", "not-mini"])
+        ranked = rank_mini_models([
+            "gpt-4.1-mini",
+            "gpt-5-mini",
+            "gpt-5.1-codex-mini",
+            "gpt-5.4-mini",
+            "not-mini",
+        ])
 
         self.assertEqual(ranked[0], "gpt-5.4-mini")
 
@@ -283,6 +290,46 @@ class TestAgentLLMModelReasoningEffort(unittest.TestCase):
 
         self.assertEqual(fake_bot.kwargs["model"], "gpt-5-mini")
         self.assertNotIn("reasoning_effort", fake_bot.kwargs)
+
+
+class FakeOpenAICompatibleBot(OpenAICompatibleBot):
+    def get_api_config(self):
+        return {
+            "api_key": "test",
+            "api_base": "https://example.test",
+            "model": "gpt-5.5",
+            "default_temperature": 0,
+            "default_top_p": 1,
+            "default_frequency_penalty": 0,
+            "default_presence_penalty": 0,
+        }
+
+
+class TestOpenAICompatibleReasoningEffort(unittest.TestCase):
+    def setUp(self):
+        self.old_conf = dict(conf())
+        conf().clear()
+        conf().update({
+            "enable_thinking": True,
+            "model_reasoning_effort": "xhigh",
+            "reasoning_effort": "xhigh",
+        })
+
+    def tearDown(self):
+        conf().clear()
+        conf().update(self.old_conf)
+
+    def test_locked_empty_effort_does_not_fall_back_to_config(self):
+        bot = FakeOpenAICompatibleBot()
+
+        self.assertIsNone(bot._resolve_reasoning_effort({"reasoning_effort_locked": True}))
+        self.assertEqual(
+            bot._resolve_reasoning_effort({
+                "reasoning_effort_locked": True,
+                "reasoning_effort": "low",
+            }),
+            "low",
+        )
 
 
 if __name__ == "__main__":

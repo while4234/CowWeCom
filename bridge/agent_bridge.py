@@ -206,6 +206,8 @@ class AgentLLMModel(LLMModel):
                 request_effort = getattr(request, 'reasoning_effort', None)
                 effort_locked = bool(getattr(request, 'reasoning_effort_locked', False))
                 if effort_locked:
+                    kwargs['reasoning_effort_locked'] = True
+                if effort_locked:
                     effort = request_effort
                 elif thinking_enabled or request_effort:
                     effort = request_effort or conf().get("model_reasoning_effort") or conf().get("reasoning_effort", "high")
@@ -285,6 +287,8 @@ class AgentLLMModel(LLMModel):
                 # Bots that don't understand the kwarg drop it silently.
                 request_effort = getattr(request, 'reasoning_effort', None)
                 effort_locked = bool(getattr(request, 'reasoning_effort_locked', False))
+                if effort_locked:
+                    kwargs['reasoning_effort_locked'] = True
                 if effort_locked:
                     effort = request_effort
                 elif thinking_enabled or request_effort:

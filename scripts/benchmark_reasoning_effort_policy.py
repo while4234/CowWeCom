@@ -131,6 +131,7 @@ def _resolve_latest_mini(model_adapter: AgentLLMModel, backend: str) -> str:
         return ranked[0] if ranked else ""
     if backend == BACKEND_CODEX:
         configured = conf().get("reasoning_effort_policy_codex_mini_model_candidates") or [
+            "gpt-5.4-mini",
             "gpt-5.1-codex-mini",
             "gpt-5-mini",
         ]

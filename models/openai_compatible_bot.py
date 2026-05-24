@@ -193,6 +193,8 @@ class OpenAICompatibleBot:
         """Resolve reasoning effort from kwargs or project config."""
         from config import conf
         kwargs = kwargs or {}
+        if kwargs.get("reasoning_effort_locked"):
+            return normalize_reasoning_effort(kwargs.get("reasoning_effort"))
         effort = kwargs.get("reasoning_effort") or conf().get("model_reasoning_effort")
         if not effort and conf().get("enable_thinking", False):
             effort = conf().get("reasoning_effort")
