@@ -14,8 +14,8 @@ metadata:
 
 This skill collects high-engagement images that are likely to become memes or reaction material. It is hot-topic driven: it first gathers current trend terms, then searches each platform for images around those topics instead of only searching the literal keyword "梗图".
 
-- Weibo: fetches hot-search terms from the public hotSearch endpoint, searches related image posts, ranks by hot-term score plus engagement, then downloads public images.
-- Xiaohongshu: uses a skill-owned persistent Playwright Chrome profile by default, searches around shared hot topics plus fallback terms such as 今日热梗 and 名场面, then downloads image URLs exposed in normal web responses. A short bounded HTTP path remains as fallback when the browser path produces no candidates.
+- Weibo: fetches hot-search terms from the public hotSearch endpoint, searches a bounded number of related image posts, ranks by hot-term score plus engagement, then downloads public images. A dedicated browser profile is available for manual login/risk verification.
+- Xiaohongshu: uses a skill-owned persistent Chrome profile by default, searches around shared hot topics plus fallback terms such as 今日热梗 and 名场面, applies the default search filters `sort_type=time_descending`, `note_type=普通笔记`, and `time_filter=一天内`, then downloads image URLs exposed in normal web responses. A short bounded HTTP path remains as fallback when the browser path produces no candidates.
 - Optional Reddit support remains available when explicitly requested, but the default deployment for this project is Weibo and Xiaohongshu.
 - Each provider is isolated: if one platform returns 403, 429, captcha, risk-control shells, or empty data, the script records a warning and continues with the other providers.
 - The script ranks candidates, filters obvious sensitive content, deduplicates by URL and SHA-256, downloads images atomically, and writes `index.md`, `manifest.jsonl`, and state files.
@@ -41,6 +41,7 @@ Default TOP3 behavior:
 - Keep `--max-total 6` for the default behavior: TOP3 from Weibo plus TOP3 from Xiaohongshu.
 - Dedupe happens after each platform's TOP3 is selected. If Weibo and Xiaohongshu hit the same hot topic, the duplicate is removed and the script does not backfill another item.
 - Same-day repeat runs automatically suppress hot topics, source URLs, and image URLs already downloaded earlier that day. The second run therefore looks for a fresh batch from the same one-pass candidate pool.
+- Serious accident/disaster keywords are filtered by default so daily meme runs do not select tragedy or emergency-news images as reaction素材.
 
 Dry run without downloads:
 
@@ -52,6 +53,12 @@ Open the dedicated Xiaohongshu profile for one-time manual login or risk verific
 
 ```bash
 python3 skills/daily-meme-harvester/scripts/harvest_memes.py --open-xiaohongshu-profile --json
+```
+
+Open the dedicated Weibo profile for one-time manual login or risk verification:
+
+```bash
+python3 skills/daily-meme-harvester/scripts/harvest_memes.py --open-weibo-profile --json
 ```
 
 Download and send to Enterprise WeChat:
@@ -73,8 +80,9 @@ Supported environment variables:
 
 - `MEME_OUTPUT_DIR`: default local output directory when `--out` is not supplied.
 - `WEIBO_COOKIE`: optional; used only for normal authenticated Weibo requests when the user explicitly provides it.
+- `WEIBO_BROWSER_USER_DATA_DIR`: optional persistent Chrome profile override. By default the script uses `~/.cow-meme-harvester/weibo-browser-profile`.
 - `XHS_COOKIE`: optional fallback cookie header for the bounded Xiaohongshu HTTP path. The default persistent-browser path can rely on the skill-owned browser profile instead.
-- `XHS_BROWSER_USER_DATA_DIR`: optional persistent Playwright Chrome profile override. By default the script uses `~/.cow-meme-harvester/xiaohongshu-browser-profile`.
+- `XHS_BROWSER_USER_DATA_DIR`: optional persistent Chrome profile override. By default the script uses `~/.cow-meme-harvester/xiaohongshu-browser-profile`.
 - `HTTP_PROXY` / `HTTPS_PROXY`: optional proxy settings honored by Python networking unless a provider disables proxy use in config.
 - `WECOM_BOT_ID` / `WECOM_BOT_SECRET`: optional override for sending; if missing, the script reads `D:/CowWechat/config.json`.
 - `WECOM_BOT_RECEIVER`: optional receiver userid/chatid for `--send-wecom`; if missing, the script tries to resolve the first WeCom admin profile in CowWechat config.
@@ -101,9 +109,11 @@ Important config keys:
 
 Provider notes:
 
+- Weibo has its own dedicated persistent browser profile at `~/.cow-meme-harvester/weibo-browser-profile`. The current Weibo collector still uses public endpoints plus optional `WEIBO_COOKIE`; the profile is there for manual login/risk verification and future browser fallback without sharing Xiaohongshu or Codex state. Weibo HTTP search is bounded by `max_search_terms`, `max_search_suffixes`, `request_timeout_seconds`, and `search_time_budget_seconds`.
 - Xiaohongshu defaults to a dedicated persistent browser profile at `~/.cow-meme-harvester/xiaohongshu-browser-profile`. This keeps the skill independent from Codex profiles and portable to another machine. Closing Chrome does not delete this profile; login state persists until the directory is deleted or the platform expires the session.
 - If the dedicated Xiaohongshu profile is not logged in or shows risk verification, run `--open-xiaohongshu-profile --json`, complete login or verification in the opened normal Chrome window, close it, then run the normal command again.
 - Collection uses normal system Chrome with this profile and connects briefly through local CDP to read page responses. The older Playwright-managed launch path is still available by setting `xiaohongshu.browser.launch_mode` away from `system_chrome_cdp`, but the default avoids creating a fresh automation-looking profile.
+- Xiaohongshu search defaults to recent image notes: `sort_type=time_descending`, `note_type=普通笔记`, `time_filter=一天内`. Set `xiaohongshu.search_filters.enabled` to `false` or change those values in config if you want broader results.
 - Xiaohongshu HTTP fallback is intentionally bounded: only a small number of queries run, each with short per-request timeouts and an overall fallback time budget.
 - Xiaohongshu HTTP fallback defaults to `disable_proxy: true` because some local proxies break its TLS handshake.
 - When Xiaohongshu HTTP fallback appears unreachable because subscription updates broke local Clash Verge rules, the script runs `D:\CowWechat\scripts\clash_verge_rule_guard.py --json` once and retries once. This only repairs local DIRECT rules; it does not bypass platform login, captcha, or risk controls. Dry-run mode skips this repair guard.
@@ -114,6 +124,12 @@ Xiaohongshu browser config:
 ```json
 {
   "xiaohongshu": {
+    "search_filters": {
+      "enabled": true,
+      "sort_type": "time_descending",
+      "note_type": "普通笔记",
+      "time_filter": "一天内"
+    },
     "browser": {
       "enabled": true,
       "use_persistent_profile": true,
@@ -131,6 +147,25 @@ Xiaohongshu browser config:
     "http_fallback_enabled": true,
     "http_fallback_max_queries": 2,
     "http_time_budget_seconds": 25
+  }
+}
+```
+
+Weibo profile and HTTP budget config:
+
+```json
+{
+  "weibo": {
+    "max_search_terms": 5,
+    "max_search_suffixes": 3,
+    "request_timeout_seconds": 6,
+    "search_time_budget_seconds": 45,
+    "browser": {
+      "enabled": true,
+      "use_persistent_profile": true,
+      "user_data_dir": "~/.cow-meme-harvester/weibo-browser-profile",
+      "warmup_url": "https://weibo.com/"
+    }
   }
 }
 ```

@@ -126,7 +126,8 @@ class DailyMemeHarvesterTest(unittest.TestCase):
         html_text = (
             '<script>window.__INITIAL_STATE__={"url":"https:\\/\\/sns-webpic-qc.xhscdn.com\\/abc.jpg?imageView2=2",'
             '"another":"https://sns-webpic-qc.xhscdn.com/def.webp",'
-            '"static":"https://fe-static.xhscdn.com/as/v1/app.js"}</script>'
+            '"static":"https://fe-static.xhscdn.com/as/v1/app.js",'
+            '"avatar":"https://sns-avatar-qc.xhscdn.com/avatar/user.jpg"}</script>'
         )
 
         candidates = self.module.parse_xiaohongshu_search_html(
@@ -139,12 +140,24 @@ class DailyMemeHarvesterTest(unittest.TestCase):
         self.assertEqual(candidates[0].provider, "xiaohongshu")
         self.assertTrue(candidates[0].image_url.startswith("https://sns-webpic-qc.xhscdn.com/"))
 
+    def test_xiaohongshu_search_params_default_to_today_image_notes(self):
+        params = self.module.xiaohongshu_search_params(self.module.DEFAULT_CONFIG["xiaohongshu"], "今日热梗")
+
+        self.assertEqual(params["keyword"], "今日热梗")
+        self.assertEqual(params["sort_type"], "time_descending")
+        self.assertEqual(params["note_type"], "普通笔记")
+        self.assertEqual(params["time_filter"], "一天内")
+
     def test_xiaohongshu_browser_artifacts_extract_image_candidates(self):
         artifact = {
             "spec": {"query": "热点事件 表情包", "base_score": 500, "term": "热点事件"},
             "source_url": "https://www.xiaohongshu.com/search_result?keyword=test",
             "texts": ['{"url":"https:\\/\\/sns-webpic-qc.xhscdn.com\\/abc.jpg"}'],
-            "image_urls": ["https://sns-webpic-qc.xhscdn.com/def.webp", "https://fe-static.xhscdn.com/as/v1/app.js"],
+            "image_urls": [
+                "https://sns-webpic-qc.xhscdn.com/def.webp",
+                "https://fe-static.xhscdn.com/as/v1/app.js",
+                "https://sns-avatar-qc.xhscdn.com/avatar/user.jpg",
+            ],
         }
 
         candidates = self.module.parse_xiaohongshu_browser_artifacts([artifact])
@@ -197,6 +210,53 @@ class DailyMemeHarvesterTest(unittest.TestCase):
         self.assertEqual([item.provider for item in selected[:3]], ["weibo", "weibo", "weibo"])
         self.assertEqual([item.provider for item in selected[3:]], ["xiaohongshu", "xiaohongshu", "xiaohongshu"])
 
+    def test_weibo_search_limits_suffixes_and_forwards_timeout(self):
+        term = {"word": "热点事件", "score": 1000}
+        config = {
+            "_env": {},
+            "_warnings": [],
+            "_failed_providers": set(),
+            "user_agent": "test-agent",
+            "weibo": {
+                "search_suffixes": ["", "名场面", "表情包", "梗"],
+                "max_search_suffixes": 2,
+                "request_interval_seconds": 0,
+                "request_timeout_seconds": 4,
+            },
+        }
+        payload = {"data": {"cards": []}}
+
+        with patch.object(self.module, "http_get_json", return_value=(payload, {})) as fetch_mock:
+            candidates = self.module.search_weibo_images_for_term(term, config)
+
+        self.assertEqual(candidates, [])
+        self.assertEqual(fetch_mock.call_count, 2)
+        self.assertEqual(fetch_mock.call_args.kwargs["timeout"], 4)
+
+    def test_collect_weibo_limits_search_terms(self):
+        config = {
+            "_env": {},
+            "_warnings": [],
+            "_failed_providers": set(),
+            "max_per_provider": 10,
+            "weibo": {
+                "max_search_terms": 2,
+                "search_time_budget_seconds": 30,
+                "request_interval_seconds": 0,
+            },
+        }
+        terms = [{"word": "热点一", "score": 3}, {"word": "热点二", "score": 2}, {"word": "热点三", "score": 1}]
+
+        with patch.object(self.module, "fetch_weibo_hot_terms", return_value=terms), patch.object(
+            self.module,
+            "search_weibo_images_for_term",
+            return_value=[],
+        ) as search_mock:
+            candidates = self.module.collect_weibo(config)
+
+        self.assertEqual(candidates, [])
+        self.assertEqual(search_mock.call_count, 2)
+
     def test_filter_candidates_dedupes_same_weibo_content_before_images(self):
         candidates = [
             self.module.MemeCandidate(
@@ -214,6 +274,24 @@ class DailyMemeHarvesterTest(unittest.TestCase):
 
         self.assertEqual(len(filtered), 1)
         self.assertEqual(skipped, 2)
+
+    def test_filter_candidates_skips_serious_incident_terms_by_default(self):
+        candidate = self.module.MemeCandidate(
+            provider="weibo",
+            source_id="serious",
+            source_url="https://weibo.com/100/ABC",
+            image_url="https://wx1.sinaimg.cn/large/serious.jpg",
+            title="煤矿爆炸事故救援最新通报",
+            score=100,
+        )
+
+        filtered, skipped = self.module.filter_candidates(
+            [candidate],
+            {"skip_sensitive": True, "dedupe_same_content": True, "block_keywords": self.module.DEFAULT_CONFIG["block_keywords"]},
+        )
+
+        self.assertEqual(filtered, [])
+        self.assertEqual(skipped, 1)
 
     def test_select_candidates_dedupes_same_hot_topic_across_providers_without_backfill(self):
         candidates = [
@@ -666,6 +744,31 @@ class DailyMemeHarvesterTest(unittest.TestCase):
             )
             self.assertTrue(any("legacy xiaohongshu HTTP defaults detected" in warning for warning in config["_warnings"]))
 
+    def test_legacy_block_keywords_are_extended_with_serious_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps({"config_version": 3, "block_keywords": ["nsfw"]}),
+                encoding="utf-8",
+            )
+            args = Namespace(
+                config=str(config_path),
+                providers="weibo",
+                max_total=None,
+                max_per_provider=None,
+                since_hours=None,
+                dry_run=True,
+                json=True,
+                debug=False,
+                out=None,
+            )
+
+            config = self.module.build_config(args, env={})
+
+            self.assertIn("nsfw", config["block_keywords"])
+            self.assertIn("爆炸", config["block_keywords"])
+            self.assertTrue(any("legacy block keyword defaults extended" in warning for warning in config["_warnings"]))
+
     def test_xiaohongshu_browser_profile_env_overrides_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.json"
@@ -695,6 +798,35 @@ class DailyMemeHarvesterTest(unittest.TestCase):
 
             self.assertEqual(config["xiaohongshu"]["browser"]["user_data_dir"], profile_override)
 
+    def test_weibo_browser_profile_env_overrides_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "config_version": 4,
+                        "weibo": {"browser": {"user_data_dir": self.module.WEIBO_BROWSER_PROFILE_DIR}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            profile_override = str(Path(tmp) / "weibo-profile")
+            args = Namespace(
+                config=str(config_path),
+                providers=None,
+                max_total=None,
+                max_per_provider=None,
+                since_hours=None,
+                dry_run=True,
+                json=True,
+                debug=False,
+                out=None,
+            )
+
+            config = self.module.build_config(args, env={self.module.WEIBO_BROWSER_PROFILE_ENV: profile_override})
+
+            self.assertEqual(config["weibo"]["browser"]["user_data_dir"], profile_override)
+
     def test_xiaohongshu_risk_challenge_text_is_detected(self):
         self.assertTrue(self.module.looks_like_xiaohongshu_challenge("当前IP存在风险，请稍后再试"))
 
@@ -718,6 +850,27 @@ class DailyMemeHarvesterTest(unittest.TestCase):
         args = popen_mock.call_args.args[0]
         self.assertIn(f"--user-data-dir={profile.resolve()}", args)
         self.assertIn("https://www.xiaohongshu.com/explore", args)
+
+    def test_open_weibo_profile_window_uses_dedicated_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "weibo-profile"
+            chrome = Path(tmp) / "chrome.exe"
+            chrome.write_text("", encoding="utf-8")
+            config = {
+                "weibo": {"browser": {"user_data_dir": str(profile)}},
+            }
+
+            with patch.object(self.module, "find_chrome_executable", return_value=chrome), patch.object(
+                self.module.subprocess,
+                "Popen",
+            ) as popen_mock:
+                summary = self.module.open_weibo_profile_window(config)
+
+        self.assertTrue(summary["opened_weibo_profile"])
+        self.assertEqual(Path(summary["profile"]), profile.resolve())
+        args = popen_mock.call_args.args[0]
+        self.assertIn(f"--user-data-dir={profile.resolve()}", args)
+        self.assertIn("https://weibo.com/", args)
 
     def test_config_loader_accepts_utf8_bom_from_powershell(self):
         with tempfile.TemporaryDirectory() as tmp:

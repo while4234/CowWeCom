@@ -33,10 +33,12 @@ PROVIDER_ALIASES = {
     "red": "xiaohongshu",
 }
 DEFAULT_CONFIG_PATH = "~/.cow-meme-harvester/config.json"
+WEIBO_BROWSER_PROFILE_DIR = "~/.cow-meme-harvester/weibo-browser-profile"
+WEIBO_BROWSER_PROFILE_ENV = "WEIBO_BROWSER_USER_DATA_DIR"
 XIAOHONGSHU_BROWSER_PROFILE_DIR = "~/.cow-meme-harvester/xiaohongshu-browser-profile"
 XIAOHONGSHU_BROWSER_PROFILE_ENV = "XHS_BROWSER_USER_DATA_DIR"
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "config_version": 3,
+    "config_version": 4,
     "output_dir": "~/cow/memes",
     "timezone": "Asia/Shanghai",
     "providers": ["weibo", "xiaohongshu"],
@@ -56,10 +58,20 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "weibo": {
         "enabled": True,
         "max_hot_terms": 20,
+        "max_search_terms": 5,
+        "max_search_suffixes": 3,
+        "search_time_budget_seconds": 45,
+        "request_timeout_seconds": 6,
         "search_suffixes": ["", "名场面", "表情包", "梗", "搞笑图", "meme"],
         "request_interval_seconds": 2,
         "endpoint_hotsearch": "https://weibo.com/ajax/side/hotSearch",
         "cookie_env": "WEIBO_COOKIE",
+        "browser": {
+            "enabled": True,
+            "use_persistent_profile": True,
+            "user_data_dir": WEIBO_BROWSER_PROFILE_DIR,
+            "warmup_url": "https://weibo.com/",
+        },
     },
     "xiaohongshu": {
         "enabled": True,
@@ -78,6 +90,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "http_fallback_enabled": True,
         "http_fallback_max_queries": 2,
         "http_time_budget_seconds": 25,
+        "search_filters": {
+            "enabled": True,
+            "sort_type": "time_descending",
+            "note_type": "普通笔记",
+            "time_filter": "一天内",
+        },
         "browser": {
             "enabled": True,
             "use_persistent_profile": True,
@@ -116,7 +134,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "listing": "top",
         "time": "day",
     },
-    "block_keywords": ["nsfw", "血腥", "露骨", "成人", "色情"],
+    "block_keywords": [
+        "nsfw",
+        "血腥",
+        "露骨",
+        "成人",
+        "色情",
+        "事故",
+        "爆炸",
+        "遇难",
+        "死亡",
+        "失联",
+        "救援",
+        "灾害",
+        "煤矿",
+        "下井",
+    ],
 }
 
 
@@ -209,15 +242,21 @@ def looks_like_legacy_weibo_only_default(raw_config: Dict[str, Any]) -> bool:
     return int(raw_config.get("max_total", 3)) == 3 and raw_config.get("max_downloads_per_provider") is None
 
 
+def raw_config_version(config: Dict[str, Any]) -> int:
+    raw_config = config.get("_raw_config", {})
+    if not isinstance(raw_config, dict):
+        return 0
+    try:
+        return int(raw_config.get("config_version", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def maybe_migrate_legacy_xiaohongshu_defaults(config: Dict[str, Any]) -> None:
     raw_config = config.get("_raw_config", {})
     if not isinstance(raw_config, dict):
         return
-    try:
-        config_version = int(raw_config.get("config_version", 0) or 0)
-    except (TypeError, ValueError):
-        config_version = 0
-    if config_version >= 3:
+    if raw_config_version(config) >= 3:
         return
     raw_xhs = raw_config.get("xiaohongshu", {})
     if not isinstance(raw_xhs, dict):
@@ -245,16 +284,44 @@ def maybe_migrate_legacy_xiaohongshu_defaults(config: Dict[str, Any]) -> None:
         )
 
 
-def configure_xiaohongshu_browser_profile(config: Dict[str, Any], environ: Dict[str, str]) -> None:
-    xhs_config = config.setdefault("xiaohongshu", {})
-    browser_config = xhs_config.setdefault("browser", {})
-    env_profile = environ.get(XIAOHONGSHU_BROWSER_PROFILE_ENV)
+def maybe_migrate_default_block_keywords(config: Dict[str, Any]) -> None:
+    if raw_config_version(config) >= 4:
+        return
+    configured = [str(keyword) for keyword in (config.get("block_keywords") or []) if str(keyword).strip()]
+    default_keywords = [str(keyword) for keyword in DEFAULT_CONFIG["block_keywords"]]
+    merged = list(dict.fromkeys(configured + default_keywords))
+    if merged != configured:
+        config["block_keywords"] = merged
+        add_warning(config, "legacy block keyword defaults extended with serious accident/disaster filters for this run")
+
+
+def configure_provider_browser_profile(
+    config: Dict[str, Any],
+    provider: str,
+    env_name: str,
+    default_profile: str,
+    environ: Dict[str, str],
+) -> None:
+    provider_config = config.setdefault(provider, {})
+    browser_config = provider_config.setdefault("browser", {})
+    env_profile = environ.get(env_name)
     if env_profile:
         browser_config["user_data_dir"] = env_profile
         return
     configured_profile = str(browser_config.get("user_data_dir") or "").strip()
     if not configured_profile:
-        browser_config["user_data_dir"] = XIAOHONGSHU_BROWSER_PROFILE_DIR
+        browser_config["user_data_dir"] = default_profile
+
+
+def configure_browser_profiles(config: Dict[str, Any], environ: Dict[str, str]) -> None:
+    configure_provider_browser_profile(config, "weibo", WEIBO_BROWSER_PROFILE_ENV, WEIBO_BROWSER_PROFILE_DIR, environ)
+    configure_provider_browser_profile(
+        config,
+        "xiaohongshu",
+        XIAOHONGSHU_BROWSER_PROFILE_ENV,
+        XIAOHONGSHU_BROWSER_PROFILE_DIR,
+        environ,
+    )
 
 
 def chrome_executable_candidates() -> List[Path]:
@@ -333,10 +400,16 @@ def stop_process_quietly(process: Optional[subprocess.Popen]) -> None:
             pass
 
 
-def open_xiaohongshu_profile_window(config: Dict[str, Any], url: str = "https://www.xiaohongshu.com/explore") -> Dict[str, Any]:
-    xhs_config = config.get("xiaohongshu", {})
-    browser_config = xhs_config.get("browser") if isinstance(xhs_config.get("browser"), dict) else {}
-    user_data_dir = expand_path(str(browser_config.get("user_data_dir") or XIAOHONGSHU_BROWSER_PROFILE_DIR))
+def open_provider_profile_window(
+    config: Dict[str, Any],
+    provider: str,
+    default_profile: str,
+    url: str,
+    opened_key: str,
+) -> Dict[str, Any]:
+    provider_config = config.get(provider, {})
+    browser_config = provider_config.get("browser") if isinstance(provider_config.get("browser"), dict) else {}
+    user_data_dir = expand_path(str(browser_config.get("user_data_dir") or default_profile))
     user_data_dir.mkdir(parents=True, exist_ok=True)
     chrome_path = find_chrome_executable()
     arguments = [
@@ -349,12 +422,33 @@ def open_xiaohongshu_profile_window(config: Dict[str, Any], url: str = "https://
     ]
     subprocess.Popen(arguments, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return {
-        "opened_xiaohongshu_profile": True,
+        opened_key: True,
+        "provider": provider,
         "profile": str(user_data_dir),
         "url": url,
         "chrome": str(chrome_path),
-        "message": "Complete Xiaohongshu login or risk verification in the opened dedicated Chrome profile, then rerun the harvester.",
+        "message": f"Complete {provider} login or risk verification in the opened dedicated Chrome profile, then rerun the harvester.",
     }
+
+
+def open_xiaohongshu_profile_window(config: Dict[str, Any], url: str = "https://www.xiaohongshu.com/explore") -> Dict[str, Any]:
+    return open_provider_profile_window(
+        config,
+        provider="xiaohongshu",
+        default_profile=XIAOHONGSHU_BROWSER_PROFILE_DIR,
+        url=url,
+        opened_key="opened_xiaohongshu_profile",
+    )
+
+
+def open_weibo_profile_window(config: Dict[str, Any], url: str = "https://weibo.com/") -> Dict[str, Any]:
+    return open_provider_profile_window(
+        config,
+        provider="weibo",
+        default_profile=WEIBO_BROWSER_PROFILE_DIR,
+        url=url,
+        opened_key="opened_weibo_profile",
+    )
 
 
 def parse_csv(value: Optional[str]) -> List[str]:
@@ -390,7 +484,9 @@ def build_config(args: argparse.Namespace, env: Optional[Dict[str, str]] = None)
         )
     else:
         config["providers"] = config.get("providers") or DEFAULT_CONFIG["providers"]
-    maybe_migrate_legacy_xiaohongshu_defaults(config)
+    if "xiaohongshu" in set(config.get("providers", [])) or getattr(args, "open_xiaohongshu_profile", False):
+        maybe_migrate_legacy_xiaohongshu_defaults(config)
+    maybe_migrate_default_block_keywords(config)
     config["max_total"] = args.max_total if args.max_total is not None else int(config.get("max_total", 50))
     config["max_per_provider"] = (
         args.max_per_provider if args.max_per_provider is not None else int(config.get("max_per_provider", 30))
@@ -411,7 +507,7 @@ def build_config(args: argparse.Namespace, env: Optional[Dict[str, str]] = None)
     output_dir = args.out or environ.get("MEME_OUTPUT_DIR") or config.get("output_dir") or DEFAULT_CONFIG["output_dir"]
     config["output_dir"] = str(expand_path(output_dir))
     config["_env"] = environ
-    configure_xiaohongshu_browser_profile(config, environ)
+    configure_browser_profiles(config, environ)
     return config
 
 
@@ -852,6 +948,17 @@ def build_hot_driven_queries(provider_config: Dict[str, Any], config: Dict[str, 
     return [spec["query"] for spec in build_hot_driven_search_specs(provider_config, config)]
 
 
+def xiaohongshu_search_params(xhs_config: Dict[str, Any], keyword: str) -> Dict[str, Any]:
+    params: Dict[str, Any] = {"keyword": keyword, "source": "web_search_result_notes"}
+    filters = xhs_config.get("search_filters") if isinstance(xhs_config.get("search_filters"), dict) else {}
+    if filters.get("enabled", True):
+        for key in ("sort_type", "note_type", "time_filter"):
+            value = filters.get(key)
+            if value not in (None, ""):
+                params[key] = value
+    return params
+
+
 def iter_weibo_mblogs(cards: Iterable[Dict[str, Any]]) -> Iterable[Dict[str, Any]]:
     for card in cards:
         if not isinstance(card, dict):
@@ -934,6 +1041,8 @@ def search_weibo_images_for_term(term: Dict[str, Any], config: Dict[str, Any]) -
     if cookie:
         headers["Cookie"] = cookie
     suffixes = weibo_config.get("search_suffixes") or ["", "名场面", "表情包", "梗", "搞笑图"]
+    max_suffixes = int(weibo_config.get("max_search_suffixes", len(suffixes)))
+    suffixes = list(suffixes)[: max(1, max_suffixes)]
     candidates: List[MemeCandidate] = []
     for suffix_index, suffix in enumerate(suffixes):
         if suffix_index:
@@ -949,6 +1058,7 @@ def search_weibo_images_for_term(term: Dict[str, Any], config: Dict[str, Any]) -
                 "https://m.weibo.cn/api/container/getIndex",
                 params=params,
                 headers=headers,
+                timeout=int(weibo_config.get("request_timeout_seconds", 6)),
             )
         except FetchError as exc:
             add_warning(config, f"weibo search failed for {query}: {exc}")
@@ -963,13 +1073,20 @@ def search_weibo_images_for_term(term: Dict[str, Any], config: Dict[str, Any]) -
 
 def collect_weibo(config: Dict[str, Any]) -> List[MemeCandidate]:
     max_per_provider = int(config.get("max_per_provider", 30))
-    terms = fetch_weibo_hot_terms(config)[:max(1, max_per_provider)]
+    weibo_config = config.get("weibo", {})
+    search_terms_limit = min(max_per_provider, int(weibo_config.get("max_search_terms", max_per_provider)))
+    terms = fetch_weibo_hot_terms(config)[: max(1, search_terms_limit)]
     cache_hot_terms(config, terms)
     candidates: List[MemeCandidate] = []
     limit = max_per_provider
+    started = time.monotonic()
+    time_budget_seconds = max(1.0, float(weibo_config.get("search_time_budget_seconds", 45)))
     for term_index, term in enumerate(terms):
+        if time.monotonic() - started >= time_budget_seconds:
+            add_warning(config, "weibo search stopped at its time budget")
+            break
         if term_index:
-            time.sleep(float(config.get("weibo", {}).get("request_interval_seconds", 2)))
+            time.sleep(float(weibo_config.get("request_interval_seconds", 2)))
         candidates.extend(search_weibo_images_for_term(term, config))
         if len(candidates) >= limit or config.get("_weibo_search_blocked"):
             break
@@ -993,6 +1110,16 @@ def looks_like_image_asset_url(url: str, host_keywords: Optional[Sequence[str]] 
     return any(token in path for token in ("/img/", "image", "tos-", "/obj/"))
 
 
+def looks_like_xiaohongshu_content_image_url(url: str) -> bool:
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    blocked_tokens = ("avatar", "fe-static", "favicon", "icon", "sprite", "/as/")
+    if any(token in host or token in path for token in blocked_tokens):
+        return False
+    return looks_like_image_asset_url(url, host_keywords=("xhscdn.com",))
+
+
 def embedded_image_urls(text: str, host_keywords: Optional[Sequence[str]] = None) -> List[str]:
     search_text = unescape_url(text)
     url_pattern = re.compile(r"https?://[^\"'<>\\\s]+", re.IGNORECASE)
@@ -1012,6 +1139,8 @@ def embedded_image_urls(text: str, host_keywords: Optional[Sequence[str]] = None
 def parse_xiaohongshu_search_html(html_text: str, keyword: str, source_url: str) -> List[MemeCandidate]:
     candidates: List[MemeCandidate] = []
     for index, image_url in enumerate(embedded_image_urls(html_text, host_keywords=("xhscdn.com",)), start=1):
+        if not looks_like_xiaohongshu_content_image_url(image_url):
+            continue
         source_id = hashlib.sha1(image_url.encode("utf-8")).hexdigest()[:16]
         candidates.append(
             MemeCandidate(
@@ -1063,7 +1192,7 @@ def parse_xiaohongshu_browser_artifacts(artifacts: Sequence[Dict[str, Any]]) -> 
                     candidates.append(candidate)
         for image_url in artifact.get("image_urls") or []:
             image_url = str(image_url)
-            if not looks_like_image_asset_url(image_url, host_keywords=("xhscdn.com",)):
+            if not looks_like_xiaohongshu_content_image_url(image_url):
                 continue
             if image_url in seen_urls:
                 continue
@@ -1193,7 +1322,7 @@ def collect_xiaohongshu_browser(
                         return
                     response_url = str(getattr(response, "url", "") or "")
                     lowered = response_url.lower()
-                    if looks_like_image_asset_url(response_url, host_keywords=("xhscdn.com",)):
+                    if looks_like_xiaohongshu_content_image_url(response_url):
                         artifact.setdefault("image_urls", []).append(response_url)
                         return
                     if "xiaohongshu.com" not in lowered:
@@ -1239,7 +1368,8 @@ def collect_xiaohongshu_browser(
                     if index:
                         time.sleep(min(float(xhs_config.get("request_interval_seconds", 0.5)), max(0.0, remaining)))
                     keyword = str(spec.get("query") or "")
-                    source_url = build_url(endpoint, {"keyword": keyword, "source": "web_search_result_notes"})
+                    params = xiaohongshu_search_params(xhs_config, keyword)
+                    source_url = build_url(endpoint, params)
                     artifact = {"spec": spec, "keyword": keyword, "source_url": source_url, "texts": [], "image_urls": []}
                     current_artifact["value"] = artifact
                     try:
@@ -1307,7 +1437,7 @@ def collect_xiaohongshu_http(
         keyword = spec["query"]
         if index:
             time.sleep(min(float(xhs_config.get("request_interval_seconds", 0.5)), max(0.0, remaining)))
-        params = {"keyword": keyword, "source": "web_search_result_notes"}
+        params = xiaohongshu_search_params(xhs_config, keyword)
         source_url = build_url(endpoint, params)
         request_timeout = max(1, min(int(xhs_config.get("request_timeout_seconds", 6)), int(max(1.0, remaining))))
         try:
@@ -1960,9 +2090,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Open the dedicated Xiaohongshu Chrome profile for manual login or risk verification, then exit.",
     )
     parser.add_argument(
+        "--open-weibo-profile",
+        action="store_true",
+        help="Open the dedicated Weibo Chrome profile for manual login or risk verification, then exit.",
+    )
+    parser.add_argument(
         "--xiaohongshu-login-url",
         default="https://www.xiaohongshu.com/explore",
         help="URL to open with --open-xiaohongshu-profile.",
+    )
+    parser.add_argument(
+        "--weibo-login-url",
+        default="https://weibo.com/",
+        help="URL to open with --open-weibo-profile.",
     )
     parser.add_argument(
         "--xiaohongshu-login-wait-seconds",
@@ -2012,6 +2152,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             add_warning(config, str(exc))
             summary = {
                 "opened_xiaohongshu_profile": False,
+                "warnings": list(config.get("_warnings", [])),
+            }
+    elif getattr(args, "open_weibo_profile", False):
+        try:
+            summary = open_weibo_profile_window(config, url=args.weibo_login_url)
+        except FetchError as exc:
+            add_warning(config, str(exc))
+            summary = {
+                "opened_weibo_profile": False,
                 "warnings": list(config.get("_warnings", [])),
             }
     else:
