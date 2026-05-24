@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from common.log import logger
 from common.utils import expand_path
@@ -117,6 +117,7 @@ _ACTIVE_RULES_LOCK = threading.Lock()
 _REFLECTION_QUEUE: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=10)
 _REFLECTION_WORKER_LOCK = threading.Lock()
 _REFLECTION_WORKER_STARTED = False
+MODEL_REFLECTION_SHORT_TASK_TURN_LIMIT = 10
 
 _UNIX_COMMAND_RE = re.compile(
     r"(^|[\s&|;()])(?:grep|sed|awk|head|tail|cat|touch|chmod|which)\b",
@@ -343,6 +344,9 @@ def schedule_post_task_reflection(
     final_response: str = "",
     intermediate_texts: Optional[List[str]] = None,
     workspace_root: Optional[str] = None,
+    task_is_development: Optional[bool] = None,
+    process_turn_count: Optional[int] = None,
+    tool_error_lesson_count: int = 0,
 ) -> bool:
     """Queue post-task self-evolution reflection without blocking the reply path."""
     if not _config_bool("cowagent_self_evolution_post_task_enabled", True):
@@ -362,6 +366,9 @@ def schedule_post_task_reflection(
         "intermediate_texts": texts,
         "workspace_root": workspace_root,
         "reason": "post_task",
+        "task_is_development": task_is_development,
+        "process_turn_count": process_turn_count,
+        "tool_error_lesson_count": tool_error_lesson_count,
     }
     try:
         _reflection_queue().put_nowait(payload)
@@ -378,6 +385,9 @@ def run_post_task_reflection_once(
     intermediate_texts: Optional[List[str]] = None,
     workspace_root: Optional[str] = None,
     reason: str = "manual",
+    task_is_development: Optional[bool] = None,
+    process_turn_count: Optional[int] = None,
+    tool_error_lesson_count: int = 0,
 ) -> Dict[str, Any]:
     """
     Refresh tool-attempt lessons, then mine assistant process text for lessons.
@@ -398,6 +408,9 @@ def run_post_task_reflection_once(
         "status": "skipped",
         "process_text_count": len(texts),
         "process_text_hash": _hash_texts(texts),
+        "task_is_development": task_is_development,
+        "process_turn_count": _optional_nonnegative_int(process_turn_count),
+        "tool_error_lesson_count": _nonnegative_int(tool_error_lesson_count),
     }
 
     tool_rule_count = 0
@@ -420,7 +433,19 @@ def run_post_task_reflection_once(
     try:
         existing_ids = {str(rule.get("id") or "") for rule in list_active_rules(workspace_root, include_seed=True)}
         lessons = _infer_process_lessons(texts)
-        lessons.extend(_ask_model_for_process_lessons(model_adapter, texts, workspace_root))
+        if _should_run_model_process_reflection(
+            task_is_development=task_is_development,
+            process_turn_count=process_turn_count,
+            tool_error_lesson_count=tool_error_lesson_count,
+        ):
+            if model_adapter is None or not hasattr(model_adapter, "call"):
+                report["model_reflection_status"] = "unavailable"
+            else:
+                report["model_reflection_status"] = "ran"
+                lessons.extend(_ask_model_for_process_lessons(model_adapter, texts, workspace_root))
+        else:
+            report["model_reflection_status"] = "skipped"
+            report["model_reflection_skip_reason"] = "short_non_development_no_tool_error_lessons"
         lessons = _normalize_reflection_lessons(lessons)
 
         recorded: List[Dict[str, Any]] = []
@@ -519,6 +544,50 @@ def get_active_prompt_guidance(limit: int = 8, workspace_root: Optional[str] = N
         if len(guidance) >= limit:
             break
     return guidance
+
+
+def collect_tool_error_lesson_snapshot(workspace_root: Optional[str] = None) -> Dict[str, int]:
+    """Return reusable tool/error lesson keys with counts, excluding seed-only rules."""
+    snapshot: Dict[str, int] = {}
+
+    try:
+        for rule in list_active_rules(workspace_root, include_seed=False):
+            rule_id = str(rule.get("id") or "").strip()
+            if not rule_id or rule.get("first_seen") == "seed":
+                continue
+            snapshot[f"self:{rule_id}"] = max(1, _nonnegative_int(rule.get("count"), default=1))
+    except Exception as exc:
+        logger.debug("[SelfEvolution] Failed to snapshot self lessons: %s", exc)
+
+    try:
+        from common.tool_attempt_memory import list_active_rules as list_tool_attempt_rules
+
+        for rule in list_tool_attempt_rules(workspace_root):
+            key = str(rule.get("key") or "").strip()
+            if not key:
+                continue
+            snapshot[f"tool:{key}"] = max(1, _nonnegative_int(rule.get("count"), default=1))
+    except Exception as exc:
+        logger.debug("[SelfEvolution] Failed to snapshot tool-attempt lessons: %s", exc)
+
+    return snapshot
+
+
+def count_tool_error_lesson_changes(
+    before_snapshot: Optional[Mapping[str, int]],
+    workspace_root: Optional[str] = None,
+) -> int:
+    """Count new or incremented reusable tool/error lessons since a prior snapshot."""
+    if before_snapshot is None:
+        return 0
+
+    after_snapshot = collect_tool_error_lesson_snapshot(workspace_root)
+    changes = 0
+    for key, after_count in after_snapshot.items():
+        before_count = _nonnegative_int(before_snapshot.get(key, 0))
+        if after_count > before_count:
+            changes += after_count - before_count
+    return changes
 
 
 def _reflection_queue() -> "queue.Queue[Dict[str, Any]]":
@@ -767,6 +836,27 @@ def _parse_reflection_lessons(text: str) -> List[Dict[str, str]]:
     return [lesson for lesson in lessons if isinstance(lesson, dict)]
 
 
+def _should_run_model_process_reflection(
+    *,
+    task_is_development: Optional[bool],
+    process_turn_count: Optional[int],
+    tool_error_lesson_count: int,
+) -> bool:
+    """Return whether to spend model tokens looking for missed process lessons."""
+    if task_is_development is True:
+        return True
+    if task_is_development is not False:
+        return True
+
+    turns = _optional_nonnegative_int(process_turn_count)
+    if turns is None:
+        return True
+
+    if turns < MODEL_REFLECTION_SHORT_TASK_TURN_LIMIT and _nonnegative_int(tool_error_lesson_count) <= 0:
+        return False
+    return True
+
+
 def _normalize_reflection_lessons(lessons: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     normalized: List[Dict[str, str]] = []
     seen = set()
@@ -817,6 +907,23 @@ def _config_int(key: str, default: int, *, minimum: int, maximum: int) -> int:
     except Exception:
         value = default
     return max(minimum, min(maximum, value))
+
+
+def _nonnegative_int(value: Any, default: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return max(0, default)
+    return max(0, parsed)
+
+
+def _optional_nonnegative_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalize_text_for_compare(text: str) -> str:

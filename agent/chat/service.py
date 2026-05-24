@@ -8,7 +8,7 @@ into the CHAT socket protocol format (content chunks with segment_id, tool_calls
 import time
 from typing import Callable, Optional
 
-from common.agent_task_limits import resolve_agent_max_steps
+from common.agent_task_limits import is_development_task, resolve_agent_max_steps
 from common.log import logger
 
 
@@ -52,13 +52,20 @@ class ChatService:
 
         # State shared between the event callback and this method
         state = _StreamState()
+        task_is_development = is_development_task(query)
 
         def on_event(event: dict):
             """Translate agent events into CHAT protocol chunks."""
             event_type = event.get("type")
             data = event.get("data", {})
 
-            if event_type == "reasoning_update":
+            if event_type == "turn_start":
+                try:
+                    state.turn_number = max(state.turn_number, int(data.get("turn", 0) or 0))
+                except (TypeError, ValueError):
+                    pass
+
+            elif event_type == "reasoning_update":
                 delta = data.get("delta", "")
                 if delta:
                     send_chunk_fn({
@@ -156,6 +163,9 @@ class ChatService:
                     # Next content belongs to a new segment
                     state.segment_id += 1
 
+            elif event_type == "llm_usage":
+                state.llm_call_count += 1
+
         # Run the agent with our event callback ---------------------------
         logger.info(f"[ChatService] Starting agent run: session={session_id}, query={query[:80]}")
 
@@ -171,6 +181,8 @@ class ChatService:
             original_length = len(agent.messages)
 
         from agent.protocol.agent_stream import AgentStreamExecutor
+        workspace_root = conf().get("agent_workspace", "~/cow")
+        tool_error_lesson_snapshot = self._collect_tool_error_lesson_snapshot(workspace_root)
         run_max_steps = resolve_agent_max_steps(query, conf())
 
         executor = AgentStreamExecutor(
@@ -255,7 +267,18 @@ class ChatService:
 
         # Execute post-process tools
         agent._execute_post_process_tools()
-        self._schedule_post_task_self_evolution(agent, new_messages, response)
+        self._schedule_post_task_self_evolution(
+            agent,
+            new_messages,
+            response,
+            workspace_root=workspace_root,
+            task_is_development=task_is_development,
+            process_turn_count=max(state.turn_number, state.llm_call_count),
+            tool_error_lesson_count=self._count_tool_error_lesson_changes(
+                tool_error_lesson_snapshot,
+                workspace_root,
+            ),
+        )
 
         logger.info(f"[ChatService] Agent run completed: session={session_id}")
 
@@ -280,19 +303,50 @@ class ChatService:
             )
 
     @staticmethod
-    def _schedule_post_task_self_evolution(agent, new_messages: list, final_response: str):
+    def _schedule_post_task_self_evolution(
+        agent,
+        new_messages: list,
+        final_response: str,
+        *,
+        workspace_root: str,
+        task_is_development: bool,
+        process_turn_count: int,
+        tool_error_lesson_count: int,
+    ):
         try:
-            from config import conf
             from common.self_evolution import schedule_post_task_reflection
 
             schedule_post_task_reflection(
                 model_adapter=getattr(agent, "model", None),
                 new_messages=list(new_messages or []),
                 final_response=final_response or "",
-                workspace_root=conf().get("agent_workspace", "~/cow"),
+                workspace_root=workspace_root,
+                task_is_development=bool(task_is_development),
+                process_turn_count=int(process_turn_count or 0),
+                tool_error_lesson_count=int(tool_error_lesson_count or 0),
             )
         except Exception as e:
             logger.debug(f"[SelfEvolution] Failed to schedule chat-service reflection: {e}")
+
+    @staticmethod
+    def _collect_tool_error_lesson_snapshot(workspace_root):
+        try:
+            from common.self_evolution import collect_tool_error_lesson_snapshot
+
+            return collect_tool_error_lesson_snapshot(workspace_root)
+        except Exception as e:
+            logger.debug(f"[SelfEvolution] Failed to collect tool-error lesson snapshot: {e}")
+            return None
+
+    @staticmethod
+    def _count_tool_error_lesson_changes(before_snapshot, workspace_root) -> int:
+        try:
+            from common.self_evolution import count_tool_error_lesson_changes
+
+            return count_tool_error_lesson_changes(before_snapshot, workspace_root)
+        except Exception as e:
+            logger.debug(f"[SelfEvolution] Failed to count tool-error lesson changes: {e}")
+            return 0
 
 
 class _StreamState:
@@ -300,6 +354,8 @@ class _StreamState:
 
     def __init__(self):
         self.segment_id: int = 0
+        self.turn_number: int = 0
+        self.llm_call_count: int = 0
         # None means we are not accumulating tool results right now.
         # A list means we are in the middle of a tool-execution phase.
         self.pending_tool_results: Optional[list] = None

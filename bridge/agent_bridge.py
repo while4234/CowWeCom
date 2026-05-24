@@ -641,6 +641,9 @@ class AgentBridge:
         get_agent_elapsed = None
         run_stream_elapsed = None
         persist_elapsed = None
+        task_is_development = False
+        workspace_root = conf().get("agent_workspace", "~/cow")
+        tool_error_lesson_snapshot = None
         try:
             # Extract session_id from context for user isolation
             if context:
@@ -665,6 +668,8 @@ class AgentBridge:
             # Create event handler for logging and channel communication
             event_handler = AgentEventHandler(context=context, original_callback=on_event)
             cancellation_token = context.get("_cancellation_token") if context else None
+            task_is_development = is_development_task(query)
+            tool_error_lesson_snapshot = self._collect_tool_error_lesson_snapshot(workspace_root)
             
             # Filter tools based on context
             original_tools = agent.tools
@@ -736,7 +741,7 @@ class AgentBridge:
                 logger.info(
                     "[AgentBridge] Using max_steps=%s development_task=%s",
                     run_max_steps,
-                    is_development_task(query),
+                    task_is_development,
                 )
                 response = agent.run_stream(
                     user_message=query,
@@ -794,6 +799,12 @@ class AgentBridge:
                 new_messages=list(new_messages or []),
                 final_response=response,
                 event_handler=event_handler,
+                workspace_root=workspace_root,
+                task_is_development=task_is_development,
+                tool_error_lesson_count=self._count_tool_error_lesson_changes(
+                    tool_error_lesson_snapshot,
+                    workspace_root,
+                ),
             )
 
             # Check if there are files to send (from send/read tool)
@@ -920,6 +931,9 @@ class AgentBridge:
         new_messages: list,
         final_response: str,
         event_handler,
+        workspace_root: str,
+        task_is_development: bool,
+        tool_error_lesson_count: int,
     ) -> None:
         try:
             intermediate_texts = []
@@ -930,7 +944,10 @@ class AgentBridge:
                 "new_messages": new_messages,
                 "final_response": final_response or "",
                 "intermediate_texts": intermediate_texts,
-                "workspace_root": conf().get("agent_workspace", "~/cow"),
+                "workspace_root": workspace_root,
+                "task_is_development": bool(task_is_development),
+                "process_turn_count": self._reflection_process_turn_count(context, event_handler),
+                "tool_error_lesson_count": int(tool_error_lesson_count or 0),
             }
             if context is not None and context.get("_session_runtime") is not None:
                 context["_self_evolution_post_task"] = payload
@@ -941,6 +958,44 @@ class AgentBridge:
             schedule_post_task_reflection(**payload)
         except Exception as e:
             logger.debug(f"[SelfEvolution] Failed to stage post-task reflection: {e}")
+
+    @staticmethod
+    def _collect_tool_error_lesson_snapshot(workspace_root):
+        try:
+            from common.self_evolution import collect_tool_error_lesson_snapshot
+
+            return collect_tool_error_lesson_snapshot(workspace_root)
+        except Exception as e:
+            logger.debug(f"[SelfEvolution] Failed to collect tool-error lesson snapshot: {e}")
+            return None
+
+    @staticmethod
+    def _count_tool_error_lesson_changes(before_snapshot, workspace_root) -> int:
+        try:
+            from common.self_evolution import count_tool_error_lesson_changes
+
+            return count_tool_error_lesson_changes(before_snapshot, workspace_root)
+        except Exception as e:
+            logger.debug(f"[SelfEvolution] Failed to count tool-error lesson changes: {e}")
+            return 0
+
+    @staticmethod
+    def _reflection_process_turn_count(context, event_handler) -> int:
+        candidates = []
+        try:
+            candidates.append(int(getattr(event_handler, "turn_number", 0) or 0))
+        except (TypeError, ValueError):
+            pass
+
+        runtime = context.get("_session_runtime") if context else None
+        progress = getattr(runtime, "progress", None) if runtime else None
+        for name in ("turn", "llm_call_count"):
+            try:
+                candidates.append(int(getattr(progress, name, 0) or 0))
+            except (TypeError, ValueError):
+                pass
+
+        return max(candidates or [0])
 
     @staticmethod
     def _ensure_tools_guarded(agent) -> None:

@@ -264,6 +264,109 @@ class PostTaskReflectionTest(unittest.TestCase):
             active = json.loads((get_data_dir(tmp) / ACTIVE_RULES_FILE).read_text(encoding="utf-8"))
             self.assertTrue(any(rule["id"] == "clawhub-inspect-file-staging" for rule in active["rules"]))
 
+    def test_post_task_reflection_skips_model_for_short_non_development_without_tool_lessons(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = _ReflectionFakeModel(json.dumps({
+                "lessons": [
+                    {
+                        "id": "should-not-run",
+                        "summary": "Should not run",
+                        "next_action": "This model result should not be requested.",
+                    }
+                ]
+            }))
+
+            report = run_post_task_reflection_once(
+                model_adapter=model,
+                intermediate_texts=["I will check the latest summary first."],
+                workspace_root=tmp,
+                task_is_development=False,
+                process_turn_count=3,
+                tool_error_lesson_count=0,
+            )
+
+            self.assertEqual(model.calls, [])
+            self.assertEqual(report["model_reflection_status"], "skipped")
+            self.assertEqual(
+                report["model_reflection_skip_reason"],
+                "short_non_development_no_tool_error_lessons",
+            )
+
+    def test_post_task_reflection_runs_model_for_short_development_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = _ReflectionFakeModel(json.dumps({
+                "lessons": [
+                    {
+                        "id": "dev-model-gate",
+                        "summary": "Development tasks still run model reflection",
+                        "next_action": "Keep model missed-lesson analysis enabled for development tasks.",
+                    }
+                ]
+            }))
+
+            report = run_post_task_reflection_once(
+                model_adapter=model,
+                intermediate_texts=["I will patch the code and run focused tests."],
+                workspace_root=tmp,
+                task_is_development=True,
+                process_turn_count=3,
+                tool_error_lesson_count=0,
+            )
+
+            self.assertEqual(len(model.calls), 1)
+            self.assertEqual(report["model_reflection_status"], "ran")
+            self.assertEqual(report["status"], "success")
+
+    def test_post_task_reflection_runs_model_when_tool_error_lesson_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = _ReflectionFakeModel(json.dumps({
+                "lessons": [
+                    {
+                        "id": "tool-error-model-gate",
+                        "summary": "Tool-error lessons keep model reflection enabled",
+                        "next_action": "Run model missed-lesson analysis when tool-error learning changed.",
+                    }
+                ]
+            }))
+
+            report = run_post_task_reflection_once(
+                model_adapter=model,
+                intermediate_texts=["I will inspect this short non-code task."],
+                workspace_root=tmp,
+                task_is_development=False,
+                process_turn_count=2,
+                tool_error_lesson_count=1,
+            )
+
+            self.assertEqual(len(model.calls), 1)
+            self.assertEqual(report["model_reflection_status"], "ran")
+            self.assertEqual(report["status"], "success")
+
+    def test_post_task_reflection_runs_model_for_long_non_development_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model = _ReflectionFakeModel(json.dumps({
+                "lessons": [
+                    {
+                        "id": "long-non-dev-model-gate",
+                        "summary": "Long non-development tasks still run model reflection",
+                        "next_action": "Run model missed-lesson analysis for long non-development tasks.",
+                    }
+                ]
+            }))
+
+            report = run_post_task_reflection_once(
+                model_adapter=model,
+                intermediate_texts=["I have worked through a longer non-code task."],
+                workspace_root=tmp,
+                task_is_development=False,
+                process_turn_count=10,
+                tool_error_lesson_count=0,
+            )
+
+            self.assertEqual(len(model.calls), 1)
+            self.assertEqual(report["model_reflection_status"], "ran")
+            self.assertEqual(report["status"], "success")
+
 
 class BashSelfEvolutionHookTest(unittest.TestCase):
     def test_failed_windows_bash_records_side_channel_without_changing_result(self):
