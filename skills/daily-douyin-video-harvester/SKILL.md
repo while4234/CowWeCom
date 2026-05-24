@@ -1,6 +1,6 @@
 ---
 name: daily-douyin-video-harvester
-description: Fetch Douyin hot topics, filter for meme-worthy and commentary-friendly trending videos, download the TOP videos, send them to Enterprise WeChat with sharp Chinese commentary, and queue local video cleanup after 24 hours. Use when the user asks to harvest, download, push, archive, schedule, or 锐评 Douyin 抖音热点视频, 有梗热点, 名场面, 热梗, 爆款视频, or daily social-video素材.
+description: Fetch Douyin hot topics, filter for meme-worthy and commentary-friendly trending videos, download the TOP videos, send them to Enterprise WeChat with sharp Chinese commentary, and queue local video cleanup after 24 hours. Use when the user asks to harvest, download, push, archive, schedule, or 锐评 Douyin 抖音热点视频, 热搜, 热点, 有趣短视频, 抽象视频, 擦边但平台合规的视频, 有梗热点, 名场面, 热梗, 爆款视频, or daily social-video素材.
 metadata:
   cow:
     emoji: "🎬"
@@ -16,7 +16,7 @@ Use this skill when the user wants Douyin hot videos that are actually worth sen
 
 1. Opens a dedicated persistent Playwright Chrome profile, injects the user-provided `DOUYIN_COOKIE` when present, collects normal Douyin page responses from bounded search queries, and closes the browser when done.
 2. Uses interest-seeded searches first by default, then optionally uses Douyin hot-board terms when `douyin.use_hot_terms=true`. This avoids sending duplicate hard-news hot-search items the user already sees.
-3. Filters out stale known-timestamp videos outside the default 48-hour window, and penalizes candidates without a timestamp.
+3. Filters out stale known-timestamp videos outside the default 24-hour window, and penalizes candidates without a timestamp.
 4. Filters out boring or unsuitable topics such as formal announcements, disasters, crime, pure finance, hard-news bulletins, generic movie recaps, shopping, travel, and old fixed memes.
 5. Ranks candidates by a combined score: current heat, engagement, freshness, and 梗感分.
 6. Downloads only the TOP videos, default `3`, with an 80 MB per-video ceiling.
@@ -31,7 +31,9 @@ Do not search only for `梗图` or blindly send raw hot-list results. The script
 
 - Default to bounded interest seeds such as `轻擦边舞蹈`, `氛围感美女跳舞`, `甜妹变装`, `情侣搞笑日常`, `评论区笑死`, and `反转名场面`.
 - Search current hot-board terms only when `douyin.use_hot_terms=true`, with patterns such as `{term}`, `{term} 名场面`, `{term} 反转`, `{term} 笑死`, `{term} 二创`.
-- Keep known-timestamp videos within `since_hours`, default `48`; stale videos are skipped.
+- Keep known-timestamp videos within `since_hours`, default `24`; stale videos are skipped.
+- Douyin search URLs apply the platform freshness filter by default: `since_hours <= 24` maps to the one-day search filter, and wider diagnostic windows map to the closest broader platform filter.
+- Within one run, normalize search terms by removing whitespace before dedupe. If a search term fails or returns no usable candidates, do not reuse the same normalized term in the browser fallback; move to a different term instead.
 - Limit the final TOP list to one video per hot term by default, so a single topic cannot fill all three slots.
 - Add score: `名场面`, `离谱`, `笑死`, `反转`, `破防`, `整活`, `抽象`, `社死`, `显眼包`, `魔性`, `吐槽`, `二创`, `模仿`, `挑战`, `瓜`, `热梗`, `绷不住`, `擦边`, `氛围感`, `美女`, `甜妹`, `辣妹`, `热舞`, `舞蹈`, `变装`.
 - Add score: titles with conversational hooks such as `怎么`, `为什么`, `原来`, `竟然`, `不是`, `这也`, `谁懂`, `网友`, `全网`, `哈哈`.
@@ -96,7 +98,7 @@ Important config keys:
   "collection_mode": "browser",
   "max_total": 3,
   "max_candidates": 30,
-  "since_hours": 48,
+  "since_hours": 24,
   "max_per_hot_term": 1,
   "max_video_bytes": 80000000,
   "delete_after_hours": 24,
@@ -106,6 +108,7 @@ Important config keys:
   "douyin": {
     "cookie_env": "DOUYIN_COOKIE",
     "use_hot_terms": false,
+    "search_filters": {"enabled": true, "publish_time": "auto"},
     "fallback_keywords": ["轻擦边舞蹈", "氛围感美女跳舞", "甜妹变装", "情侣搞笑日常", "评论区笑死", "反转名场面"],
     "search_patterns": ["{term}", "{term} 名场面", "{term} 反转", "{term} 笑死", "{term} 二创"]
   },

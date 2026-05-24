@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import hashlib
 import importlib.util
 import io
@@ -125,6 +126,31 @@ class DailyDouyinVideoHarvesterTest(unittest.TestCase):
         self.assertIn("氛围感美女跳舞", query_text)
         self.assertIn("情侣搞笑日常", query_text)
         self.assertNotIn("今日热榜", query_text)
+
+    def test_search_queries_normalize_whitespace_for_deduping(self):
+        config = copy.deepcopy(self.module.DEFAULT_CONFIG)
+        config["douyin"]["search_patterns"] = ["{term} 名场面", "{term}名场面", " {term}  名场面 "]
+        config["douyin"]["fallback_keywords"] = []
+        terms = [self.module.HotTerm(word="抽象", rank=1, score=1000, meme_score=1000)]
+
+        queries = self.module.build_search_queries(terms, config)
+
+        self.assertEqual([item["query"] for item in queries], ["抽象 名场面"])
+
+    def test_douyin_search_url_uses_recent_filter_from_since_hours(self):
+        config = copy.deepcopy(self.module.DEFAULT_CONFIG)
+
+        one_day_url = self.module.build_douyin_browser_search_url("抽象 短视频", config)
+        one_day_params = self.module.urllib.parse.parse_qs(self.module.urllib.parse.urlsplit(one_day_url).query)
+
+        self.assertEqual(one_day_params["type"], ["general"])
+        self.assertEqual(one_day_params["publish_time"], ["1"])
+
+        config["since_hours"] = 72
+        week_url = self.module.build_douyin_browser_search_url("抽象 短视频", config)
+        week_params = self.module.urllib.parse.parse_qs(self.module.urllib.parse.urlsplit(week_url).query)
+
+        self.assertEqual(week_params["publish_time"], ["7"])
 
     def test_parse_search_html_extracts_video_candidate_and_scores(self):
         html_text = """
@@ -371,6 +397,37 @@ class DailyDouyinVideoHarvesterTest(unittest.TestCase):
             self.module.collect_douyin(config)
 
         self.assertNotIn("DOUYIN_COOKIE not set", "\n".join(config["_warnings"]))
+
+    def test_empty_http_search_query_is_not_retried_by_browser_fallback(self):
+        config = copy.deepcopy(self.module.DEFAULT_CONFIG)
+        config.update(
+            {
+                "_env": {"DOUYIN_COOKIE": "sid=1"},
+                "_warnings": [],
+                "collection_mode": "http",
+                "max_total": 3,
+                "max_candidates": 3,
+                "douyin": {
+                    **config["douyin"],
+                    "use_hot_terms": False,
+                    "fallback_keywords": ["抽象 短视频"],
+                    "max_search_queries": 1,
+                    "request_interval_seconds": 0,
+                },
+            }
+        )
+
+        with patch.object(self.module, "http_get_text", return_value=("<html></html>", {})), patch.object(
+            self.module,
+            "collect_douyin_browser_fallback",
+            return_value=[],
+        ) as browser_mock:
+            candidates = self.module.collect_douyin(config)
+
+        self.assertEqual(candidates, [])
+        browser_mock.assert_called_once()
+        self.assertEqual(browser_mock.call_args.args[1], [])
+        self.assertTrue(self.module.is_failed_search_query(config, "抽象短视频"))
 
     def test_same_day_seen_filters_previous_hot_video_before_top_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -801,6 +858,25 @@ class DailyDouyinVideoHarvesterTest(unittest.TestCase):
             config = self.module.build_config(args, env={"DOUYIN_VIDEO_OUTPUT_DIR": str(Path(tmp) / "env-out")})
 
             self.assertEqual(Path(config["output_dir"]), (Path(tmp) / "cli-out").resolve())
+
+    def test_legacy_default_since_hours_migrates_to_today_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(json.dumps({"config_version": 2, "since_hours": 48}), encoding="utf-8")
+
+            config = self.module.build_config(make_config_args(config_path), env={})
+
+            self.assertEqual(config["since_hours"], 24)
+            self.assertIn("tightened to 24 hours", "\n".join(config["_warnings"]))
+
+    def test_legacy_custom_since_hours_is_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(json.dumps({"config_version": 2, "since_hours": 72}), encoding="utf-8")
+
+            config = self.module.build_config(make_config_args(config_path), env={})
+
+            self.assertEqual(config["since_hours"], 72)
 
     def test_blank_browser_profile_config_uses_skill_owned_profile(self):
         with tempfile.TemporaryDirectory() as tmp:

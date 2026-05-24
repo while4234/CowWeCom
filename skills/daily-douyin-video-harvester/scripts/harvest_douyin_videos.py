@@ -32,13 +32,16 @@ BROWSER_PROFILE_ENV = "DOUYIN_BROWSER_USER_DATA_DIR"
 WECOM_WS_URL = "wss://openws.work.weixin.qq.com"
 WECOM_MEDIA_CHUNK_SIZE = 512 * 1024
 
+DEFAULT_SINCE_HOURS = 24
+FAILED_SEARCH_QUERY_KEYS = "_failed_search_query_keys"
+
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "config_version": 2,
+    "config_version": 3,
     "output_dir": "~/cow/douyin-videos",
     "timezone": "Asia/Shanghai",
     "max_total": 3,
     "max_candidates": 30,
-    "since_hours": 48,
+    "since_hours": DEFAULT_SINCE_HOURS,
     "dedupe_days": 7,
     "delete_after_hours": 24,
     "min_video_bytes": 4096,
@@ -63,6 +66,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         ],
         "hotsearch_params": {"device_platform": "webapp", "aid": "6383"},
         "endpoint_search": "https://www.douyin.com/search/{keyword}",
+        "search_filters": {"enabled": True, "publish_time": "auto"},
         "search_patterns": ["{term}", "{term} 名场面", "{term} 反转", "{term} 笑死", "{term} 二创"],
         "fallback_keywords": [
             "轻擦边舞蹈",
@@ -417,6 +421,22 @@ def maybe_migrate_interest_seed_defaults(config: Dict[str, Any]) -> None:
         add_warning(config, "legacy douyin hot-board defaults replaced with interest-seeded profile search for this run")
 
 
+def maybe_migrate_daily_search_defaults(config: Dict[str, Any]) -> None:
+    if raw_config_version(config) >= 3:
+        return
+    raw_config = config.get("_raw_config", {})
+    if not isinstance(raw_config, dict):
+        raw_config = {}
+    raw_since_hours = raw_config.get("since_hours", 48)
+    try:
+        raw_since_hours_int = int(raw_since_hours)
+    except (TypeError, ValueError):
+        raw_since_hours_int = 48
+    if "since_hours" not in raw_config or raw_since_hours_int == 48:
+        config["since_hours"] = DEFAULT_SINCE_HOURS
+        add_warning(config, "legacy douyin freshness default tightened to 24 hours for today's searches")
+
+
 def build_config(args: argparse.Namespace, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     environ = env if env is not None else os.environ
     config_path = expand_path(args.config or DEFAULT_CONFIG_PATH)
@@ -426,12 +446,15 @@ def build_config(args: argparse.Namespace, env: Optional[Dict[str, str]] = None)
     config["_warnings"] = []
     config["_failed"] = False
     maybe_migrate_interest_seed_defaults(config)
+    maybe_migrate_daily_search_defaults(config)
     config["output_dir"] = str(expand_path(args.out or environ.get("DOUYIN_VIDEO_OUTPUT_DIR") or config["output_dir"]))
     config["max_total"] = args.max_total if args.max_total is not None else int(config.get("max_total", 3))
     config["max_candidates"] = (
         args.max_candidates if args.max_candidates is not None else int(config.get("max_candidates", 30))
     )
-    config["since_hours"] = args.since_hours if args.since_hours is not None else int(config.get("since_hours", 48))
+    config["since_hours"] = (
+        args.since_hours if args.since_hours is not None else int(config.get("since_hours", DEFAULT_SINCE_HOURS))
+    )
     config["delete_after_hours"] = (
         args.delete_after_hours
         if args.delete_after_hours is not None
@@ -496,6 +519,91 @@ def build_url(url: str, params: Optional[Dict[str, Any]] = None) -> str:
     query = urllib.parse.urlencode({key: value for key, value in params.items() if value is not None})
     separator = "&" if urllib.parse.urlsplit(url).query else "?"
     return f"{url}{separator}{query}"
+
+
+def normalize_search_query(query: Any) -> str:
+    text = urllib.parse.unquote(str(query or "")).casefold()
+    return re.sub(r"\s+", "", text).strip()
+
+
+def remember_failed_search_query(config: Dict[str, Any], query: Any) -> None:
+    key = normalize_search_query(query)
+    if not key:
+        return
+    failed_keys = config.setdefault(FAILED_SEARCH_QUERY_KEYS, [])
+    if isinstance(failed_keys, set):
+        failed_keys.add(key)
+        return
+    if key not in failed_keys:
+        failed_keys.append(key)
+
+
+def is_failed_search_query(config: Dict[str, Any], query: Any) -> bool:
+    key = normalize_search_query(query)
+    return bool(key and key in set(config.get(FAILED_SEARCH_QUERY_KEYS, [])))
+
+
+def available_search_query_specs(
+    config: Dict[str, Any],
+    specs: Sequence[Dict[str, Any]],
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    result: List[Dict[str, Any]] = []
+    seen = set()
+    for spec in specs:
+        keyword = str(spec.get("query") or spec.get("term") or "").strip()
+        key = normalize_search_query(keyword)
+        if not keyword or not key or key in seen or is_failed_search_query(config, keyword):
+            continue
+        seen.add(key)
+        result.append(spec)
+        if limit is not None and len(result) >= limit:
+            break
+    return result
+
+
+def douyin_publish_time_from_since_hours(since_hours: Any) -> Optional[str]:
+    try:
+        hours = int(since_hours)
+    except (TypeError, ValueError):
+        hours = DEFAULT_SINCE_HOURS
+    if hours <= 0:
+        return None
+    if hours <= 24:
+        return "1"
+    if hours <= 24 * 7:
+        return "7"
+    return "180"
+
+
+def douyin_search_filter_params(config: Dict[str, Any]) -> Dict[str, Any]:
+    douyin_config = config.get("douyin", {})
+    filters = douyin_config.get("search_filters") if isinstance(douyin_config.get("search_filters"), dict) else {}
+    if filters.get("enabled", True) is False:
+        return {}
+    params: Dict[str, Any] = {}
+    publish_time = filters.get("publish_time", "auto")
+    if publish_time == "auto":
+        publish_time = douyin_publish_time_from_since_hours(config.get("since_hours", DEFAULT_SINCE_HOURS))
+    if publish_time not in (None, ""):
+        params["publish_time"] = publish_time
+    for key, value in filters.items():
+        if key in {"enabled", "publish_time"} or value in (None, "", "auto"):
+            continue
+        params[str(key)] = value
+    return params
+
+
+def douyin_search_params(config: Dict[str, Any], **overrides: Any) -> Dict[str, Any]:
+    params: Dict[str, Any] = {"type": "general"}
+    params.update(douyin_search_filter_params(config))
+    params.update({key: value for key, value in overrides.items() if value is not None})
+    return params
+
+
+def build_douyin_browser_search_url(keyword: str, config: Dict[str, Any]) -> str:
+    endpoint = f"https://www.douyin.com/search/{urllib.parse.quote(keyword, safe='')}"
+    return build_url(endpoint, douyin_search_params(config))
 
 
 def http_get_json(
@@ -850,14 +958,16 @@ def build_search_queries(terms: Sequence[HotTerm], config: Dict[str, Any]) -> Li
     for term in terms:
         for pattern in douyin_config.get("search_patterns", ["{term}"]):
             query = str(pattern).format(term=term.word).strip()
-            if query and query not in seen:
-                seen.add(query)
+            query_key = normalize_search_query(query)
+            if query and query_key and query_key not in seen:
+                seen.add(query_key)
                 queries.append({"query": query, "term": term.word, "base_score": term.score, "meme_score": term.meme_score})
             if len(queries) >= int(douyin_config.get("max_search_queries", 30)):
                 return queries
     for keyword in douyin_config.get("fallback_keywords", []):
-        if keyword not in seen:
-            seen.add(keyword)
+        keyword_key = normalize_search_query(keyword)
+        if keyword_key and keyword_key not in seen:
+            seen.add(keyword_key)
             meme_score, reasons = score_meme_potential(keyword, config)
             if meme_score < min_query_score:
                 continue
@@ -1456,7 +1566,7 @@ def collect_douyin_browser_fallback(
                     "url": build_url(str(endpoint), config.get("douyin", {}).get("hotsearch_params") or {}),
                 }
             )
-    for spec in list(queries)[:max_queries]:
+    for spec in available_search_query_specs(config, list(queries), limit=max_queries):
         keyword = str(spec.get("query") or spec.get("term") or "").strip()
         if not keyword:
             continue
@@ -1465,7 +1575,7 @@ def collect_douyin_browser_fallback(
                 "query": keyword,
                 "term": spec.get("term") or keyword,
                 "base_score": float(spec.get("base_score") or 0.0),
-                "url": f"https://www.douyin.com/search/{urllib.parse.quote(keyword, safe='')}?type=general",
+                "url": build_douyin_browser_search_url(keyword, config),
             }
         )
     if use_hot_terms:
@@ -1544,6 +1654,7 @@ def collect_douyin_browser_fallback(
                         html_text = page.content()
                     except PlaywrightTimeoutError as exc:
                         add_warning(config, f"douyin browser fallback timed out for {url}: {short_error_message(exc)}")
+                        remember_failed_search_query(config, spec.get("query") or spec.get("term"))
                         return None
                     visible_text = visible_page_text(page)
                     if looks_like_blocking_challenge(visible_text):
@@ -1575,17 +1686,22 @@ def collect_douyin_browser_fallback(
                 )
                 search_specs: List[Dict[str, Any]] = []
                 seen_queries = set()
-                for spec in build_search_queries(hot_terms, config) + fallback_query_specs:
+                merged_specs = available_search_query_specs(
+                    config,
+                    build_search_queries(hot_terms, config) + fallback_query_specs,
+                )
+                for spec in merged_specs:
                     keyword = str(spec.get("query") or spec.get("term") or "").strip()
-                    if not keyword or keyword in seen_queries:
+                    query_key = normalize_search_query(keyword)
+                    if not keyword or not query_key or query_key in seen_queries:
                         continue
-                    seen_queries.add(keyword)
+                    seen_queries.add(query_key)
                     search_specs.append(
                         {
                             "query": keyword,
                             "term": spec.get("term") or keyword,
                             "base_score": float(spec.get("base_score") or 0.0),
-                            "url": f"https://www.douyin.com/search/{urllib.parse.quote(keyword, safe='')}?type=general",
+                            "url": build_douyin_browser_search_url(keyword, config),
                         }
                     )
                     if len(search_specs) >= max_queries:
@@ -1598,10 +1714,13 @@ def collect_douyin_browser_fallback(
                     add_warning(config, "douyin hot-board discovery produced no usable terms; using fallback meme queries")
 
                 for spec in search_specs:
+                    before_count = len(browser_candidate_artifacts_to_candidates(candidate_artifacts, config))
                     result = visit_spec(spec)
                     if result == "challenge":
                         break
                     extracted = browser_candidate_artifacts_to_candidates(candidate_artifacts, config)
+                    if len(extracted) <= before_count:
+                        remember_failed_search_query(config, spec.get("query") or spec.get("term"))
                     if len(extracted) >= int(config.get("max_candidates", 30)):
                         break
                 return browser_candidate_artifacts_to_candidates(candidate_artifacts, config)
@@ -1648,7 +1767,8 @@ def collect_douyin(config: Dict[str, Any]) -> List[DouyinVideoCandidate]:
     queries = build_search_queries(terms, config)
     endpoint_template = douyin_config.get("endpoint_search", "https://www.douyin.com/search/{keyword}")
 
-    for index, spec in enumerate(queries):
+    available_queries = available_search_query_specs(config, queries)
+    for index, spec in enumerate(available_queries):
         if len(candidates) >= max_candidates:
             break
         if index:
@@ -1657,10 +1777,10 @@ def collect_douyin(config: Dict[str, Any]) -> List[DouyinVideoCandidate]:
         encoded_keyword = urllib.parse.quote(keyword, safe="")
         if "{keyword}" in endpoint_template:
             endpoint = endpoint_template.format(keyword=encoded_keyword)
-            params = {"type": "general"}
+            params = douyin_search_params(config)
         else:
             endpoint = endpoint_template
-            params = {"keyword": keyword, "type": "general"}
+            params = douyin_search_params(config, keyword=keyword)
         source_url = build_url(endpoint, params)
         try:
             html_text, _headers = http_get_text(
@@ -1682,9 +1802,11 @@ def collect_douyin(config: Dict[str, Any]) -> List[DouyinVideoCandidate]:
                     )
                 except FetchError as retry_exc:
                     add_warning(config, f"douyin search skipped for {keyword}: {retry_exc}")
+                    remember_failed_search_query(config, keyword)
                     continue
             else:
                 add_warning(config, f"douyin search skipped for {keyword}: {exc}")
+                remember_failed_search_query(config, keyword)
                 continue
         provider_candidates = parse_douyin_search_html(
             html_text,
@@ -1695,12 +1817,15 @@ def collect_douyin(config: Dict[str, Any]) -> List[DouyinVideoCandidate]:
         )
         if not provider_candidates and looks_like_risk_control(html_text):
             add_warning(config, "douyin returned risk-control content; skip without bypassing platform controls")
+            remember_failed_search_query(config, keyword)
             config["_failed"] = True
             break
+        if not provider_candidates:
+            remember_failed_search_query(config, keyword)
         candidates.extend(provider_candidates)
 
     if len(candidates) < int(config.get("max_total", 3)):
-        candidates.extend(collect_douyin_browser_fallback(config, queries))
+        candidates.extend(collect_douyin_browser_fallback(config, available_search_query_specs(config, queries)))
 
     deduped = dedupe_candidates(candidates)
     deduped.sort(key=lambda candidate: candidate.score, reverse=True)
@@ -1849,7 +1974,7 @@ def filter_recent_candidates(
     candidates: Sequence[DouyinVideoCandidate],
     config: Dict[str, Any],
 ) -> Tuple[List[DouyinVideoCandidate], int]:
-    since_hours = int(config.get("since_hours", 48) or 0)
+    since_hours = int(config.get("since_hours", DEFAULT_SINCE_HOURS) or 0)
     if since_hours <= 0:
         return list(candidates), 0
     now = now_for_config(config)
