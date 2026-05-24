@@ -369,6 +369,7 @@ available_setting = {
     "agent_max_context_tokens": 50000,  # Agent模式下最大上下文tokens
     "agent_max_context_turns": 20,  # Agent模式下最大上下文记忆轮次
     "agent_max_steps": 20,  # Agent模式下单次运行最大决策步数
+    "agent_development_max_steps": 40,  # 代码开发/调试/测试任务的单次运行最大决策步数
     "memory_deep_dream": copy.deepcopy(_DEFAULT_MEMORY_DEEP_DREAM_CONFIG),
     "enable_thinking": False,  # Enable deep-thinking mode for thinking-capable models
     "reasoning_effort": "high",  # Reasoning depth under thinking mode: "high" or "max"

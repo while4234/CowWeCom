@@ -8,6 +8,7 @@ into the CHAT socket protocol format (content chunks with segment_id, tool_calls
 import time
 from typing import Callable, Optional
 
+from common.agent_task_limits import resolve_agent_max_steps
 from common.log import logger
 
 
@@ -170,13 +171,14 @@ class ChatService:
             original_length = len(agent.messages)
 
         from agent.protocol.agent_stream import AgentStreamExecutor
+        run_max_steps = resolve_agent_max_steps(query, conf())
 
         executor = AgentStreamExecutor(
             agent=agent,
             model=agent.model,
             system_prompt=full_system_prompt,
             tools=agent.tools,
-            max_turns=agent.max_steps,
+            max_turns=run_max_steps,
             on_event=on_event,
             messages=messages_copy,
             max_context_turns=max_context_turns,

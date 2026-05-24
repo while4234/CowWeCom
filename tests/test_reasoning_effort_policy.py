@@ -265,9 +265,30 @@ class FakeStreamingModel:
 
     def __init__(self):
         self.requests = []
+        self.calls = 0
 
     def call_stream(self, request):
         self.requests.append(request)
+        self.calls += 1
+        if self.calls == 1:
+            yield {
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_for_summary",
+                            "type": "function",
+                            "function": {
+                                "name": "missing_tool",
+                                "arguments": "{}",
+                            },
+                        }]
+                    }
+                }]
+            }
+            yield {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+            return
+
         yield {"choices": [{"delta": {"content": "done"}, "finish_reason": None}]}
         yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
 

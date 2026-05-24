@@ -9,6 +9,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from bridge.context import *
 from bridge.reply import *
 from channel.channel import Channel
+from common.agent_task_limits import resolve_agent_max_steps
 from common.agent_task_runtime import SessionRuntime, TaskPolicy
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common import memory
@@ -824,9 +825,11 @@ class ChatChannel(Channel):
                         context = runtime.queue.get()
                         dequeued_at = monotonic()
                         context["_latency_dequeued_at"] = dequeued_at
+                        agent_max_steps = resolve_agent_max_steps(context.content, conf())
+                        context["_agent_max_steps"] = agent_max_steps
                         token = runtime.start_task(
                             context.content,
-                            max_turns=conf().get("agent_max_steps", 0),
+                            max_turns=agent_max_steps,
                         )
                         context["_session_runtime"] = runtime
                         context["_cancellation_token"] = token

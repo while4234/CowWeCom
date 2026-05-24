@@ -380,7 +380,8 @@ class Agent:
             on_event=None,
             clear_history: bool = False,
             skill_filter=None,
-            cancellation_token=None) -> str:
+            cancellation_token=None,
+            max_steps=None) -> str:
         """
         Execute single agent task with streaming (based on tool-call)
 
@@ -396,6 +397,7 @@ class Agent:
                      event = {"type": str, "timestamp": float, "data": dict}
             clear_history: If True, clear conversation history before this call (default: False)
             skill_filter: Optional list of skill names to include in this run
+            max_steps: Optional per-run override for the decision-step limit
 
         Returns:
             Final response text
@@ -429,6 +431,10 @@ class Agent:
         # Get max_context_turns from config
         from config import conf
         max_context_turns = conf().get("agent_max_context_turns", 20)
+        try:
+            run_max_steps = self.max_steps if max_steps is None else max(1, int(max_steps))
+        except (TypeError, ValueError):
+            run_max_steps = self.max_steps
         
         # Create stream executor with copied message history
         executor = AgentStreamExecutor(
@@ -436,7 +442,7 @@ class Agent:
             model=self.model,
             system_prompt=full_system_prompt,
             tools=self.tools,
-            max_turns=self.max_steps,
+            max_turns=run_max_steps,
             on_event=on_event,
             messages=messages_copy,  # Pass copied message history
             max_context_turns=max_context_turns,

@@ -12,6 +12,7 @@ from bridge.bridge import Bridge
 from bridge.context import Context
 from bridge.reply import Reply, ReplyType
 from common import const
+from common.agent_task_limits import is_development_task, resolve_agent_max_steps
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common.log import logger
 from common.utils import expand_path
@@ -716,7 +717,6 @@ class AgentBridge:
             # blow up prompt cost. Regular user chats are not touched here —
             # the agent's own context manager handles that path.
             if conversation_id and conversation_id.startswith("scheduler_"):
-                from config import conf
                 scheduler_keep_turns = max(
                     1, int(conf().get("agent_max_context_turns", 20)) // 5
                 )
@@ -725,11 +725,23 @@ class AgentBridge:
             try:
                 # Use agent's run_stream method with event handler
                 run_stream_start = monotonic()
+                max_steps_override = context.get("_agent_max_steps") if context else None
+                run_max_steps = resolve_agent_max_steps(
+                    query,
+                    conf(),
+                    override=max_steps_override,
+                )
+                logger.info(
+                    "[AgentBridge] Using max_steps=%s development_task=%s",
+                    run_max_steps,
+                    is_development_task(query),
+                )
                 response = agent.run_stream(
                     user_message=query,
                     on_event=event_handler.handle_event,
                     clear_history=clear_history,
                     cancellation_token=cancellation_token,
+                    max_steps=run_max_steps,
                 )
                 run_stream_elapsed = elapsed(run_stream_start)
             finally:
