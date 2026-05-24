@@ -2,9 +2,9 @@
 
 """Task-level reasoning-effort routing for Agent conversations.
 
-The policy keeps development and high-risk work on quality effort while routing
-ordinary non-development chat to the configured default effort for lower
-latency.
+The policy is local-only and intentionally conservative:
+- high-confidence low-risk tasks use the configured default effort;
+- development, high-risk, and uncertain tasks use the configured quality effort.
 
 No raw prompt text, session ids, API keys, or tool arguments are persisted by
 the audit log.
@@ -90,8 +90,8 @@ def resolve_reasoning_effort_for_task(user_message: str, model_adapter: Any) -> 
     task_id = uuid.uuid4().hex[:12]
     local_effort, local_rule = classify_local_task(user_message, quality_effort, default_effort)
     if not local_effort:
-        local_effort = default_effort
-        local_rule = "general_default_medium"
+        local_effort = quality_effort
+        local_rule = "uncertain_default_quality"
 
     decision = ReasoningEffortDecision(
         task_id=task_id,
@@ -403,6 +403,7 @@ def _match_medium_rule(text: str) -> str:
         "short_summary": r"(总结|摘要|概括|summari[sz]e).{0,120}$",
         "sentence_check": r"(语病|错别字|有没有问题|看看这句话|检查这句话).{0,120}$",
         "short_writing": r"(写一条|写一封|起.*?标题|取.*?标题|拟.*?标题|短信|文案|标题|祝福语|邮件).{0,120}$",
+        "daily_expression_advice": r"(怎么回复|怎么说|如何回复|如何表达|沟通建议|安慰|鼓励|朋友圈|起名|取名).{0,120}$",
         "simple_explain": r"^(简单)?(解释|说明).{0,120}$|是什么[？?]?$|什么意思[？?]?$",
     }
     for rule, pattern in medium_patterns.items():

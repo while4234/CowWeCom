@@ -83,13 +83,13 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertEqual(effort, "medium")
         self.assertEqual(rule, "greeting")
 
-    def test_general_non_development_task_defaults_to_medium(self):
+    def test_uncertain_task_defaults_to_local_quality_effort(self):
         model = FakePolicyModel(response='{"effort":"medium","reason":"short"}')
         decision = resolve_reasoning_effort_for_task("please look at whether this sentence has issues", model)
 
-        self.assertEqual(decision.selected_effort, "medium")
+        self.assertEqual(decision.selected_effort, "xhigh")
         self.assertEqual(decision.decision_source, "local")
-        self.assertEqual(decision.reason, "general_default_medium")
+        self.assertEqual(decision.reason, "uncertain_default_quality")
         self.assertEqual(model.calls, [])
 
     def test_chinese_simple_explain_uses_medium(self):
@@ -112,6 +112,8 @@ class TestReasoningEffortPolicy(unittest.TestCase):
             "这句话是什么意思？": "simple_explain",
             "把这句话翻译成英文：我明天到。": "short_translation",
             "润色这句话：今天会议我会晚点到。": "short_rewrite",
+            "帮我想想怎么回复这条消息": "daily_expression_advice",
+            "给这个小项目取名": "daily_expression_advice",
         }
 
         for text, expected_rule in cases.items():
