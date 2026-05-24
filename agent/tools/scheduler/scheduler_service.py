@@ -355,6 +355,12 @@ class SchedulerService:
         return text or "unknown error"
 
     def _send_notice(self, task: dict, notice_type: str, content: str) -> None:
+        if self._is_system_task(task):
+            logger.debug(
+                f"[Scheduler] Suppressed {notice_type} notice for system task "
+                f"{task.get('id')}"
+            )
+            return
         try:
             notice_task = self._build_notice_task(task, notice_type, content)
             self.notify_callback(notice_task)
@@ -363,6 +369,12 @@ class SchedulerService:
                 f"[Scheduler] Failed to send {notice_type} notice for "
                 f"task {task.get('id')}: {e}"
             )
+
+    @staticmethod
+    def _is_system_task(task: dict) -> bool:
+        action = task.get("action", {}) if isinstance(task, dict) else {}
+        action_type = str(action.get("type") or "")
+        return bool(task.get("system") or action_type.startswith("system_"))
 
     @staticmethod
     def _build_notice_task(task: dict, notice_type: str, content: str) -> dict:

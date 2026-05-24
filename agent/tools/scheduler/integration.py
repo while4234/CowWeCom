@@ -4,7 +4,9 @@ Integration module for scheduler with AgentBridge
 
 import os
 import threading
+from datetime import datetime
 from typing import Optional
+from croniter import croniter
 from config import conf
 from common.log import logger
 from common.utils import expand_path
@@ -14,6 +16,8 @@ from bridge.reply import Reply, ReplyType
 # Global scheduler service instance
 _scheduler_service = None
 _task_store = None
+LLM_BACKEND_AUTO_SWITCH_TASK_ID = "system_llm_backend_auto_switch"
+LLM_BACKEND_AUTO_SWITCH_ACTION = "system_llm_backend_auto_switch"
 # Module-level lock to guard idempotent initialization across threads
 _init_lock = threading.Lock()
 
@@ -27,6 +31,60 @@ def _current_agent_bridge(fallback_agent_bridge):
     except Exception as e:
         logger.debug(f"[Scheduler] Falling back to captured AgentBridge: {e}")
         return fallback_agent_bridge
+
+
+def ensure_llm_backend_auto_switch_task(task_store, now: Optional[datetime] = None) -> Optional[dict]:
+    """Ensure the global LLM backend check is a hidden CowChat system task."""
+    if task_store is None:
+        return None
+
+    from common.llm_backend_auto_switcher import scheduler_cron_expression
+    from common.llm_backend_router import get_llm_backend_config
+
+    now = now or datetime.now()
+    cfg = get_llm_backend_config()
+    auto_cfg = cfg.get("auto_switch") if isinstance(cfg.get("auto_switch"), dict) else {}
+    enabled = bool(auto_cfg.get("enabled", True))
+    expression = scheduler_cron_expression()
+    task = {
+        "id": LLM_BACKEND_AUTO_SWITCH_TASK_ID,
+        "name": "LLM backend daily auto switch",
+        "enabled": enabled,
+        "system": True,
+        "hidden": True,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "schedule": {"type": "cron", "expression": expression},
+        "action": {
+            "type": LLM_BACKEND_AUTO_SWITCH_ACTION,
+            "description": "Run the global LLM backend daily route check",
+        },
+        "next_run_at": _next_cron_run(expression, now).isoformat(),
+    }
+
+    existing = task_store.get_task(LLM_BACKEND_AUTO_SWITCH_TASK_ID)
+    if not existing:
+        task_store.add_task(task)
+        logger.info("[Scheduler] Registered system task: %s", LLM_BACKEND_AUTO_SWITCH_TASK_ID)
+        return task
+
+    existing_schedule = existing.get("schedule") if isinstance(existing.get("schedule"), dict) else {}
+    updates = {
+        "name": task["name"],
+        "enabled": enabled,
+        "system": True,
+        "hidden": True,
+        "schedule": task["schedule"],
+        "action": task["action"],
+    }
+    if existing_schedule.get("expression") != expression or not existing.get("next_run_at"):
+        updates["next_run_at"] = task["next_run_at"]
+    task_store.update_task(LLM_BACKEND_AUTO_SWITCH_TASK_ID, updates)
+    return task_store.get_task(LLM_BACKEND_AUTO_SWITCH_TASK_ID)
+
+
+def _next_cron_run(expression: str, now: datetime) -> datetime:
+    return croniter(expression, now).get_next(datetime)
 
 
 def init_scheduler(agent_bridge) -> bool:
@@ -68,14 +126,19 @@ def init_scheduler(agent_bridge) -> bool:
                 _task_store = TaskStore(store_path)
                 logger.debug(f"[Scheduler] Task store initialized: {store_path}")
 
+            ensure_llm_backend_auto_switch_task(_task_store)
+
             # Create execute callback
             def execute_task_callback(task: dict):
                 """Callback to execute a scheduled task"""
                 try:
-                    current_agent_bridge = _current_agent_bridge(agent_bridge)
                     action = task.get("action", {})
                     action_type = action.get("type")
 
+                    if action_type == LLM_BACKEND_AUTO_SWITCH_ACTION:
+                        return _execute_llm_backend_auto_switch(task)
+
+                    current_agent_bridge = _current_agent_bridge(agent_bridge)
                     if action_type == "agent_task":
                         return _execute_agent_task(task, current_agent_bridge)
                     elif action_type == "send_message":
@@ -292,6 +355,29 @@ def _send_scheduler_reply(task: dict, channel_type: str, receiver: str, reply: R
         import traceback
 
         logger.error(f"[Scheduler] Traceback: {traceback.format_exc()}")
+        return False
+
+
+def _execute_llm_backend_auto_switch(task: dict) -> bool:
+    """Run the global LLM backend route check without involving Agent/LLM."""
+    try:
+        from common.llm_backend_auto_switcher import run_once
+
+        state = run_once()
+        auto = state.get("auto", {}) if isinstance(state, dict) else {}
+        logger.info(
+            "[Scheduler] System task %s completed: decision=%s reason=%s",
+            task.get("id", LLM_BACKEND_AUTO_SWITCH_TASK_ID),
+            auto.get("last_decision", ""),
+            auto.get("last_reason", ""),
+        )
+        return True
+    except Exception as e:
+        logger.warning(
+            "[Scheduler] System task %s failed: %s",
+            task.get("id", LLM_BACKEND_AUTO_SWITCH_TASK_ID),
+            str(e)[:300],
+        )
         return False
 
 

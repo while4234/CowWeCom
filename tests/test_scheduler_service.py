@@ -104,6 +104,37 @@ class SchedulerServiceTest(unittest.TestCase):
             self.assertIn("定时任务已暂停", calls[0]["action"]["content"])
             self.assertIn("invalid next_run_at", task["last_error"])
 
+    def test_system_task_failure_does_not_send_user_notice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = TaskStore(os.path.join(tmp, "tasks.json"))
+            store.add_task({
+                "id": "system_llm_backend_auto_switch",
+                "name": "LLM backend daily auto switch",
+                "enabled": True,
+                "system": True,
+                "hidden": True,
+                "created_at": "2026-05-23T23:00:00",
+                "updated_at": "2026-05-23T23:00:00",
+                "schedule": {"type": "cron", "expression": "0 0 * * *"},
+                "action": {"type": "system_llm_backend_auto_switch"},
+                "next_run_at": "2026-05-24T00:00:00",
+            })
+            executions = []
+            notices = []
+
+            def execute(task):
+                executions.append(task)
+                return False
+
+            service = SchedulerService(store, execute, notify_callback=notices.append)
+            service._check_and_execute_tasks(datetime(2026, 5, 24, 0, 0, 1))
+
+            task = store.get_task("system_llm_backend_auto_switch")
+            self.assertEqual(len(executions), 1)
+            self.assertEqual(notices, [])
+            self.assertEqual(task["next_run_at"], "2026-05-25T00:00:00")
+            self.assertIn("scheduled task execution returned failure", task["last_error"])
+
 
 if __name__ == "__main__":
     unittest.main()

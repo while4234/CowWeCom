@@ -1,10 +1,24 @@
+import os
+import tempfile
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.tools.scheduler.integration import _current_agent_bridge, _execute_agent_task, _execute_send_message, _execute_tool_call
+from agent.tools.scheduler.integration import (
+    LLM_BACKEND_AUTO_SWITCH_ACTION,
+    LLM_BACKEND_AUTO_SWITCH_TASK_ID,
+    _current_agent_bridge,
+    _execute_agent_task,
+    _execute_llm_backend_auto_switch,
+    _execute_send_message,
+    _execute_tool_call,
+    ensure_llm_backend_auto_switch_task,
+)
 from agent.tools.scheduler.scheduler_tool import SchedulerTool
+from agent.tools.scheduler.task_store import TaskStore
 from bridge.context import Context, ContextType
+from config import conf
 
 
 class FakeAgentBridge:
@@ -315,6 +329,58 @@ class TestSchedulerExecutionIdentity(unittest.TestCase):
             _execute_tool_call(task, bridge)
 
         create_tool.assert_not_called()
+
+    def test_registers_llm_backend_auto_switch_as_hidden_system_task_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_llm_backend = conf().get("llm_backend")
+            conf()["llm_backend"] = {
+                "current_backend": "capi",
+                "state_path": os.path.join(tmp, "state.json"),
+                "auto_switch": {"enabled": True, "check_time": "00:00"},
+            }
+            try:
+                store = TaskStore(os.path.join(tmp, "tasks.json"))
+                now = datetime(2026, 5, 24, 23, 0, 0)
+
+                first = ensure_llm_backend_auto_switch_task(store, now=now)
+                second = ensure_llm_backend_auto_switch_task(store, now=now)
+                tasks = store.list_tasks()
+
+                self.assertEqual(len(tasks), 1)
+                self.assertEqual(first["id"], LLM_BACKEND_AUTO_SWITCH_TASK_ID)
+                self.assertEqual(second["id"], LLM_BACKEND_AUTO_SWITCH_TASK_ID)
+                self.assertTrue(tasks[0]["system"])
+                self.assertTrue(tasks[0]["hidden"])
+                self.assertTrue(tasks[0]["enabled"])
+                self.assertEqual(tasks[0]["schedule"], {"type": "cron", "expression": "0 0 * * *"})
+                self.assertEqual(tasks[0]["action"]["type"], LLM_BACKEND_AUTO_SWITCH_ACTION)
+                self.assertNotEqual(tasks[0]["action"]["type"], "agent_task")
+                self.assertNotIn("receiver", tasks[0]["action"])
+                self.assertNotIn("notify_session_id", tasks[0]["action"])
+                self.assertIsNone(tasks[0].get("owner_actor_id"))
+            finally:
+                if old_llm_backend is None:
+                    conf().pop("llm_backend", None)
+                else:
+                    conf()["llm_backend"] = old_llm_backend
+
+    def test_llm_backend_auto_switch_action_runs_router_without_agent_reply(self):
+        bridge = FakeAgentBridge()
+        task = {
+            "id": LLM_BACKEND_AUTO_SWITCH_TASK_ID,
+            "system": True,
+            "action": {"type": LLM_BACKEND_AUTO_SWITCH_ACTION},
+        }
+
+        with patch("common.llm_backend_auto_switcher.run_once", return_value={"auto": {"last_decision": "kept"}}) as run_once, patch(
+            "agent.tools.scheduler.integration._send_scheduler_reply"
+        ) as send_reply:
+            result = _execute_llm_backend_auto_switch(task)
+
+        self.assertTrue(result)
+        run_once.assert_called_once()
+        send_reply.assert_not_called()
+        self.assertFalse(hasattr(bridge, "query"))
 
 
 if __name__ == "__main__":

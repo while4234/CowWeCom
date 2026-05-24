@@ -37,6 +37,13 @@ def run_once() -> Dict[str, Any]:
     return evaluate_midnight_backend_route(quota_payload_factory=_query_codex_quota_json, now=datetime.now())
 
 
+def scheduler_cron_expression() -> str:
+    """Return the CowChat scheduler cron expression for the daily backend check."""
+    check_time = str(get_llm_backend_config().get("auto_switch", {}).get("check_time") or "00:00")
+    hour, minute = _parse_check_time(check_time)
+    return f"{minute} {hour} * * *"
+
+
 def _run_loop() -> None:
     while True:
         try:
