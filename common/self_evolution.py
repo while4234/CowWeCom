@@ -1,8 +1,9 @@
 """
 Lightweight self-evolution memory for reusable execution mistakes.
 
-This module is intentionally side-channel only: callers should not append its
-records to conversation history, emit agent events, or alter tool results.
+This module stores side-channel lessons and exposes deterministic local command
+policies. Callers should not append records to conversation history or emit
+agent events when these policies are applied.
 """
 
 from __future__ import annotations
@@ -11,9 +12,11 @@ import json
 import os
 import platform
 import re
+import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from common.log import logger
 from common.utils import expand_path
@@ -23,6 +26,9 @@ DATA_DIR_NAME = "cowagent-self-evolution"
 ERRORS_FILE = "reusable_errors.jsonl"
 ACTIVE_RULES_FILE = "active_rules.json"
 RULE_ID_WINDOWS_SHELL = "windows-shell-dialect"
+RULE_ID_WINDOWS_CMD_SET_QUOTING = "windows-cmd-env-set-quoting"
+RULE_ID_WINDOWS_PYTHON_C_QUOTING = "windows-python-c-quoting"
+RULE_ID_WINDOWS_NPM_CMD_SHIM = "windows-npm-cmd-shim"
 
 WINDOWS_SHELL_NEXT_ACTION = (
     "On Windows, CowAgent's bash tool runs through cmd.exe. Avoid Bash "
@@ -41,6 +47,55 @@ WINDOWS_SHELL_SEED_RULE = {
     "last_seen": "seed",
 }
 
+WINDOWS_CMD_SET_NEXT_ACTION = (
+    "When using cmd.exe, set environment variables before a command with "
+    "quoted syntax such as set \"PYTHONUTF8=1\" && python ... so trailing "
+    "spaces are not included in the value."
+)
+
+WINDOWS_PYTHON_C_NEXT_ACTION = (
+    "On Windows cmd.exe, avoid multi-line or heavily quoted python -c snippets; "
+    "write a temporary .py file or use a short, single-line command instead."
+)
+
+WINDOWS_NPM_CMD_SHIM_NEXT_ACTION = (
+    "When Python subprocess launches npm-installed CLIs on Windows, resolve the "
+    ".cmd or .exe shim explicitly, for example clawhub.cmd, npx.cmd, or "
+    "openclaw.cmd."
+)
+
+_LESSONS_BY_ID = {
+    RULE_ID_WINDOWS_SHELL: {
+        "id": RULE_ID_WINDOWS_SHELL,
+        "summary": "Windows shell dialect mistakes in CowAgent bash tool",
+        "next_action": WINDOWS_SHELL_NEXT_ACTION,
+    },
+    RULE_ID_WINDOWS_CMD_SET_QUOTING: {
+        "id": RULE_ID_WINDOWS_CMD_SET_QUOTING,
+        "summary": "Windows cmd.exe environment assignment needs quoted set syntax",
+        "next_action": WINDOWS_CMD_SET_NEXT_ACTION,
+    },
+    RULE_ID_WINDOWS_PYTHON_C_QUOTING: {
+        "id": RULE_ID_WINDOWS_PYTHON_C_QUOTING,
+        "summary": "Windows cmd.exe fragile python -c quoting",
+        "next_action": WINDOWS_PYTHON_C_NEXT_ACTION,
+    },
+    RULE_ID_WINDOWS_NPM_CMD_SHIM: {
+        "id": RULE_ID_WINDOWS_NPM_CMD_SHIM,
+        "summary": "Windows Python subprocess needs npm CLI .cmd shims",
+        "next_action": WINDOWS_NPM_CMD_SHIM_NEXT_ACTION,
+    },
+}
+
+
+@dataclass(frozen=True)
+class WindowsShellPolicyDecision:
+    """Deterministic command guard result; contains no persisted history."""
+
+    command: str
+    applied_rule_ids: Tuple[str, ...] = ()
+    block_reason: str = ""
+
 _SECRET_PATTERNS = [
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}"), "Bearer <redacted>"),
     (re.compile(r"(?i)\b(sk-[A-Za-z0-9_-]{8,})"), "sk-<redacted>"),
@@ -52,6 +107,8 @@ _SECRET_PATTERNS = [
         r"\1=<redacted>",
     ),
 ]
+_ACTIVE_RULES_CACHE: Dict[str, Tuple[float, Dict[str, Dict[str, Any]]]] = {}
+_ACTIVE_RULES_LOCK = threading.Lock()
 
 _UNIX_COMMAND_RE = re.compile(
     r"(^|[\s&|;()])(?:grep|sed|awk|head|tail|cat|touch|chmod|which)\b",
@@ -72,6 +129,15 @@ def classify_windows_shell_failure(command: str, output: str = "") -> Optional[D
     output = output or ""
     command_lower = command.lower()
     output_lower = output.lower()
+
+    if _has_unquoted_cmd_set_assignment(command):
+        return _lesson(RULE_ID_WINDOWS_CMD_SET_QUOTING)
+    if "invalid pythonutf8 environment variable value" in output_lower:
+        return _lesson(RULE_ID_WINDOWS_CMD_SET_QUOTING)
+    if _uses_fragile_python_c(command) and _looks_like_cmd_quoting_failure(output):
+        return _lesson(RULE_ID_WINDOWS_PYTHON_C_QUOTING)
+    if _looks_like_missing_npm_shim(command, output):
+        return _lesson(RULE_ID_WINDOWS_NPM_CMD_SHIM)
 
     triggers: List[str] = []
 
@@ -106,6 +172,64 @@ def classify_windows_shell_failure(command: str, output: str = "") -> Optional[D
     }
 
 
+def apply_windows_shell_policies(command: str) -> WindowsShellPolicyDecision:
+    """
+    Apply cheap deterministic Windows shell fixes before cmd.exe execution.
+
+    This intentionally does not read active_rules.json. It is safe to run for
+    every bash command because it only uses compiled regex checks in memory.
+    """
+    original = command or ""
+    rewritten = original
+    applied: List[str] = []
+
+    rewritten, changed = _quote_cmd_set_assignments(rewritten)
+    if changed:
+        applied.append(RULE_ID_WINDOWS_CMD_SET_QUOTING)
+
+    if _uses_fragile_python_c(rewritten) and ("\n" in rewritten or "\r" in rewritten):
+        return WindowsShellPolicyDecision(
+            command=rewritten,
+            applied_rule_ids=tuple(dict.fromkeys(applied + [RULE_ID_WINDOWS_PYTHON_C_QUOTING])),
+            block_reason=WINDOWS_PYTHON_C_NEXT_ACTION,
+        )
+
+    return WindowsShellPolicyDecision(
+        command=rewritten,
+        applied_rule_ids=tuple(dict.fromkeys(applied)),
+    )
+
+
+def record_windows_shell_policy_application(
+    rule_id: str,
+    command: str,
+    action: str,
+    workspace_root: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Record a deterministic command policy application as a compact lesson."""
+    lesson = _lesson(rule_id)
+    if not lesson:
+        return None
+
+    data_dir = get_data_dir(workspace_root)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    now = _utc_now()
+
+    event = {
+        "id": lesson["id"],
+        "summary": lesson["summary"],
+        "next_action": lesson["next_action"],
+        "event": "policy_applied",
+        "action": _preview(action, limit=200),
+        "seen_at": now,
+        "command_preview": _preview(command),
+    }
+    _append_jsonl(data_dir / ERRORS_FILE, event)
+    rule = _upsert_active_rule(data_dir / ACTIVE_RULES_FILE, lesson, event, now)
+    logger.info("[SelfEvolution] Applied reusable shell policy: %s", lesson["id"])
+    return rule
+
+
 def record_windows_shell_failure(
     command: str,
     output: str = "",
@@ -131,28 +255,7 @@ def record_windows_shell_failure(
         "output_preview": _preview(output),
     }
     _append_jsonl(data_dir / ERRORS_FILE, event)
-
-    active = _load_active_rules_map(data_dir / ACTIVE_RULES_FILE)
-    existing = active.get(lesson["id"])
-    if existing:
-        count = int(existing.get("count", 0) or 0) + 1
-        first_seen = existing.get("first_seen") or now
-    else:
-        count = 1
-        first_seen = now
-
-    rule = {
-        "id": lesson["id"],
-        "summary": lesson["summary"],
-        "next_action": lesson["next_action"],
-        "count": count,
-        "first_seen": first_seen,
-        "last_seen": now,
-        "command_preview": event["command_preview"],
-        "output_preview": event["output_preview"],
-    }
-    active[lesson["id"]] = rule
-    _write_active_rules(data_dir / ACTIVE_RULES_FILE, active)
+    rule = _upsert_active_rule(data_dir / ACTIVE_RULES_FILE, lesson, event, now)
     logger.info("[SelfEvolution] Recorded reusable shell lesson: %s", lesson["id"])
     return rule
 
@@ -214,7 +317,12 @@ def _append_jsonl(path: Path, record: Dict[str, Any]) -> None:
 def _load_active_rules_map(path: Path) -> Dict[str, Dict[str, Any]]:
     if not path.is_file():
         return {}
+    cache_key = str(path)
     try:
+        mtime = path.stat().st_mtime
+        cached = _ACTIVE_RULES_CACHE.get(cache_key)
+        if cached and cached[0] == mtime:
+            return dict(cached[1])
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
         logger.warning("[SelfEvolution] Failed to read active rules: %s", e)
@@ -235,6 +343,10 @@ def _load_active_rules_map(path: Path) -> Dict[str, Dict[str, Any]]:
         rule_id = str(item.get("id") or "").strip()
         if rule_id:
             active[rule_id] = item
+    try:
+        _ACTIVE_RULES_CACHE[cache_key] = (mtime, dict(active))
+    except Exception:
+        pass
     return active
 
 
@@ -246,6 +358,42 @@ def _write_active_rules(path: Path, active: Dict[str, Dict[str, Any]]) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp_path, path)
+    try:
+        _ACTIVE_RULES_CACHE[str(path)] = (path.stat().st_mtime, dict(active))
+    except Exception:
+        pass
+
+
+def _upsert_active_rule(
+    path: Path,
+    lesson: Dict[str, str],
+    event: Dict[str, Any],
+    now: str,
+) -> Dict[str, Any]:
+    with _ACTIVE_RULES_LOCK:
+        active = _load_active_rules_map(path)
+        existing = active.get(lesson["id"])
+        if existing:
+            count = int(existing.get("count", 0) or 0) + 1
+            first_seen = existing.get("first_seen") or now
+        else:
+            count = 1
+            first_seen = now
+
+        rule = {
+            "id": lesson["id"],
+            "summary": lesson["summary"],
+            "next_action": lesson["next_action"],
+            "count": count,
+            "first_seen": first_seen,
+            "last_seen": now,
+        }
+        for key in ("command_preview", "output_preview", "action"):
+            if event.get(key):
+                rule[key] = event[key]
+        active[lesson["id"]] = rule
+        _write_active_rules(path, active)
+        return rule
 
 
 def _sorted_rules(active: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -254,6 +402,69 @@ def _sorted_rules(active: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         key=lambda item: (int(item.get("count", 0) or 0), str(item.get("last_seen", ""))),
         reverse=True,
     )
+
+
+_CMD_SET_ASSIGNMENT_RE = re.compile(
+    r"(?P<prefix>^|(?:&&|\|\|)\s*)set\s+"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)="
+    r"(?P<value>[^&|\r\n]*?)"
+    r"(?P<sep>\s*(?:&&|\|\|))",
+    re.IGNORECASE,
+)
+
+
+def _quote_cmd_set_assignments(command: str) -> Tuple[str, bool]:
+    changed = False
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal changed
+        prefix = match.group("prefix")
+        name = match.group("name")
+        value = match.group("value").strip()
+        sep = match.group("sep").strip()
+        changed = True
+        return f'{prefix}set "{name}={value}" {sep}'
+
+    return _CMD_SET_ASSIGNMENT_RE.sub(replace, command or ""), changed
+
+
+def _has_unquoted_cmd_set_assignment(command: str) -> bool:
+    return bool(_CMD_SET_ASSIGNMENT_RE.search(command or ""))
+
+
+def _uses_fragile_python_c(command: str) -> bool:
+    return bool(re.search(r"(^|[\s&|;()])(?:python|python3|py)(?:\.exe)?\s+-c\s+", command or "", re.IGNORECASE))
+
+
+def _looks_like_cmd_quoting_failure(output: str) -> bool:
+    lower = (output or "").lower()
+    markers = (
+        'file "<string>"',
+        "syntaxerror",
+        "indentationerror",
+        "was unexpected at this time",
+        "the syntax of the command is incorrect",
+        "unexpected token",
+    )
+    return any(marker in lower for marker in markers)
+
+
+def _looks_like_missing_npm_shim(command: str, output: str) -> bool:
+    combined = f"{command}\n{output}".lower()
+    if not any(name in combined for name in ("clawhub", "openclaw", "npx")):
+        return False
+    markers = (
+        "[winerror 2]",
+        "the system cannot find the file specified",
+        "no such file or directory",
+        "not recognized as an internal or external command",
+    )
+    return any(marker in combined for marker in markers)
+
+
+def _lesson(rule_id: str) -> Optional[Dict[str, str]]:
+    lesson = _LESSONS_BY_ID.get(rule_id)
+    return dict(lesson) if lesson else None
 
 
 def _preview(text: str, limit: int = 800) -> str:

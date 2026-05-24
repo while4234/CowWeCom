@@ -84,6 +84,19 @@ SAFETY:
                 return ToolResult.fail(
                     f"Safety Warning: {warning}\n\nIf you believe this command is safe and necessary, please ask the user for confirmation first, explaining what the command does and why it's needed.")
 
+        if self._IS_WIN:
+            guard = self._apply_windows_shell_policies(command)
+            for rule_id in guard.applied_rule_ids:
+                self._record_policy_application(rule_id, original_command, "windows shell guard")
+            if guard.block_reason:
+                self._record_reusable_failure(original_command, guard.block_reason, 1)
+                return ToolResult.fail({
+                    "output": guard.block_reason,
+                    "exit_code": 1,
+                    "details": {"self_evolution_guard": True},
+                })
+            command = guard.command
+
         try:
             # Prepare environment with .env file variables
             env = os.environ.copy()
@@ -255,6 +268,30 @@ SAFETY:
             record_windows_shell_failure(command, output, exit_code=exit_code)
         except Exception as e:
             logger.debug(f"[Bash] Self-evolution logging skipped: {e}")
+
+    def _record_policy_application(self, rule_id: str, command: str, action: str) -> None:
+        """Persist deterministic guard applications without changing tool output."""
+        if not self._IS_WIN:
+            return
+        try:
+            from common.self_evolution import record_windows_shell_policy_application
+
+            record_windows_shell_policy_application(rule_id, command, action)
+        except Exception as e:
+            logger.debug(f"[Bash] Self-evolution policy logging skipped: {e}")
+
+    @staticmethod
+    def _apply_windows_shell_policies(command: str):
+        """Run cheap Windows command guards without reading persistent history."""
+        try:
+            from common.self_evolution import apply_windows_shell_policies
+
+            return apply_windows_shell_policies(command)
+        except Exception as e:
+            logger.debug(f"[Bash] Self-evolution guard skipped: {e}")
+            from types import SimpleNamespace
+
+            return SimpleNamespace(command=command, applied_rule_ids=(), block_reason="")
 
     def _get_safety_warning(self, command: str) -> str:
         """

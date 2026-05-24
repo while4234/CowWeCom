@@ -99,6 +99,41 @@ class TestToolAttemptMemory(unittest.TestCase):
             self.assertNotIn("api-key", serialized)
             self.assertNotIn(r"D:\private", serialized)
 
+    def test_policy_shape_skip_for_repeated_unsupported_action_across_ids(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = ToolAttemptMemory(tmpdir)
+            for index in range(3):
+                memory.record_attempt(
+                    "scheduler",
+                    {"action": "teleport", "task_id": f"task-{index}"},
+                    "error",
+                    "Unknown action: teleport",
+                )
+
+            decision = memory.should_skip(
+                "scheduler",
+                {"action": "teleport", "task_id": "task-new"},
+            )
+
+            self.assertTrue(decision.should_skip)
+            self.assertEqual(decision.failure_class, FAILURE_NON_RETRYABLE_ARGS)
+            self.assertIn("rule=policy_shape", decision.reason)
+
+    def test_policy_shape_does_not_skip_value_specific_missing_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = ToolAttemptMemory(tmpdir)
+            for index in range(3):
+                memory.record_attempt(
+                    "read",
+                    {"path": fr"D:\missing-{index}.md"},
+                    "error",
+                    "File not found",
+                )
+
+            decision = memory.should_skip("read", {"path": r"D:\different.md"})
+
+            self.assertFalse(decision.should_skip)
+
 
 if __name__ == "__main__":
     unittest.main()

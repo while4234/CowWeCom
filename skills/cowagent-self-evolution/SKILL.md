@@ -11,7 +11,7 @@ metadata:
 
 # CowAgent Self Evolution
 
-Use this skill to inspect or manually maintain CowAgent's local self-evolution records. Normal automatic recording is handled by the runtime and does not require the agent to call this script.
+Use this skill to inspect or manually maintain CowAgent's local self-evolution records. Normal automatic recording and deterministic policy application are handled by the runtime and do not require the agent to call this script.
 
 ## Storage
 
@@ -21,8 +21,14 @@ Runtime records are stored under:
 
 Files:
 
-- `reusable_errors.jsonl` - append-only event log with redacted command/output previews.
-- `active_rules.json` - compact rules injected into future system prompts.
+- `reusable_errors.jsonl` - append-only event log with redacted command/output previews and deterministic policy applications.
+- `active_rules.json` - compact rules used for bounded prompt guidance and local execution policies.
+
+Tool-attempt policy records are stored separately under:
+
+`<agent_workspace>/data/tool-attempt-memory/`
+
+That store keeps only hashes, counts, failure classes, and safe selector-shaped argument metadata. It does not store raw tool arguments, raw outputs, prompts, private paths, tokens, or API keys.
 
 Do not store secrets, raw `.env` values, cookies, tokens, API keys, or private auth paths in these records.
 
@@ -47,6 +53,8 @@ Commands:
 ## Operating Rules
 
 - Prefer the runtime's automatic side-channel recorder. It does not consume `agent_max_steps`, does not add messages to conversation history, and does not send WeChat-visible notices.
+- CowAgent loads compact tool-attempt rules once per user request and uses an in-process mtime cache; individual tool calls use in-memory lookups rather than scanning historical logs.
+- High-confidence local policies can be applied before execution, such as rewriting unsafe Windows cmd environment assignment syntax or blocking fragile multi-line `python -c` snippets before launching `cmd.exe`.
 - Use this script only for diagnostics, manual backfill, or confirming that active rules exist.
 - For Windows shell work, remember that CowAgent's `bash` tool runs through `cmd.exe`. Avoid Bash heredocs such as `python - <<EOF`, and avoid Unix-only commands like `grep`, `sed`, `awk`, `head`, and `tail`.
 - For QR/image parsing command workflows on Windows, prefer `python -c`, a temporary `.py` file, cmd-compatible commands, or explicit `powershell -NoProfile -Command` with Windows-compatible quoting.

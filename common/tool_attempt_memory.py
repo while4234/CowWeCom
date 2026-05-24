@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +35,23 @@ FAILURE_UNKNOWN = "unknown_failure"
 PERSISTENT_SKIP_FAILURES = {FAILURE_NON_RETRYABLE_ARGS, FAILURE_SHELL_DIALECT}
 READONLY_REUSABLE_TOOLS = {"read", "ls", "knowledge_query"}
 MUTATING_TOOLS = {"write", "edit", "bash", "send", "browser", "env_config", "scheduler"}
+SHAPE_REUSABLE_SIGNATURES = {
+    "invalid_json",
+    "missing_required",
+    "unknown_action",
+    "unsupported_action",
+}
+_POLICY_SELECTOR_KEYS = {
+    "action",
+    "operation",
+    "op",
+    "mode",
+    "kind",
+    "type",
+    "tool",
+}
+_ACTIVE_RULES_CACHE: Dict[str, tuple[float, Dict[str, Dict[str, Any]]]] = {}
+_ACTIVE_RULES_LOCK = threading.Lock()
 
 
 @dataclass
@@ -62,28 +81,20 @@ class ToolAttemptMemory:
         """Return whether an attempt should be skipped using a stable rule snapshot."""
         key = _attempt_key(tool_name, args)
         rule = (rules or {}).get(key)
-        if not rule:
-            return ToolSkipDecision(False)
+        if rule:
+            decision = _decision_from_rule(tool_name, args, rule)
+            if decision.should_skip:
+                return decision
 
-        failure_class = str(rule.get("failure_class") or "")
-        count = _to_int(rule.get("count"))
-        if failure_class not in PERSISTENT_SKIP_FAILURES or count < 3:
-            return ToolSkipDecision(False)
-        if failure_class == FAILURE_NON_RETRYABLE_ARGS and _path_now_exists_for_retry(tool_name, args):
-            return ToolSkipDecision(False)
+        policy_key = _policy_attempt_key(tool_name, args)
+        if policy_key:
+            rule = (rules or {}).get(policy_key)
+            if rule and str(rule.get("failure_signature") or "") in SHAPE_REUSABLE_SIGNATURES:
+                decision = _decision_from_rule(tool_name, args, rule)
+                if decision.should_skip:
+                    return decision
 
-        last_seen = _parse_time(rule.get("last_seen"))
-        if not last_seen or datetime.now(timezone.utc) - last_seen > timedelta(days=7):
-            return ToolSkipDecision(False)
-
-        next_action = str(rule.get("next_action") or "").strip()
-        reason = (
-            f"Known repeated non-retryable tool attempt skipped "
-            f"(class={failure_class}, count={count})."
-        )
-        if next_action:
-            reason += f" {next_action}"
-        return ToolSkipDecision(True, reason=reason, failure_class=failure_class, count=count)
+        return ToolSkipDecision(False)
 
     def load_rules_snapshot(self) -> Dict[str, Dict[str, Any]]:
         """Load active rules for one user request."""
@@ -103,6 +114,7 @@ class ToolAttemptMemory:
         args = args if isinstance(args, dict) else {}
         result_text = _result_preview_source(result)
         failure_class = classify_tool_failure(tool_name, args, result_status, result_text)
+        failure_signature = _failure_signature(result_text)
         result_hash = stable_metadata_hash(result_text) if result_text else ""
         now = _utc_now()
 
@@ -110,7 +122,9 @@ class ToolAttemptMemory:
             "tool_name": tool_name,
             "args_hash": stable_metadata_hash(args),
             "args_shape_hash": stable_metadata_hash(_shape(args)),
+            "args_policy_hash": stable_metadata_hash(_policy_shape(args)),
             "failure_class": failure_class,
+            "failure_signature": failure_signature,
             "result_status": str(result_status or ""),
             "result_hash": result_hash,
             "result_chars": len(result_text),
@@ -121,31 +135,57 @@ class ToolAttemptMemory:
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
             _append_jsonl(self.data_dir / ATTEMPTS_FILE, record)
-            if failure_class in PERSISTENT_SKIP_FAILURES:
+            if failure_class in PERSISTENT_SKIP_FAILURES and not skipped:
                 self._upsert_active_rule(record, now)
+                self._upsert_policy_rule(record, now)
         except Exception as exc:
             logger.debug("[ToolAttemptMemory] Failed to record attempt: %s", exc)
             return None
         return record
 
     def _upsert_active_rule(self, record: Dict[str, Any], now: str) -> None:
-        rules = _load_active_rules(self.data_dir)
-        key = _record_key(record)
-        existing = rules.get(key)
-        count = _to_int(existing.get("count")) + 1 if existing else 1
-        first_seen = (existing or {}).get("first_seen") or now
-        rules[key] = {
-            "key": key,
-            "tool_name": record.get("tool_name"),
-            "args_hash": record.get("args_hash"),
-            "args_shape_hash": record.get("args_shape_hash"),
-            "failure_class": record.get("failure_class"),
-            "count": count,
-            "first_seen": first_seen,
-            "last_seen": now,
-            "next_action": _next_action(record.get("failure_class")),
-        }
-        _write_active_rules(self.data_dir / ACTIVE_RULES_FILE, rules)
+        with _ACTIVE_RULES_LOCK:
+            rules = _load_active_rules(self.data_dir)
+            key = _record_key(record)
+            existing = rules.get(key)
+            count = _to_int(existing.get("count")) + 1 if existing else 1
+            first_seen = (existing or {}).get("first_seen") or now
+            rules[key] = {
+                "key": key,
+                "tool_name": record.get("tool_name"),
+                "args_hash": record.get("args_hash"),
+                "args_shape_hash": record.get("args_shape_hash"),
+                "failure_class": record.get("failure_class"),
+                "count": count,
+                "first_seen": first_seen,
+                "last_seen": now,
+                "next_action": _next_action(record.get("failure_class")),
+            }
+            _write_active_rules(self.data_dir / ACTIVE_RULES_FILE, rules)
+
+    def _upsert_policy_rule(self, record: Dict[str, Any], now: str) -> None:
+        signature = str(record.get("failure_signature") or "")
+        if signature not in SHAPE_REUSABLE_SIGNATURES:
+            return
+        key = _policy_record_key(record)
+        with _ACTIVE_RULES_LOCK:
+            rules = _load_active_rules(self.data_dir)
+            existing = rules.get(key)
+            count = _to_int(existing.get("count")) + 1 if existing else 1
+            first_seen = (existing or {}).get("first_seen") or now
+            rules[key] = {
+                "key": key,
+                "rule_type": "policy_shape",
+                "tool_name": record.get("tool_name"),
+                "args_policy_hash": record.get("args_policy_hash"),
+                "failure_class": record.get("failure_class"),
+                "failure_signature": signature,
+                "count": count,
+                "first_seen": first_seen,
+                "last_seen": now,
+                "next_action": _next_action(record.get("failure_class"), signature),
+            }
+            _write_active_rules(self.data_dir / ACTIVE_RULES_FILE, rules)
 
 
 def get_data_dir(workspace_root: Optional[str] = None) -> Path:
@@ -228,8 +268,16 @@ def _attempt_key(tool_name: str, args: Dict[str, Any]) -> str:
     return f"{tool_name}:{stable_metadata_hash(args)}"
 
 
+def _policy_attempt_key(tool_name: str, args: Dict[str, Any]) -> str:
+    return f"policy:{tool_name}:{stable_metadata_hash(_policy_shape(args))}"
+
+
 def _record_key(record: Dict[str, Any]) -> str:
     return f"{record.get('tool_name')}:{record.get('args_hash')}"
+
+
+def _policy_record_key(record: Dict[str, Any]) -> str:
+    return f"policy:{record.get('tool_name')}:{record.get('args_policy_hash')}"
 
 
 def _result_preview_source(result: Any) -> str:
@@ -259,7 +307,78 @@ def _shape(value: Any) -> Any:
     return "<str>"
 
 
-def _next_action(failure_class: Any) -> str:
+def _policy_shape(value: Any) -> Any:
+    """Keep only structural shape plus safe enum-like selector fields."""
+    if isinstance(value, dict):
+        shaped = {}
+        for key in sorted(value.keys(), key=lambda item: str(item)):
+            key_text = str(key)
+            if key_text in _POLICY_SELECTOR_KEYS:
+                shaped[key_text] = _safe_selector_value(value[key])
+            else:
+                shaped[key_text] = _shape(value[key])
+        return shaped
+    return _shape(value)
+
+
+def _safe_selector_value(value: Any) -> str:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        text = str(value or "")
+        if re.search(r"[\\/]|https?://|[?&=]", text, re.IGNORECASE):
+            return "<selector>"
+        return text[:80]
+    return "<selector>"
+
+
+def _failure_signature(result_text: str) -> str:
+    lower = str(result_text or "").lower()
+    if "invalid json" in lower or "failed to parse tool arguments" in lower:
+        return "invalid_json"
+    if "unknown action" in lower or "unknown command" in lower:
+        return "unknown_action"
+    if "unsupported action" in lower or "unsupported operation" in lower or "unsupported" in lower:
+        return "unsupported_action"
+    if "required" in lower or "missing" in lower:
+        return "missing_required"
+    if "invalid url" in lower:
+        return "invalid_url"
+    if "file not found" in lower or "path not found" in lower:
+        return "missing_path"
+    if "permission denied" in lower or "access denied" in lower or "outside workspace" in lower:
+        return "access_denied"
+    return ""
+
+
+def _decision_from_rule(tool_name: str, args: Dict[str, Any], rule: Dict[str, Any]) -> ToolSkipDecision:
+    failure_class = str(rule.get("failure_class") or "")
+    count = _to_int(rule.get("count"))
+    if failure_class not in PERSISTENT_SKIP_FAILURES or count < 3:
+        return ToolSkipDecision(False)
+    if failure_class == FAILURE_NON_RETRYABLE_ARGS and _path_now_exists_for_retry(tool_name, args):
+        return ToolSkipDecision(False)
+
+    last_seen = _parse_time(rule.get("last_seen"))
+    if not last_seen or datetime.now(timezone.utc) - last_seen > timedelta(days=7):
+        return ToolSkipDecision(False)
+
+    next_action = str(rule.get("next_action") or "").strip()
+    rule_type = str(rule.get("rule_type") or "exact")
+    reason = (
+        f"Known repeated non-retryable tool attempt skipped "
+        f"(class={failure_class}, rule={rule_type}, count={count})."
+    )
+    if next_action:
+        reason += f" {next_action}"
+    return ToolSkipDecision(True, reason=reason, failure_class=failure_class, count=count)
+
+
+def _next_action(failure_class: Any, failure_signature: str = "") -> str:
+    if failure_signature == "missing_required":
+        return "Provide the missing required field or choose a different tool shape before retrying."
+    if failure_signature in {"unknown_action", "unsupported_action"}:
+        return "Use one of the tool's supported actions or modes before retrying."
+    if failure_signature == "invalid_json":
+        return "Fix the tool argument JSON/schema before retrying."
     if failure_class == FAILURE_SHELL_DIALECT:
         return "Use a Windows-compatible command or PowerShell syntax instead."
     if failure_class == FAILURE_NON_RETRYABLE_ARGS:
@@ -292,7 +411,12 @@ def _load_active_rules(data_dir: Path) -> Dict[str, Dict[str, Any]]:
     path = data_dir / ACTIVE_RULES_FILE
     if not path.is_file():
         return {}
+    cache_key = str(path)
     try:
+        mtime = path.stat().st_mtime
+        cached = _ACTIVE_RULES_CACHE.get(cache_key)
+        if cached and cached[0] == mtime:
+            return dict(cached[1])
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
@@ -303,6 +427,10 @@ def _load_active_rules(data_dir: Path) -> Dict[str, Dict[str, Any]]:
     for item in rules:
         if isinstance(item, dict) and item.get("key"):
             result[str(item["key"])] = item
+    try:
+        _ACTIVE_RULES_CACHE[cache_key] = (mtime, dict(result))
+    except Exception:
+        pass
     return result
 
 
@@ -318,6 +446,10 @@ def _write_active_rules(path: Path, rules: Dict[str, Dict[str, Any]]) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp_path, path)
+    try:
+        _ACTIVE_RULES_CACHE[str(path)] = (path.stat().st_mtime, dict(rules))
+    except Exception:
+        pass
 
 
 def _append_jsonl(path: Path, record: Dict[str, Any]) -> None:

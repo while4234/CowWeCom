@@ -37,6 +37,23 @@ class ReadTool(BaseTool):
         return ToolResult.success(self.result)
 
 
+class SchedulerTool(BaseTool):
+    name = "scheduler"
+    description = "scheduler"
+    params = {
+        "type": "object",
+        "properties": {"action": {"type": "string"}, "task_id": {"type": "string"}},
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def execute(self, params):
+        self.calls += 1
+        return ToolResult.success("scheduled")
+
+
 class RepeatedReadModel(LLMModel):
     def __init__(self):
         super().__init__(model="test-model")
@@ -85,6 +102,36 @@ class OneReadThenDoneModel(LLMModel):
                             "function": {
                                 "name": "read",
                                 "arguments": '{"path":"missing.md"}',
+                            },
+                        }]
+                    }
+                }]
+            }
+            yield {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+            return
+
+        yield {"choices": [{"delta": {"content": "done"}}]}
+        yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+
+class OneSchedulerThenDoneModel(LLMModel):
+    def __init__(self):
+        super().__init__(model="test-model")
+        self.calls = 0
+
+    def call_stream(self, request):
+        self.calls += 1
+        if self.calls == 1:
+            yield {
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call_scheduler",
+                            "type": "function",
+                            "function": {
+                                "name": "scheduler",
+                                "arguments": '{"action":"teleport","task_id":"new-id"}',
                             },
                         }]
                     }
@@ -146,6 +193,33 @@ class TestAgentStreamToolAttemptMemory(unittest.TestCase):
             self.assertEqual(tool.calls, 0)
             self.assertEqual(executor._tool_memory_rule_hits, 1)
             self.assertEqual(executor._tool_skip_count, 1)
+
+    def test_persisted_policy_shape_short_circuits_before_execute(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = ToolAttemptMemory(tmpdir)
+            for index in range(3):
+                memory.record_attempt(
+                    "scheduler",
+                    {"action": "teleport", "task_id": f"old-{index}"},
+                    "error",
+                    "Unknown action: teleport",
+                )
+
+            tool = SchedulerTool()
+            executor = AgentStreamExecutor(
+                agent=FakeAgent(),
+                model=OneSchedulerThenDoneModel(),
+                system_prompt="system",
+                tools=[tool],
+                messages=[],
+            )
+            executor.tool_attempt_memory = memory
+
+            response = executor.run_stream("bad scheduler action")
+
+            self.assertEqual(response, "done")
+            self.assertEqual(tool.calls, 0)
+            self.assertEqual(executor._tool_memory_rule_hits, 1)
 
     def test_compacts_old_tool_results_in_request_copy_only(self):
         executor = AgentStreamExecutor(
