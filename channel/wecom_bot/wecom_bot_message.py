@@ -94,7 +94,14 @@ class WecomBotMessage(ChatMessage):
         self.is_group = is_group
 
         msg_type = msg_body.get("msgtype")
-        from_userid = msg_body.get("from", {}).get("userid", "")
+        from_info = msg_body.get("from", {}) or {}
+        from_userid = from_info.get("userid", "")
+        from_name = (
+            from_info.get("name")
+            or from_info.get("alias")
+            or from_info.get("userid")
+            or ""
+        )
         chat_id = msg_body.get("chatid", "")
         bot_id = msg_body.get("aibotid", "")
 
@@ -206,11 +213,14 @@ class WecomBotMessage(ChatMessage):
             raise NotImplementedError(f"Unsupported message type: {msg_type}")
 
         self.from_user_id = from_userid
+        self.from_user_nickname = from_name or from_userid
         self.to_user_id = bot_id
         if is_group:
             self.other_user_id = chat_id
+            self.other_user_nickname = msg_body.get("chatname") or chat_id
             self.actual_user_id = from_userid
-            self.actual_user_nickname = from_userid
+            self.actual_user_nickname = from_name or from_userid
         else:
             self.other_user_id = from_userid
             self.actual_user_id = from_userid
+            self.actual_user_nickname = from_name or from_userid

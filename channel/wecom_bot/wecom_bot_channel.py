@@ -28,12 +28,37 @@ from channel.wecom_bot.wecom_bot_message import WecomBotMessage
 from common.expired_dict import ExpiredDict
 from common.log import logger
 from common.singleton import singleton
+from common.utils import expand_path
 from common.ws_client_compat import websocket_app_run_forever
 from config import conf
+from agent.user_profiles import safe_actor_slug
 
 WECOM_WS_URL = "wss://openws.work.weixin.qq.com"
 HEARTBEAT_INTERVAL = 30
 MEDIA_CHUNK_SIZE = 512 * 1024  # 512KB per chunk (before base64 encoding)
+
+
+def _wecom_group_actor_id(channel_type: str, chat_id: str) -> str:
+    return f"{channel_type}:group:{chat_id}"
+
+
+def _wecom_group_memory_user_id(channel_type: str, chat_id: str) -> str:
+    return safe_actor_slug(_wecom_group_actor_id(channel_type, chat_id))
+
+
+def _read_relative_workspace_file(relative_path: str) -> str:
+    relative_path = str(relative_path or "").replace("\\", "/").lstrip("/")
+    if not relative_path:
+        return ""
+    try:
+        workspace = Path(expand_path(conf().get("agent_workspace", "~/cow"))).resolve()
+        path = (workspace / relative_path).resolve()
+        path.relative_to(workspace)
+        if path.exists() and path.is_file():
+            return path.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.debug(f"[WecomBot] Failed to read group member profile: {e}")
+    return ""
 
 
 def _escape_control_chars_inside_json_strings(s: str) -> str:
@@ -301,6 +326,9 @@ class WecomBotChannel(ChatChannel):
 
         chattype = body.get("chattype", "single")
         is_group = chattype == "group"
+        if is_group and not str(body.get("chatid", "") or "").strip():
+            logger.warning("[WecomBot] Dropping group message without chatid")
+            return
 
         try:
             wecom_msg = WecomBotMessage(body, is_group=is_group)
@@ -317,13 +345,10 @@ class WecomBotChannel(ChatChannel):
         from channel.file_cache import get_file_cache
         file_cache = get_file_cache()
 
-        if is_group:
-            if conf().get("group_shared_session", True):
-                session_id = body.get("chatid", "")
-            else:
-                session_id = wecom_msg.from_user_id + "_" + body.get("chatid", "")
-        else:
-            session_id = wecom_msg.from_user_id
+        session_id = self._message_cache_session_id(wecom_msg)
+        if not session_id:
+            logger.warning("[WecomBot] Dropping message without a stable session id")
+            return
 
         if wecom_msg.ctype == ContextType.IMAGE:
             if hasattr(wecom_msg, "image_path") and wecom_msg.image_path:
@@ -366,6 +391,11 @@ class WecomBotChannel(ChatChannel):
             if req_id:
                 context["on_event"] = self._make_stream_callback(req_id)
             self.produce(context)
+
+    def _message_cache_session_id(self, wecom_msg: WecomBotMessage) -> str:
+        if wecom_msg.is_group:
+            return str(wecom_msg.other_user_id or "").strip()
+        return str(wecom_msg.from_user_id or "").strip()
 
     def _remember_social_bridge_user(self, context: Context, wecom_msg: WecomBotMessage) -> None:
         """Best-effort bridge directory registration for reachable WeCom single-chat users."""
@@ -574,10 +604,31 @@ class WecomBotChannel(ChatChannel):
         cmsg = context["msg"]
 
         if cmsg.is_group:
-            if conf().get("group_shared_session", True):
-                context["session_id"] = cmsg.other_user_id
-            else:
-                context["session_id"] = f"{cmsg.from_user_id}:{cmsg.other_user_id}"
+            chat_id = str(cmsg.other_user_id or "").strip()
+            if not chat_id:
+                logger.warning("[WecomBot] Cannot compose group context without chatid")
+                return None
+            group_actor_id = _wecom_group_actor_id(self.channel_type, chat_id)
+            group_memory_user_id = _wecom_group_memory_user_id(self.channel_type, chat_id)
+            sender_id = str(cmsg.actual_user_id or cmsg.from_user_id or "").strip()
+            sender_label = (
+                str(getattr(cmsg, "actual_user_nickname", "") or "").strip()
+                or str(getattr(cmsg, "from_user_nickname", "") or "").strip()
+                or sender_id
+            )
+
+            context["session_id"] = chat_id
+            context["actor_id"] = group_actor_id
+            context["actor_role"] = "user"
+            context["conversation_id"] = group_actor_id
+            context["memory_user_id"] = group_memory_user_id
+            context["group_chat_id"] = chat_id
+            context["group_sender_id"] = sender_id
+            context["group_sender_label"] = sender_label
+            context["group_member_profile_path"] = (
+                f"memory/users/{group_memory_user_id}/members/"
+                f"{safe_actor_slug(sender_id)}/USER.md"
+            )
         else:
             context["session_id"] = cmsg.from_user_id
 
@@ -590,9 +641,33 @@ class WecomBotChannel(ChatChannel):
                 context.type = ContextType.IMAGE_CREATE
             else:
                 context.type = ContextType.TEXT
-            context.content = content.strip()
+            content = content.strip()
+            if cmsg.is_group and context.type == ContextType.TEXT:
+                context.content = self._format_group_member_query(context, content)
+            else:
+                context.content = content
 
         return context
+
+    @staticmethod
+    def _format_group_member_query(context: Context, content: str) -> str:
+        sender_id = context.get("group_sender_id", "")
+        sender_label = context.get("group_sender_label", "") or sender_id or "未知成员"
+        member_profile_path = context.get("group_member_profile_path", "")
+        known_profile = _read_relative_workspace_file(member_profile_path)
+        known_profile_note = known_profile.strip() if known_profile.strip() else "暂无明确称呼"
+        return (
+            "[群聊消息元信息]\n"
+            f"- 群ID: {context.get('group_chat_id', '')}\n"
+            f"- 发言人ID: {sender_id}\n"
+            f"- 发言人企微显示名: {sender_label}\n"
+            f"- 发言人成员档案: {member_profile_path}\n"
+            f"- 已知成员称呼档案内容: {known_profile_note}\n"
+            "- 如果用户正在告诉你希望怎么称呼TA，请把称呼写入上述成员档案；"
+            "不要写入任何私聊记忆。\n"
+            "- 回复时不要复述这段元信息。\n\n"
+            f"[群成员: {sender_label}] {content}"
+        )
 
     # ------------------------------------------------------------------
     # Send reply

@@ -17,7 +17,7 @@ from common.log import logger
 from common.utils import expand_path
 from config import conf
 from agent.access_control import get_resource_leases
-from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile
+from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile, safe_actor_slug
 from common.llm_backend_router import get_effective_chat_bot_type, get_effective_model
 from models.openai_compatible_bot import OpenAICompatibleBot
 
@@ -350,12 +350,24 @@ class AgentBridge:
 2. **我该怎么称呼你？** （叫名字最亲切啦）
 3. **你希望我们交流是什么风格？** 比如：专业严谨 🤓 / 轻松幽默 😄 / 温暖友好 ☀️ / 简洁高效 ⚡
 不急，或者如果你一上来就有事找我帮忙，也直接说，我们边聊边了解～"""
+
+    _GROUP_MEMBER_ONBOARDING_WELCOME = (
+        "你好呀，我第一次在这个群里和你对上话。\n"
+        "为了以后在群里更自然地称呼你，告诉我你希望我怎么叫你就好。"
+    )
     
     _USER_ONBOARDING_TEMPLATE = """# USER.md - 用户基本信息
 
 - **姓名**: *(在首次对话时询问)*
 - **称呼**: *(用户希望被如何称呼)*
 - **交流风格**: *(在首次对话时询问)*
+"""
+
+    _GROUP_MEMBER_ONBOARDING_TEMPLATE = """# USER.md - 群成员称呼
+
+- **称呼**: *(用户希望被如何称呼)*
+- **企微用户ID**: {sender_id}
+- **企微显示名**: {sender_label}
 """
 
     _USER_ONBOARDING_PLACEHOLDERS = (
@@ -422,6 +434,52 @@ class AgentBridge:
         return user_file
 
     @classmethod
+    def _group_member_user_file(cls, profile, context) -> Optional[str]:
+        if not context or not bool(context.get("isgroup", False)):
+            return None
+        memory_user_id = getattr(profile, "memory_user_id", "")
+        sender_id = str(context.get("group_sender_id", "") or "").strip()
+        if not memory_user_id or not sender_id:
+            return None
+        shared_workspace = getattr(profile, "shared_workspace", "") or cls._agent_workspace_root()
+        return os.path.join(
+            shared_workspace,
+            "memory",
+            "users",
+            str(memory_user_id),
+            "members",
+            safe_actor_slug(sender_id),
+            "USER.md",
+        )
+
+    @classmethod
+    def _ensure_group_member_user_file(cls, profile, context) -> Optional[str]:
+        user_file = cls._group_member_user_file(profile, context)
+        if not user_file:
+            return None
+        if os.path.exists(user_file):
+            return user_file
+        sender_id = str(context.get("group_sender_id", "") or "").strip()
+        sender_label = str(context.get("group_sender_label", "") or "").strip() or sender_id
+        try:
+            os.makedirs(os.path.dirname(user_file), exist_ok=True)
+            with open(user_file, "w", encoding="utf-8") as f:
+                f.write(
+                    cls._GROUP_MEMBER_ONBOARDING_TEMPLATE.format(
+                        sender_id=sender_id,
+                        sender_label=sender_label,
+                    )
+                )
+        except OSError as e:
+            logger.warning(f"[AgentBridge] Failed to create group member onboarding file {user_file}: {e}")
+        return user_file
+
+    @classmethod
+    def _is_group_member_onboarding_pending(cls, profile, context) -> bool:
+        user_file = cls._group_member_user_file(profile, context)
+        return bool(user_file and not os.path.exists(user_file))
+
+    @classmethod
     def _looks_user_profile_initialized(cls, content: str) -> bool:
         text = (content or "").strip()
         if not text:
@@ -457,7 +515,13 @@ class AgentBridge:
         return cls._is_global_onboarding_pending()
 
     @classmethod
-    def _try_onboarding_welcome(cls, query: str, profile=None) -> Optional[Reply]:
+    def _try_onboarding_welcome(cls, query: str, profile=None, context=None) -> Optional[Reply]:
+        if context and bool(context.get("isgroup", False)):
+            if profile is not None and cls._is_group_member_onboarding_pending(profile, context):
+                cls._ensure_group_member_user_file(profile, context)
+                logger.info("[AgentBridge] Returning deterministic group member onboarding greeting")
+                return Reply(ReplyType.TEXT, cls._GROUP_MEMBER_ONBOARDING_WELCOME)
+            return None
         if cls._is_onboarding_pending(profile=profile) and cls._is_onboarding_greeting(query):
             logger.info("[AgentBridge] Returning deterministic onboarding greeting")
             return Reply(ReplyType.TEXT, cls._ONBOARDING_WELCOME)
@@ -584,7 +648,7 @@ class AgentBridge:
             else:
                 conversation_id = session_id
 
-            onboarding_reply = self._try_onboarding_welcome(query, profile=profile)
+            onboarding_reply = self._try_onboarding_welcome(query, profile=profile, context=context)
             if onboarding_reply:
                 return onboarding_reply
             
