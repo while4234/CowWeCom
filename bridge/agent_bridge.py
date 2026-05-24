@@ -3,7 +3,6 @@ Agent Bridge - Integrates Agent system with existing COW bridge
 """
 
 import os
-import re
 from typing import Optional, List
 
 from agent.protocol import Agent, LLMModel, LLMRequest
@@ -380,26 +379,6 @@ class AgentBridge:
         "todo",
     )
 
-    _PLAIN_TEXT_INTENT_MARKERS = (
-        "文案", "祝福", "红包", "朋友圈", "微信文案", "怎么说", "咋说",
-        "帮我想", "帮我写", "写一段", "写个", "写封", "润色", "改写",
-        "翻译", "解释", "起名", "取名", "回复", "评价一下", "建议一下",
-    )
-    _TOOL_REQUIRED_MARKERS = (
-        "查一下", "查下", "查询", "搜索", "搜一下", "搜下", "浏览",
-        "打开", "访问", "联网", "网页", "网址", "链接", "下载",
-        "文件", "目录", "项目", "仓库", "代码", "测试", "运行", "执行",
-        "终端", "bash", "powershell", "git", "commit", "push", "dry-run",
-        "日志", "报错", "重启", "状态", "进展", "队列", "当前任务",
-        "刚才", "之前", "上次", "前面", "记得", "记住", "回忆",
-        "定时", "提醒", "自动", "监控", "通知我", "生成图片", "画图",
-        "图片", "视频", "附件",
-    )
-    _EXTERNAL_FRESHNESS_PATTERNS = (
-        r"(今天|今日|最近|最新|现在|当前).{0,16}(热点|热搜|新闻|天气|股价|价格|汇率|排行|榜|小红书|微博|抖音|b站|B站|知乎)",
-        r"(小红书|微博|抖音|b站|B站|知乎|百度|必应|google|Google).{0,20}(查|搜|热点|热搜|最新|今天|今日|榜)",
-    )
-
     def __init__(self, bridge: Bridge):
         self.bridge = bridge
         self.agents = {}  # session_id -> Agent instance mapping
@@ -548,38 +527,6 @@ class AgentBridge:
             return Reply(ReplyType.TEXT, cls._ONBOARDING_WELCOME)
         return None
 
-    @classmethod
-    def _should_disable_tools_for_plain_text(cls, query: str, context: Context = None) -> bool:
-        """Return True for self-contained text tasks that should not expose tools."""
-        if not bool(conf().get("agent_plain_text_no_tools_enabled", True)):
-            return False
-        if context and context.get("is_scheduled_task"):
-            return False
-
-        text = str(query or "").strip()
-        if not text:
-            return False
-
-        compact = re.sub(r"\s+", "", text)
-        lowered = compact.casefold()
-        if re.search(r"https?://|www\.", lowered):
-            return False
-
-        for pattern in cls._EXTERNAL_FRESHNESS_PATTERNS:
-            if re.search(pattern, compact, flags=re.IGNORECASE):
-                return False
-
-        if any(marker.casefold() in lowered for marker in cls._TOOL_REQUIRED_MARKERS):
-            return False
-
-        if any(marker.casefold() in lowered for marker in cls._PLAIN_TEXT_INTENT_MARKERS):
-            return True
-
-        # Short, self-contained chat questions should not pay the full tool-choice
-        # tax. Tool-ish wording above keeps project, search, file, and memory tasks
-        # on the normal agent path.
-        return len(compact) <= 160
-
     def create_agent(self, system_prompt: str, tools: List = None, **kwargs) -> Agent:
         """
         Create the super agent with COW integration
@@ -719,24 +666,12 @@ class AgentBridge:
             # Filter tools based on context
             original_tools = agent.tools
             filtered_tools = original_tools
-            restore_tools = False
-            skip_knowledge_auto_retrieval = False
             
             # If this is a scheduled task execution, exclude scheduler tool to prevent recursion
             if context and context.get("is_scheduled_task"):
                 filtered_tools = [tool for tool in agent.tools if tool.name != "scheduler"]
-                restore_tools = True
+                agent.tools = filtered_tools
                 logger.info(f"[AgentBridge] Scheduled task execution: excluded scheduler tool ({len(filtered_tools)}/{len(original_tools)} tools)")
-            elif self._should_disable_tools_for_plain_text(query, context):
-                filtered_tools = []
-                restore_tools = True
-                skip_knowledge_auto_retrieval = True
-                agent._skip_knowledge_auto_retrieval_once = True
-                logger.info(
-                    "[AgentBridge] Plain-text mode: disabled tools for self-contained text request "
-                    "session=%s",
-                    hash_id(conversation_id or session_id),
-                )
             else:
                 # Attach context to scheduler tool if present
                 if context and agent.tools:
@@ -756,8 +691,6 @@ class AgentBridge:
                                 target_tool.profile = profile
                             except Exception as e:
                                 logger.warning(f"[AgentBridge] Failed to attach context to image_generation_task: {e}")
-            if restore_tools:
-                agent.tools = filtered_tools
             
             # Pass context metadata to model for downstream API requests
             if context and hasattr(agent, 'model'):
@@ -801,10 +734,8 @@ class AgentBridge:
                 run_stream_elapsed = elapsed(run_stream_start)
             finally:
                 # Restore original tools
-                if restore_tools:
+                if context and context.get("is_scheduled_task"):
                     agent.tools = original_tools
-                if skip_knowledge_auto_retrieval and hasattr(agent, "_skip_knowledge_auto_retrieval_once"):
-                    delattr(agent, "_skip_knowledge_auto_retrieval_once")
 
                 # Log execution summary
                 event_handler.log_summary()

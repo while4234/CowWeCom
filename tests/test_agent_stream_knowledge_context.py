@@ -1,6 +1,5 @@
 import json
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.protocol.agent_stream import AgentStreamExecutor
@@ -130,23 +129,6 @@ class TestAgentStreamKnowledgeContext(unittest.TestCase):
             patch.object(executor, "_retrieve_markdown_knowledge") as markdown,
         ):
             self.assertEqual(executor._build_knowledge_context_text("q"), "")
-
-        backend.assert_not_called()
-        markdown.assert_not_called()
-
-    def test_build_knowledge_context_skips_when_plain_text_mode_requests_it(self):
-        executor = self._executor()
-        executor.agent = SimpleNamespace(_skip_knowledge_auto_retrieval_once=True)
-
-        with (
-            patch("config.conf", return_value={
-                "knowledge_backend": {"enabled": True, "retrieval": {"auto_inject": True}},
-                "knowledge_auto_retrieval": True,
-            }),
-            patch.object(executor, "_retrieve_backend_knowledge") as backend,
-            patch.object(executor, "_retrieve_markdown_knowledge") as markdown,
-        ):
-            self.assertEqual(executor._build_knowledge_context_text("帮我想个红包文案"), "")
 
         backend.assert_not_called()
         markdown.assert_not_called()
