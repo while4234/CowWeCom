@@ -2118,6 +2118,9 @@ class AgentStreamExecutor:
             return ""
 
     def _build_knowledge_context_text(self, user_message: str) -> str:
+        if getattr(getattr(self, "agent", None), "_skip_knowledge_auto_retrieval_once", False):
+            return ""
+
         try:
             from config import conf
 

@@ -94,6 +94,7 @@
   "agent_max_context_tokens": 50000,
   "agent_max_context_turns": 20,
   "agent_max_steps": 20,
+  "agent_plain_text_no_tools_enabled": true,
   "memory_deep_dream": {
     "enabled": true,
     "check_time": "00:00",
