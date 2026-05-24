@@ -290,13 +290,38 @@ def list_active_rules(
     return _sorted_rules(active)
 
 
-def get_active_prompt_guidance(limit: int = 5) -> List[str]:
-    """Return compact hidden guidance lines for the system prompt."""
-    guidance = []
-    for rule in list_active_rules(include_seed=True)[:limit]:
+def get_active_prompt_guidance(limit: int = 8) -> List[str]:
+    """Return stable compact guidance lines for request-scoped model context."""
+    guidance: List[str] = []
+    seen = set()
+
+    own_rules = sorted(
+        list_active_rules(include_seed=True),
+        key=lambda item: str(item.get("id") or ""),
+    )
+    for rule in own_rules:
         next_action = str(rule.get("next_action") or "").strip()
-        if next_action:
+        if next_action and next_action not in seen:
+            seen.add(next_action)
             guidance.append(next_action)
+        if len(guidance) >= limit:
+            return guidance
+
+    try:
+        from common.tool_attempt_memory import get_active_prompt_guidance as get_tool_prompt_guidance
+
+        tool_guidance = get_tool_prompt_guidance(limit=max(0, limit - len(guidance)))
+    except Exception as e:
+        logger.debug("[SelfEvolution] Tool-attempt prompt guidance skipped: %s", e)
+        tool_guidance = []
+
+    for item in tool_guidance:
+        line = str(item or "").strip()
+        if line and line not in seen:
+            seen.add(line)
+            guidance.append(line)
+        if len(guidance) >= limit:
+            break
     return guidance
 
 

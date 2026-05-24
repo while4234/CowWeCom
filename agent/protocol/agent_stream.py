@@ -2140,13 +2140,18 @@ class AgentStreamExecutor:
 
     def _build_request_context_text(self, user_message: str) -> str:
         runtime_context = self._build_runtime_context_text()
+        self_evolution_context = self._build_self_evolution_context_text()
         knowledge_context = self._build_knowledge_context_text(user_message)
         self._request_runtime_context_chars = len(runtime_context)
+        self._request_self_evolution_context_chars = len(self_evolution_context)
         self._request_knowledge_context_chars = len(knowledge_context)
+        self._request_self_evolution_context_hash = (
+            stable_metadata_hash(self_evolution_context) if self_evolution_context else ""
+        )
         self._request_knowledge_context_hash = (
             stable_metadata_hash(knowledge_context) if knowledge_context else ""
         )
-        parts = [runtime_context, knowledge_context]
+        parts = [runtime_context, self_evolution_context, knowledge_context]
         return "\n\n".join(part for part in parts if part)
 
     def _build_runtime_context_text(self) -> str:
@@ -2166,6 +2171,22 @@ class AgentStreamExecutor:
         except Exception as e:
             logger.debug(f"[PromptCache] Failed to build runtime context: {e}")
             return ""
+
+    def _build_self_evolution_context_text(self) -> str:
+        try:
+            from common.self_evolution import get_active_prompt_guidance
+
+            guidance = get_active_prompt_guidance()
+        except Exception as e:
+            logger.debug(f"[PromptCache] Failed to build self-evolution context: {e}")
+            return ""
+        if not guidance:
+            return ""
+        lines = [
+            "[Background execution policy for this request. Apply before choosing tools; do not mention unless asked.]"
+        ]
+        lines.extend(f"- {item}" for item in guidance)
+        return "\n".join(lines)
 
     def _build_knowledge_context_text(self, user_message: str) -> str:
         try:
@@ -2324,6 +2345,8 @@ class AgentStreamExecutor:
             "turn_count": len(turns or []),
             "tool_count": len(tools_schema or []),
             "runtime_context_chars": int(getattr(self, "_request_runtime_context_chars", 0) or 0),
+            "self_evolution_context_chars": int(getattr(self, "_request_self_evolution_context_chars", 0) or 0),
+            "self_evolution_context_hash": getattr(self, "_request_self_evolution_context_hash", "") or "",
             "retrieved_knowledge_chars": int(getattr(self, "_request_knowledge_context_chars", 0) or 0),
             "retrieved_knowledge_hash": getattr(self, "_request_knowledge_context_hash", "") or "",
             "tool_result_chars": tool_result_chars,

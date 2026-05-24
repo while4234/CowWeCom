@@ -123,6 +123,7 @@ class ToolAttemptMemory:
             "args_hash": stable_metadata_hash(args),
             "args_shape_hash": stable_metadata_hash(_shape(args)),
             "args_policy_hash": stable_metadata_hash(_policy_shape(args)),
+            "args_policy_label": _policy_label(args),
             "failure_class": failure_class,
             "failure_signature": failure_signature,
             "result_status": str(result_status or ""),
@@ -178,6 +179,7 @@ class ToolAttemptMemory:
                 "rule_type": "policy_shape",
                 "tool_name": record.get("tool_name"),
                 "args_policy_hash": record.get("args_policy_hash"),
+                "args_policy_label": record.get("args_policy_label"),
                 "failure_class": record.get("failure_class"),
                 "failure_signature": signature,
                 "count": count,
@@ -201,6 +203,29 @@ def list_active_rules(workspace_root: Optional[str] = None) -> list[Dict[str, An
         key=lambda item: (_to_int(item.get("count")), str(item.get("last_seen") or "")),
         reverse=True,
     )
+
+
+def get_active_prompt_guidance(limit: int = 4, workspace_root: Optional[str] = None) -> list[str]:
+    """Return stable, compact tool-policy guidance for prompt injection."""
+    guidance = []
+    for rule in sorted(list_active_rules(workspace_root), key=lambda item: str(item.get("key") or "")):
+        if len(guidance) >= limit:
+            break
+        if str(rule.get("rule_type") or "") != "policy_shape":
+            continue
+        if _to_int(rule.get("count")) < 3:
+            continue
+        label = str(rule.get("args_policy_label") or "").strip()
+        if not label:
+            continue
+        tool_name = str(rule.get("tool_name") or "tool").strip()
+        signature = str(rule.get("failure_signature") or "non_retryable_args").strip()
+        next_action = str(rule.get("next_action") or "").strip()
+        line = f"Tool policy: for {tool_name} calls matching {label}, avoid the repeated {signature} failure."
+        if next_action:
+            line += f" {next_action}"
+        guidance.append(line)
+    return guidance
 
 
 def classify_tool_failure(
@@ -338,6 +363,21 @@ def _safe_selector_value(value: Any) -> str:
             return "<selector>"
         return text[:80]
     return "<selector>"
+
+
+def _policy_label(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    labels = []
+    for key in sorted(value.keys(), key=lambda item: str(item)):
+        key_text = str(key)
+        if key_text not in _POLICY_SELECTOR_KEYS:
+            continue
+        selector = _safe_selector_value(value[key])
+        if not selector or selector == "<selector>":
+            continue
+        labels.append(f"{key_text}={selector}")
+    return ", ".join(labels[:3])
 
 
 def _failure_signature(result_text: str) -> str:

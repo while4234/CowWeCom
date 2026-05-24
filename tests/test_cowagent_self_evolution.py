@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.prompt.builder import _build_self_evolution_section
+from agent.prompt.builder import build_agent_system_prompt, _build_self_evolution_section
 from agent.skills.manager import SkillManager
 from agent.tools.bash.bash import Bash
 from common.self_evolution import (
@@ -17,6 +17,7 @@ from common.self_evolution import (
     apply_windows_shell_policies,
     classify_windows_shell_failure,
     get_data_dir,
+    get_active_prompt_guidance as get_self_evolution_prompt_guidance,
     record_windows_shell_policy_application,
     record_windows_shell_failure,
 )
@@ -105,17 +106,63 @@ class SelfEvolutionDetectionTest(unittest.TestCase):
             self.assertNotIn("sk-secret123456", rule["command_preview"])
 
 
-class SelfEvolutionPromptTest(unittest.TestCase):
-    def test_prompt_guidance_is_hidden_and_compact(self):
+class SelfEvolutionPromptCacheTest(unittest.TestCase):
+    def test_system_prompt_section_is_static(self):
         with patch(
             "common.self_evolution.get_active_prompt_guidance",
             return_value=["Use Windows-compatible commands."],
-        ):
+        ) as guidance:
             section = "\n".join(_build_self_evolution_section("zh"))
 
-        self.assertIn("后台经验规则", section)
-        self.assertIn("Use Windows-compatible commands.", section)
-        self.assertIn("不要主动告诉用户", section)
+        guidance.assert_not_called()
+        self.assertIn("Background execution policy", section)
+        self.assertNotIn("Use Windows-compatible commands.", section)
+        self.assertIn("system prompt stays cacheable", section)
+
+    def test_full_system_prompt_does_not_read_dynamic_guidance(self):
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "common.self_evolution.get_active_prompt_guidance",
+            return_value=["Use Windows-compatible commands."],
+        ) as guidance:
+            prompt = build_agent_system_prompt(workspace_dir=tmp)
+
+        guidance.assert_not_called()
+        self.assertIn("Background execution policy", prompt)
+        self.assertNotIn("Use Windows-compatible commands.", prompt)
+
+    def test_dynamic_guidance_is_stable_and_metadata_free(self):
+        rules = [
+            {
+                "id": "z-rule",
+                "count": 12,
+                "last_seen": "2026-05-24T10:00:00Z",
+                "next_action": "Use z-safe command shape.",
+            },
+            {
+                "id": "a-rule",
+                "count": 1,
+                "last_seen": "2026-05-24T11:00:00Z",
+                "next_action": "Use a-safe command shape.",
+            },
+        ]
+
+        with patch("common.self_evolution.list_active_rules", return_value=rules), patch(
+            "common.tool_attempt_memory.get_active_prompt_guidance",
+            return_value=["Tool policy: use supported scheduler actions."],
+        ):
+            guidance = get_self_evolution_prompt_guidance(limit=3)
+
+        self.assertEqual(
+            guidance,
+            [
+                "Use a-safe command shape.",
+                "Use z-safe command shape.",
+                "Tool policy: use supported scheduler actions.",
+            ],
+        )
+        joined = "\n".join(guidance)
+        self.assertNotIn("count", joined)
+        self.assertNotIn("last_seen", joined)
 
 
 class BashSelfEvolutionHookTest(unittest.TestCase):

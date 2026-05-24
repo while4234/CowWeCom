@@ -9,6 +9,7 @@ from common.tool_attempt_memory import (
     FAILURE_TRANSIENT,
     ToolAttemptMemory,
     classify_tool_failure,
+    get_active_prompt_guidance,
     list_active_rules,
 )
 
@@ -150,6 +151,24 @@ class TestToolAttemptMemory(unittest.TestCase):
 
             self.assertGreaterEqual(len(rules), 2)
             self.assertTrue(any(rule.get("rule_type") == "policy_shape" for rule in rules))
+
+    def test_tool_prompt_guidance_is_stable_and_actionable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory = ToolAttemptMemory(tmpdir)
+            for index in range(3):
+                memory.record_attempt(
+                    "scheduler",
+                    {"action": "teleport", "task_id": f"task-{index}"},
+                    "error",
+                    "Unknown action: teleport",
+                )
+
+            guidance = get_active_prompt_guidance(workspace_root=tmpdir)
+
+            self.assertEqual(len(guidance), 1)
+            self.assertIn("scheduler", guidance[0])
+            self.assertIn("action=teleport", guidance[0])
+            self.assertIn("unknown_action", guidance[0])
 
 
 if __name__ == "__main__":

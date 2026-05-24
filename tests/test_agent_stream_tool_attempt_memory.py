@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from agent.protocol.agent_stream import AgentStreamExecutor
 from agent.protocol.models import LLMModel
@@ -248,6 +249,61 @@ class TestAgentStreamToolAttemptMemory(unittest.TestCase):
             self.assertEqual(response, "done")
             self.assertEqual(tool.calls, 0)
             self.assertEqual(executor._tool_policy_skip_turn_credit, 1)
+
+    def test_self_evolution_guidance_is_request_context_not_system_prompt(self):
+        executor = AgentStreamExecutor(
+            agent=FakeAgent(),
+            model=RepeatedReadModel(),
+            system_prompt="system",
+            tools=[],
+            messages=[],
+        )
+
+        with patch(
+            "common.self_evolution.get_active_prompt_guidance",
+            return_value=["Use set \"PYTHONUTF8=1\" before Python commands."],
+        ):
+            context = executor._build_self_evolution_context_text()
+
+        self.assertIn("Background execution policy for this request", context)
+        self.assertIn('set "PYTHONUTF8=1"', context)
+
+    def test_request_context_tracks_self_evolution_guidance_separately(self):
+        executor = AgentStreamExecutor(
+            agent=FakeAgent(),
+            model=RepeatedReadModel(),
+            system_prompt="system",
+            tools=[],
+            messages=[],
+        )
+
+        with patch("common.self_evolution.get_active_prompt_guidance", return_value=["Use supported actions."]):
+            context = executor._build_request_context_text("schedule it")
+
+        self.assertIn("Use supported actions.", context)
+        self.assertGreater(executor._request_self_evolution_context_chars, 0)
+        self.assertTrue(executor._request_self_evolution_context_hash)
+        self.assertEqual(executor.system_prompt, "system")
+
+    def test_prepare_messages_injects_guidance_into_request_copy_only(self):
+        executor = AgentStreamExecutor(
+            agent=FakeAgent(),
+            model=RepeatedReadModel(),
+            system_prompt="system",
+            tools=[],
+            messages=[],
+        )
+        executor.messages = [{"role": "user", "content": [{"type": "text", "text": "schedule it"}]}]
+
+        with patch("common.self_evolution.get_active_prompt_guidance", return_value=["Use supported actions."]):
+            executor._request_runtime_context = executor._build_request_context_text("schedule it")
+            prepared = executor._prepare_messages()
+            metadata = executor._build_cache_shape_metadata(prepared, [], [])
+
+        self.assertIn("Use supported actions.", prepared[0]["content"][0]["text"])
+        self.assertEqual(executor.messages[0]["content"][0]["text"], "schedule it")
+        self.assertGreater(metadata["self_evolution_context_chars"], 0)
+        self.assertTrue(metadata["self_evolution_context_hash"])
 
     def test_compacts_old_tool_results_in_request_copy_only(self):
         executor = AgentStreamExecutor(

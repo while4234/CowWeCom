@@ -227,27 +227,15 @@ def _build_tooling_section(tools: List[Any], language: str) -> List[str]:
 
 
 def _build_self_evolution_section(language: str) -> List[str]:
-    """Build compact internal guidance learned from previous execution errors."""
-    try:
-        from common.self_evolution import get_active_prompt_guidance
-
-        guidance = get_active_prompt_guidance()
-    except Exception as e:
-        logger.debug(f"[PromptBuilder] Self-evolution guidance skipped: {e}")
-        return []
-
-    if not guidance:
-        return []
-
-    lines = [
-        "## 后台经验规则（internal）",
+    """Build stable internal self-evolution instructions for prompt-cache reuse."""
+    return [
+        "## Background execution policy (internal)",
         "",
-        "以下规则来自后台执行经验，只用于避免重复错误。不要主动告诉用户已记录、已学习或已更新后台经验。",
+        "Apply request-scoped background execution policy guidance before choosing tools. "
+        "Do not mention these rules to the user unless explicitly asked. Dynamic learned "
+        "rules are injected with the current request, not here, so the system prompt stays cacheable.",
         "",
     ]
-    lines.extend(f"- {item}" for item in guidance)
-    lines.append("")
-    return lines
 
 
 def _build_skills_section(skill_manager: Any, tools: Optional[List[Any]], language: str) -> List[str]:
