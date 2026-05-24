@@ -71,8 +71,34 @@ class Edit(BaseTool):
         # Resolve path
         absolute_path = self._resolve_path(path)
         
-        # Check if file exists
+        append_mode = not old_text or not old_text.strip()
+
+        # Check if file exists. Empty oldText means append, so a missing file is
+        # treated as appending to a new empty file.
         if not os.path.exists(absolute_path):
+            if append_mode:
+                try:
+                    parent_dir = os.path.dirname(absolute_path)
+                    if parent_dir:
+                        os.makedirs(parent_dir, exist_ok=True)
+
+                    normalized_new_text = normalize_to_lf(new_text)
+                    with open(absolute_path, 'w', encoding='utf-8') as f:
+                        f.write(normalized_new_text)
+
+                    self._notify_memory_manager(path)
+
+                    return ToolResult.success({
+                        "message": f"Successfully created {path}",
+                        "path": path,
+                        "diff": generate_diff_string("", normalized_new_text)['diff'],
+                        "first_changed_line": 1
+                    })
+                except PermissionError:
+                    return ToolResult.fail(f"Error: Permission denied writing to {path}")
+                except Exception as e:
+                    return ToolResult.fail(f"Error creating file: {str(e)}")
+
             return ToolResult.fail(f"Error: File not found: {path}")
         
         # Check if readable/writable
@@ -96,7 +122,7 @@ class Edit(BaseTool):
             normalized_new_text = normalize_to_lf(new_text)
             
             # Special case: empty oldText means append to end of file
-            if not old_text or not old_text.strip():
+            if append_mode:
                 # Append mode: add newText to the end
                 # Add newline before newText if file doesn't end with one
                 if normalized_content and not normalized_content.endswith('\n'):
@@ -159,14 +185,7 @@ class Edit(BaseTool):
                 "first_changed_line": diff_result['first_changed_line']
             }
             
-            # Notify memory manager if file is in memory or knowledge directory
-            normalized_path = path.replace("\\", "/")
-            if self.memory_manager and ("memory/" in normalized_path or "knowledge/" in normalized_path):
-                try:
-                    self.memory_manager.mark_dirty()
-                except Exception as e:
-                    # Don't fail the edit if memory notification fails
-                    pass
+            self._notify_memory_manager(path)
             
             return ToolResult.success(result)
             
@@ -189,3 +208,13 @@ class Edit(BaseTool):
         if os.path.isabs(path):
             return path
         return os.path.abspath(os.path.join(self.cwd, path))
+
+    def _notify_memory_manager(self, path: str) -> None:
+        """Mark memory dirty when editing memory or knowledge files."""
+        normalized_path = path.replace("\\", "/")
+        if self.memory_manager and ("memory/" in normalized_path or "knowledge/" in normalized_path):
+            try:
+                self.memory_manager.mark_dirty()
+            except Exception:
+                # Don't fail the edit if memory notification fails.
+                pass

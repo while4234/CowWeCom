@@ -41,6 +41,35 @@ class A2EDailyCheckinSkillTest(unittest.TestCase):
         self.assertIn("[switch]$KeepOpen", script_content)
         self.assertIn("$autoCloseAfterVerifiedClaim", script_content)
         self.assertIn("Close-ChromeWindow $openedWindow", script_content)
+        self.assertIn("Close-AllA2EChromeWindows", script_content)
+        self.assertIn("FinalCloseSweep", script_content)
+
+    def test_helper_surfaces_manual_verification_for_notification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = SkillManager(custom_dir=str(Path(tmp) / "skills"))
+            entry = manager.get_skill("a2e-daily-checkin")
+            skill_content = Path(entry.skill.file_path).read_text(encoding="utf-8")
+            script_content = (
+                Path(entry.skill.file_path).parent / "scripts" / "a2e_checkin.ps1"
+            ).read_text(encoding="utf-8")
+
+        self.assertIn("ManualActionRequired", skill_content)
+        self.assertIn("NeedsNotification", skill_content)
+        self.assertIn("New-ManualActionRequired", script_content)
+        self.assertIn("NeedsNotification = $true", script_content)
+        self.assertIn("human verification", script_content)
+
+    def test_helper_can_fall_back_to_a2e_profile_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = SkillManager(custom_dir=str(Path(tmp) / "skills"))
+            entry = manager.get_skill("a2e-daily-checkin")
+            script_content = (
+                Path(entry.skill.file_path).parent / "scripts" / "a2e_checkin.ps1"
+            ).read_text(encoding="utf-8")
+
+        self.assertIn("$fallbackTokens = @()", script_content)
+        self.assertIn("$fallbackTokens += $match.Groups[1].Value", script_content)
+        self.assertIn("return $fallbackTokens[0]", script_content)
 
 
 if __name__ == "__main__":

@@ -151,21 +151,31 @@ function Get-A2EAccessToken($Config) {
     Where-Object { $_.Extension -in @(".log", ".ldb") } |
     Sort-Object LastWriteTime -Descending
 
+  $fallbackTokens = @()
+
   foreach ($file in $files) {
     try {
       $bytes = Read-SharedFileBytes $file.FullName
       $text = [Text.Encoding]::UTF8.GetString($bytes)
-      if ($text -notmatch "https://video\.a2e\.ai" -or $text -notmatch [regex]::Escape($Config.email)) {
+      if ($text -notmatch "https://video\.a2e\.ai") {
         continue
       }
 
       $match = [regex]::Match($text, '"accessToken"\s*:\s*"([^"]+)"')
       if ($match.Success) {
-        return $match.Groups[1].Value
+        if ($text -match [regex]::Escape($Config.email)) {
+          return $match.Groups[1].Value
+        }
+
+        $fallbackTokens += $match.Groups[1].Value
       }
     } catch {
       continue
     }
+  }
+
+  if ($fallbackTokens.Count -gt 0) {
+    return $fallbackTokens[0]
   }
 
   throw "A2E access token was not found in Chrome profile '$($Config.chromeProfileDirectory)' for '$($Config.email)'."
@@ -407,6 +417,12 @@ function Focus-A2EChromeWindow {
   $window
 }
 
+function Get-A2EChromeWindows {
+  Get-Process chrome -ErrorAction SilentlyContinue |
+    Where-Object { $_.MainWindowHandle -ne 0 -and ($_.MainWindowTitle -match "A2E|AI Videos|video\.a2e|RunningHub|runninghub") } |
+    Sort-Object StartTime -Descending
+}
+
 function Close-ChromeWindow($Window) {
   if ($Window) {
     Ensure-Win32Types
@@ -440,8 +456,39 @@ function Close-ChromeWindow($Window) {
   }
 }
 
+function Close-AllA2EChromeWindows {
+  $results = @()
+  foreach ($window in @(Get-A2EChromeWindows)) {
+    try {
+      $results += Close-ChromeWindow $window
+    } catch {
+      $results += [pscustomobject]@{
+        Requested = $true
+        CloseMainWindow = $false
+        Exited = $false
+        Handle = if ($window) { $window.MainWindowHandle } else { $null }
+        WindowTitle = if ($window) { $window.MainWindowTitle } else { $null }
+        Error = $_.Exception.Message
+      }
+    }
+  }
+
+  $results
+}
+
 function Close-FocusedChromeWindow {
   Close-ChromeWindow $null
+}
+
+function New-ManualActionRequired([string]$AccountName, [string]$Reason, [string]$Message, [string]$ScreenshotPath = $null) {
+  [pscustomobject]@{
+    Required = $true
+    NeedsNotification = $true
+    Account = $AccountName
+    Reason = $Reason
+    Message = $Message
+    Screenshot = $ScreenshotPath
+  }
 }
 
 function Navigate-FocusedChromeToUrl([string]$TargetUrl) {
@@ -683,49 +730,111 @@ if (-not $selectedAccounts -or $selectedAccounts.Count -eq 0) {
 
 $results = @()
 foreach ($entry in $selectedAccounts) {
-  $openedWindow = Open-A2EAccount $state $entry.Name
-  Focus-A2EChromeWindow | Out-Null
-
   $clickResult = $null
   $beforeStatus = $null
   $claimVerification = $null
-  if ($ClickClaim) {
-    if ($VerifyClaim -or $AutoUpdateState) {
-      $beforeStatus = Get-A2EApiStatus $entry.Name
-    }
-
-    $clickResult = Click-VisibleClaimButton
-
-    if ($VerifyClaim -or $AutoUpdateState) {
-      $claimVerification = Confirm-ClaimResult $entry.Name $beforeStatus
-    }
-  }
-
   $screenshotPath = $null
-  if ($Screenshot -or $ClickClaim -or $OpenOnly) {
-    $screenshotPath = Save-ScreenCapture $entry.Name
-  }
-
+  $openedWindow = $null
   $closeResult = $null
-  $autoCloseAfterVerifiedClaim = $ClickClaim -and $claimVerification -and $claimVerification.Verified -and -not $KeepOpen
-  $shouldCloseBrowser = ($CloseAfter -or $autoCloseAfterVerifiedClaim) -and -not $KeepOpen
-  if ($shouldCloseBrowser) {
-    $verifiedClaim = $claimVerification -and $claimVerification.Verified
-    $safeToClose = $OpenOnly -or (-not $ClickClaim) -or $verifiedClaim
-    if ($safeToClose) {
-      $closeResult = Close-ChromeWindow $openedWindow
-    } else {
-      $closeResult = [pscustomobject]@{
-        Requested = $true
-        Skipped = $true
-        Reason = "Claim was clicked but not API-verified; leaving the browser open for manual inspection."
+  $manualActionRequired = $null
+  $failureNotification = $null
+  $apiStatusError = $null
+  $accountError = $null
+
+  try {
+    $openedWindow = Open-A2EAccount $state $entry.Name
+    Focus-A2EChromeWindow | Out-Null
+
+    if ($ClickClaim) {
+      if ($VerifyClaim -or $AutoUpdateState) {
+        try {
+          $beforeStatus = Get-A2EApiStatus $entry.Name
+        } catch {
+          $apiStatusError = $_.Exception.Message
+        }
+      }
+
+      $clickResult = Click-VisibleClaimButton
+
+      if ($VerifyClaim -or $AutoUpdateState) {
+        try {
+          $claimVerification = Confirm-ClaimResult $entry.Name $beforeStatus
+        } catch {
+          if ($apiStatusError) {
+            $apiStatusError = "$apiStatusError; $($_.Exception.Message)"
+          } else {
+            $apiStatusError = $_.Exception.Message
+          }
+        }
       }
     }
-  } elseif ($KeepOpen -and ($CloseAfter -or ($ClickClaim -and $claimVerification -and $claimVerification.Verified))) {
-    $closeResult = [pscustomobject]@{
-      Requested = $false
-      Skipped = $true
-      Reason = "-KeepOpen was passed; leaving the browser open after the check-in flow."
+
+    if ($Screenshot -or $ClickClaim -or $OpenOnly) {
+      $screenshotPath = Save-ScreenCapture $entry.Name
+    }
+
+    if ($ClickClaim -and $apiStatusError) {
+      $manualActionRequired = New-ManualActionRequired `
+        $entry.Name `
+        "api_status_unavailable_after_click" `
+        "A2E reward claim was clicked for '$($entry.Name)', but the API status could not be read afterward: $apiStatusError. If the page is showing human verification, complete it manually in the open Chrome window, then ask Agent to rerun A2E status and close the page." `
+        $screenshotPath
+    } elseif ($ClickClaim -and ($VerifyClaim -or $AutoUpdateState) -and $claimVerification -and -not $claimVerification.Verified) {
+      $manualActionRequired = New-ManualActionRequired `
+        $entry.Name `
+        "claim_not_verified_after_click" `
+        "A2E reward claim was clicked for '$($entry.Name)', but the API did not verify today's successful check-in within the wait window. If a real-person or human verification prompt is visible, complete it manually in the open Chrome window, then ask Agent to rerun A2E status and close the page." `
+        $screenshotPath
+    }
+
+    $manualActionNeeded = $manualActionRequired -and $manualActionRequired.Required
+    $autoCloseAfterVerifiedClaim = $ClickClaim -and $claimVerification -and $claimVerification.Verified -and -not $KeepOpen
+    $shouldCloseBrowser = ($CloseAfter -or $autoCloseAfterVerifiedClaim) -and -not $KeepOpen -and -not $manualActionNeeded
+    if ($shouldCloseBrowser) {
+      $verifiedClaim = $claimVerification -and $claimVerification.Verified
+      $safeToClose = $OpenOnly -or (-not $ClickClaim) -or $verifiedClaim
+      if ($safeToClose) {
+        $closeResult = Close-ChromeWindow $openedWindow
+      } else {
+        $closeResult = [pscustomobject]@{
+          Requested = $true
+          Skipped = $true
+          Reason = "Claim was clicked but not API-verified; leaving the browser open for manual inspection."
+        }
+      }
+    } elseif ($manualActionNeeded) {
+      $closeResult = [pscustomobject]@{
+        Requested = $false
+        Skipped = $true
+        Reason = "Manual action is required; leaving the A2E browser window open."
+      }
+    } elseif ($KeepOpen -and ($CloseAfter -or ($ClickClaim -and $claimVerification -and $claimVerification.Verified))) {
+      $closeResult = [pscustomobject]@{
+        Requested = $false
+        Skipped = $true
+        Reason = "-KeepOpen was passed; leaving the browser open after the check-in flow."
+      }
+    }
+  } catch {
+    $accountError = $_.Exception.Message
+    if ($openedWindow) {
+      $manualActionRequired = New-ManualActionRequired `
+        $entry.Name `
+        "automation_error_with_open_browser" `
+        "A2E automation failed for '$($entry.Name)' after opening Chrome: $accountError. The browser is left open so you can inspect the page manually, then ask Agent to rerun A2E status and close it." `
+        $screenshotPath
+      $closeResult = [pscustomobject]@{
+        Requested = $false
+        Skipped = $true
+        Reason = "Automation failed after opening Chrome; leaving the browser open for manual inspection."
+      }
+    } else {
+      $failureNotification = [pscustomobject]@{
+        NeedsNotification = $true
+        Account = $entry.Name
+        Reason = "automation_error"
+        Message = "A2E automation failed for '$($entry.Name)' before opening a usable browser window: $accountError."
+      }
     }
   }
 
@@ -738,7 +847,24 @@ foreach ($entry in $selectedAccounts) {
     ClaimVerification = $claimVerification
     Screenshot = $screenshotPath
     CloseResult = $closeResult
+    ManualActionRequired = $manualActionRequired
+    FailureNotification = $failureNotification
+    Error = $accountError
+    FinalCloseSweep = $null
   }
 }
 
-$results | ConvertTo-Json -Depth 8
+$manualResults = @($results | Where-Object { $_.ManualActionRequired -and $_.ManualActionRequired.Required })
+$closedResults = @($results | Where-Object { $_.CloseResult -and $_.CloseResult.Requested -and -not $_.CloseResult.Skipped })
+if (-not $KeepOpen -and $manualResults.Count -eq 0 -and $closedResults.Count -gt 0) {
+  $finalCloseSweep = @(Close-AllA2EChromeWindows)
+  if ($finalCloseSweep.Count -gt 0 -and $results.Count -gt 0) {
+    Set-JsonProperty $results[$results.Count - 1] "FinalCloseSweep" $finalCloseSweep
+  }
+}
+
+$hardErrors = @($results | Where-Object { $_.Error })
+Write-Output ($results | ConvertTo-Json -Depth 8)
+if ($hardErrors.Count -gt 0) {
+  exit 1
+}

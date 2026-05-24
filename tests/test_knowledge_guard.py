@@ -57,6 +57,48 @@ class TestKnowledgeGuard(unittest.TestCase):
             self.assertIn("shared knowledge wiki", result.result)
             self.assertEqual(path.read_text(encoding="utf-8"), "# Knowledge Index\n")
 
+    def test_edit_append_creates_missing_memory_file(self):
+        class MemoryManager:
+            def __init__(self):
+                self.dirty = False
+
+            def mark_dirty(self):
+                self.dirty = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_manager = MemoryManager()
+            tool = Edit({"cwd": tmp, "memory_manager": memory_manager})
+
+            result = tool.execute(
+                {
+                    "path": "memory/2026-05-24.md",
+                    "oldText": "",
+                    "newText": "task note\n",
+                }
+            )
+
+            path = Path(tmp) / "memory" / "2026-05-24.md"
+            created_content = path.read_text(encoding="utf-8")
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(created_content, "task note\n")
+        self.assertTrue(memory_manager.dirty)
+
+    def test_edit_replace_still_rejects_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = Edit({"cwd": tmp})
+
+            result = tool.execute(
+                {
+                    "path": "memory/2026-05-24.md",
+                    "oldText": "old",
+                    "newText": "new",
+                }
+            )
+
+        self.assertEqual(result.status, "error")
+        self.assertIn("File not found", result.result)
+
     def test_knowledge_prompt_declares_private_bridge_boundary(self):
         with tempfile.TemporaryDirectory() as tmp:
             knowledge_dir = Path(tmp) / "knowledge"
