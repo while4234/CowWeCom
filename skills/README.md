@@ -54,6 +54,7 @@ with machine setup notes and any required user-provided keys.
 | `docx` | Create, read, edit, and format Word `.docx` documents. | No external API key. |
 | `fast-market-price` | Fetch quick market quotes for BTC/ETH, gold, silver, oil, FX, major indexes, and symbols. | No external API key; needs Python network access. |
 | `find-skills-skill` | Search and vet community skills before local CowWechat installation. | No external API key; optional `clawhub` or `npx clawhub` improves live search. |
+| `fund-invest-advisor` | Run local fund DCA, allocation, rebalancing, fund-type, and risk-preference planning helpers. | No external API key; calculations are local scenarios only. |
 | `github` | Perform GitHub repository, fork, PR, release, issue, and comment operations. | `GITHUB_TOKEN`; also needs `git`, `curl`, and `jq`. |
 | `image-generation` | Generate/edit images through background jobs. | Local Codex login, or one configured image provider API key. |
 | `knowledge-wiki` | Maintain a local structured knowledge wiki. | No API key. |
