@@ -122,10 +122,24 @@ class DailyDouyinVideoHarvesterTest(unittest.TestCase):
         self.assertNotIn("安卓人", query_text)
         self.assertNotIn("黄仁勋 空军一号", query_text)
         self.assertFalse(self.module.DEFAULT_CONFIG["douyin"]["use_hot_terms"])
-        self.assertIn("轻擦边舞蹈", query_text)
+        self.assertIn("擦边舞蹈", query_text)
+        self.assertIn("性感热舞", query_text)
         self.assertIn("氛围感美女跳舞", query_text)
         self.assertIn("情侣搞笑日常", query_text)
         self.assertNotIn("今日热榜", query_text)
+
+    def test_adult_oriented_douyin_terms_are_not_over_filtered(self):
+        score, reasons = self.module.score_meme_potential("成人向擦边性感热舞名场面", self.module.DEFAULT_CONFIG)
+
+        self.assertGreater(score, 0)
+        self.assertTrue(any("擦边" in reason or "性感" in reason for reason in reasons))
+        self.assertFalse(any(reason.startswith("严肃:成人") for reason in reasons))
+
+    def test_unsafe_boundary_terms_stay_filtered(self):
+        score, reasons = self.module.score_meme_potential("未成年擦边成人视频", self.module.DEFAULT_CONFIG)
+
+        self.assertLess(score, 0)
+        self.assertTrue(any(reason.startswith("严肃:未成年") for reason in reasons))
 
     def test_search_queries_normalize_whitespace_for_deduping(self):
         config = copy.deepcopy(self.module.DEFAULT_CONFIG)
