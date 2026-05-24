@@ -285,6 +285,31 @@ class TestAgentStreamToolAttemptMemory(unittest.TestCase):
         self.assertTrue(executor._request_self_evolution_context_hash)
         self.assertEqual(executor.system_prompt, "system")
 
+    def test_stable_self_evolution_context_precedes_volatile_runtime_context(self):
+        agent = FakeAgent()
+        agent.runtime_info = {
+            "_get_current_time": lambda: {
+                "time": "10:00",
+                "weekday": "Sunday",
+                "timezone": "UTC",
+            }
+        }
+        executor = AgentStreamExecutor(
+            agent=agent,
+            model=RepeatedReadModel(),
+            system_prompt="system",
+            tools=[],
+            messages=[],
+        )
+
+        with patch("common.self_evolution.get_active_prompt_guidance", return_value=["Use supported actions."]):
+            context = executor._build_request_context_text("schedule it")
+
+        self.assertLess(
+            context.index("Use supported actions."),
+            context.index("current time is 10:00"),
+        )
+
     def test_prepare_messages_injects_guidance_into_request_copy_only(self):
         executor = AgentStreamExecutor(
             agent=FakeAgent(),

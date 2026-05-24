@@ -2139,8 +2139,8 @@ class AgentStreamExecutor:
         return max(40000, budget), max(1, keep_recent), max(2000, small_limit)
 
     def _build_request_context_text(self, user_message: str) -> str:
-        runtime_context = self._build_runtime_context_text()
         self_evolution_context = self._build_self_evolution_context_text()
+        runtime_context = self._build_runtime_context_text()
         knowledge_context = self._build_knowledge_context_text(user_message)
         self._request_runtime_context_chars = len(runtime_context)
         self._request_self_evolution_context_chars = len(self_evolution_context)
@@ -2151,7 +2151,7 @@ class AgentStreamExecutor:
         self._request_knowledge_context_hash = (
             stable_metadata_hash(knowledge_context) if knowledge_context else ""
         )
-        parts = [runtime_context, self_evolution_context, knowledge_context]
+        parts = [self_evolution_context, runtime_context, knowledge_context]
         return "\n\n".join(part for part in parts if part)
 
     def _build_runtime_context_text(self) -> str:

@@ -59,7 +59,7 @@ All commands accept `--workspace-root <path>` after the command name for diagnos
 
 - Prefer the runtime's automatic side-channel recorder. It does not consume `agent_max_steps`, does not add messages to conversation history, and does not send WeChat-visible notices.
 - CowAgent loads compact tool-attempt rules once per user request and uses an in-process mtime cache; individual tool calls use in-memory lookups rather than scanning historical logs.
-- High-confidence compact rules are injected into request-scoped runtime context in a stable order. Keep the system prompt section static so learned-rule churn does not reduce system-prompt cache hits; the execution-layer guard remains the fallback.
+- High-confidence compact rules are injected into request-scoped runtime context in a stable order before volatile time or retrieved-knowledge context. Keep the system prompt section static so learned-rule churn does not reduce system-prompt cache hits; the execution-layer guard remains the fallback.
 - High-confidence local policies can be applied before execution, such as rewriting unsafe Windows cmd environment assignment syntax or blocking fragile multi-line `python -c` snippets before launching `cmd.exe`.
 - Use this script only for diagnostics, manual backfill, or confirming that active rules exist.
 - For Windows shell work, remember that CowAgent's `bash` tool runs through `cmd.exe`. Avoid Bash heredocs such as `python - <<EOF`, and avoid Unix-only commands like `grep`, `sed`, `awk`, `head`, and `tail`.
