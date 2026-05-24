@@ -968,7 +968,10 @@ class WecomBotChannel(ChatChannel):
         return [text] if text else []
 
     @classmethod
-    def _mention_tokens(cls, mention_user_ids) -> list:
+    def _mention_tokens(cls, mention_user_ids=None, mention_display_names=None) -> list:
+        display_tokens = [f"@{name}" for name in cls._as_list(mention_display_names)]
+        if display_tokens:
+            return display_tokens
         return [f"<@{user_id}>" for user_id in cls._as_list(mention_user_ids)]
 
     @classmethod
@@ -984,7 +987,7 @@ class WecomBotChannel(ChatChannel):
             return text
         user_ids = cls._as_list(mention_user_ids)
         names = cls._as_list(mention_display_names)
-        tokens = cls._mention_tokens(user_ids) or [f"@{name}" for name in names]
+        tokens = cls._mention_tokens(user_ids, names)
         if not tokens:
             return text
         if any(text.startswith(token) for token in tokens):

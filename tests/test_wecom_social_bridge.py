@@ -548,7 +548,7 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         payload = ws.sent[0]
         self.assertEqual(payload["body"]["chatid"], "group-alpha")
         self.assertEqual(payload["body"]["chat_type"], 2)
-        self.assertEqual(payload["body"]["markdown"]["content"], "<@riko-user>\n该喝水啦 💧")
+        self.assertEqual(payload["body"]["markdown"]["content"], "@Riko\n该喝水啦 💧")
         self.assertNotIn("riko-user, 该喝水", payload["body"]["markdown"]["content"])
 
     def test_group_reply_mentions_sender(self):
@@ -568,7 +568,7 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         self.assertTrue(delivered)
         payload = ws.sent[0]
         self.assertEqual(payload["body"]["chat_type"], 2)
-        self.assertEqual(payload["body"]["markdown"]["content"], "<@sender-a>\n好的")
+        self.assertEqual(payload["body"]["markdown"]["content"], "@Alice\n好的")
 
     def test_active_send_text_result_reports_websocket_send_failure(self):
         class BrokenWebSocket:
