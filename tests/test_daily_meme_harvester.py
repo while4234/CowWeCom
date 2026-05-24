@@ -125,7 +125,8 @@ class DailyMemeHarvesterTest(unittest.TestCase):
     def test_xiaohongshu_public_html_extracts_image_urls_without_login_logic(self):
         html_text = (
             '<script>window.__INITIAL_STATE__={"url":"https:\\/\\/sns-webpic-qc.xhscdn.com\\/abc.jpg?imageView2=2",'
-            '"another":"https://sns-webpic-qc.xhscdn.com/def.webp"}</script>'
+            '"another":"https://sns-webpic-qc.xhscdn.com/def.webp",'
+            '"static":"https://fe-static.xhscdn.com/as/v1/app.js"}</script>'
         )
 
         candidates = self.module.parse_xiaohongshu_search_html(
@@ -137,6 +138,22 @@ class DailyMemeHarvesterTest(unittest.TestCase):
         self.assertEqual(len(candidates), 2)
         self.assertEqual(candidates[0].provider, "xiaohongshu")
         self.assertTrue(candidates[0].image_url.startswith("https://sns-webpic-qc.xhscdn.com/"))
+
+    def test_xiaohongshu_browser_artifacts_extract_image_candidates(self):
+        artifact = {
+            "spec": {"query": "热点事件 表情包", "base_score": 500, "term": "热点事件"},
+            "source_url": "https://www.xiaohongshu.com/search_result?keyword=test",
+            "texts": ['{"url":"https:\\/\\/sns-webpic-qc.xhscdn.com\\/abc.jpg"}'],
+            "image_urls": ["https://sns-webpic-qc.xhscdn.com/def.webp", "https://fe-static.xhscdn.com/as/v1/app.js"],
+        }
+
+        candidates = self.module.parse_xiaohongshu_browser_artifacts([artifact])
+
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(candidates[0].provider, "xiaohongshu")
+        self.assertEqual(candidates[0].extra["source"], "persistent_browser")
+        self.assertEqual(candidates[0].extra["term"], "热点事件")
+        self.assertGreaterEqual(candidates[0].metrics["query_score"], 500)
 
     def test_provider_aliases_include_xiaohongshu(self):
         providers = self.module.parse_csv("小红书,xhs,red")
@@ -322,6 +339,144 @@ class DailyMemeHarvesterTest(unittest.TestCase):
         self.assertEqual(run_mock.call_count, 1)
         self.assertTrue(any("rule guard" in warning for warning in config["_warnings"]))
 
+    def test_xiaohongshu_dry_run_does_not_run_proxy_guard(self):
+        config = {
+            "_env": {},
+            "_warnings": [],
+            "_failed_providers": set(),
+            "_hot_terms": [{"word": "热点事件", "score": 1000}],
+            "dry_run": True,
+            "user_agent": "test-agent",
+            "max_per_provider": 1,
+            "proxy_guard": {
+                "enabled": True,
+                "script": str(SCRIPT),
+                "providers": ["xiaohongshu"],
+                "timeout_seconds": 1,
+            },
+            "xiaohongshu": {
+                "search_patterns": ["{term}"],
+                "fallback_keywords": [],
+                "max_search_queries": 1,
+                "request_interval_seconds": 0,
+                "request_timeout_seconds": 1,
+                "endpoint_search": "https://www.xiaohongshu.com/search_result",
+                "disable_proxy": True,
+                "use_requests": True,
+            },
+        }
+
+        with patch.object(
+            self.module,
+            "http_get_text_requests",
+            side_effect=self.module.FetchError("Network error for xhs"),
+        ), patch.object(self.module.subprocess, "run") as run_mock:
+            candidates = self.module.collect_xiaohongshu(config)
+
+        self.assertEqual(candidates, [])
+        self.assertEqual(run_mock.call_count, 0)
+        self.assertTrue(any("xiaohongshu search failed" in warning for warning in config["_warnings"]))
+
+    def test_xiaohongshu_prefers_browser_collection_over_http(self):
+        browser_candidate = self.module.MemeCandidate(
+            provider="xiaohongshu",
+            source_id="browser-1",
+            source_url="https://www.xiaohongshu.com/search_result?keyword=test",
+            image_url="https://sns-webpic-qc.xhscdn.com/browser.jpg",
+        )
+        config = {
+            "_env": {},
+            "_warnings": [],
+            "_failed_providers": set(),
+            "_hot_terms": [{"word": "热点事件", "score": 1000}],
+            "user_agent": "test-agent",
+            "max_per_provider": 3,
+            "xiaohongshu": {
+                "browser": {"enabled": True},
+                "search_patterns": ["{term}"],
+                "fallback_keywords": [],
+                "max_search_queries": 1,
+            },
+        }
+
+        with patch.object(self.module, "collect_xiaohongshu_browser", return_value=[browser_candidate]) as browser_mock, patch.object(
+            self.module, "collect_xiaohongshu_http"
+        ) as http_mock:
+            candidates = self.module.collect_xiaohongshu(config)
+
+        self.assertEqual(candidates, [browser_candidate])
+        self.assertEqual(browser_mock.call_count, 1)
+        self.assertEqual(http_mock.call_count, 0)
+
+    def test_xiaohongshu_http_fallback_limits_queries(self):
+        html_text = '<script>{"url":"https:\\/\\/sns-webpic-qc.xhscdn.com\\/abc.jpg"}</script>'
+        config = {
+            "_env": {},
+            "_warnings": [],
+            "_failed_providers": set(),
+            "_hot_terms": [{"word": "热点一", "score": 1000}, {"word": "热点二", "score": 900}, {"word": "热点三", "score": 800}],
+            "user_agent": "test-agent",
+            "max_per_provider": 10,
+            "proxy_guard": {"enabled": False, "providers": ["xiaohongshu"]},
+            "xiaohongshu": {
+                "search_patterns": ["{term}"],
+                "fallback_keywords": [],
+                "max_search_queries": 3,
+                "request_interval_seconds": 0,
+                "request_timeout_seconds": 1,
+                "http_fallback_max_queries": 2,
+                "http_time_budget_seconds": 10,
+                "endpoint_search": "https://www.xiaohongshu.com/search_result",
+                "disable_proxy": True,
+                "use_requests": True,
+            },
+        }
+
+        with patch.object(self.module, "collect_xiaohongshu_browser", return_value=[]), patch.object(
+            self.module,
+            "http_get_text_requests",
+            return_value=(html_text, {}),
+        ) as fetch_mock:
+            candidates = self.module.collect_xiaohongshu(config)
+
+        self.assertEqual(fetch_mock.call_count, 2)
+        self.assertGreaterEqual(len(candidates), 1)
+
+    def test_xiaohongshu_dry_run_uses_fallback_terms_without_weibo_hot_fetch(self):
+        config = {
+            "_env": {},
+            "_warnings": [],
+            "_failed_providers": set(),
+            "dry_run": True,
+            "user_agent": "test-agent",
+            "max_per_provider": 2,
+            "proxy_guard": {"enabled": False, "providers": ["xiaohongshu"]},
+            "xiaohongshu": {
+                "browser": {"enabled": False},
+                "use_hot_terms": True,
+                "search_patterns": ["{term}"],
+                "fallback_keywords": ["今日热梗"],
+                "max_search_queries": 1,
+                "request_interval_seconds": 0,
+                "request_timeout_seconds": 1,
+                "http_fallback_max_queries": 1,
+                "http_time_budget_seconds": 5,
+                "endpoint_search": "https://www.xiaohongshu.com/search_result",
+                "disable_proxy": True,
+                "use_requests": True,
+            },
+        }
+
+        with patch.object(self.module, "fetch_weibo_hot_terms") as hot_terms_mock, patch.object(
+            self.module,
+            "http_get_text_requests",
+            return_value=('<script>{"url":"https:\\/\\/sns-webpic-qc.xhscdn.com\\/abc.jpg"}</script>', {}),
+        ):
+            candidates = self.module.collect_xiaohongshu(config)
+
+        self.assertEqual(hot_terms_mock.call_count, 0)
+        self.assertEqual(candidates[0].extra["query"], "今日热梗")
+
     def test_download_candidate_validates_image_and_dedupes_by_sha256(self):
         image_bytes = b"fake-jpeg-bytes"
         expected_sha = hashlib.sha256(image_bytes).hexdigest()
@@ -468,6 +623,101 @@ class DailyMemeHarvesterTest(unittest.TestCase):
             self.assertEqual(config["max_total"], 6)
             self.assertEqual(config["max_downloads_per_provider"], 3)
             self.assertIn("legacy weibo-only default config detected", config["_warnings"][0])
+
+    def test_legacy_xiaohongshu_http_defaults_migrate_to_bounded_browser_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "config_version": 2,
+                        "providers": ["xiaohongshu"],
+                        "xiaohongshu": {
+                            "max_search_queries": 12,
+                            "request_interval_seconds": 2,
+                            "request_timeout_seconds": 20,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = Namespace(
+                config=str(config_path),
+                providers=None,
+                max_total=None,
+                max_per_provider=None,
+                since_hours=None,
+                dry_run=True,
+                json=True,
+                debug=False,
+                out=None,
+            )
+
+            config = self.module.build_config(args, env={})
+
+            self.assertEqual(config["xiaohongshu"]["max_search_queries"], self.module.DEFAULT_CONFIG["xiaohongshu"]["max_search_queries"])
+            self.assertEqual(
+                config["xiaohongshu"]["request_timeout_seconds"],
+                self.module.DEFAULT_CONFIG["xiaohongshu"]["request_timeout_seconds"],
+            )
+            self.assertEqual(
+                config["xiaohongshu"]["browser"]["user_data_dir"],
+                self.module.XIAOHONGSHU_BROWSER_PROFILE_DIR,
+            )
+            self.assertTrue(any("legacy xiaohongshu HTTP defaults detected" in warning for warning in config["_warnings"]))
+
+    def test_xiaohongshu_browser_profile_env_overrides_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "config_version": 3,
+                        "xiaohongshu": {"browser": {"user_data_dir": self.module.XIAOHONGSHU_BROWSER_PROFILE_DIR}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            profile_override = str(Path(tmp) / "xhs-profile")
+            args = Namespace(
+                config=str(config_path),
+                providers=None,
+                max_total=None,
+                max_per_provider=None,
+                since_hours=None,
+                dry_run=True,
+                json=True,
+                debug=False,
+                out=None,
+            )
+
+            config = self.module.build_config(args, env={self.module.XIAOHONGSHU_BROWSER_PROFILE_ENV: profile_override})
+
+            self.assertEqual(config["xiaohongshu"]["browser"]["user_data_dir"], profile_override)
+
+    def test_xiaohongshu_risk_challenge_text_is_detected(self):
+        self.assertTrue(self.module.looks_like_xiaohongshu_challenge("当前IP存在风险，请稍后再试"))
+
+    def test_open_xiaohongshu_profile_window_uses_dedicated_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "xhs-profile"
+            chrome = Path(tmp) / "chrome.exe"
+            chrome.write_text("", encoding="utf-8")
+            config = {
+                "xiaohongshu": {"browser": {"user_data_dir": str(profile)}},
+            }
+
+            with patch.object(self.module, "find_chrome_executable", return_value=chrome), patch.object(
+                self.module.subprocess,
+                "Popen",
+            ) as popen_mock:
+                summary = self.module.open_xiaohongshu_profile_window(config)
+
+        self.assertTrue(summary["opened_xiaohongshu_profile"])
+        self.assertEqual(Path(summary["profile"]), profile.resolve())
+        args = popen_mock.call_args.args[0]
+        self.assertIn(f"--user-data-dir={profile.resolve()}", args)
+        self.assertIn("https://www.xiaohongshu.com/explore", args)
 
     def test_config_loader_accepts_utf8_bom_from_powershell(self):
         with tempfile.TemporaryDirectory() as tmp:

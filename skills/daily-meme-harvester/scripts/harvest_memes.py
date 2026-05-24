@@ -14,6 +14,8 @@ import math
 import mimetypes
 import os
 import re
+import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -31,8 +33,10 @@ PROVIDER_ALIASES = {
     "red": "xiaohongshu",
 }
 DEFAULT_CONFIG_PATH = "~/.cow-meme-harvester/config.json"
+XIAOHONGSHU_BROWSER_PROFILE_DIR = "~/.cow-meme-harvester/xiaohongshu-browser-profile"
+XIAOHONGSHU_BROWSER_PROFILE_ENV = "XHS_BROWSER_USER_DATA_DIR"
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "config_version": 2,
+    "config_version": 3,
     "output_dir": "~/cow/memes",
     "timezone": "Asia/Shanghai",
     "providers": ["weibo", "xiaohongshu"],
@@ -64,13 +68,31 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "fallback_keywords": ["今日热梗", "热门表情包", "名场面", "搞笑图"],
         "use_hot_terms": True,
         "max_hot_terms": 8,
-        "max_search_queries": 12,
+        "max_search_queries": 6,
         "search_patterns": ["{term}", "{term} 名场面", "{term} 表情包", "{term} 梗"],
-        "request_interval_seconds": 2,
+        "request_interval_seconds": 0.5,
         "endpoint_search": "https://www.xiaohongshu.com/search_result",
         "disable_proxy": True,
-        "request_timeout_seconds": 20,
+        "request_timeout_seconds": 6,
         "use_requests": True,
+        "http_fallback_enabled": True,
+        "http_fallback_max_queries": 2,
+        "http_time_budget_seconds": 25,
+        "browser": {
+            "enabled": True,
+            "use_persistent_profile": True,
+            "user_data_dir": XIAOHONGSHU_BROWSER_PROFILE_DIR,
+            "launch_mode": "system_chrome_cdp",
+            "remote_debugging_port": 0,
+            "channel": "chrome",
+            "headless": False,
+            "timeout_seconds": 18,
+            "wait_seconds": 3,
+            "manual_login_wait_seconds": 0,
+            "warmup_url": "https://www.xiaohongshu.com/explore",
+            "max_queries": 3,
+            "time_budget_seconds": 70,
+        },
     },
     "proxy_guard": {
         "enabled": True,
@@ -187,6 +209,154 @@ def looks_like_legacy_weibo_only_default(raw_config: Dict[str, Any]) -> bool:
     return int(raw_config.get("max_total", 3)) == 3 and raw_config.get("max_downloads_per_provider") is None
 
 
+def maybe_migrate_legacy_xiaohongshu_defaults(config: Dict[str, Any]) -> None:
+    raw_config = config.get("_raw_config", {})
+    if not isinstance(raw_config, dict):
+        return
+    try:
+        config_version = int(raw_config.get("config_version", 0) or 0)
+    except (TypeError, ValueError):
+        config_version = 0
+    if config_version >= 3:
+        return
+    raw_xhs = raw_config.get("xiaohongshu", {})
+    if not isinstance(raw_xhs, dict):
+        raw_xhs = {}
+    xhs_config = config.setdefault("xiaohongshu", {})
+    default_xhs = DEFAULT_CONFIG["xiaohongshu"]
+    legacy_values = {
+        "max_search_queries": 12,
+        "request_interval_seconds": 2,
+        "request_timeout_seconds": 20,
+    }
+    changed: List[str] = []
+    for key, legacy_value in legacy_values.items():
+        if raw_xhs.get(key, legacy_value) == legacy_value:
+            xhs_config[key] = copy.deepcopy(default_xhs[key])
+            changed.append(key)
+    for key in ("http_fallback_enabled", "http_fallback_max_queries", "http_time_budget_seconds", "browser"):
+        if key not in raw_xhs:
+            xhs_config[key] = copy.deepcopy(default_xhs[key])
+            changed.append(key)
+    if changed:
+        add_warning(
+            config,
+            "legacy xiaohongshu HTTP defaults detected; using persistent browser profile and bounded HTTP fallback for this run",
+        )
+
+
+def configure_xiaohongshu_browser_profile(config: Dict[str, Any], environ: Dict[str, str]) -> None:
+    xhs_config = config.setdefault("xiaohongshu", {})
+    browser_config = xhs_config.setdefault("browser", {})
+    env_profile = environ.get(XIAOHONGSHU_BROWSER_PROFILE_ENV)
+    if env_profile:
+        browser_config["user_data_dir"] = env_profile
+        return
+    configured_profile = str(browser_config.get("user_data_dir") or "").strip()
+    if not configured_profile:
+        browser_config["user_data_dir"] = XIAOHONGSHU_BROWSER_PROFILE_DIR
+
+
+def chrome_executable_candidates() -> List[Path]:
+    candidates: List[Path] = []
+    resolved = shutil.which("chrome") or shutil.which("chrome.exe") or shutil.which("google-chrome")
+    if resolved:
+        candidates.append(Path(resolved))
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    program_files = [os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")]
+    for root in [item for item in program_files + [local_app_data] if item]:
+        candidates.append(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe")
+    return candidates
+
+
+def find_chrome_executable() -> Path:
+    for candidate in chrome_executable_candidates():
+        if candidate.is_file():
+            return candidate
+    raise FetchError("Chrome executable was not found")
+
+
+def find_free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def wait_for_chrome_cdp(port: int, timeout_seconds: float) -> None:
+    deadline = time.monotonic() + max(1.0, timeout_seconds)
+    url = f"http://127.0.0.1:{port}/json/version"
+    last_error: Optional[Exception] = None
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=1) as response:
+                if response.status == 200:
+                    return
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = exc
+            time.sleep(0.25)
+    raise FetchError(f"Chrome remote debugging endpoint did not become ready on port {port}: {last_error}")
+
+
+def launch_system_chrome_cdp(
+    browser_config: Dict[str, Any],
+    user_data_dir: Path,
+    timeout_seconds: float,
+) -> Tuple[int, subprocess.Popen]:
+    chrome_path = find_chrome_executable()
+    configured_port = int(browser_config.get("remote_debugging_port") or 0)
+    port = configured_port if configured_port > 0 else find_free_local_port()
+    warmup_url = str(browser_config.get("warmup_url") or "https://www.xiaohongshu.com/explore")
+    arguments = [
+        str(chrome_path),
+        "--new-window",
+        "--no-first-run",
+        "--no-default-browser-check",
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={user_data_dir}",
+        warmup_url,
+    ]
+    process = subprocess.Popen(arguments, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    wait_for_chrome_cdp(port, timeout_seconds=timeout_seconds)
+    return port, process
+
+
+def stop_process_quietly(process: Optional[subprocess.Popen]) -> None:
+    if not process or process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
+def open_xiaohongshu_profile_window(config: Dict[str, Any], url: str = "https://www.xiaohongshu.com/explore") -> Dict[str, Any]:
+    xhs_config = config.get("xiaohongshu", {})
+    browser_config = xhs_config.get("browser") if isinstance(xhs_config.get("browser"), dict) else {}
+    user_data_dir = expand_path(str(browser_config.get("user_data_dir") or XIAOHONGSHU_BROWSER_PROFILE_DIR))
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+    chrome_path = find_chrome_executable()
+    arguments = [
+        str(chrome_path),
+        "--new-window",
+        "--no-first-run",
+        "--no-default-browser-check",
+        f"--user-data-dir={user_data_dir}",
+        url,
+    ]
+    subprocess.Popen(arguments, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return {
+        "opened_xiaohongshu_profile": True,
+        "profile": str(user_data_dir),
+        "url": url,
+        "chrome": str(chrome_path),
+        "message": "Complete Xiaohongshu login or risk verification in the opened dedicated Chrome profile, then rerun the harvester.",
+    }
+
+
 def parse_csv(value: Optional[str]) -> List[str]:
     if not value:
         return []
@@ -220,6 +390,7 @@ def build_config(args: argparse.Namespace, env: Optional[Dict[str, str]] = None)
         )
     else:
         config["providers"] = config.get("providers") or DEFAULT_CONFIG["providers"]
+    maybe_migrate_legacy_xiaohongshu_defaults(config)
     config["max_total"] = args.max_total if args.max_total is not None else int(config.get("max_total", 50))
     config["max_per_provider"] = (
         args.max_per_provider if args.max_per_provider is not None else int(config.get("max_per_provider", 30))
@@ -234,9 +405,13 @@ def build_config(args: argparse.Namespace, env: Optional[Dict[str, str]] = None)
         config.setdefault("wecom", {})["receiver"] = args.receiver
     if getattr(args, "group", False):
         config.setdefault("wecom", {})["is_group"] = True
+    login_wait_seconds = getattr(args, "xiaohongshu_login_wait_seconds", None)
+    if login_wait_seconds is not None:
+        config.setdefault("xiaohongshu", {}).setdefault("browser", {})["manual_login_wait_seconds"] = login_wait_seconds
     output_dir = args.out or environ.get("MEME_OUTPUT_DIR") or config.get("output_dir") or DEFAULT_CONFIG["output_dir"]
     config["output_dir"] = str(expand_path(output_dir))
     config["_env"] = environ
+    configure_xiaohongshu_browser_profile(config, environ)
     return config
 
 
@@ -262,6 +437,8 @@ def mark_provider_skipped(config: Dict[str, Any], provider: str) -> None:
 
 
 def should_run_proxy_guard_for(config: Dict[str, Any], provider: str) -> bool:
+    if config.get("dry_run"):
+        return False
     guard_config = config.get("proxy_guard", {})
     if not guard_config.get("enabled", True):
         return False
@@ -641,8 +818,8 @@ def build_hot_driven_search_specs(
     if provider_config.get("use_hot_terms", True):
         max_hot_terms = int(provider_config.get("max_hot_terms", 8))
         patterns = provider_config.get("search_patterns") or ["{term}", "{term} 名场面", "{term} 表情包"]
-        terms = list(hot_terms or [])
-        if not terms:
+        terms = list(hot_terms) if hot_terms is not None else []
+        if hot_terms is None and not terms:
             terms = get_shared_hot_terms(config, max_terms=max_hot_terms)
         for rank, term in enumerate(terms[:max_hot_terms], start=1):
             word = term_word(term)
@@ -804,6 +981,18 @@ def unescape_url(value: str) -> str:
     return html.unescape(url)
 
 
+def looks_like_image_asset_url(url: str, host_keywords: Optional[Sequence[str]] = None) -> bool:
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.netloc.lower()
+    if host_keywords and not any(keyword in host for keyword in host_keywords):
+        return False
+    path = parsed.path.lower()
+    suffix = Path(path).suffix.lower()
+    if suffix:
+        return suffix in IMAGE_EXTENSIONS
+    return any(token in path for token in ("/img/", "image", "tos-", "/obj/"))
+
+
 def embedded_image_urls(text: str, host_keywords: Optional[Sequence[str]] = None) -> List[str]:
     search_text = unescape_url(text)
     url_pattern = re.compile(r"https?://[^\"'<>\\\s]+", re.IGNORECASE)
@@ -811,14 +1000,8 @@ def embedded_image_urls(text: str, host_keywords: Optional[Sequence[str]] = None
     seen_urls = set()
     for match in url_pattern.finditer(search_text):
         image_url = unescape_url(match.group(0)).strip().rstrip("),.;]}")
-        parsed = urllib.parse.urlsplit(image_url)
-        host = parsed.netloc.lower()
-        if host_keywords and not any(keyword in host for keyword in host_keywords):
+        if not looks_like_image_asset_url(image_url, host_keywords=host_keywords):
             continue
-        if extension_from_url(image_url) is None:
-            path = parsed.path.lower()
-            if not any(token in path for token in ("/img/", "image", "tos-", "/obj/")):
-                continue
         if image_url in seen_urls:
             continue
         seen_urls.add(image_url)
@@ -848,44 +1031,306 @@ def parse_xiaohongshu_search_html(html_text: str, keyword: str, source_url: str)
     return candidates
 
 
-def collect_xiaohongshu(config: Dict[str, Any]) -> List[MemeCandidate]:
+def add_xiaohongshu_query_score(
+    candidates: Sequence[MemeCandidate],
+    spec: Dict[str, Any],
+    source: Optional[str] = None,
+) -> None:
+    base_score = float(spec.get("base_score", 0.0))
+    for candidate in candidates:
+        candidate.score += base_score
+        candidate.metrics["query_score"] = base_score
+        candidate.extra["term"] = spec.get("term")
+        if source:
+            candidate.extra["source"] = source
+
+
+def parse_xiaohongshu_browser_artifacts(artifacts: Sequence[Dict[str, Any]]) -> List[MemeCandidate]:
+    candidates: List[MemeCandidate] = []
+    seen_urls = set()
+    for artifact in artifacts:
+        spec = artifact.get("spec") if isinstance(artifact.get("spec"), dict) else {}
+        keyword = str(spec.get("query") or artifact.get("keyword") or "")
+        source_url = str(artifact.get("source_url") or "https://www.xiaohongshu.com/")
+        for html_text in artifact.get("texts") or []:
+            if isinstance(html_text, str) and html_text:
+                provider_candidates = parse_xiaohongshu_search_html(html_text, keyword=keyword, source_url=source_url)
+                add_xiaohongshu_query_score(provider_candidates, spec, source="persistent_browser")
+                for candidate in provider_candidates:
+                    if candidate.image_url in seen_urls:
+                        continue
+                    seen_urls.add(candidate.image_url)
+                    candidates.append(candidate)
+        for image_url in artifact.get("image_urls") or []:
+            image_url = str(image_url)
+            if not looks_like_image_asset_url(image_url, host_keywords=("xhscdn.com",)):
+                continue
+            if image_url in seen_urls:
+                continue
+            seen_urls.add(image_url)
+            source_id = hashlib.sha1(image_url.encode("utf-8")).hexdigest()[:16]
+            candidate = MemeCandidate(
+                provider="xiaohongshu",
+                source_id=source_id,
+                source_url=source_url,
+                image_url=image_url,
+                title=f"{keyword} 小红书图片",
+                score=max(1.0, 1000.0 - len(candidates)),
+                metrics={"rank": len(candidates) + 1},
+                extra={"query": keyword, "source": "persistent_browser"},
+            )
+            add_xiaohongshu_query_score([candidate], spec, source="persistent_browser")
+            candidates.append(candidate)
+    candidates.sort(key=lambda candidate: candidate.score, reverse=True)
+    return candidates
+
+
+def looks_like_xiaohongshu_challenge(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        token in lowered
+        for token in (
+            "captcha",
+            "verify",
+            "login",
+            "安全验证",
+            "验证码",
+            "滑块",
+            "请登录",
+            "登录后",
+            "ip存在风险",
+            "当前ip",
+            "账号存在风险",
+            "访问频繁",
+            "异常访问",
+        )
+    )
+
+
+def xiaohongshu_cookies_from_header(cookie_header: str) -> List[Dict[str, Any]]:
+    cookies: List[Dict[str, Any]] = []
+    for part in cookie_header.split(";"):
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name = name.strip()
+        if not name:
+            continue
+        for domain in ("www.xiaohongshu.com", ".xiaohongshu.com"):
+            cookies.append({"name": name, "value": value.strip(), "domain": domain, "path": "/"})
+    return cookies
+
+
+def add_xiaohongshu_cookie_header(context: Any, cookie_header: str) -> None:
+    cookies = xiaohongshu_cookies_from_header(cookie_header)
+    if cookies:
+        context.add_cookies(cookies)
+
+
+def collect_xiaohongshu_browser(
+    config: Dict[str, Any],
+    specs: Sequence[Dict[str, Any]],
+    headers: Dict[str, str],
+) -> List[MemeCandidate]:
+    xhs_config = config.get("xiaohongshu", {})
+    browser_config = xhs_config.get("browser") if isinstance(xhs_config.get("browser"), dict) else {}
+    if not browser_config or not browser_config.get("enabled", False):
+        return []
+    try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        add_warning(config, f"xiaohongshu browser collection unavailable: playwright is not installed ({exc})")
+        return []
+
+    endpoint = xhs_config.get("endpoint_search", "https://www.xiaohongshu.com/search_result")
+    user_data_dir = expand_path(str(browser_config.get("user_data_dir") or XIAOHONGSHU_BROWSER_PROFILE_DIR))
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+    timeout_seconds = max(1.0, float(browser_config.get("timeout_seconds", 18)))
+    timeout_ms = int(timeout_seconds * 1000)
+    wait_seconds = max(0.0, float(browser_config.get("wait_seconds", 3)))
+    max_queries = max(1, int(browser_config.get("max_queries", 3)))
+    time_budget_seconds = max(5.0, float(browser_config.get("time_budget_seconds", 70)))
+    manual_login_wait_seconds = max(0.0, float(browser_config.get("manual_login_wait_seconds", 0)))
+    started = time.monotonic()
+    artifacts: List[Dict[str, Any]] = []
+
+    launch_mode = str(browser_config.get("launch_mode") or "system_chrome_cdp")
+    add_warning(config, f"xiaohongshu collection is using persistent browser profile: {user_data_dir}")
+    try:
+        with sync_playwright() as playwright:
+            chrome_process: Optional[subprocess.Popen] = None
+            browser = None
+            if launch_mode == "system_chrome_cdp":
+                cdp_port, chrome_process = launch_system_chrome_cdp(browser_config, user_data_dir, timeout_seconds)
+                browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}", timeout=timeout_ms)
+                context = browser.contexts[0] if browser.contexts else browser.new_context()
+            else:
+                launch_options = {
+                    "headless": bool(browser_config.get("headless", False)),
+                    "viewport": {"width": 1280, "height": 900},
+                    "user_agent": config.get("user_agent", DEFAULT_CONFIG["user_agent"]),
+                    "locale": "zh-CN",
+                    "timeout": timeout_ms,
+                }
+                channel = str(browser_config.get("channel") or "").strip()
+                if channel:
+                    launch_options["channel"] = channel
+                context = playwright.chromium.launch_persistent_context(str(user_data_dir), **launch_options)
+            try:
+                if headers.get("Cookie"):
+                    add_xiaohongshu_cookie_header(context, headers["Cookie"])
+                page = context.pages[-1] if context.pages else context.new_page()
+                try:
+                    page.set_viewport_size({"width": 1280, "height": 900})
+                except Exception:
+                    pass
+                current_artifact: Dict[str, Any] = {}
+
+                def handle_response(response: Any) -> None:
+                    artifact = current_artifact.get("value")
+                    if not artifact:
+                        return
+                    response_url = str(getattr(response, "url", "") or "")
+                    lowered = response_url.lower()
+                    if looks_like_image_asset_url(response_url, host_keywords=("xhscdn.com",)):
+                        artifact.setdefault("image_urls", []).append(response_url)
+                        return
+                    if "xiaohongshu.com" not in lowered:
+                        return
+                    headers_map = response.headers or {}
+                    content_type = str(headers_map.get("content-type") or headers_map.get("Content-Type") or "")
+                    if not any(token in content_type for token in ("text/html", "application/json", "text/plain")):
+                        return
+                    try:
+                        text = response.text()
+                    except Exception:
+                        return
+                    if text:
+                        artifact.setdefault("texts", []).append(text[:1_000_000])
+
+                page.on("response", handle_response)
+                warmup_url = str(browser_config.get("warmup_url") or "").strip()
+                if warmup_url:
+                    try:
+                        page.goto(warmup_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                        if wait_seconds:
+                            page.wait_for_timeout(int(wait_seconds * 1000))
+                        warmup_text = page.locator("body").inner_text(timeout=3000)
+                    except PlaywrightTimeoutError as exc:
+                        add_warning(config, f"xiaohongshu browser warm-up timed out: {exc}")
+                        warmup_text = ""
+                    except Exception as exc:
+                        add_warning(config, f"xiaohongshu browser warm-up failed: {exc}")
+                        warmup_text = ""
+                    if looks_like_xiaohongshu_challenge(warmup_text):
+                        add_warning(
+                            config,
+                            "xiaohongshu browser profile hit login/risk verification during warm-up; open the dedicated profile manually, finish verification, then rerun",
+                        )
+                        if manual_login_wait_seconds:
+                            page.wait_for_timeout(int(manual_login_wait_seconds * 1000))
+                        return []
+                for index, spec in enumerate(specs[:max_queries]):
+                    remaining = time_budget_seconds - (time.monotonic() - started)
+                    if remaining <= 1:
+                        add_warning(config, "xiaohongshu browser collection stopped at its time budget")
+                        break
+                    if index:
+                        time.sleep(min(float(xhs_config.get("request_interval_seconds", 0.5)), max(0.0, remaining)))
+                    keyword = str(spec.get("query") or "")
+                    source_url = build_url(endpoint, {"keyword": keyword, "source": "web_search_result_notes"})
+                    artifact = {"spec": spec, "keyword": keyword, "source_url": source_url, "texts": [], "image_urls": []}
+                    current_artifact["value"] = artifact
+                    try:
+                        page.goto(source_url, wait_until="domcontentloaded", timeout=int(min(timeout_ms, remaining * 1000)))
+                        if wait_seconds:
+                            page.wait_for_timeout(int(min(wait_seconds, max(0.0, remaining)) * 1000))
+                        artifact["texts"].append(page.content())
+                        try:
+                            visible_text = page.locator("body").inner_text(timeout=3000)
+                        except Exception:
+                            visible_text = ""
+                        if looks_like_xiaohongshu_challenge(visible_text):
+                            add_warning(
+                                config,
+                                "xiaohongshu browser profile needs login or verification; complete it in the dedicated profile and rerun",
+                            )
+                            if manual_login_wait_seconds:
+                                page.wait_for_timeout(int(manual_login_wait_seconds * 1000))
+                            artifacts.append(artifact)
+                            break
+                    except PlaywrightTimeoutError as exc:
+                        add_warning(config, f"xiaohongshu browser search timed out for {keyword}: {exc}")
+                    except Exception as exc:
+                        add_warning(config, f"xiaohongshu browser search failed for {keyword}: {exc}")
+                    finally:
+                        current_artifact["value"] = None
+                    artifacts.append(artifact)
+            finally:
+                try:
+                    if browser is not None:
+                        browser.close()
+                    else:
+                        context.close()
+                finally:
+                    stop_process_quietly(chrome_process)
+    except Exception as exc:
+        add_warning(config, f"xiaohongshu browser collection unavailable: {exc}")
+        return []
+    return parse_xiaohongshu_browser_artifacts(artifacts)
+
+
+def collect_xiaohongshu_http(
+    config: Dict[str, Any],
+    specs: Sequence[Dict[str, Any]],
+    headers: Dict[str, str],
+) -> List[MemeCandidate]:
     xhs_config = config.get("xiaohongshu", {})
     headers = {
-        "User-Agent": config.get("user_agent", DEFAULT_CONFIG["user_agent"]),
-        "Referer": "https://www.xiaohongshu.com/",
+        "User-Agent": headers.get("User-Agent", config.get("user_agent", DEFAULT_CONFIG["user_agent"])),
+        "Referer": headers.get("Referer", "https://www.xiaohongshu.com/"),
+        **({"Cookie": headers["Cookie"]} if headers.get("Cookie") else {}),
     }
-    cookie = config.get("_env", os.environ).get(xhs_config.get("cookie_env", "XHS_COOKIE"))
-    if cookie:
-        headers["Cookie"] = cookie
-    else:
-        add_warning(config, "XHS_COOKIE not set; xiaohongshu public pages may be unavailable and will be skipped on access failure")
 
     endpoint = xhs_config.get("endpoint_search", "https://www.xiaohongshu.com/search_result")
     candidates: List[MemeCandidate] = []
     max_per_provider = int(config.get("max_per_provider", 30))
-    for index, spec in enumerate(build_hot_driven_search_specs(xhs_config, config)[:max_per_provider]):
+    max_queries = max(1, int(xhs_config.get("http_fallback_max_queries", 2)))
+    time_budget_seconds = max(1.0, float(xhs_config.get("http_time_budget_seconds", 25)))
+    started = time.monotonic()
+    for index, spec in enumerate(specs[: min(max_per_provider, max_queries)]):
+        remaining = time_budget_seconds - (time.monotonic() - started)
+        if remaining <= 0:
+            add_warning(config, "xiaohongshu HTTP fallback stopped at its time budget")
+            break
         keyword = spec["query"]
         if index:
-            time.sleep(float(xhs_config.get("request_interval_seconds", 2)))
+            time.sleep(min(float(xhs_config.get("request_interval_seconds", 0.5)), max(0.0, remaining)))
         params = {"keyword": keyword, "source": "web_search_result_notes"}
         source_url = build_url(endpoint, params)
+        request_timeout = max(1, min(int(xhs_config.get("request_timeout_seconds", 6)), int(max(1.0, remaining))))
         try:
             html_text, _headers = fetch_provider_text(
                 endpoint,
                 params=params,
                 headers=headers,
-                timeout=int(xhs_config.get("request_timeout_seconds", 20)),
+                timeout=request_timeout,
                 disable_proxy=bool(xhs_config.get("disable_proxy", True)),
                 use_requests=bool(xhs_config.get("use_requests", True)),
             )
         except FetchError as exc:
             if run_proxy_guard(config, "xiaohongshu", str(exc)):
+                remaining = time_budget_seconds - (time.monotonic() - started)
+                if remaining <= 0:
+                    add_warning(config, "xiaohongshu HTTP fallback skipped retry at its time budget")
+                    break
                 try:
                     html_text, _headers = fetch_provider_text(
                         endpoint,
                         params=params,
                         headers=headers,
-                        timeout=int(xhs_config.get("request_timeout_seconds", 20)),
+                        timeout=max(1, min(int(xhs_config.get("request_timeout_seconds", 6)), int(max(1.0, remaining)))),
                         disable_proxy=bool(xhs_config.get("disable_proxy", True)),
                         use_requests=bool(xhs_config.get("use_requests", True)),
                     )
@@ -893,10 +1338,7 @@ def collect_xiaohongshu(config: Dict[str, Any]) -> List[MemeCandidate]:
                     exc = retry_exc
                 else:
                     provider_candidates = parse_xiaohongshu_search_html(html_text, keyword=keyword, source_url=source_url)
-                    for candidate in provider_candidates:
-                        candidate.score += float(spec.get("base_score", 0.0))
-                        candidate.metrics["query_score"] = float(spec.get("base_score", 0.0))
-                        candidate.extra["term"] = spec.get("term")
+                    add_xiaohongshu_query_score(provider_candidates, spec, source="http_fallback")
                     candidates.extend(provider_candidates)
                     if len(candidates) >= max_per_provider:
                         break
@@ -910,14 +1352,36 @@ def collect_xiaohongshu(config: Dict[str, Any]) -> List[MemeCandidate]:
                 break
             continue
         provider_candidates = parse_xiaohongshu_search_html(html_text, keyword=keyword, source_url=source_url)
-        for candidate in provider_candidates:
-            candidate.score += float(spec.get("base_score", 0.0))
-            candidate.metrics["query_score"] = float(spec.get("base_score", 0.0))
-            candidate.extra["term"] = spec.get("term")
+        add_xiaohongshu_query_score(provider_candidates, spec, source="http_fallback")
         candidates.extend(provider_candidates)
         if len(candidates) >= max_per_provider:
             break
     return candidates
+
+
+def collect_xiaohongshu(config: Dict[str, Any]) -> List[MemeCandidate]:
+    xhs_config = config.get("xiaohongshu", {})
+    headers = {
+        "User-Agent": config.get("user_agent", DEFAULT_CONFIG["user_agent"]),
+        "Referer": "https://www.xiaohongshu.com/",
+    }
+    cookie = config.get("_env", os.environ).get(xhs_config.get("cookie_env", "XHS_COOKIE"))
+    if cookie:
+        headers["Cookie"] = cookie
+    hot_terms = None
+    if "_hot_terms" in config:
+        hot_terms = config.get("_hot_terms") or []
+    elif config.get("dry_run"):
+        hot_terms = []
+    specs = build_hot_driven_search_specs(xhs_config, config, hot_terms=hot_terms)[: int(config.get("max_per_provider", 30))]
+    browser_candidates = collect_xiaohongshu_browser(config, specs, headers)
+    if browser_candidates:
+        return browser_candidates
+    if not xhs_config.get("http_fallback_enabled", True):
+        return []
+    if not cookie:
+        add_warning(config, "XHS_COOKIE not set; using bounded Xiaohongshu HTTP fallback after browser collection")
+    return collect_xiaohongshu_http(config, specs, headers)
 
 
 def is_image_url(url: str) -> bool:
@@ -1490,6 +1954,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--send-wecom", action="store_true", help="Send downloaded images to Enterprise WeChat.")
     parser.add_argument("--receiver", default=None, help="WeCom receiver userid/chatid.")
     parser.add_argument("--group", action="store_true", help="Treat receiver as a WeCom group chatid.")
+    parser.add_argument(
+        "--open-xiaohongshu-profile",
+        action="store_true",
+        help="Open the dedicated Xiaohongshu Chrome profile for manual login or risk verification, then exit.",
+    )
+    parser.add_argument(
+        "--xiaohongshu-login-url",
+        default="https://www.xiaohongshu.com/explore",
+        help="URL to open with --open-xiaohongshu-profile.",
+    )
+    parser.add_argument(
+        "--xiaohongshu-login-wait-seconds",
+        type=int,
+        default=None,
+        help="When Xiaohongshu shows login/verification, keep the persistent profile window open for this many seconds.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print candidates without downloading.")
     parser.add_argument("--json", action="store_true", help="Print JSON summary to stdout.")
     parser.add_argument("--debug", action="store_true", help="Print debug logs to stderr.")
@@ -1525,7 +2005,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     setup_logging(args.debug)
     config = build_config(args)
-    summary = run(config)
+    if getattr(args, "open_xiaohongshu_profile", False):
+        try:
+            summary = open_xiaohongshu_profile_window(config, url=args.xiaohongshu_login_url)
+        except FetchError as exc:
+            add_warning(config, str(exc))
+            summary = {
+                "opened_xiaohongshu_profile": False,
+                "warnings": list(config.get("_warnings", [])),
+            }
+    else:
+        summary = run(config)
     if config.get("json"):
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     else:
