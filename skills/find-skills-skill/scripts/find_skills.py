@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Iterable
 
 
 @dataclass
@@ -44,30 +47,111 @@ KNOWN_LEADS = [
 ]
 
 
+@dataclass(frozen=True)
+class CliCommand:
+    label: str
+    argv: list[str]
+
+
+def _dedupe(values: Iterable[str]) -> list[str]:
+    seen = set()
+    unique = []
+    for value in values:
+        key = value.lower() if os.name == "nt" else value
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(value)
+    return unique
+
+
+def _common_node_dirs() -> list[Path]:
+    candidates: list[Path] = []
+    for env_name in ("ProgramFiles", "ProgramFiles(x86)", "APPDATA"):
+        base = os.environ.get(env_name)
+        if not base:
+            continue
+        if env_name == "APPDATA":
+            candidates.append(Path(base) / "npm")
+        else:
+            candidates.append(Path(base) / "nodejs")
+
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        winget_packages = Path(local_appdata) / "Microsoft" / "WinGet" / "Packages"
+        if winget_packages.exists():
+            candidates.extend(winget_packages.glob("OpenJS.NodeJS*/node-*"))
+
+    return [path for path in candidates if path.exists()]
+
+
+def find_executable(names: Iterable[str]) -> str | None:
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+
+    for directory in _common_node_dirs():
+        for name in names:
+            candidate = directory / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def _limit_args(sort: str) -> list[str]:
+    return ["--limit", "10"] if sort else []
+
+
+def resolve_clawhub_commands(query: str, sort: str) -> list[CliCommand]:
+    suffix = ["search", query, *_limit_args(sort)]
+    commands: list[CliCommand] = []
+
+    clawhub = find_executable(("clawhub.cmd", "clawhub.exe", "clawhub"))
+    if clawhub:
+        commands.append(CliCommand(label="clawhub", argv=[clawhub, *suffix]))
+
+    npx = find_executable(("npx.cmd", "npx.exe", "npx"))
+    if npx:
+        commands.append(CliCommand(label="npx clawhub", argv=[npx, "clawhub", *suffix]))
+
+    seen = set()
+    deduped = []
+    for command in commands:
+        key = tuple(command.argv)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(command)
+    return deduped
+
+
 def run_clawhub(query: str, sort: str) -> str | None:
-    npx = shutil.which("npx")
-    if not npx:
+    commands = resolve_clawhub_commands(query, sort)
+    if not commands:
         return None
-    cmd = [npx, "clawhub", "search", query]
-    # Current clawhub CLI exposes vector search plus --limit. Ranking flags vary
-    # between releases, so popularity sorting is handled by listing metadata.
-    if sort:
-        cmd.extend(["--limit", "10"])
+
+    failures = []
     try:
-        completed = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
+        # Current clawhub CLI exposes vector search plus --limit. Ranking flags
+        # vary between releases, so popularity sorting is handled by listing metadata.
+        for command in commands:
+            completed = subprocess.run(
+                command.argv,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+            if completed.returncode == 0:
+                return completed.stdout.strip()
+            reason = completed.stderr.strip() or completed.stdout.strip() or f"exit {completed.returncode}"
+            failures.append(f"{command.label}: {reason}")
     except Exception as exc:
-        return f"clawhub_cli_error: {exc}"
-    if completed.returncode != 0:
-        return f"clawhub_cli_error: {completed.stderr.strip() or completed.stdout.strip()}"
-    return completed.stdout.strip()
+        failures.append(str(exc))
+    return "clawhub_cli_error: " + " | ".join(_dedupe(failures))
 
 
 def main() -> int:
@@ -114,7 +198,7 @@ def main() -> int:
         print("\nClawHub CLI output:")
         print(cli_output)
     else:
-        print("\nClawHub CLI not available via npx; use web lookup plus local review.")
+        print("\nClawHub CLI not available via clawhub/npx; use web lookup plus local review.")
     return 0
 
 

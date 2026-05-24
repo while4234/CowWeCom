@@ -42,6 +42,8 @@ python "<base_dir>\scripts\find_skills.py" "weather" --sort installs
 python "<base_dir>\scripts\find_skills.py" "skill search" --sort stars
 ```
 
+The helper first tries a direct `clawhub` CLI, then `npx clawhub`, then common Windows Node install locations such as WinGet's `OpenJS.NodeJS` package directory. If the CLI still cannot run, continue with web lookup plus local review.
+
 2. Prefer candidates with high downloads or stars, clear docs, small readable source, no secrets, no unexpected network endpoints, no destructive shell commands, and no hidden credential collection.
 3. Read the candidate `SKILL.md` and bundled scripts before installation.
 4. Localize the skill for CowWechat:

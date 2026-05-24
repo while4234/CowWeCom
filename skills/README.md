@@ -53,7 +53,7 @@ with machine setup notes and any required user-provided keys.
 | `daily-meme-harvester` | Collect TOP3 hot-topic images from Weibo and TOP3 from Xiaohongshu, dedupe same topics/content without backfill, download images, and optionally send them to WeCom. | Optional `WEIBO_COOKIE` and `XHS_COOKIE`; WeCom Bot credentials from local config or env for sending. |
 | `docx` | Create, read, edit, and format Word `.docx` documents. | No external API key. |
 | `fast-market-price` | Fetch quick market quotes for BTC/ETH, gold, silver, oil, FX, major indexes, and symbols. | No external API key; needs Python network access. |
-| `find-skills-skill` | Search and vet community skills before local CowWechat installation. | No external API key; optional `npx clawhub` improves live search. |
+| `find-skills-skill` | Search and vet community skills before local CowWechat installation. | No external API key; optional `clawhub` or `npx clawhub` improves live search. |
 | `github` | Perform GitHub repository, fork, PR, release, issue, and comment operations. | `GITHUB_TOKEN`; also needs `git`, `curl`, and `jq`. |
 | `image-generation` | Generate/edit images through background jobs. | Local Codex login, or one configured image provider API key. |
 | `knowledge-wiki` | Maintain a local structured knowledge wiki. | No API key. |
