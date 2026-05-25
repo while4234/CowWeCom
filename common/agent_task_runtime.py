@@ -162,6 +162,7 @@ class SessionRuntime:
         self.model_text_sent = False
         self.last_silence_notice_at = 0.0
         self.silence_notice_count = 0
+        self.visible_silence_notice_count = 0
 
     def start_task(self, summary: str, max_turns: int = 0) -> CancellationToken:
         with self.lock:
@@ -191,6 +192,7 @@ class SessionRuntime:
             self.model_text_sent = False
             self.last_silence_notice_at = 0.0
             self.silence_notice_count = 0
+            self.visible_silence_notice_count = 0
             self.last_queue_notice_at = 0.0
             return token
 
@@ -222,6 +224,7 @@ class SessionRuntime:
             elif source == "silence_notice":
                 self.last_agent_reply_at = now
                 self.last_agent_reply_source = source
+                self.visible_silence_notice_count += 1
                 if not self.last_silence_notice_at:
                     self.last_silence_notice_at = now
                     self.silence_notice_count += 1
@@ -368,14 +371,22 @@ class SessionRuntime:
             parts.append("建议把需求拆成更小一步，或换一种描述方式让我继续尝试。")
             return "\n".join(parts)
 
-    def should_send_completion_notice(self, min_turns: int = 10) -> bool:
+    def should_send_completion_notice(
+        self,
+        min_turns: int = 10,
+        min_silence_notices: int = 2,
+    ) -> bool:
         with self.lock:
             progress = self.progress
             if progress.cancel_requested:
                 return False
             if progress.outcome_status and progress.outcome_status != "success":
                 return False
-            return progress.turn >= max(1, int(min_turns or 1)) and bool(progress.started_at)
+            has_enough_turns = progress.turn >= max(1, int(min_turns or 1))
+            has_enough_silence_notices = self.visible_silence_notice_count >= max(
+                1, int(min_silence_notices or 1)
+            )
+            return (has_enough_turns or has_enough_silence_notices) and bool(progress.started_at)
 
     def completion_notice_text(self, now: Optional[float] = None) -> str:
         with self.lock:

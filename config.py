@@ -387,6 +387,7 @@ available_setting = {
     "agent_complex_planning_max_steps": 40,  # 复杂旅行/多工具规划任务的单次运行最大决策步数
     "long_task_completion_notice_enabled": True,  # 长任务成功完成后是否发送短完成提示
     "long_task_completion_notice_min_turns": 10,  # 发送长任务成功提示的最小决策轮数
+    "long_task_completion_notice_min_silence_notices": 2,  # 兜底进度提醒出现几次后成功完成也发送短提示
     "memory_deep_dream": copy.deepcopy(_DEFAULT_MEMORY_DEEP_DREAM_CONFIG),
     "enable_thinking": False,  # Enable deep-thinking mode for thinking-capable models
     "reasoning_effort": "high",  # Reasoning depth under thinking mode: "high" or "max"

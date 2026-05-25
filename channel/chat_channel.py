@@ -733,77 +733,105 @@ class ChatChannel(Channel):
                     return self._send(reply, context)
         return False
     
+    @staticmethod
+    def _clean_media_reference(value) -> str:
+        if isinstance(value, tuple):
+            value = next((part for part in value if part), "")
+        return str(value or "").strip().strip("'\"")
+
+    @staticmethod
+    def _is_remote_media_reference(url: str) -> bool:
+        return str(url or "").lower().startswith(("http://", "https://"))
+
+    @classmethod
+    def _should_auto_send_extracted_media(cls, url: str, source: str) -> bool:
+        if not cls._is_remote_media_reference(url):
+            return True
+        return source == "explicit"
+
     def _extract_and_send_images(self, reply: Reply, context: Context):
         """
-        从文本回复中提取图片/视频URL并单独发送
-        支持格式：[图片: /path/to/image.png], [视频: /path/to/video.mp4], ![](url), <img src="url">
-        最多发送5个媒体文件
+        从文本回复中提取图片/视频URL并单独发送。
+        远程 Markdown/裸 URL 常来自酒店、OTA、搜索结果等正文资料，保留在文本中，
+        不自动拆成图片消息，避免企业微信下载失败后暴露 image failed。
         """
-        content = reply.content
-        media_items = []  # [(url, type), ...]
-        
-        # 正则提取各种格式的媒体URL
+        content = reply.content or ""
+        media_items = []  # [(url, type, source), ...]
+        skipped_remote_items = 0
+
         patterns = [
-            (r'\[图片:\s*([^\]]+)\]', 'image'),   # [图片: /path/to/image.png]
-            (r'\[视频:\s*([^\]]+)\]', 'video'),   # [视频: /path/to/video.mp4]
-            (r'!\[.*?\]\(([^\)]+)\)', 'image'),   # ![alt](url) - 默认图片
-            (r'<img[^>]+src=["\']([^"\']+)["\']', 'image'),  # <img src="url">
-            (r'<video[^>]+src=["\']([^"\']+)["\']', 'video'),  # <video src="url">
-            (r'https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp)', 'image'),  # 直接的图片URL
-            (r'https?://[^\s]+\.(?:mp4|avi|mov|wmv|flv)', 'video'),  # 直接的视频URL
+            (r'\[图片:\s*([^\]]+)\]', 'image', 'explicit'),
+            (r'\[视频:\s*([^\]]+)\]', 'video', 'explicit'),
+            (r'!\[.*?\]\(([^\)]+)\)', 'image', 'embedded'),
+            (r'<img[^>]+src=["\']([^"\']+)["\']', 'image', 'embedded'),
+            (r'<video[^>]+src=["\']([^"\']+)["\']', 'video', 'embedded'),
+            (r'https?://[^\s<>\)]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s<>\)]*)?', 'image', 'direct'),
+            (r'https?://[^\s<>\)]+\.(?:mp4|avi|mov|wmv|flv)(?:\?[^\s<>\)]*)?', 'video', 'direct'),
         ]
-        
-        for pattern, media_type in patterns:
+
+        for pattern, media_type, source in patterns:
             matches = re.findall(pattern, content, re.IGNORECASE)
             for match in matches:
-                media_items.append((match, media_type))
-        
-        # 去重（保持顺序）并限制最多5个
+                url = self._clean_media_reference(match)
+                if not url:
+                    continue
+                if not self._should_auto_send_extracted_media(url, source):
+                    skipped_remote_items += 1
+                    continue
+                media_items.append((url, media_type, source))
+
         seen = set()
         unique_items = []
-        for url, mtype in media_items:
+        for url, mtype, source in media_items:
             if url not in seen:
                 seen.add(url)
-                unique_items.append((url, mtype))
+                unique_items.append((url, mtype, source))
         media_items = unique_items[:5]
-        
-        if media_items:
-            logger.info(f"[chat_channel] Extracted {len(media_items)} media item(s) from reply")
-            
-            # Send text first (the frontend will embed video players via renderMarkdown).
-            logger.info(f"[chat_channel] Sending text content before media: {reply.content[:100]}...")
-            text_sent = self._send(reply, context)
-            logger.info(f"[chat_channel] Text sent, now sending {len(media_items)} media item(s)")
-            
-            for i, (url, media_type) in enumerate(media_items):
-                try:
-                    # Determine whether it is a remote URL or a local file.
-                    if url.startswith(('http://', 'https://')):
-                        if media_type == 'video':
-                            media_reply = Reply(ReplyType.FILE, url)
-                            media_reply.file_name = os.path.basename(url)
-                        else:
-                            media_reply = Reply(ReplyType.IMAGE_URL, url)
-                    elif os.path.exists(url):
-                        if media_type == 'video':
-                            media_reply = Reply(ReplyType.FILE, f"file://{url}")
-                            media_reply.file_name = os.path.basename(url)
-                        else:
-                            media_reply = Reply(ReplyType.IMAGE_URL, f"file://{url}")
+
+        if skipped_remote_items:
+            logger.info(
+                "[chat_channel] Skipped %d embedded/direct remote media URL(s); leaving them in text",
+                skipped_remote_items,
+            )
+
+        if not media_items:
+            return self._send(reply, context)
+
+        logger.info(f"[chat_channel] Extracted {len(media_items)} media item(s) from reply")
+        logger.info(f"[chat_channel] Sending text content before media: {reply.content[:100]}...")
+        text_sent = self._send(reply, context)
+        logger.info(f"[chat_channel] Text sent, now sending {len(media_items)} media item(s)")
+
+        for i, (url, media_type, _source) in enumerate(media_items):
+            try:
+                if url.startswith(('http://', 'https://')):
+                    if media_type == 'video':
+                        media_reply = Reply(ReplyType.FILE, url)
+                        media_reply.file_name = os.path.basename(url)
                     else:
-                        logger.warning(f"[chat_channel] Media file not found or invalid URL: {url}")
-                        continue
-                    
-                    if i > 0:
-                        time.sleep(0.5)
-                    self._send(media_reply, context)
+                        media_reply = Reply(ReplyType.IMAGE_URL, url)
+                elif os.path.exists(url):
+                    if media_type == 'video':
+                        media_reply = Reply(ReplyType.FILE, f"file://{url}")
+                        media_reply.file_name = os.path.basename(url)
+                    else:
+                        media_reply = Reply(ReplyType.IMAGE_URL, f"file://{url}")
+                else:
+                    logger.warning(f"[chat_channel] Media file not found or invalid URL: {url}")
+                    continue
+
+                if i > 0:
+                    time.sleep(0.5)
+                media_sent = self._send(media_reply, context)
+                if media_sent is not False:
                     logger.info(f"[chat_channel] Sent {media_type} {i+1}/{len(media_items)}: {url[:50]}...")
-                    
-                except Exception as e:
-                    logger.error(f"[chat_channel] Failed to send {media_type} {url}: {e}")
-        else:
-            # 没有媒体文件，正常发送文本
-                return self._send(reply, context)
+                else:
+                    logger.warning(
+                        f"[chat_channel] Failed to send extracted {media_type} {i+1}/{len(media_items)}: {url[:50]}..."
+                    )
+
+            except Exception as e:
+                logger.error(f"[chat_channel] Failed to send {media_type} {url}: {e}")
         return text_sent
 
     def _send(self, reply: Reply, context: Context, retry_cnt=0):
@@ -874,6 +902,14 @@ class ChatChannel(Channel):
             value = 10
         return max(1, value)
 
+    @staticmethod
+    def _long_task_completion_notice_min_silence_notices() -> int:
+        try:
+            value = int(conf().get("long_task_completion_notice_min_silence_notices", 2) or 2)
+        except (TypeError, ValueError):
+            value = 2
+        return max(1, value)
+
     def _send_silence_notice(self, context: Context, notice: str):
         return self._send_plain_text(
             context,
@@ -910,7 +946,8 @@ class ChatChannel(Channel):
         if not self._long_task_completion_notice_enabled():
             return
         min_turns = self._long_task_completion_notice_min_turns()
-        if not runtime.should_send_completion_notice(min_turns):
+        min_silence_notices = self._long_task_completion_notice_min_silence_notices()
+        if not runtime.should_send_completion_notice(min_turns, min_silence_notices):
             return
         self._send_plain_text(
             context,

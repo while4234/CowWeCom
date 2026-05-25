@@ -5,7 +5,7 @@ from unittest.mock import patch
 from bridge.agent_event_handler import AgentEventHandler
 from bridge.bridge import Bridge
 from bridge.context import Context, ContextType
-from bridge.reply import ReplyType
+from bridge.reply import Reply, ReplyType
 from channel.chat_channel import ChatChannel
 from common.agent_task_runtime import SessionRuntime, TaskPolicy
 
@@ -378,6 +378,24 @@ class TestFastLaneProgress(unittest.TestCase):
         self.assertIn("本轮已完成（共 12 轮", sent[0])
         self.assertIn("请向上滑一下", sent[0])
 
+    def test_completion_notice_is_sent_after_two_silence_notices(self):
+        channel = make_channel_without_thread()
+        sent = []
+        channel._send_plain_text = (
+            lambda context, text, track_visible=True, visible_source="send": sent.append(text)
+        )
+        runtime = SessionRuntime()
+        runtime.start_task("long task", max_turns=40)
+        runtime.update_progress("turn_start", {"turn": 9})
+        runtime.mark_visible_output("silence_notice")
+        runtime.mark_visible_output("silence_notice")
+        runtime.update_progress("agent_end", {"outcome_status": "success", "turn": 9})
+
+        channel._send_completion_notice_if_needed(make_text_context("long task"), runtime)
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("本轮已完成（共 9 轮", sent[0])
+
     def test_completion_notice_is_suppressed_for_short_or_failed_tasks(self):
         channel = make_channel_without_thread()
         sent = []
@@ -391,9 +409,18 @@ class TestFastLaneProgress(unittest.TestCase):
         short_runtime.update_progress("agent_end", {"outcome_status": "success", "turn": 9})
         channel._send_completion_notice_if_needed(make_text_context("short task"), short_runtime)
 
+        one_notice_runtime = SessionRuntime()
+        one_notice_runtime.start_task("one notice task", max_turns=40)
+        one_notice_runtime.update_progress("turn_start", {"turn": 9})
+        one_notice_runtime.mark_visible_output("silence_notice")
+        one_notice_runtime.update_progress("agent_end", {"outcome_status": "success", "turn": 9})
+        channel._send_completion_notice_if_needed(make_text_context("one notice task"), one_notice_runtime)
+
         failed_runtime = SessionRuntime()
         failed_runtime.start_task("failed task", max_turns=10)
         failed_runtime.update_progress("turn_start", {"turn": 10})
+        failed_runtime.mark_visible_output("silence_notice")
+        failed_runtime.mark_visible_output("silence_notice")
         failed_runtime.update_progress(
             "agent_end",
             {"outcome_status": "max_turns_exhausted", "outcome_failure_reason": "max_turns_exhausted"},
@@ -401,6 +428,20 @@ class TestFastLaneProgress(unittest.TestCase):
         channel._send_completion_notice_if_needed(make_text_context("failed task"), failed_runtime)
 
         self.assertEqual(sent, [])
+
+    def test_remote_embedded_media_links_stay_in_text_reply(self):
+        channel = make_channel_without_thread()
+        sent = []
+        channel._send = lambda reply, context: sent.append((reply.type, reply.content)) or True
+        content = (
+            "酒店参考：![房型](https://img.alicdn.com/hotel/photo.jpg) "
+            "备用图 https://ota-cdn.example.com/room.webp"
+        )
+
+        result = channel._extract_and_send_images(Reply(ReplyType.TEXT, content), make_text_context("hotel"))
+
+        self.assertTrue(result)
+        self.assertEqual(sent, [(ReplyType.TEXT, content)])
 
     def test_non_stream_message_update_does_not_reset_visible_output_until_send(self):
         runtime = SessionRuntime()
