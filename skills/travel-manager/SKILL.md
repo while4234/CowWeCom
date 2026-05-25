@@ -47,7 +47,13 @@ Collect only the missing fields that materially change the plan:
 - Health limits, pregnancy, wheelchair needs, chronic illness, allergies, large luggage, or self-driving requirements
 - Whether real-time flight, train, hotel, ticket, weather, route, or document verification is required
 
-If key details are missing, ask the fewest possible questions. If a useful draft can be made safely, provide a draft with an explicit "关键假设" section instead of blocking the whole answer.
+Before producing a plan, decide whether missing information would materially change the route, pacing, budget class, entry eligibility, or transport/accommodation strategy.
+
+- If major plan-shaping details are missing and the user has not asked you to proceed, start with an explicit "规划前确认" section and ask no more than 3 concise questions.
+- Choose only questions whose answers can prevent a conflicting plan, such as origin/destination, dates or duration, traveler constraints, budget class, mobility/health needs, or nationality/passport when entry rules matter.
+- Do not move these major plan-conflicting facts into "待确认事项" just to continue drafting.
+- If the user says to proceed, asks for a rough draft, or enough information exists to make a useful plan, continue with explicit "关键假设" instead of blocking the whole answer.
+- Keep "待确认事项" for volatile live verification, official checks, or optional preferences that refine but do not overturn the plan, such as live ticket inventory, weather, attraction hours, current prices, reservation slots, or flexible dining/hotel preferences.
 
 ## Skill Routing Matrix
 

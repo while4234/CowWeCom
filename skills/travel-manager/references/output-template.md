@@ -2,6 +2,15 @@
 
 Use this template for full itinerary planning. Keep factual status labels visible.
 
+## 0. 规划前确认
+
+Use this section only when missing plan-shaping details would materially change the itinerary and the user has not asked you to proceed with assumptions.
+
+- Ask at most 3 concise questions.
+- Ask only for facts that can prevent a conflicting plan, such as origin/destination, dates or duration, traveler constraints, budget class, mobility/health needs, or nationality/passport when entry rules matter.
+- If the user says to proceed, asks for a rough draft, or enough information already exists, skip this section and state assumptions in "关键假设".
+- Do not place major plan-conflicting facts here and then also draft as if they were optional.
+
 ## 1. 关键假设
 
 - 出发地:
@@ -88,4 +97,6 @@ Include payment, apps, etiquette, safety, closure days, local transport habits, 
 
 ## 10. 待确认事项
 
-List only items that materially change the plan. Use "待查询" or "待官方核验" where live data is missing.
+List volatile live-verification items, official checks, or optional preferences that refine the plan without overturning it. Use "待查询" or "待官方核验" where live data is missing.
+
+Do not use this section for major plan-shaping facts that should have been handled upfront in "规划前确认", such as unknown origin/destination, missing dates or duration, budget class, traveler constraints, mobility/health requirements, or nationality/passport when entry rules matter.

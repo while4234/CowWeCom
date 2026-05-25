@@ -52,3 +52,25 @@ def test_travel_skill_docs_cross_reference_each_other():
     assert "ETA" in travel
     assert "traffic" in travel
     assert "交通方式" in travel
+
+
+def test_travel_skill_requires_upfront_plan_shaping_confirmation():
+    travel = (PROJECT_ROOT / "skills" / "travel-manager" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "规划前确认" in travel
+    assert "no more than 3 concise questions" in travel
+    assert "major plan-shaping details" in travel
+    assert "If the user says to proceed" in travel
+    assert "关键假设" in travel
+
+
+def test_travel_output_template_keeps_pending_items_for_live_or_optional_checks():
+    template = (PROJECT_ROOT / "skills" / "travel-manager" / "references" / "output-template.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "规划前确认" in template
+    assert "Ask at most 3 concise questions" in template
+    assert "skip this section and state assumptions in \"关键假设\"" in template
+    assert "volatile live-verification items" in template
+    assert "Do not use this section for major plan-shaping facts" in template
