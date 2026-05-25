@@ -17,6 +17,46 @@ from agent.skills.types import SkillEntry
 
 _CATALOG_CACHE_LOCK = threading.Lock()
 _CATALOG_CACHES: Dict[Tuple[str, str], "SkillCatalogCache"] = {}
+FULL_SKILL_FALLBACK_PREFIX = "[[READ_FULL_SKILL"
+
+_CATEGORY_SPECS: Dict[str, Dict[str, object]] = {
+    "travel_location": {
+        "label": "出行地图",
+        "keywords": ("高德", "地图", "路线", "路况", "通勤", "旅行", "旅游", "天气", "12306", "火车", "票", "travel", "weather", "amap"),
+    },
+    "media_content": {
+        "label": "内容媒体",
+        "keywords": ("图片", "视频", "抖音", "哔哩", "bilibili", "meme", "表情包", "公众号", "文章", "image", "video"),
+    },
+    "documents": {
+        "label": "文档文件",
+        "keywords": ("pdf", "word", "docx", "ppt", "pptx", "xlsx", "excel", "markdown", "文件", "表格", "文档", "网盘"),
+    },
+    "web_research": {
+        "label": "网页检索与浏览",
+        "keywords": ("搜索", "网页", "浏览器", "browser", "playwright", "github", "可靠搜索", "资料", "最新", "新闻"),
+    },
+    "finance_market": {
+        "label": "金融行情",
+        "keywords": ("股票", "基金", "投资", "定投", "行情", "价格", "比特币", "黄金", "crypto", "stock", "market"),
+    },
+    "shopping_food": {
+        "label": "购物餐饮",
+        "keywords": ("外卖", "吃什么", "美团", "淘宝", "京东", "拼多多", "比价", "购物", "优惠券", "商品"),
+    },
+    "productivity": {
+        "label": "办公协作",
+        "keywords": ("企业微信", "wecom", "会议", "日程", "待办", "通讯录", "消息", "知识库", "knowledge", "wiki"),
+    },
+    "system_dev": {
+        "label": "系统开发运维",
+        "keywords": ("代码", "git", "github", "上传", "部署", "skill", "安全", "guard", "quota", "token", "额度", "自进化", "backend", "浏览器控制"),
+    },
+    "other": {
+        "label": "其他",
+        "keywords": (),
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -26,6 +66,10 @@ class SkillCatalogEntry:
     name: str
     display_name: str
     description: str
+    category: str
+    category_label: str
+    compact_summary: str
+    detailed_summary: str
     source: str
     enabled: bool
     file_path: str
@@ -37,6 +81,9 @@ class SkillCatalogEntry:
             "name": self.name,
             "display_name": self.display_name,
             "description": self.description,
+            "category": self.category,
+            "category_label": self.category_label,
+            "compact_summary": self.compact_summary,
             "source": self.source,
             "enabled": self.enabled,
             "file_path": self.file_path,
@@ -167,6 +214,90 @@ class SkillCatalogCache:
         lines.append("提示：/skill usage <名称> 查看用法")
         return "\n".join(lines)
 
+    def overview_summary(self, max_chars: int = 12000) -> str:
+        entries = sorted(
+            self.snapshot().entries,
+            key=lambda entry: (entry.category_label, not entry.enabled, entry.name),
+        )
+        if not entries:
+            return "暂无已安装的技能/功能。"
+
+        grouped: Dict[str, List[SkillCatalogEntry]] = {}
+        for entry in entries:
+            grouped.setdefault(entry.category_label or "其他", []).append(entry)
+
+        lines = ["本机技能/功能总览（压缩摘要）："]
+        for category_label in sorted(grouped):
+            lines.append(f"\n## {category_label}")
+            for entry in grouped[category_label]:
+                status = "启用" if entry.enabled else "禁用"
+                label = entry.display_name or entry.name
+                summary = entry.compact_summary or entry.description
+                lines.append(f"- {label} ({entry.name}) [{status}]：{_shorten(_one_line(summary), 150)}")
+                if _text_size(lines) >= max_chars:
+                    lines.append("...（其余技能已省略；请让用户缩小分类或指定 Skill 名称。）")
+                    return "\n".join(lines)[:max_chars]
+        return "\n".join(lines)[:max_chars]
+
+    def category_summary_for_text(self, text: str, max_chars: int = 9000) -> Optional[str]:
+        category = self.find_category_in_text(text)
+        if not category:
+            return None
+        return self.category_summary(category, max_chars=max_chars)
+
+    def category_summary(self, category: str, max_chars: int = 9000) -> str:
+        normalized = _normalize_category(category)
+        entries = [
+            entry for entry in self.snapshot().entries
+            if entry.category == normalized or entry.category_label == category
+        ]
+        if not entries:
+            return ""
+
+        entries.sort(key=lambda entry: (not entry.enabled, entry.name))
+        label = entries[0].category_label or category
+        lines = [f"{label}类技能摘要："]
+        for entry in entries:
+            status = "启用" if entry.enabled else "禁用"
+            lines.append(f"\n## {entry.display_name or entry.name} ({entry.name}) [{status}]")
+            lines.append(entry.detailed_summary or entry.compact_summary or entry.description)
+            if _text_size(lines) >= max_chars:
+                lines.append("...（本分类其余内容已省略；请指定具体 Skill 查看详细用法。）")
+                break
+        return "\n".join(lines)[:max_chars]
+
+    def find_category_in_text(self, text: str) -> str:
+        compact = _normalize_lookup(text)
+        if not compact:
+            return ""
+        for category, spec in _CATEGORY_SPECS.items():
+            if any(_normalize_lookup(keyword) in compact for keyword in spec["keywords"]):
+                return category
+        return ""
+
+    def format_skill_detail_summary(self, name: str, max_chars: int = 9000) -> str:
+        entry = self.find_entry(name)
+        if entry is None:
+            return f"技能 '{name}' 未找到"
+        label = entry.display_name or entry.name
+        lines = [f"单个 Skill 详细摘要：{label} ({entry.name})", ""]
+        lines.append(entry.detailed_summary or entry.compact_summary or entry.description)
+        lines.append("")
+        lines.append("如果以上摘要不足以回答用户对内部流程、边界条件、脚本参数、配置或安全规则的追问，请返回 READ_FULL_SKILL 标记。")
+        return "\n".join(lines)[:max_chars]
+
+    def full_skill_context(self, name: str, max_chars: int = 40000) -> str:
+        entry = self.find_entry(name)
+        if entry is None:
+            return f"技能 '{name}' 未找到"
+        label = entry.display_name or entry.name
+        content = _strip_frontmatter(entry.content).strip() or entry.content.strip()
+        return (
+            f"完整 SKILL.md：{label} ({entry.name})\n"
+            f"文件：{entry.file_path}\n\n"
+            f"{content}"
+        )[:max_chars]
+
     def format_skill_usage(self, name: str) -> str:
         entry = self.find_entry(name)
         if entry is None:
@@ -210,11 +341,18 @@ class SkillCatalogCache:
             prev = skills_config.get(name, {})
             enabled = bool(prev.get("enabled", True))
             display_name = _resolve_display_name(skill.frontmatter, prev.get("display_name")) or name
+            category = _infer_category(name, display_name, skill.description, skill.content, prev, skill.frontmatter)
+            compact_summary = _build_compact_summary(name, display_name, skill.description, skill.content)
+            detailed_summary = _build_detailed_summary(name, display_name, skill.description, skill.content)
             entries.append(
                 SkillCatalogEntry(
                     name=name,
                     display_name=display_name,
                     description=skill.description,
+                    category=category,
+                    category_label=_CATEGORY_SPECS.get(category, _CATEGORY_SPECS["other"])["label"],
+                    compact_summary=compact_summary,
+                    detailed_summary=detailed_summary,
                     source=str(prev.get("source") or skill.source or ""),
                     enabled=enabled,
                     file_path=skill.file_path,
@@ -329,6 +467,187 @@ def _shorten(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)] + "..."
+
+
+def _text_size(lines: Iterable[str]) -> int:
+    return sum(len(str(line)) + 1 for line in lines)
+
+
+def _one_line(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _normalize_category(value: object) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_")
+    if raw in _CATEGORY_SPECS:
+        return raw
+    compact = _normalize_lookup(raw)
+    for key, spec in _CATEGORY_SPECS.items():
+        if compact == _normalize_lookup(str(spec["label"])):
+            return key
+    return "other"
+
+
+def _infer_category(
+    name: str,
+    display_name: str,
+    description: str,
+    content: str,
+    config: Mapping[str, object],
+    frontmatter: Mapping[str, object],
+) -> str:
+    configured = config.get("category") or frontmatter.get("category")
+    if configured:
+        normalized = _normalize_category(configured)
+        if normalized != "other" or str(configured).strip().lower() in ("other", "其他"):
+            return normalized
+
+    text = _normalize_lookup(" ".join([name, display_name, description]))
+    best_category = "other"
+    best_score = 0
+    for category, spec in _CATEGORY_SPECS.items():
+        if category == "other":
+            continue
+        score = sum(1 for keyword in spec["keywords"] if _normalize_lookup(str(keyword)) in text)
+        if score > best_score:
+            best_category = category
+            best_score = score
+    if best_score:
+        return best_category
+
+    text = _normalize_lookup(_strip_frontmatter(content)[:1200])
+    for category, spec in _CATEGORY_SPECS.items():
+        if category == "other":
+            continue
+        score = sum(1 for keyword in spec["keywords"] if _normalize_lookup(str(keyword)) in text)
+        if score > best_score:
+            best_category = category
+            best_score = score
+    return best_category
+
+
+def _build_compact_summary(name: str, display_name: str, description: str, content: str) -> str:
+    parts = [_one_line(description)]
+    triggers = _extract_trigger_markers(description)
+    if triggers:
+        parts.append("触发词：" + "、".join(triggers[:8]))
+    commands = _extract_command_lines(content, limit=4)
+    if commands:
+        parts.append("示例：" + "；".join(commands))
+    return " ".join(part for part in parts if part).strip() or (display_name or name)
+
+
+def _build_detailed_summary(name: str, display_name: str, description: str, content: str) -> str:
+    body = _strip_frontmatter(content)
+    lines = []
+    if description:
+        lines.append("用途：" + _one_line(description))
+
+    triggers = _extract_trigger_markers(description)
+    if triggers:
+        lines.append("触发词：" + "、".join(triggers[:16]))
+
+    sections = _extract_relevant_sections(body, max_chars=6500)
+    if sections:
+        lines.append(sections)
+
+    commands = _extract_command_lines(content, limit=20)
+    if commands:
+        lines.append("可直接使用的命令/脚本示例：")
+        lines.extend(f"- {command}" for command in commands)
+
+    if not lines:
+        return display_name or name
+    return "\n".join(lines).strip()
+
+
+def _extract_trigger_markers(description: str) -> List[str]:
+    text = str(description or "")
+    match = re.search(r"(?:Use when|Triggers include|触发|适用).*", text, re.I)
+    source = match.group(0) if match else text
+    tokens = [
+        token.strip(" `\"'“”‘’。，、；;:：()（）[]【】")
+        for token in re.split(r"[,，、;/]| or | and | when | asks? |用户|提及|涉及", source, flags=re.I)
+    ]
+    result = []
+    for token in tokens:
+        if 1 < len(token) <= 24 and token.lower() not in {"use", "when", "this", "skill", "description"}:
+            result.append(token)
+    return _dedupe(result)
+
+
+def _extract_command_lines(content: str, limit: int = 12) -> List[str]:
+    commands: List[str] = []
+    in_code = False
+    for raw in _strip_frontmatter(content).splitlines():
+        line = raw.strip()
+        if line.startswith("```"):
+            in_code = not in_code
+            continue
+        if not line:
+            continue
+        candidate = line[2:].strip() if line.startswith(("- ", "* ")) else line
+        lower = candidate.lower()
+        looks_like_command = (
+            in_code
+            or candidate.startswith(("/", "cow ", "python ", "python3 ", ".venv", "$env:", "高德 ", "查询", "帮我"))
+            or ".py " in lower
+            or " --" in candidate
+        )
+        if looks_like_command and 4 <= len(candidate) <= 220:
+            commands.append(candidate)
+        if len(commands) >= limit:
+            break
+    return _dedupe(commands)
+
+
+def _extract_relevant_sections(body: str, max_chars: int = 6500) -> str:
+    keywords = (
+        "summary", "overview", "usage", "how to use", "commands", "examples", "when to use",
+        "workflow", "safety", "configuration", "api", "功能", "用法", "使用", "命令", "示例",
+        "触发", "流程", "配置", "安全", "输出", "限制", "错误", "高级",
+    )
+    lines = body.splitlines()
+    chunks: List[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = re.match(r"^(#{1,3})\s+(.+?)\s*$", line)
+        if not match:
+            index += 1
+            continue
+        level = len(match.group(1))
+        title = match.group(2).strip()
+        normalized_title = title.lower()
+        if any(keyword in normalized_title for keyword in keywords):
+            chunk = [line.rstrip()]
+            index += 1
+            while index < len(lines):
+                next_line = lines[index]
+                next_match = re.match(r"^(#{1,3})\s+", next_line)
+                if next_match and len(next_match.group(1)) <= level:
+                    break
+                chunk.append(next_line.rstrip())
+                index += 1
+                if _text_size(chunk) >= 1600:
+                    break
+            chunks.append("\n".join(chunk).strip())
+        else:
+            index += 1
+        if _text_size(chunks) >= max_chars:
+            break
+    return "\n\n".join(chunk for chunk in chunks if chunk).strip()[:max_chars]
+
+
+def _dedupe(values: Iterable[str]) -> List[str]:
+    seen = set()
+    result = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def _strip_frontmatter(content: str) -> str:

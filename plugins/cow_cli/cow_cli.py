@@ -182,6 +182,9 @@ class CowCliPlugin(Plugin):
             marker in compact or marker in normalized for marker in _SKILL_STANDALONE_LIST_MARKERS
         )
         if (has_skill_context and has_list_request) or has_standalone_list_request:
+            category = self._skill_catalog().find_category_in_text(text)
+            if category:
+                return "skill", self._encode_skill_answer_args(text, "category", category=category)
             return "skill", self._encode_skill_answer_args(text, "list")
 
         has_usage_request = any(marker in compact or marker in normalized for marker in _SKILL_USAGE_MARKERS)
@@ -196,11 +199,12 @@ class CowCliPlugin(Plugin):
         return None
 
     @staticmethod
-    def _encode_skill_answer_args(question: str, mode: str, skill_name: str = "") -> str:
+    def _encode_skill_answer_args(question: str, mode: str, skill_name: str = "", category: str = "") -> str:
         payload = {
             "question": str(question or "").strip(),
             "mode": str(mode or "list").strip() or "list",
             "skill": str(skill_name or "").strip(),
+            "category": str(category or "").strip(),
         }
         encoded = base64.urlsafe_b64encode(
             json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -951,11 +955,12 @@ class CowCliPlugin(Plugin):
         question = str(payload.get("question") or "").strip()
         mode = str(payload.get("mode") or "list").strip() or "list"
         skill_name = str(payload.get("skill") or "").strip()
+        category = str(payload.get("category") or "").strip()
         if not question:
             return self._skill_list_local()
 
-        catalog_context = self._skill_answer_context(mode=mode, skill_name=skill_name)
-        fallback = self._skill_answer_fallback(mode=mode, skill_name=skill_name)
+        catalog_context = self._skill_answer_context(mode=mode, skill_name=skill_name, category=category)
+        fallback = self._skill_answer_fallback(mode=mode, skill_name=skill_name, category=category)
         try:
             answer = self._call_skill_answer_model(
                 question=question,
@@ -964,45 +969,92 @@ class CowCliPlugin(Plugin):
                 session_id=session_id,
             )
             if answer:
+                if self._requests_full_skill_fallback(answer) and skill_name:
+                    return self._skill_answer_with_full_skill(
+                        question=question,
+                        skill_name=skill_name,
+                        e_context=e_context,
+                        session_id=session_id,
+                        fallback=fallback,
+                    )
                 return answer
         except Exception as exc:
             logger.warning(f"[CowCli] skill catalog model answer failed: {exc}")
         return fallback
 
-    def _skill_answer_context(self, mode: str = "list", skill_name: str = "", max_chars: int = 12000) -> str:
+    def _skill_answer_context(
+        self,
+        mode: str = "list",
+        skill_name: str = "",
+        category: str = "",
+        max_chars: int = 12000,
+    ) -> str:
         catalog = self._skill_catalog()
         if skill_name:
-            return catalog.format_skill_usage(skill_name)[:max_chars]
+            return self._call_catalog_text(catalog.format_skill_detail_summary, skill_name, max_chars=max_chars)
+        if mode == "category" or category:
+            summary = self._call_catalog_text(catalog.category_summary, category, max_chars=max_chars) if category else ""
+            return summary or catalog.overview_summary(max_chars=max_chars)
+        if mode == "list":
+            category_summary = self._call_catalog_text(catalog.category_summary_for_text, category or "", max_chars=max_chars)
+            if category_summary:
+                return category_summary
+        return self._call_catalog_text(catalog.overview_summary, max_chars=max_chars)
 
-        entries = sorted(
-            catalog.snapshot().entries,
-            key=lambda entry: (not entry.enabled, entry.name),
-        )
-        if not entries:
-            return "暂无已安装的技能/功能。"
-
-        lines = ["本机已缓存的技能/功能摘要："]
-        for entry in entries:
-            status = "启用" if entry.enabled else "禁用"
-            label = entry.display_name or entry.name
-            desc = " ".join(str(entry.description or "").split())
-            line = f"- {label} ({entry.name}) [{status}]"
-            if entry.source:
-                line += f" 来源: {entry.source}"
-            if desc:
-                line += f": {desc if len(desc) <= 180 else desc[:177] + '...'}"
-            lines.append(line)
-            if sum(len(item) + 1 for item in lines) >= max_chars:
-                lines.append("...（其余技能已省略；可让用户缩小范围继续问）")
-                break
-        return "\n".join(lines)[:max_chars]
-
-    def _skill_answer_fallback(self, mode: str = "list", skill_name: str = "") -> str:
+    def _skill_answer_fallback(self, mode: str = "list", skill_name: str = "", category: str = "") -> str:
+        catalog = self._skill_catalog()
         if skill_name:
             return self._skill_usage(skill_name)
+        if mode == "category" or category:
+            summary = self._call_catalog_text(catalog.category_summary, category, max_chars=6000) if category else ""
+            if summary:
+                return summary
         return self._skill_list_local()
 
-    def _call_skill_answer_model(self, question: str, catalog_context: str, e_context, session_id: str = "") -> str:
+    @staticmethod
+    def _call_catalog_text(method, *args, **kwargs) -> str:
+        try:
+            return method(*args, **kwargs)
+        except TypeError:
+            return method(*args)
+
+    @staticmethod
+    def _requests_full_skill_fallback(answer: str) -> bool:
+        text = str(answer or "").strip()
+        return text.startswith("[[READ_FULL_SKILL") or "READ_FULL_SKILL" in text[:120]
+
+    def _skill_answer_with_full_skill(
+        self,
+        *,
+        question: str,
+        skill_name: str,
+        e_context,
+        session_id: str,
+        fallback: str,
+    ) -> str:
+        full_context = self._skill_catalog().full_skill_context(skill_name)
+        try:
+            answer = self._call_skill_answer_model(
+                question=question,
+                catalog_context=full_context,
+                e_context=e_context,
+                session_id=session_id,
+                full_skill=True,
+            )
+            if answer and not self._requests_full_skill_fallback(answer):
+                return answer
+        except Exception as exc:
+            logger.warning(f"[CowCli] full skill fallback answer failed: {exc}")
+        return fallback
+
+    def _call_skill_answer_model(
+        self,
+        question: str,
+        catalog_context: str,
+        e_context,
+        session_id: str = "",
+        full_skill: bool = False,
+    ) -> str:
         from agent.protocol import LLMRequest
         from bridge.agent_bridge import AgentLLMModel
         from bridge.bridge import Bridge
@@ -1025,13 +1077,22 @@ class CowCliPlugin(Plugin):
             "你只能依据用户问题和已缓存的本机 skill/功能摘要回答；不要重新扫描、不要假装执行工具。"
             "不要逐字照抄缓存清单，除非用户明确要求完整清单。"
             "如果用户是在问能做什么，按用户关心的方向做简洁归类；如果是在问某个功能怎么用，给可直接发送的说法或命令。"
+            "如果当前摘要不足以可靠回答某个特定 Skill 的细节问题，只输出 [[READ_FULL_SKILL]]，不要猜。"
             "如果缓存里没有对应能力，直接说明没看到匹配的本机 skill，并建议用户描述具体目标让完整 Agent 处理。"
             "不要泄露密钥、token、私有配置、完整本地路径或内部实现细节。"
             "使用自然中文，控制在 8 行以内。"
         )
+        if full_skill:
+            system = (
+                "你正在依据完整 SKILL.md 回答 CowWechat 本机 Skill 用法问题。"
+                "只回答用户问到的部分，给可执行步骤或可直接发送的命令；不要输出完整原文。"
+                "不要泄露密钥、token、私有配置、完整本地路径或内部实现细节。"
+                "如果完整内容仍无法回答，直接说明没有在 Skill 中看到该信息。"
+                "使用自然中文，控制在 10 行以内。"
+            )
         user = (
             f"用户原话：{question}\n\n"
-            f"已缓存的本机 skill/功能摘要：\n{catalog_context}\n\n"
+            f"{'完整 Skill 内容' if full_skill else '已缓存的本机 skill/功能摘要'}：\n{catalog_context}\n\n"
             "请结合用户原话回答，不要把上面的摘要原样贴回去。"
         )
         response = llm.call(
