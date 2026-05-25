@@ -10,7 +10,7 @@ import os
 import re
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -53,6 +53,10 @@ class Ticket:
     status: str
     can_buy: bool
     seats: dict
+    from_station_no: str = ""
+    to_station_no: str = ""
+    seat_types: str = ""
+    prices: dict = field(default_factory=dict)
 
 
 class RailwayError(RuntimeError):
@@ -184,6 +188,36 @@ class RailwayClient:
 
         raise RailwayError(f"12306 ticket query failed: {last_error}")
 
+    def query_ticket_price(self, ticket: Ticket, date: str) -> dict:
+        validate_date(date)
+        if not ticket.from_station_no or not ticket.to_station_no or not ticket.seat_types:
+            raise RailwayError(f"Ticket row for {ticket.train_code} does not include price query fields.")
+
+        data = self._get_json(
+            "/otn/leftTicket/queryTicketPrice",
+            {
+                "train_no": ticket.train_no,
+                "from_station_no": ticket.from_station_no,
+                "to_station_no": ticket.to_station_no,
+                "seat_types": ticket.seat_types,
+                "train_date": date,
+            },
+        )
+        price_data = data.get("data") or {}
+        if not isinstance(price_data, dict):
+            raise RailwayError(f"12306 price query returned an unexpected payload for {ticket.train_code}.")
+        return {
+            str(key): value
+            for key, value in price_data.items()
+            if value not in ("", None)
+        }
+
+    def enrich_ticket_prices(self, tickets: Iterable[Ticket], date: str) -> list[Ticket]:
+        priced = []
+        for ticket in tickets:
+            priced.append(replace(ticket, prices=self.query_ticket_price(ticket, date)))
+        return priced
+
     def query_route(
         self,
         train_no: str,
@@ -303,7 +337,14 @@ def parse_ticket(row: str, station_map: dict) -> Ticket:
         status=parts[1],
         can_buy=parts[11] == "Y",
         seats=seats,
+        from_station_no=_row_part(parts, 16),
+        to_station_no=_row_part(parts, 17),
+        seat_types=_row_part(parts, 35),
     )
+
+
+def _row_part(parts: list[str], index: int) -> str:
+    return parts[index] if index < len(parts) else ""
 
 
 def filter_tickets(tickets: Iterable[Ticket], train_prefix: str | None) -> list[Ticket]:
@@ -341,14 +382,22 @@ def render_tickets(tickets: list[Ticket], date: str, from_station: Station, to_s
     print(f"Found {len(tickets)} train(s). Availability can change quickly.")
     for ticket in tickets:
         seats = ticket.seats
+        prices = render_price_fields(ticket.prices)
+        price_text = f" prices:{prices}" if prices else ""
         print(
             f"{ticket.train_code:<8} {ticket.depart_time}->{ticket.arrive_time} "
             f"{ticket.duration:<5} {ticket.from_station}->{ticket.to_station} "
             f"二等:{seats['second']} 一等:{seats['first']} 商务:{seats['business']} "
             f"软卧:{seats['soft_sleeper']} 硬卧:{seats['hard_sleeper']} "
             f"硬座:{seats['hard_seat']} 无座:{seats['no_seat']} "
-            f"状态:{ticket.status} train_no:{ticket.train_no}"
+            f"状态:{ticket.status} train_no:{ticket.train_no}{price_text}"
         )
+
+
+def render_price_fields(prices: dict) -> str:
+    if not prices:
+        return ""
+    return ", ".join(f"{key}={value}" for key, value in sorted(prices.items()))
 
 
 def render_route(stops: list[dict], train: str, date: str) -> None:
@@ -379,6 +428,7 @@ def build_parser() -> argparse.ArgumentParser:
     tickets.add_argument("date")
     tickets.add_argument("--limit", type=int, default=20)
     tickets.add_argument("--train-prefix", help="Comma-separated prefixes, e.g. G,D,K")
+    tickets.add_argument("--include-prices", action="store_true", help="Fetch official 12306 price fields per train.")
     tickets.add_argument("--json", action="store_true")
 
     route = subparsers.add_parser("route", help="Query train stops.")
@@ -410,6 +460,8 @@ def main(argv: list[str] | None = None) -> int:
             to_station = resolver.resolve(args.to_station)
             tickets = client.query_tickets(from_station, to_station, args.date)
             tickets = filter_tickets(tickets, args.train_prefix)[: args.limit]
+            if args.include_prices:
+                tickets = client.enrich_ticket_prices(tickets, args.date)
             if args.json:
                 emit_json([asdict(ticket) for ticket in tickets])
             else:

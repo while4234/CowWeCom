@@ -277,6 +277,55 @@ def test_driving_route_parses_duration_eta_and_tmcs(monkeypatch):
     assert_contains_any(blob, ["拥堵", "congested"])
 
 
+def test_transit_invalid_params_falls_back_to_driving_with_warning():
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, endpoint, params=None):
+            self.calls.append((endpoint, dict(params or {})))
+            if endpoint == "/v5/direction/transit/integrated":
+                raise AmapApiError(
+                    "AMap failed: INVALID_PARAMS",
+                    info="INVALID_PARAMS",
+                    infocode="20000",
+                    endpoint=endpoint,
+                )
+            if endpoint == "/v5/direction/driving":
+                return {
+                    "status": "1",
+                    "infocode": "10000",
+                    "route": {
+                        "paths": [
+                            {
+                                "distance": "58000",
+                                "duration": "3600",
+                                "steps": [],
+                            }
+                        ]
+                    },
+                }
+            raise AssertionError(endpoint)
+
+    service = AmapService(client=FakeClient())
+
+    route = service.route_plan(
+        "121.326997,31.194423",
+        "121.805215,31.150867",
+        mode="transit",
+        city="上海",
+        include_alternatives=True,
+    )
+
+    assert route.mode == "driving"
+    assert route.distance_meters == 58000
+    assert "INVALID_PARAMS" in route.warning
+    assert [call[0] for call in service.client.calls] == [
+        "/v5/direction/transit/integrated",
+        "/v5/direction/driving",
+    ]
+
+
 def test_congestion_status_normalization():
     service = make_service()
 

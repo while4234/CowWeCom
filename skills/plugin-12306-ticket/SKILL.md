@@ -16,7 +16,7 @@ This version runs locally and calls public 12306 web endpoints directly. It does
 ## Capabilities
 
 - Resolve station names, telecodes, pinyin, and abbreviations.
-- Query remaining tickets between two stations on a travel date.
+- Query remaining tickets between two stations on a travel date, with optional official price fields.
 - Filter by train prefix, such as `G`, `D`, `K`, `Z`, `T`.
 - Query stops for a specific train when date/from/to are known.
 
@@ -27,13 +27,14 @@ Run the bundled script from this skill directory:
 ```bash
 python scripts/railway_12306.py stations 北京
 python scripts/railway_12306.py tickets 北京南 上海虹桥 2026-05-23 --limit 10
-python scripts/railway_12306.py tickets 北京南 上海虹桥 2026-05-23 --train-prefix G --json
+python scripts/railway_12306.py tickets 北京南 上海虹桥 2026-05-23 --train-prefix G --include-prices --json
 python scripts/railway_12306.py route G547 北京南 上海虹桥 2026-05-23
 ```
 
 When answering users:
 
 - Prefer concise summaries with train number, departure/arrival time, duration, and key seat availability.
+- Use `tickets ... --include-prices --json` when users ask for fare comparison; `prices` contains raw official 12306 price fields.
 - Mention that availability is live query data from public 12306 web endpoints and can change quickly.
 - If the query fails with a non-JSON/HTML 12306 response, explain that 12306 may be rate-limiting or temporarily blocking public web queries and suggest retrying later.
 - Do not claim this skill can book or purchase tickets. It only queries public availability and route data.

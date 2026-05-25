@@ -52,6 +52,8 @@ def format_route(route: RoutePlan, title: str = "路线") -> str:
         lines.append(f"过路费：约 {route.tolls:g} 元")
     if route.traffic_lights:
         lines.append(f"红绿灯：约 {route.traffic_lights} 个")
+    if route.warning:
+        lines.append(f"提示：{route.warning}")
     lines.extend(_format_segments(route))
     return "\n".join(lines)
 

@@ -124,6 +124,7 @@ class RoutePlan:
     steps: List[RouteStep] = field(default_factory=list)
     polyline: str = ""
     score: float = 0.0
+    warning: str = ""
     raw: Optional[Dict[str, Any]] = None
 
 

@@ -298,16 +298,56 @@ class AmapService:
     ) -> RoutePlan:
         origin_point = self.resolve_point(origin, city, prefer_poi=True)
         destination_point = self.resolve_point(destination, city, prefer_poi=True)
-        plans = self._request_routes(
-            origin_point,
-            destination_point,
-            mode=mode,
-            strategy=strategy,
-            include_alternatives=include_alternatives,
-        )
+        normalized_mode = _normalize_mode(mode)
+        try:
+            plans = self._request_routes(
+                origin_point,
+                destination_point,
+                mode=normalized_mode,
+                strategy=strategy,
+                include_alternatives=include_alternatives,
+            )
+        except AmapApiError as exc:
+            if normalized_mode != "transit" or not _is_invalid_params(exc):
+                raise
+            plans = self._transit_invalid_params_fallback(
+                origin_point,
+                destination_point,
+                include_alternatives=include_alternatives,
+                cause=exc,
+            )
         if not plans:
             raise AmapServiceError("高德未返回可用路线。")
         return plans[0]
+
+    def _transit_invalid_params_fallback(
+        self,
+        origin: GeoPoint,
+        destination: GeoPoint,
+        *,
+        include_alternatives: bool,
+        cause: AmapApiError,
+    ) -> List[RoutePlan]:
+        try:
+            plans = self._request_routes(
+                origin,
+                destination,
+                mode="driving",
+                include_alternatives=include_alternatives,
+            )
+        except Exception as exc:
+            raise AmapServiceError(
+                "高德公交/地铁路线返回 INVALID_PARAMS，且驾车/打车兜底也失败；"
+                "请补充 city 参数或改用官方机场线/地铁来源复核。"
+            ) from exc
+
+        warning = (
+            f"高德公交/地铁路线返回 {cause.safe_message()}，已改用驾车/打车估时兜底；"
+            "如需地铁/机场线方案，请补充 city 参数或用官方交通来源复核。"
+        )
+        for plan in plans:
+            plan.warning = warning
+        return plans
 
     def traffic_status(
         self,
@@ -1090,6 +1130,11 @@ def _normalize_mode(mode: str) -> str:
         "bus": "transit",
     }
     return mapping.get(raw, raw)
+
+
+def _is_invalid_params(exc: AmapApiError) -> bool:
+    text = f"{exc.info} {exc}".upper()
+    return "INVALID_PARAMS" in text
 
 
 def _traffic_level(value: Any) -> int:
