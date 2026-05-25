@@ -176,8 +176,7 @@ class CowCliPlugin(Plugin):
 
         return None
 
-    @staticmethod
-    def _parse_project_update_natural_command(content: str):
+    def _parse_project_update_natural_command(self, content: str):
         text = str(content or "").strip()
         if not text or text.startswith("/") or text.lower().startswith("cow "):
             return None
@@ -187,8 +186,37 @@ class CowCliPlugin(Plugin):
         has_update = any(marker in compact or marker in normalized for marker in _PROJECT_UPDATE_ACTION_MARKERS)
         has_summary = any(marker in compact or marker in normalized for marker in _PROJECT_UPDATE_SUMMARY_MARKERS)
         if has_time and has_update and has_summary:
-            return "updates", "today"
+            return "updates", self._encode_project_update_args(text, "today")
         return None
+
+    @staticmethod
+    def _encode_project_update_args(question: str, period: str = "today") -> str:
+        payload = {
+            "question": str(question or "").strip(),
+            "period": str(period or "today").strip() or "today",
+        }
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
+        return f"summary {encoded}"
+
+    @staticmethod
+    def _decode_project_update_args(args: str) -> dict:
+        raw = str(args or "").strip()
+        if not raw.startswith("summary "):
+            return {"question": "", "period": raw or "today"}
+        encoded = raw.split(None, 1)[1].strip()
+        try:
+            decoded = base64.urlsafe_b64decode(encoded.encode("ascii"))
+            data = json.loads(decoded.decode("utf-8"))
+        except Exception:
+            return {"question": "", "period": "today"}
+        if not isinstance(data, dict):
+            return {"question": "", "period": "today"}
+        return {
+            "question": str(data.get("question") or "").strip(),
+            "period": str(data.get("period") or "today").strip() or "today",
+        }
 
     def _parse_skill_natural_command(self, content: str):
         text = str(content or "").strip()
@@ -396,8 +424,10 @@ class CowCliPlugin(Plugin):
     # project updates
     # ------------------------------------------------------------------
 
-    def _cmd_updates(self, args: str, e_context, **_) -> str:
-        period = str(args or "").strip().lower() or "today"
+    def _cmd_updates(self, args: str, e_context, session_id: str = "", **_) -> str:
+        payload = self._decode_project_update_args(args)
+        question = payload.get("question", "")
+        period = str(payload.get("period") or "today").strip().lower() or "today"
         if period not in {"today", "今日", "今天"}:
             period = "today"
         commits = self._git_commits_for_today()
@@ -407,9 +437,24 @@ class CowCliPlugin(Plugin):
 
         recommended = self._summarize_updates_for_private_use(commits, update_entries)
         update_count = max(len(commits), len(update_entries))
+        context = self._format_project_update_context(commits, update_entries, recommended, update_count)
+        target_label = self._project_update_target_label(question)
+        if question:
+            try:
+                answer = self._call_project_update_summary_model(
+                    question=question,
+                    update_context=context,
+                    e_context=e_context,
+                    session_id=session_id,
+                )
+                if answer:
+                    return answer
+            except Exception as exc:
+                logger.warning(f"[CowCli] project update model summary failed: {exc}")
+
         lines = [
             "我查的是本项目今天的 Git/README 更新记录，不是泛化功能清单。",
-            f"今天共看到 {update_count} 条更新记录。适合推送给日常使用者的主要是：",
+            f"今天共看到 {update_count} 条更新记录。适合推荐给{target_label}的主要是：",
             "",
         ]
         for index, item in enumerate(recommended[:6], 1):
@@ -421,6 +466,94 @@ class CowCliPlugin(Plugin):
                 f"另外有 {internal_count} 个偏内部的后端、测试、文档或发布安全更新，不建议作为功能点单独推送。",
             ])
         return "\n".join(lines)
+
+    @staticmethod
+    def _project_update_target_label(question: str) -> str:
+        text = str(question or "")
+        if any(marker in text for marker in ("老婆", "妻子", "太太", "媳妇", "夫人")):
+            return "你老婆"
+        if any(marker in text for marker in ("老公", "丈夫", "先生")):
+            return "你老公"
+        if "家人" in text:
+            return "你家人"
+        if "朋友" in text:
+            return "朋友"
+        return "你指定的人"
+
+    @staticmethod
+    def _format_project_update_context(commits, update_entries, recommended, update_count: int) -> str:
+        lines = [
+            f"今日更新记录数：{update_count}",
+            "",
+            "README 更新日志：",
+        ]
+        if update_entries:
+            for entry in update_entries[:20]:
+                lines.append(f"- {entry}")
+        else:
+            lines.append("- （README 今日更新日志为空，使用 Git 提交主题兜底。）")
+        lines.extend(["", "Git 提交主题："])
+        if commits:
+            for commit in commits[:40]:
+                lines.append(f"- {commit.get('hash', '')} {commit.get('subject', '')}")
+        else:
+            lines.append("- （今日没有读取到 Git 提交。）")
+        lines.extend(["", "本地候选功能分类（仅供模型筛选，不要照搬）："])
+        for item in recommended[:8]:
+            lines.append(f"- {item}")
+        return "\n".join(lines)[:12000]
+
+    def _call_project_update_summary_model(
+        self,
+        *,
+        question: str,
+        update_context: str,
+        e_context,
+        session_id: str = "",
+    ) -> str:
+        from agent.protocol import LLMRequest
+        from bridge.agent_bridge import AgentLLMModel
+        from bridge.bridge import Bridge
+
+        llm = AgentLLMModel(Bridge())
+        try:
+            context = e_context["context"] if e_context is not None else None
+        except Exception:
+            context = None
+        if context is not None:
+            llm.channel_type = context.get("channel_type", "") or context.get("channel", "")
+            llm.session_id = session_id or context.get("session_id", "") or context.get("from_user_id", "")
+            llm.user_id = context.get("from_user_id", "") or context.get("receiver", "")
+            llm.user_label = context.get("actual_user_nickname", "") or context.get("from_user_nickname", "")
+        elif session_id:
+            llm.session_id = session_id
+
+        system = (
+            "你是 CowWeCom 项目更新总结助手。"
+            "只能依据提供的 Git/README 更新记录回答，不要泛化成本机功能清单。"
+            "必须保留用户原话中的推荐对象和筛选目标；如果用户说推荐给老婆，就直接围绕“适合推给你老婆”筛选。"
+            "优先推荐普通使用者能直接感知的功能和体验改进，排除后端、测试、发布、安全流程等内部维护，除非它们能转化成明显体验收益。"
+            "回答要像可直接转发前的建议，简洁、具体、自然中文；不要泄露本地路径、密钥、内部实现细节。"
+        )
+        user = (
+            f"用户原话：{question}\n\n"
+            f"项目今日 Git/README 更新记录：\n{update_context}\n\n"
+            "请按用户原话筛选并总结，不要把候选分类原样照搬。"
+        )
+        response = llm.call(
+            LLMRequest(
+                messages=[{"role": "user", "content": user}],
+                system=system,
+                max_tokens=900,
+                temperature=0.2,
+                tools=[],
+                request_timeout=45,
+                reasoning_effort="medium",
+                reasoning_effort_locked=True,
+                cache_shape_metadata={"request_kind": "cow_cli_project_update_summary"},
+            )
+        )
+        return self._extract_model_text(response)
 
     @staticmethod
     def _git_commits_for_today():

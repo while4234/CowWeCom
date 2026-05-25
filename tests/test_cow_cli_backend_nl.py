@@ -343,7 +343,10 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertEqual(plugin._parse_command("/skill list"), ("skill", "list"))
 
         cmd, args = plugin._parse_command("帮我总结下今天更新的功能适合推送给我老婆使用的有哪些")
-        self.assertEqual((cmd, args), ("updates", "today"))
+        self.assertEqual(cmd, "updates")
+        update_payload = plugin._decode_project_update_args(args)
+        self.assertEqual(update_payload["period"], "today")
+        self.assertEqual(update_payload["question"], "帮我总结下今天更新的功能适合推送给我老婆使用的有哪些")
 
         cmd, args = plugin._parse_command("当前支持哪些功能呢")
         self.assertEqual(cmd, "skill")
@@ -391,17 +394,25 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         with (
             patch("plugins.cow_cli.cow_cli.subprocess.run", return_value=FakeProc()) as run,
             patch.object(plugin, "_skill_catalog") as skill_catalog,
+            patch("bridge.agent_bridge.AgentLLMModel") as model_cls,
         ):
+            model = model_cls.return_value
+            model.call.return_value = {
+                "choices": [{"message": {"content": "适合推给你老婆的：旅行规划、企业微信稳定性和图片追问稳定。"}}],
+            }
             with patch.object(plugin, "_read_readme_update_entries_for_today", return_value=[]):
                 result = plugin.execute("帮我总结下今天更新的功能适合推送给我老婆使用的有哪些", session_id="test")
 
         run.assert_called_once()
         skill_catalog.assert_not_called()
-        self.assertIn("Git/README 更新记录", result)
-        self.assertIn("企业微信回复更稳", result)
-        self.assertIn("旅行规划更适合直接用", result)
-        self.assertIn("长任务体验更清楚", result)
-        self.assertIn("图片识别追问更稳", result)
+        self.assertIn("适合推给你老婆", result)
+        request = model.call.call_args.args[0]
+        self.assertEqual(request.cache_shape_metadata["request_kind"], "cow_cli_project_update_summary")
+        self.assertEqual(request.tools, [])
+        self.assertEqual(request.reasoning_effort, "medium")
+        self.assertTrue(request.reasoning_effort_locked)
+        self.assertIn("帮我总结下今天更新的功能适合推送给我老婆使用的有哪些", request.messages[0]["content"])
+        self.assertIn("fix: reconnect stalled wecom bot subscribe", request.messages[0]["content"])
 
     def test_today_project_update_summary_prefers_readme_update_log(self):
         plugin = _load_cow_cli_plugin()
@@ -420,12 +431,42 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
             patch("plugins.cow_cli.cow_cli.subprocess.run", return_value=FakeProc()),
             patch.object(plugin, "_read_readme_update_entries_for_today", return_value=readme_entries),
             patch.object(plugin, "_skill_catalog") as skill_catalog,
+            patch("bridge.agent_bridge.AgentLLMModel") as model_cls,
         ):
+            model = model_cls.return_value
+            model.call.return_value = {
+                "choices": [{"message": {"content": "适合推给你老婆的：旅行规划和企业微信稳定性。"}}],
+            }
             result = plugin.execute("帮我总结下今天更新的功能适合推送给我老婆使用的有哪些", session_id="test")
 
         skill_catalog.assert_not_called()
-        self.assertIn("Git/README 更新记录", result)
-        self.assertIn("企业微信回复更稳", result)
+        self.assertIn("适合推给你老婆", result)
+        request = model.call.call_args.args[0]
+        self.assertIn("加固企业微信智能机器人长连接", request.messages[0]["content"])
+        self.assertIn("优化旅行规划技能", request.messages[0]["content"])
+
+    def test_today_project_update_summary_fallback_keeps_spouse_target(self):
+        plugin = _load_cow_cli_plugin()
+
+        class FakeProc:
+            returncode = 0
+            stderr = ""
+            stdout = "abc123\t2026-05-25\tfeat: upgrade travel manager orchestration"
+
+        encoded_args = plugin._encode_project_update_args(
+            "帮我总结下今天更新的功能适合推送给我老婆使用的有哪些",
+            "today",
+        )
+
+        with (
+            patch("plugins.cow_cli.cow_cli.subprocess.run", return_value=FakeProc()),
+            patch.object(plugin, "_read_readme_update_entries_for_today", return_value=[]),
+            patch.object(plugin, "_call_project_update_summary_model", side_effect=RuntimeError("model down")),
+        ):
+            result = plugin._cmd_updates(encoded_args, e_context=None, session_id="test")
+
+        self.assertIn("适合推荐给你老婆", result)
+        self.assertNotIn("日常使用者", result)
         self.assertIn("旅行规划更适合直接用", result)
 
     def test_skill_natural_language_answer_uses_cached_catalog_context_model_call(self):
