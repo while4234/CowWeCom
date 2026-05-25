@@ -234,10 +234,13 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         plugin = _load_cow_cli_plugin()
 
         self.assertEqual(plugin._parse_command("本地有哪些 skills"), ("skill", "list"))
+        self.assertEqual(plugin._parse_command("当前支持哪些功能呢"), ("skill", "list"))
+        self.assertEqual(plugin._parse_command("你现在能做什么功能"), ("skill", "list"))
         self.assertEqual(
             plugin._parse_command("capi-usage-monitor 怎么用"),
             ("skill", "usage capi-usage-monitor"),
         )
+        self.assertIsNone(plugin._parse_command("帮我开发一个新功能"))
 
 
 if __name__ == "__main__":

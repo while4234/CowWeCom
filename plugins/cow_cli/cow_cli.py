@@ -52,8 +52,12 @@ QUOTA_ALIASES = {
     "查询codex登录",
 }
 
-_SKILL_CONTEXT_MARKERS = ("技能", "skill", "skills", "函数", "function", "functions")
-_SKILL_LIST_MARKERS = ("有哪些", "有什么", "列出", "列表", "清单", "已安装", "本地", "local", "list", "available", "show")
+_SKILL_CONTEXT_MARKERS = ("技能", "skill", "skills", "函数", "function", "functions", "功能", "能力")
+_SKILL_LIST_MARKERS = (
+    "有哪些", "有什么", "哪些", "支持哪些", "支持什么", "能做什么", "可以做什么",
+    "会什么", "会做什么", "能干什么", "列出", "列表", "清单", "已安装",
+    "本地", "local", "list", "available", "show",
+)
 _SKILL_USAGE_MARKERS = ("怎么用", "如何用", "用法", "使用方法", "怎么使用", "如何使用", "usage", "help")
 
 
