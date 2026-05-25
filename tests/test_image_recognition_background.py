@@ -74,6 +74,29 @@ class TestImageRecognitionManager(unittest.TestCase):
             self.assertIn("A concise image summary.", followup_context)
             self.assertIn("[image:", followup_context)
 
+    def test_github_account_requests_are_not_image_followups(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+
+            self.assertEqual(
+                manager.classify_followup_intent("\u5217\u4e00\u4e0b\u6211\u7684github\u4ed3\u5e93"),
+                "none",
+            )
+            self.assertEqual(
+                manager.classify_followup_intent(
+                    "\u6240\u4ee5\u4f60\u73b0\u5728\u80fd\u8fde\u63a5\u5230\u6211\u7684 github \u8d26\u6237\u5417"
+                ),
+                "none",
+            )
+            self.assertEqual(
+                manager.classify_followup_intent("\u8fd9\u662f\u6211\u7684\u5348\u996d"),
+                "related",
+            )
+            self.assertEqual(
+                manager.classify_followup_intent("\u8fd9\u5f20\u56fe\u91cc\u662f\u4ec0\u4e48"),
+                "explicit",
+            )
+
     def test_result_and_image_copy_ttls_are_enforced(self):
         with tempfile.TemporaryDirectory() as workspace:
             source = Path(workspace) / "source.png"

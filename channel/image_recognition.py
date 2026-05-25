@@ -66,6 +66,31 @@ _RELATED_IMAGE_MARKERS = (
 )
 
 
+_NON_IMAGE_TASK_MARKERS = (
+    "github",
+    "gitlab",
+    "git hub",
+    "repo",
+    "repository",
+    "pullrequest",
+    "pull-request",
+    "issue",
+    "token",
+    "pat",
+    "apikey",
+    "api-key",
+    "skill",
+    "mcp",
+    "ssh",
+    "\u4ed3\u5e93",  # repository
+    "\u8d26\u53f7",  # account
+    "\u8d26\u6237",  # account
+    "\u6388\u6743",  # authorization
+    "\u5de5\u5177",  # tool
+    "\u8c03\u7528",  # invoke
+)
+
+
 @dataclass
 class ImageRecognitionRecord:
     record_id: str
@@ -651,6 +676,8 @@ class ImageRecognitionManager:
             return "none"
         if any(marker.lower() in compact for marker in _EXPLICIT_IMAGE_QUESTION_MARKERS):
             return "explicit"
+        if any(marker in compact for marker in _NON_IMAGE_TASK_MARKERS):
+            return "none"
         if len(compact) <= 120 and any(marker in compact for marker in _RELATED_IMAGE_MARKERS):
             return "related"
         return "none"
