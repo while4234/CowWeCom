@@ -986,6 +986,8 @@ class CowCliPlugin(Plugin):
             categories = []
         if not question:
             return self._skill_list_local()
+        if self._wants_explicit_skill_inventory(question, mode, skill_name, category, categories):
+            return self._call_catalog_text(self._skill_catalog().overview_summary, max_chars=20000)
         categories = self._resolve_skill_answer_categories(
             question=question,
             mode=mode,
@@ -1088,6 +1090,38 @@ class CowCliPlugin(Plugin):
             return method(*args, **kwargs)
         except TypeError:
             return method(*args)
+
+    @staticmethod
+    def _wants_explicit_skill_inventory(
+        question: str,
+        mode: str,
+        skill_name: str = "",
+        category: str = "",
+        categories=None,
+    ) -> bool:
+        if str(mode or "") != "list" or skill_name or category or categories:
+            return False
+        normalized = str(question or "").lower()
+        compact = re.sub(r"[\s,，。?!？！:：;；\"'`“”‘’（）()\[\]【】<>《》]+", "", normalized)
+        mentions_skill = any(marker in compact or marker in normalized for marker in ("skill", "skills", "技能"))
+        asks_inventory = any(
+            marker in compact or marker in normalized
+            for marker in (
+                "有哪些",
+                "有什么",
+                "哪些",
+                "支持哪些",
+                "支持什么",
+                "列表",
+                "清单",
+                "已安装",
+                "本地",
+                "list",
+                "available",
+                "show",
+            )
+        )
+        return mentions_skill and asks_inventory
 
     def _resolve_skill_answer_categories(
         self,

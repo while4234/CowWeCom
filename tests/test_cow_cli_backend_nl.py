@@ -472,6 +472,35 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertIn("下单找折扣", router_request.messages[0]["content"])
         self.assertIn("SUMMARY: shopping_food", answer_request.messages[0]["content"])
 
+    def test_explicit_skill_inventory_bypasses_model_and_returns_full_overview(self):
+        plugin = _load_cow_cli_plugin()
+        catalog = SimpleNamespace(
+            overview_summary=lambda **_: (
+                "本机技能/功能总览：\n"
+                "- Skill A\n"
+                "- Skill B\n"
+                "- Skill C\n"
+                "- Skill D\n"
+                "- Skill E"
+            )
+        )
+        encoded_args = plugin._encode_skill_answer_args(
+            "当前支持哪些 skill 呢",
+            "list",
+        ).split(None, 1)[1]
+
+        with (
+            patch.object(plugin, "_skill_catalog", return_value=catalog),
+            patch.object(plugin, "_call_skill_answer_model") as model_call,
+            patch.object(plugin, "_infer_skill_categories_with_model") as router_call,
+        ):
+            result = plugin._skill_answer(encoded_args, e_context=None, session_id="test-session")
+
+        self.assertIn("Skill A", result)
+        self.assertIn("Skill E", result)
+        model_call.assert_not_called()
+        router_call.assert_not_called()
+
     def test_insufficient_summary_marker_falls_back_to_full_skill_context(self):
         plugin = _load_cow_cli_plugin()
         catalog = SimpleNamespace(
