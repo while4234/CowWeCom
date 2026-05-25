@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 from datetime import datetime
 from typing import Any, Callable, Dict, Mapping, Optional
 
@@ -43,6 +44,7 @@ DEFAULT_LLM_BACKEND_CONFIG: Dict[str, Any] = {
             "api_base_env": "OPENAI_API_BASE",
             "wire_api": "",
             "model": "",
+            "connectivity_timeout_seconds": 12,
         },
         "capi_monthly": {
             "label": "CAPI Monthly Card",
@@ -52,6 +54,7 @@ DEFAULT_LLM_BACKEND_CONFIG: Dict[str, Any] = {
             "api_base_env": "OPENAI_API_BASE",
             "wire_api": "",
             "model": "",
+            "connectivity_timeout_seconds": 12,
             "default_daily_quota": 90,
         },
     },
@@ -113,11 +116,12 @@ def resolve_provider_value(provider: Mapping[str, Any], value_key: str, env_key:
     return str(value) if value else ""
 
 
-def get_effective_openai_api_config() -> Dict[str, Any]:
+def get_effective_openai_api_config(backend: Optional[str] = None) -> Dict[str, Any]:
     """Return route-aware OpenAI-compatible API settings for the active CAPI backend."""
     from config import conf
 
-    provider = get_capi_provider_config()
+    normalized_backend = normalize_backend(backend or get_current_backend())
+    provider = get_capi_provider_config(normalized_backend)
     api_key = resolve_provider_value(provider, "api_key", "api_key_env") or str(conf().get("open_ai_api_key") or "")
     api_base = resolve_provider_value(provider, "api_base", "api_base_env") or str(conf().get("open_ai_api_base") or "")
     wire_api = str(
@@ -133,13 +137,158 @@ def get_effective_openai_api_config() -> Dict[str, Any]:
         "api_base": api_base,
         "wire_api": wire_api,
         "model": model,
-        "backend": get_current_backend(),
+        "backend": normalized_backend,
     }
 
 
 def has_capi_monthly_credentials() -> bool:
     provider = get_capi_provider_config(BACKEND_CAPI_MONTHLY)
     return bool(resolve_provider_value(provider, "api_key", "api_key_env"))
+
+
+def is_capi_backend(backend: Optional[str]) -> bool:
+    if backend is None:
+        return False
+    return normalize_backend(backend or "") in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY}
+
+
+def check_capi_connectivity(backend: Optional[str] = None, *, timeout_seconds: Optional[float] = None) -> bool:
+    """Probe the OpenAI-compatible endpoint used by the selected CAPI backend."""
+    normalized_backend = normalize_backend(backend or get_current_backend())
+    if not is_capi_backend(normalized_backend):
+        return True
+
+    from config import conf
+    from models.openai.openai_http_client import OpenAIHTTPClient, OpenAIHTTPError
+    from models.openai.responses_api_adapter import build_responses_payload, is_responses_wire_api
+
+    provider = get_capi_provider_config(normalized_backend)
+    routed = get_effective_openai_api_config(normalized_backend)
+    model = str(routed.get("model") or "").strip()
+    api_key = str(routed.get("api_key") or "").strip()
+    api_base = str(routed.get("api_base") or "").strip()
+    if not model or not api_key:
+        logger.warning(
+            "[LLMBackend] CAPI connectivity probe skipped: missing model or API key "
+            "(backend=%s)",
+            normalized_backend,
+        )
+        return False
+
+    timeout = timeout_seconds
+    if timeout is None:
+        try:
+            timeout = float(provider.get("connectivity_timeout_seconds") or 12)
+        except (TypeError, ValueError):
+            timeout = 12.0
+    timeout = max(1.0, min(float(timeout), 60.0))
+    client = OpenAIHTTPClient(proxy=conf().get("proxy") or None, timeout=timeout)
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+    }
+
+    try:
+        if is_responses_wire_api(routed.get("wire_api")):
+            responses_payload = build_responses_payload(payload, store=False)
+            response = client.responses(
+                api_key=api_key,
+                api_base=api_base or None,
+                timeout=timeout,
+                stream=False,
+                **responses_payload,
+            )
+        else:
+            response = client.chat_completions(
+                api_key=api_key,
+                api_base=api_base or None,
+                timeout=timeout,
+                stream=False,
+                **payload,
+            )
+        if isinstance(response, dict) and response.get("error"):
+            logger.warning(
+                "[LLMBackend] CAPI connectivity probe failed: backend=%s status=%s message=%s",
+                normalized_backend,
+                response.get("status_code", ""),
+                str(response.get("message", ""))[:180],
+            )
+            return False
+        logger.info("[LLMBackend] CAPI connectivity probe succeeded: backend=%s", normalized_backend)
+        return True
+    except OpenAIHTTPError as e:
+        logger.warning(
+            "[LLMBackend] CAPI connectivity probe failed: backend=%s status=%s message=%s",
+            normalized_backend,
+            e.status_code,
+            e.message[:180],
+        )
+        return False
+    except Exception as e:
+        logger.warning(
+            "[LLMBackend] CAPI connectivity probe failed: backend=%s error=%s",
+            normalized_backend,
+            str(e)[:180],
+        )
+        return False
+
+
+def is_capi_runtime_fallback_error(error: Any) -> bool:
+    """Return True for transient CAPI failures that should be retried on Codex."""
+    text = _stringify_error(error).lower()
+    status_code = _extract_status_code(text)
+    if status_code in {0, 408, 429, 500, 502, 503, 504, 512}:
+        return True
+    if status_code is not None and 400 <= status_code < 500:
+        return False
+    transient_markers = (
+        "connection error",
+        "provider_network_error",
+        "connection aborted",
+        "connectionreseterror",
+        "ssleoferror",
+        "unexpected_eof",
+        "max retries exceeded",
+        "remote host",
+        "request timed out",
+        "timeout",
+        "timed out",
+        "internal server error",
+        "bad gateway",
+        "service unavailable",
+        "gateway timeout",
+        "too many pending requests",
+        "concurrency limit exceeded",
+        "rate_limit_error",
+        "rate limit",
+        "overloaded",
+        "unavailable",
+        "temporarily unavailable",
+        "server busy",
+    )
+    return any(marker in text for marker in transient_markers)
+
+
+def _stringify_error(error: Any) -> str:
+    if isinstance(error, Mapping):
+        return json.dumps(error, ensure_ascii=False, default=str)
+    return str(error or "")
+
+
+def _extract_status_code(text: str) -> Optional[int]:
+    for pattern in (
+        r"status(?:[_\s]+code)?\s*[:=]\s*([0-9]{1,3})",
+        r"status:\s*([0-9]{1,3})",
+        r"http\s+([0-9]{1,3})",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return None
+    return None
 
 
 def get_codex_model() -> str:
@@ -287,6 +436,9 @@ def set_current_backend(backend: str, *, manual: bool = True, reason: str = "") 
         state["manual_override_active"] = True
         state["manual_changed_at"] = state["updated_at"]
         state["auto_switch_latched"] = False
+    else:
+        state["manual_override_active"] = False
+        state["auto_switch_latched"] = normalized == BACKEND_CODEX
     save_state(state)
     _reset_bridge_cache()
     return state
@@ -402,6 +554,7 @@ def evaluate_midnight_backend_route(
     quota_payload: Optional[Mapping[str, Any]] = None,
     *,
     quota_payload_factory: Optional[Callable[[], Mapping[str, Any]]] = None,
+    capi_connectivity_checker: Optional[Callable[[str], bool]] = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     now = now or datetime.now()
@@ -415,13 +568,20 @@ def evaluate_midnight_backend_route(
         return record_auto_check(decision="skipped", reason="auto_disabled", now=now)
     if auto_state.get("last_checked_date") == today:
         return state
+
+    checker = capi_connectivity_checker or check_capi_connectivity
     if bool(auto_cfg.get("prefer_capi_monthly_at_check_time", True)) and has_capi_monthly_credentials():
+        if not _run_capi_connectivity_check(BACKEND_CAPI_MONTHLY, checker):
+            return _record_capi_connectivity_fallback(BACKEND_CAPI_MONTHLY, now=now)
         return record_auto_check(
             decision="switched_to_capi_monthly",
             reason="daily_monthly_card_reset",
             switched_backend=BACKEND_CAPI_MONTHLY,
             now=now,
         )
+
+    if not _run_capi_connectivity_check(BACKEND_CAPI, checker):
+        return _record_capi_connectivity_fallback(BACKEND_CAPI, now=now)
 
     payload = quota_payload
     if payload is None and quota_payload_factory is not None:
@@ -430,6 +590,28 @@ def evaluate_midnight_backend_route(
         payload or {},
         ignore_manual_override=True,
         clear_manual_override_on_check=True,
+        now=now,
+    )
+
+
+def _run_capi_connectivity_check(backend: str, checker: Callable[[str], bool]) -> bool:
+    try:
+        return bool(checker(backend))
+    except Exception as e:
+        logger.warning(
+            "[LLMBackend] CAPI connectivity checker raised: backend=%s error=%s",
+            normalize_backend(backend),
+            str(e)[:180],
+        )
+        return False
+
+
+def _record_capi_connectivity_fallback(backend: str, *, now: datetime) -> Dict[str, Any]:
+    normalized = normalize_backend(backend)
+    return record_auto_check(
+        decision="switched_to_codex",
+        reason=f"capi_connectivity_failed:{normalized}",
+        switched_backend=BACKEND_CODEX,
         now=now,
     )
 

@@ -13,6 +13,14 @@ from agent.tools.base_tool import BaseTool, ToolResult
 from common.agent_task_runtime import TaskCancelled
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common.log import logger
+from common.llm_backend_router import (
+    BACKEND_CAPI,
+    BACKEND_CAPI_MONTHLY,
+    BACKEND_CODEX,
+    get_current_backend,
+    is_capi_runtime_fallback_error,
+    set_current_backend,
+)
 from common.llm_usage_tracker import normalize_usage, stable_metadata_hash
 from common.reasoning_effort_policy import (
     record_policy_task_outcome,
@@ -930,7 +938,8 @@ class AgentStreamExecutor:
         return final_response
 
     def _call_llm_stream(self, retry_on_empty=True, retry_count=0, max_retries=3,
-                         _overflow_retry: bool = False) -> Tuple[str, List[Dict]]:
+                         _overflow_retry: bool = False,
+                         _capi_fallback_retry: bool = False) -> Tuple[str, List[Dict]]:
         """
         Call LLM with streaming and automatic retry on errors
         
@@ -939,6 +948,7 @@ class AgentStreamExecutor:
             retry_count: Current retry attempt (internal use)
             max_retries: Maximum number of retries for API errors
             _overflow_retry: Internal flag indicating this is a retry after context overflow
+            _capi_fallback_retry: Internal flag indicating this request was already replayed on Codex
         
         Returns:
             (response_text, tool_calls)
@@ -1205,7 +1215,8 @@ class AgentStreamExecutor:
                             retry_on_empty=retry_on_empty,
                             retry_count=retry_count,
                             max_retries=max_retries,
-                            _overflow_retry=True
+                            _overflow_retry=True,
+                            _capi_fallback_retry=_capi_fallback_retry,
                         )
 
                 # Aggressive trim didn't help or this is a message format error
@@ -1231,6 +1242,32 @@ class AgentStreamExecutor:
                 'rate limit', 'overloaded', 'unavailable', 'busy', 'retry',
                 '429', '500', '502', '503', '504', '512'
             ])
+
+            if (
+                    not _capi_fallback_retry
+                    and first_visible_text_at is None
+                    and retry_count >= max_retries
+                    and get_current_backend() in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY}
+                    and is_capi_runtime_fallback_error(error_str)):
+                previous_backend = get_current_backend()
+                set_current_backend(
+                    BACKEND_CODEX,
+                    manual=False,
+                    reason=f"capi_runtime_fallback:{previous_backend}",
+                )
+                logger.warning(
+                    "[LLMBackend] CAPI request failed after retries; switched to Codex and "
+                    "replaying the same Agent request (backend=%s, error=%s)",
+                    previous_backend,
+                    error_str[:180],
+                )
+                return self._call_llm_stream(
+                    retry_on_empty=retry_on_empty,
+                    retry_count=0,
+                    max_retries=max_retries,
+                    _overflow_retry=_overflow_retry,
+                    _capi_fallback_retry=True,
+                )
             
             if is_retryable and retry_count < max_retries:
                 # Rate limit needs longer wait time
@@ -1245,7 +1282,9 @@ class AgentStreamExecutor:
                 return self._call_llm_stream(
                     retry_on_empty=retry_on_empty, 
                     retry_count=retry_count + 1,
-                    max_retries=max_retries
+                    max_retries=max_retries,
+                    _overflow_retry=_overflow_retry,
+                    _capi_fallback_retry=_capi_fallback_retry,
                 )
             else:
                 if retry_count >= max_retries:
@@ -1339,7 +1378,9 @@ class AgentStreamExecutor:
             return self._call_llm_stream(
                 retry_on_empty=False, 
                 retry_count=retry_count,
-                max_retries=max_retries
+                max_retries=max_retries,
+                _overflow_retry=_overflow_retry,
+                _capi_fallback_retry=_capi_fallback_retry,
             )
 
         # Filter full_content one more time (in case tags were split across chunks)

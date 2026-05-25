@@ -14,6 +14,7 @@ from common.llm_backend_router import (
     evaluate_midnight_backend_route,
     get_effective_openai_api_config,
     get_current_backend,
+    is_capi_runtime_fallback_error,
     load_state,
     select_backend_after_monthly_quota_low,
     save_state,
@@ -107,7 +108,11 @@ class TestCodexBackendRouter(unittest.TestCase):
         })
         now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
 
-        state = evaluate_midnight_backend_route(quota_payload=weekly_payload(used_percent=5), now=now)
+        state = evaluate_midnight_backend_route(
+            quota_payload=weekly_payload(used_percent=5),
+            capi_connectivity_checker=lambda backend: True,
+            now=now,
+        )
 
         self.assertEqual(state["current_backend"], BACKEND_CODEX)
         self.assertFalse(state["manual_override_active"])
@@ -121,7 +126,11 @@ class TestCodexBackendRouter(unittest.TestCase):
         })
         now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
 
-        state = evaluate_midnight_backend_route(quota_payload=weekly_payload(used_percent=30), now=now)
+        state = evaluate_midnight_backend_route(
+            quota_payload=weekly_payload(used_percent=30),
+            capi_connectivity_checker=lambda backend: True,
+            now=now,
+        )
 
         self.assertEqual(state["current_backend"], BACKEND_CAPI)
         self.assertFalse(state["manual_override_active"])
@@ -147,12 +156,67 @@ class TestCodexBackendRouter(unittest.TestCase):
         conf()["llm_backend"]["providers"]["capi_monthly"] = {"api_key": "TEST-MONTHLY-KEY"}
         now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
 
-        state = evaluate_midnight_backend_route(quota_payload=weekly_payload(used_percent=99), now=now)
+        state = evaluate_midnight_backend_route(
+            quota_payload=weekly_payload(used_percent=99),
+            capi_connectivity_checker=lambda backend: True,
+            now=now,
+        )
 
         self.assertEqual(state["current_backend"], BACKEND_CAPI_MONTHLY)
         self.assertFalse(state["manual_override_active"])
         self.assertEqual(state["auto"]["last_decision"], "switched_to_capi_monthly")
         self.assertEqual(get_current_backend(), BACKEND_CAPI_MONTHLY)
+
+    def test_midnight_uses_codex_when_monthly_capi_probe_fails(self):
+        conf()["llm_backend"]["providers"]["capi_monthly"] = {"api_key": "TEST-MONTHLY-KEY"}
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+        checked = []
+
+        state = evaluate_midnight_backend_route(
+            quota_payload=weekly_payload(used_percent=99),
+            capi_connectivity_checker=lambda backend: checked.append(backend) or False,
+            now=now,
+        )
+
+        self.assertEqual(checked, [BACKEND_CAPI_MONTHLY])
+        self.assertEqual(state["current_backend"], BACKEND_CODEX)
+        self.assertEqual(state["auto"]["last_decision"], "switched_to_codex")
+        self.assertEqual(state["auto"]["last_reason"], f"capi_connectivity_failed:{BACKEND_CAPI_MONTHLY}")
+
+    def test_midnight_uses_codex_when_regular_capi_probe_fails_before_quota(self):
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+
+        state = evaluate_midnight_backend_route(
+            quota_payload=weekly_payload(used_percent=99),
+            capi_connectivity_checker=lambda backend: False,
+            now=now,
+        )
+
+        self.assertEqual(state["current_backend"], BACKEND_CODEX)
+        self.assertTrue(state["auto_switch_latched"])
+        self.assertEqual(state["auto"]["last_reason"], f"capi_connectivity_failed:{BACKEND_CAPI}")
+
+    def test_midnight_probe_exception_falls_back_without_leaking_message(self):
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+
+        def failing_checker(_backend):
+            raise RuntimeError("SECRET-API-KEY")
+
+        state = evaluate_midnight_backend_route(
+            quota_payload=weekly_payload(used_percent=99),
+            capi_connectivity_checker=failing_checker,
+            now=now,
+        )
+
+        self.assertEqual(state["current_backend"], BACKEND_CODEX)
+        self.assertEqual(state["auto"]["last_reason"], f"capi_connectivity_failed:{BACKEND_CAPI}")
+        self.assertNotIn("SECRET", json.dumps(state, ensure_ascii=False))
+
+    def test_capi_runtime_fallback_error_classifier_covers_riko_failure(self):
+        self.assertTrue(is_capi_runtime_fallback_error("{'raw': 'Internal Server Error'} (Status: 500)"))
+        self.assertTrue(is_capi_runtime_fallback_error("provider_network_error: ConnectionResetError(10054)"))
+        self.assertTrue(is_capi_runtime_fallback_error("Concurrency limit exceeded for account (Status: 429)"))
+        self.assertFalse(is_capi_runtime_fallback_error("invalid_request_error (Status: 400)"))
 
     def test_monthly_low_quota_falls_back_to_codex_when_under_fair_share(self):
         now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
