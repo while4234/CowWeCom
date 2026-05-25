@@ -390,6 +390,46 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertEqual(context, "DETAILED SUMMARY: deep-skill")
 
+    def test_skill_natural_query_supports_single_and_multi_category(self):
+        plugin = _load_cow_cli_plugin()
+        catalog = SimpleNamespace(
+            find_categories_in_text=lambda text: ["shopping_food", "travel_location"]
+            if "购物" in text and "出行" in text
+            else (["shopping_food"] if "购物" in text else []),
+            find_category_in_text=lambda text: "shopping_food" if "购物" in text else "",
+        )
+
+        with patch.object(plugin, "_skill_catalog", return_value=catalog):
+            single = plugin._parse_command("当前有没有购物类的功能呢")
+            multiple = plugin._parse_command("当前有没有购物和出行相关的功能呢")
+
+        self.assertEqual(single[0], "skill")
+        single_payload = plugin._decode_skill_answer_args(single[1].split(None, 1)[1])
+        self.assertEqual(single_payload["mode"], "category")
+        self.assertEqual(single_payload["categories"], ["shopping_food"])
+
+        self.assertEqual(multiple[0], "skill")
+        multiple_payload = plugin._decode_skill_answer_args(multiple[1].split(None, 1)[1])
+        self.assertEqual(multiple_payload["mode"], "category")
+        self.assertEqual(multiple_payload["categories"], ["shopping_food", "travel_location"])
+
+    def test_category_answer_context_uses_multi_category_summary(self):
+        plugin = _load_cow_cli_plugin()
+        catalog = SimpleNamespace(
+            multi_category_summary=lambda categories, **_: f"MULTI CATEGORY: {','.join(categories)}",
+            category_summary=lambda category, **_: f"SINGLE CATEGORY: {category}",
+            overview_summary=lambda **_: "OVERVIEW",
+        )
+
+        with patch.object(plugin, "_skill_catalog", return_value=catalog):
+            context = plugin._skill_answer_context(
+                mode="category",
+                category="shopping_food,travel_location",
+                categories=["shopping_food", "travel_location"],
+            )
+
+        self.assertEqual(context, "MULTI CATEGORY: shopping_food,travel_location")
+
     def test_insufficient_summary_marker_falls_back_to_full_skill_context(self):
         plugin = _load_cow_cli_plugin()
         catalog = SimpleNamespace(

@@ -131,6 +131,39 @@ class SkillCatalogCacheTest(unittest.TestCase):
             self.assertIn("高德 上班", detail)
             self.assertIn("READ_FULL_SKILL", detail)
 
+    def test_finds_and_summarizes_multiple_categories_from_user_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            builtin = root / "builtin"
+            custom = root / "custom"
+            write_skill(
+                builtin / "amap-cowwechat",
+                "amap-cowwechat",
+                "使用高德地图提供出行、路线、路况和通勤分析。",
+                body="## 支持命令\n高德 上班\n",
+            )
+            write_skill(
+                builtin / "shopping-helper",
+                "shopping-helper",
+                "帮助用户做购物比价、商品筛选和优惠券查询。",
+                body="## 支持命令\n购物 比价 iPhone\n",
+            )
+            write_skill(
+                builtin / "stock-analysis",
+                "stock-analysis",
+                "Analyze stocks and cryptocurrencies using Yahoo Finance data.",
+                body="## Usage\npython stock.py quote AAPL\n",
+            )
+
+            catalog = SkillCatalogCache(str(builtin), str(custom))
+            categories = catalog.find_categories_in_text("当前有没有购物和出行相关的功能呢")
+            summary = catalog.multi_category_summary(categories)
+
+            self.assertEqual(categories, ["travel_location", "shopping_food"])
+            self.assertIn("amap-cowwechat", summary)
+            self.assertIn("shopping-helper", summary)
+            self.assertNotIn("stock-analysis", summary)
+
     def test_full_skill_context_strips_frontmatter(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

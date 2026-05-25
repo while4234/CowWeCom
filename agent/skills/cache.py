@@ -9,7 +9,7 @@ import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from agent.skills.loader import SkillLoader
 from agent.skills.types import SkillEntry
@@ -22,7 +22,7 @@ FULL_SKILL_FALLBACK_PREFIX = "[[READ_FULL_SKILL"
 _CATEGORY_SPECS: Dict[str, Dict[str, object]] = {
     "travel_location": {
         "label": "出行地图",
-        "keywords": ("高德", "地图", "路线", "路况", "通勤", "旅行", "旅游", "天气", "12306", "火车", "票", "travel", "weather", "amap"),
+        "keywords": ("高德", "地图", "路线", "路况", "通勤", "旅行", "旅游", "出行", "交通", "天气", "12306", "火车", "票", "travel", "weather", "amap"),
     },
     "media_content": {
         "label": "内容媒体",
@@ -42,7 +42,7 @@ _CATEGORY_SPECS: Dict[str, Dict[str, object]] = {
     },
     "shopping_food": {
         "label": "购物餐饮",
-        "keywords": ("外卖", "吃什么", "美团", "淘宝", "京东", "拼多多", "比价", "购物", "优惠券", "商品"),
+        "keywords": ("外卖", "吃什么", "美团", "淘宝", "京东", "拼多多", "比价", "购物", "买东西", "网购", "优惠券", "商品", "餐饮", "点餐", "吃饭", "takeout", "shopping"),
     },
     "productivity": {
         "label": "办公协作",
@@ -240,10 +240,10 @@ class SkillCatalogCache:
         return "\n".join(lines)[:max_chars]
 
     def category_summary_for_text(self, text: str, max_chars: int = 9000) -> Optional[str]:
-        category = self.find_category_in_text(text)
-        if not category:
+        categories = self.find_categories_in_text(text)
+        if not categories:
             return None
-        return self.category_summary(category, max_chars=max_chars)
+        return self.multi_category_summary(categories, max_chars=max_chars)
 
     def category_summary(self, category: str, max_chars: int = 9000) -> str:
         normalized = _normalize_category(category)
@@ -266,14 +266,54 @@ class SkillCatalogCache:
                 break
         return "\n".join(lines)[:max_chars]
 
+    def multi_category_summary(self, categories: Sequence[str] | str, max_chars: int = 12000) -> str:
+        normalized_categories = self._normalize_category_list(categories)
+        if not normalized_categories:
+            return self.overview_summary(max_chars=max_chars)
+
+        chunks: List[str] = []
+        remaining = max_chars
+        per_category_limit = max(2500, max_chars // max(1, len(normalized_categories)))
+        for category in normalized_categories:
+            summary = self.category_summary(category, max_chars=min(per_category_limit, remaining))
+            if not summary:
+                continue
+            chunks.append(summary)
+            remaining = max_chars - _text_size(chunks)
+            if remaining <= 200:
+                chunks.append("...（其余分类内容已省略；请让用户缩小分类或指定 Skill 名称。）")
+                break
+        return "\n\n".join(chunks)[:max_chars]
+
     def find_category_in_text(self, text: str) -> str:
+        categories = self.find_categories_in_text(text)
+        return categories[0] if categories else ""
+
+    def find_categories_in_text(self, text: str) -> List[str]:
         compact = _normalize_lookup(text)
         if not compact:
-            return ""
+            return []
+        matches: List[str] = []
         for category, spec in _CATEGORY_SPECS.items():
+            if category == "other":
+                continue
             if any(_normalize_lookup(keyword) in compact for keyword in spec["keywords"]):
-                return category
-        return ""
+                matches.append(category)
+        return matches
+
+    @staticmethod
+    def _normalize_category_list(categories: Sequence[str] | str) -> List[str]:
+        if isinstance(categories, str):
+            raw_values = re.split(r"[,，|、\s]+", categories)
+        else:
+            raw_values = [str(category or "") for category in categories]
+
+        normalized: List[str] = []
+        for value in raw_values:
+            category = _normalize_category(value.strip())
+            if category and category not in normalized:
+                normalized.append(category)
+        return normalized
 
     def format_skill_detail_summary(self, name: str, max_chars: int = 9000) -> str:
         entry = self.find_entry(name)

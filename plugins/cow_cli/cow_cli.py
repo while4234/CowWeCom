@@ -58,6 +58,7 @@ _SKILL_CONTEXT_MARKERS = ("技能", "skill", "skills", "函数", "function", "fu
 _SKILL_LIST_MARKERS = (
     "有哪些", "有什么", "哪些", "支持哪些", "支持什么", "能做什么", "可以做什么",
     "会什么", "会做什么", "能干什么", "列出", "列表", "清单", "已安装",
+    "有没有", "有无", "是否有", "有没有什么", "有没有相关", "有没有类似", "有没有这类", "有吗",
     "本地", "local", "list", "available", "show",
 )
 _SKILL_USAGE_MARKERS = ("怎么用", "如何用", "用法", "使用方法", "怎么使用", "如何使用", "usage", "help")
@@ -182,9 +183,9 @@ class CowCliPlugin(Plugin):
             marker in compact or marker in normalized for marker in _SKILL_STANDALONE_LIST_MARKERS
         )
         if (has_skill_context and has_list_request) or has_standalone_list_request:
-            category = self._skill_catalog().find_category_in_text(text)
-            if category:
-                return "skill", self._encode_skill_answer_args(text, "category", category=category)
+            categories = self._find_skill_categories_in_text(text)
+            if categories:
+                return "skill", self._encode_skill_answer_args(text, "category", categories=categories)
             return "skill", self._encode_skill_answer_args(text, "list")
 
         has_usage_request = any(marker in compact or marker in normalized for marker in _SKILL_USAGE_MARKERS)
@@ -199,12 +200,28 @@ class CowCliPlugin(Plugin):
         return None
 
     @staticmethod
-    def _encode_skill_answer_args(question: str, mode: str, skill_name: str = "", category: str = "") -> str:
+    def _encode_skill_answer_args(
+        question: str,
+        mode: str,
+        skill_name: str = "",
+        category: str = "",
+        categories=None,
+    ) -> str:
+        category_values = []
+        if categories:
+            category_values = [str(item or "").strip() for item in categories if str(item or "").strip()]
+        elif category:
+            category_values = [
+                item.strip()
+                for item in re.split(r"[,，|、\s]+", str(category or ""))
+                if item.strip()
+            ]
         payload = {
             "question": str(question or "").strip(),
             "mode": str(mode or "list").strip() or "list",
             "skill": str(skill_name or "").strip(),
-            "category": str(category or "").strip(),
+            "category": ",".join(category_values) if category_values else str(category or "").strip(),
+            "categories": category_values,
         }
         encoded = base64.urlsafe_b64encode(
             json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -221,6 +238,14 @@ class CowCliPlugin(Plugin):
         except Exception:
             return {}
         return data if isinstance(data, dict) else {}
+
+    def _find_skill_categories_in_text(self, text: str):
+        catalog = self._skill_catalog()
+        finder = getattr(catalog, "find_categories_in_text", None)
+        if callable(finder):
+            return finder(text)
+        category = catalog.find_category_in_text(text)
+        return [category] if category else []
 
     @staticmethod
     def _suggest_command(cmd: str) -> str:
@@ -956,11 +981,24 @@ class CowCliPlugin(Plugin):
         mode = str(payload.get("mode") or "list").strip() or "list"
         skill_name = str(payload.get("skill") or "").strip()
         category = str(payload.get("category") or "").strip()
+        categories = payload.get("categories") or []
+        if not isinstance(categories, list):
+            categories = []
         if not question:
             return self._skill_list_local()
 
-        catalog_context = self._skill_answer_context(mode=mode, skill_name=skill_name, category=category)
-        fallback = self._skill_answer_fallback(mode=mode, skill_name=skill_name, category=category)
+        catalog_context = self._skill_answer_context(
+            mode=mode,
+            skill_name=skill_name,
+            category=category,
+            categories=categories,
+        )
+        fallback = self._skill_answer_fallback(
+            mode=mode,
+            skill_name=skill_name,
+            category=category,
+            categories=categories,
+        )
         try:
             answer = self._call_skill_answer_model(
                 question=question,
@@ -987,13 +1025,22 @@ class CowCliPlugin(Plugin):
         mode: str = "list",
         skill_name: str = "",
         category: str = "",
+        categories=None,
         max_chars: int = 12000,
     ) -> str:
         catalog = self._skill_catalog()
         if skill_name:
             return self._call_catalog_text(catalog.format_skill_detail_summary, skill_name, max_chars=max_chars)
         if mode == "category" or category:
-            summary = self._call_catalog_text(catalog.category_summary, category, max_chars=max_chars) if category else ""
+            category_input = categories or category
+            summary = ""
+            if category_input:
+                summarizer = getattr(catalog, "multi_category_summary", None)
+                if not callable(summarizer):
+                    if isinstance(category_input, list):
+                        category_input = ",".join(str(item) for item in category_input)
+                    summarizer = catalog.category_summary
+                summary = self._call_catalog_text(summarizer, category_input, max_chars=max_chars)
             return summary or catalog.overview_summary(max_chars=max_chars)
         if mode == "list":
             category_summary = self._call_catalog_text(catalog.category_summary_for_text, category or "", max_chars=max_chars)
@@ -1001,12 +1048,26 @@ class CowCliPlugin(Plugin):
                 return category_summary
         return self._call_catalog_text(catalog.overview_summary, max_chars=max_chars)
 
-    def _skill_answer_fallback(self, mode: str = "list", skill_name: str = "", category: str = "") -> str:
+    def _skill_answer_fallback(
+        self,
+        mode: str = "list",
+        skill_name: str = "",
+        category: str = "",
+        categories=None,
+    ) -> str:
         catalog = self._skill_catalog()
         if skill_name:
             return self._skill_usage(skill_name)
         if mode == "category" or category:
-            summary = self._call_catalog_text(catalog.category_summary, category, max_chars=6000) if category else ""
+            category_input = categories or category
+            summary = ""
+            if category_input:
+                summarizer = getattr(catalog, "multi_category_summary", None)
+                if not callable(summarizer):
+                    if isinstance(category_input, list):
+                        category_input = ",".join(str(item) for item in category_input)
+                    summarizer = catalog.category_summary
+                summary = self._call_catalog_text(summarizer, category_input, max_chars=6000)
             if summary:
                 return summary
         return self._skill_list_local()
