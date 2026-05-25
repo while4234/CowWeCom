@@ -39,6 +39,18 @@ class TestCowCliBackendNaturalLanguage(unittest.TestCase):
             parse_backend_natural_command("现在直接用capi回复"),
             ("backend", "capi"),
         )
+        self.assertEqual(
+            parse_backend_natural_command("帮我切换后端到capi额度卡"),
+            ("backend", "capi"),
+        )
+        self.assertEqual(
+            parse_backend_natural_command("帮我切换后端到额度卡"),
+            ("backend", "capi"),
+        )
+        self.assertEqual(
+            parse_backend_natural_command("switch backend to quota card"),
+            ("backend", "capi"),
+        )
         self.assertIsNone(parse_backend_natural_command("用 CAPI 写一个调用示例"))
 
     def test_switches_to_capi_monthly_for_monthly_card_request(self):
@@ -155,6 +167,25 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertEqual(result, "LLM backend switched to capi")
         self.assertEqual(get_current_backend(), "capi")
+
+    def test_execute_switches_to_quota_card_before_quota_query_path(self):
+        from common.llm_backend_router import get_current_backend, set_current_backend
+
+        plugin = _load_cow_cli_plugin()
+
+        with patch.object(plugin, "_backend_capi_quota") as quota:
+            result = plugin.execute("帮我切换后端到capi额度卡", session_id="test")
+
+        self.assertEqual(result, "LLM backend switched to capi")
+        self.assertEqual(get_current_backend(), "capi")
+        quota.assert_not_called()
+
+        set_current_backend("codex", manual=True, reason="test")
+        result = plugin.execute("帮我切换到额度卡后端", session_id="test")
+
+        self.assertEqual(result, "LLM backend switched to capi")
+        self.assertEqual(get_current_backend(), "capi")
+        quota.assert_not_called()
 
     def test_execute_switches_to_monthly_card_before_agent_path(self):
         from common.llm_backend_router import get_current_backend

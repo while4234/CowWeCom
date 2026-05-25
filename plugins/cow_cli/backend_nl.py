@@ -249,10 +249,6 @@ def parse_backend_natural_command(content: str) -> Optional[BackendCommand]:
     normalized = _normalize(text)
     compact = _compact(text)
 
-    quota_command = _quota_backend_command(normalized, compact)
-    if quota_command:
-        return "backend", quota_command
-
     if _looks_like_sensitive_secret_request(normalized, compact):
         return "backend", "credential-safety"
 
@@ -260,11 +256,15 @@ def parse_backend_natural_command(content: str) -> Optional[BackendCommand]:
         return "backend", "auto reset"
 
     target = _target_backend(normalized, compact)
-    if _looks_like_status_request(normalized, compact, target):
-        return "backend", "status"
-
     if target and _looks_like_switch_request(normalized, compact):
         return "backend", target
+
+    quota_command = _quota_backend_command(normalized, compact)
+    if quota_command:
+        return "backend", quota_command
+
+    if _looks_like_status_request(normalized, compact, target):
+        return "backend", "status"
 
     return None
 
@@ -282,9 +282,15 @@ def _target_backend(normalized: str, compact: str) -> Optional[str]:
         return "capi_monthly"
     if _CAPI_RE.search(normalized) or "capi" in compact:
         return "capi"
+    if _looks_like_capi_quota_card(normalized, compact):
+        return "capi"
     if _CODEX_RE.search(normalized) or "codex" in compact:
         return "codex"
     return None
+
+
+def _looks_like_capi_quota_card(normalized: str, compact: str) -> bool:
+    return any(marker in compact or marker in normalized for marker in _QUOTA_CARD_MARKERS)
 
 
 def _looks_like_capi_monthly(normalized: str, compact: str) -> bool:
