@@ -17,18 +17,23 @@ credentials, and ignored local files on the machine.
 
 Default repository:
 
-- Project root: `D:\CowWechat`
+- Project root: the current Git root whose `origin` remote is the user's writable `github.com/while4234/CowWeCom` repository.
 - Push remote: `origin`
 - Push branch: `main`
 - Never push to `upstream`; it is the original CowAgent project.
+- If this checkout is a fork, read-only clone, another user's checkout, or local
+  Git credentials cannot write to `while4234/CowWeCom`, do not treat push as
+  required; make the local commit only and report that remote publishing is not
+  active for this checkout.
 
 ## Required Preflight
 
 Before staging and again after staging, run the bundled guard script:
 
 ```powershell
+$root = git rev-parse --show-toplevel
 $env:PYTHONUTF8='1'
-.venv\Scripts\python.exe skills\safe-github-upload\scripts\preflight.py --root D:\CowWechat
+py -3 "$root\skills\safe-github-upload\scripts\preflight.py" --root $root
 ```
 
 If the script reports `BLOCKED`, do not commit or push until the blocked staged
@@ -99,7 +104,7 @@ Safe examples and placeholders are allowed only when they contain no real keys:
 
 When creating or updating any CowWechat skill, maintain both copies:
 
-1. Repository builtin copy: `D:\CowWechat\skills\<skill-name>\`
+1. Repository builtin copy: `<project-root>\skills\<skill-name>\`
 2. Deployed workspace copy: `$HOME\cow\skills\<skill-name>\`
 
 Edit and validate the repository copy first. Then copy the entire skill directory
