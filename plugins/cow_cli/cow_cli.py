@@ -986,6 +986,16 @@ class CowCliPlugin(Plugin):
             categories = []
         if not question:
             return self._skill_list_local()
+        categories = self._resolve_skill_answer_categories(
+            question=question,
+            mode=mode,
+            category=category,
+            categories=categories,
+            e_context=e_context,
+            session_id=session_id,
+        )
+        if categories and mode == "list":
+            mode = "category"
 
         catalog_context = self._skill_answer_context(
             mode=mode,
@@ -1078,6 +1088,115 @@ class CowCliPlugin(Plugin):
             return method(*args, **kwargs)
         except TypeError:
             return method(*args)
+
+    def _resolve_skill_answer_categories(
+        self,
+        *,
+        question: str,
+        mode: str,
+        category: str,
+        categories,
+        e_context,
+        session_id: str,
+    ):
+        normalized = self._normalize_skill_category_values(categories or category)
+        if normalized:
+            return normalized
+        if mode != "list":
+            return []
+
+        local_categories = self._find_skill_categories_in_text(question)
+        if local_categories:
+            return self._normalize_skill_category_values(local_categories)
+
+        try:
+            model_categories = self._infer_skill_categories_with_model(
+                question=question,
+                e_context=e_context,
+                session_id=session_id,
+            )
+            return self._normalize_skill_category_values(model_categories)
+        except Exception as exc:
+            logger.warning(f"[CowCli] skill category model inference failed: {exc}")
+            return []
+
+    @staticmethod
+    def _normalize_skill_category_values(categories) -> list:
+        if isinstance(categories, str):
+            raw_values = re.split(r"[,，|、\s]+", categories)
+        elif isinstance(categories, list):
+            raw_values = categories
+        else:
+            raw_values = []
+
+        normalized = []
+        for value in raw_values:
+            item = str(value or "").strip()
+            if item and item not in normalized:
+                normalized.append(item)
+        return normalized
+
+    def _infer_skill_categories_with_model(self, question: str, e_context, session_id: str = "") -> list:
+        from agent.protocol import LLMRequest
+        from bridge.agent_bridge import AgentLLMModel
+        from bridge.bridge import Bridge
+
+        catalog = self._skill_catalog()
+        options_summary = self._call_catalog_text(catalog.category_options_summary)
+        llm = AgentLLMModel(Bridge())
+        try:
+            context = e_context["context"] if e_context is not None else None
+        except Exception:
+            context = None
+        if context is not None:
+            llm.channel_type = context.get("channel_type", "") or context.get("channel", "")
+            llm.session_id = session_id or context.get("session_id", "") or context.get("from_user_id", "")
+            llm.user_id = context.get("from_user_id", "") or context.get("receiver", "")
+            llm.user_label = context.get("actual_user_nickname", "") or context.get("from_user_nickname", "")
+        elif session_id:
+            llm.session_id = session_id
+
+        system = (
+            "你是 CowWechat 本地 Skill 分类器。"
+            "根据用户原话判断他们想查询哪些功能分类，可以选择 0 到多个分类。"
+            "用户可能不会说准确分类名，要理解同义表达，例如买东西、下单、找优惠可归为购物餐饮。"
+            "如果用户只是泛问全部能力，不要硬选分类，返回空列表。"
+            "只能输出 JSON，不要解释。格式：{\"categories\":[\"category_id\"]}。"
+        )
+        user = f"用户原话：{question}\n\n{options_summary}"
+        response = llm.call(
+            LLMRequest(
+                messages=[{"role": "user", "content": user}],
+                system=system,
+                max_tokens=200,
+                temperature=0,
+                tools=[],
+                request_timeout=30,
+                reasoning_effort="medium",
+                reasoning_effort_locked=True,
+                cache_shape_metadata={"request_kind": "cow_cli_skill_category_router"},
+            )
+        )
+        return self._extract_category_router_output(response)
+
+    def _extract_category_router_output(self, response) -> list:
+        text = self._extract_model_text(response)
+        if not text:
+            return []
+        try:
+            data = json.loads(text)
+        except Exception:
+            match = re.search(r"\{.*\}", text, flags=re.S)
+            if not match:
+                return []
+            try:
+                data = json.loads(match.group(0))
+            except Exception:
+                return []
+        categories = data.get("categories") if isinstance(data, dict) else None
+        if not isinstance(categories, list):
+            return []
+        return [str(category or "").strip() for category in categories if str(category or "").strip()]
 
     @staticmethod
     def _requests_full_skill_fallback(answer: str) -> bool:

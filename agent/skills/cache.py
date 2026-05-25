@@ -252,6 +252,9 @@ class SkillCatalogCache:
             if entry.category == normalized or entry.category_label == category
         ]
         if not entries:
+            if normalized in _CATEGORY_SPECS:
+                label = str(_CATEGORY_SPECS[normalized]["label"])
+                return f"{label}类技能摘要：\n暂无匹配这个分类的本地 Skill。"
             return ""
 
         entries.sort(key=lambda entry: (not entry.enabled, entry.name))
@@ -284,6 +287,23 @@ class SkillCatalogCache:
                 chunks.append("...（其余分类内容已省略；请让用户缩小分类或指定 Skill 名称。）")
                 break
         return "\n\n".join(chunks)[:max_chars]
+
+    def category_options_summary(self) -> str:
+        counts: Dict[str, int] = {category: 0 for category in _CATEGORY_SPECS}
+        for entry in self.snapshot().entries:
+            counts[entry.category] = counts.get(entry.category, 0) + 1
+
+        lines = ["可选 Skill 分类："]
+        for category, spec in _CATEGORY_SPECS.items():
+            if category == "other":
+                continue
+            keywords = "、".join(str(keyword) for keyword in tuple(spec["keywords"])[:12])
+            lines.append(
+                f"- {category}: {spec['label']}；已安装 {counts.get(category, 0)} 个；"
+                f"常见说法示例：{keywords}"
+            )
+        lines.append("- other: 其他；只在无法归入上面任何分类时使用。")
+        return "\n".join(lines)
 
     def find_category_in_text(self, text: str) -> str:
         categories = self.find_categories_in_text(text)

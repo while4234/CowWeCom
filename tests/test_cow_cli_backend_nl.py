@@ -430,6 +430,48 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertEqual(context, "MULTI CATEGORY: shopping_food,travel_location")
 
+    def test_skill_answer_uses_medium_model_router_for_unlisted_category_phrasing(self):
+        plugin = _load_cow_cli_plugin()
+        catalog = SimpleNamespace(
+            find_categories_in_text=lambda text: [],
+            category_options_summary=lambda: (
+                "可选 Skill 分类：\n"
+                "- shopping_food: 购物餐饮；已安装 0 个；常见说法示例：购物、商品\n"
+                "- travel_location: 出行地图；已安装 1 个；常见说法示例：路线、交通"
+            ),
+            multi_category_summary=lambda categories, **_: f"SUMMARY: {','.join(categories)}",
+            category_summary=lambda category, **_: f"SUMMARY: {category}",
+            overview_summary=lambda **_: "OVERVIEW",
+            format_local_list=lambda: "LOCAL LIST",
+        )
+        encoded_args = plugin._encode_skill_answer_args(
+            "有没有帮我下单找折扣这种功能",
+            "list",
+        ).split(None, 1)[1]
+        responses = [
+            {"choices": [{"message": {"content": "{\"categories\":[\"shopping_food\"]}"}}]},
+            {"choices": [{"message": {"content": "当前没有看到购物类 Skill。"}}]},
+        ]
+
+        with (
+            patch.object(plugin, "_skill_catalog", return_value=catalog),
+            patch("bridge.agent_bridge.AgentLLMModel") as model_cls,
+        ):
+            model = model_cls.return_value
+            model.call.side_effect = responses
+            result = plugin._skill_answer(encoded_args, e_context=None, session_id="test-session")
+
+        self.assertEqual(result, "当前没有看到购物类 Skill。")
+        self.assertEqual(model.call.call_count, 2)
+        router_request = model.call.call_args_list[0].args[0]
+        answer_request = model.call.call_args_list[1].args[0]
+        self.assertEqual(router_request.reasoning_effort, "medium")
+        self.assertTrue(router_request.reasoning_effort_locked)
+        self.assertEqual(router_request.tools, [])
+        self.assertEqual(router_request.cache_shape_metadata["request_kind"], "cow_cli_skill_category_router")
+        self.assertIn("下单找折扣", router_request.messages[0]["content"])
+        self.assertIn("SUMMARY: shopping_food", answer_request.messages[0]["content"])
+
     def test_insufficient_summary_marker_falls_back_to_full_skill_context(self):
         plugin = _load_cow_cli_plugin()
         catalog = SimpleNamespace(

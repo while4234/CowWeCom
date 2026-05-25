@@ -164,6 +164,27 @@ class SkillCatalogCacheTest(unittest.TestCase):
             self.assertIn("shopping-helper", summary)
             self.assertNotIn("stock-analysis", summary)
 
+    def test_category_summary_reports_no_installed_skill_for_empty_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            builtin = root / "builtin"
+            custom = root / "custom"
+            write_skill(
+                builtin / "amap-cowwechat",
+                "amap-cowwechat",
+                "使用高德地图提供出行、路线、路况和通勤分析。",
+                body="## 支持命令\n高德 上班\n",
+            )
+
+            catalog = SkillCatalogCache(str(builtin), str(custom))
+            summary = catalog.category_summary("shopping_food")
+            options = catalog.category_options_summary()
+
+            self.assertIn("购物餐饮", summary)
+            self.assertIn("暂无匹配", summary)
+            self.assertIn("shopping_food", options)
+            self.assertIn("已安装 0 个", options)
+
     def test_full_skill_context_strips_frontmatter(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
