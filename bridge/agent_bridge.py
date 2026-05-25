@@ -15,6 +15,10 @@ from common import const
 from common.agent_task_limits import resolve_agent_task_budget
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common.log import logger
+from common.travel_planning_gate import (
+    build_travel_planning_clarification,
+    deterministic_travel_messages,
+)
 from common.utils import expand_path
 from config import conf
 from agent.access_control import get_resource_leases
@@ -537,6 +541,38 @@ class AgentBridge:
             return Reply(ReplyType.TEXT, cls._ONBOARDING_WELCOME)
         return None
 
+    def _try_travel_planning_clarification(
+        self,
+        query: str,
+        *,
+        conversation_id: Optional[str],
+        profile=None,
+        context: Context = None,
+    ) -> Optional[Reply]:
+        clarification = build_travel_planning_clarification(query)
+        if clarification is None:
+            return None
+
+        response = clarification.message
+        messages = deterministic_travel_messages(query, response)
+        if conversation_id:
+            try:
+                agent = self.get_agent(session_id=conversation_id, profile=profile)
+                if agent is not None:
+                    with agent.messages_lock:
+                        agent.messages.extend(messages)
+            except Exception as e:
+                logger.warning(f"[AgentBridge] Failed to remember travel clarification in memory: {e}")
+
+            channel_type = (context.get("channel_type") or "") if context else ""
+            self._persist_messages(conversation_id, messages, channel_type)
+
+        logger.info(
+            "[AgentBridge] Returning deterministic travel clarification missing_fields=%s",
+            ",".join(clarification.missing_fields),
+        )
+        return Reply(ReplyType.TEXT, response)
+
     def create_agent(self, system_prompt: str, tools: List = None, **kwargs) -> Agent:
         """
         Create the super agent with COW integration
@@ -668,6 +704,15 @@ class AgentBridge:
             onboarding_reply = self._try_onboarding_welcome(query, profile=profile, context=context)
             if onboarding_reply:
                 return onboarding_reply
+
+            travel_clarification_reply = self._try_travel_planning_clarification(
+                query,
+                conversation_id=conversation_id,
+                profile=profile,
+                context=context,
+            )
+            if travel_clarification_reply:
+                return travel_clarification_reply
             
             # Get agent for this session (will auto-initialize if needed)
             get_agent_start = monotonic()

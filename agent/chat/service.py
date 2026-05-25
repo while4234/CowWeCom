@@ -12,6 +12,10 @@ from common.agent_task_limits import is_development_task, resolve_agent_task_bud
 from common.capi_monthly_monitor import maybe_check_capi_monthly_after_task
 from common.llm_backend_router import get_current_backend
 from common.log import logger
+from common.travel_planning_gate import (
+    build_travel_planning_clarification,
+    deterministic_travel_messages,
+)
 
 
 class ChatService:
@@ -56,6 +60,24 @@ class ChatService:
         state = _StreamState()
         task_is_development = is_development_task(query)
         task_backend = get_current_backend()
+
+        clarification = build_travel_planning_clarification(query)
+        if clarification is not None:
+            response = clarification.message
+            messages = deterministic_travel_messages(query, response)
+            with agent.messages_lock:
+                agent.messages.extend(messages)
+            self._persist_messages(session_id, messages, channel_type)
+            send_chunk_fn({
+                "chunk_type": "content",
+                "delta": response,
+                "segment_id": state.segment_id,
+            })
+            logger.info(
+                "[ChatService] Returning deterministic travel clarification missing_fields=%s",
+                ",".join(clarification.missing_fields),
+            )
+            return response
 
         def on_event(event: dict):
             """Translate agent events into CHAT protocol chunks."""

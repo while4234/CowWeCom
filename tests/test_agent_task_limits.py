@@ -1,3 +1,4 @@
+import re
 import threading
 import unittest
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from common.agent_task_limits import (
     resolve_agent_max_steps,
     resolve_agent_task_budget,
 )
+from common.travel_planning_gate import build_travel_planning_clarification
 from config import conf
 
 
@@ -58,6 +60,60 @@ class TestAgentTaskLimits(unittest.TestCase):
         self.assertTrue(is_complex_planning_task(prompt))
         self.assertEqual(budget.max_steps, 40)
         self.assertEqual(budget.kind, "complex_planning")
+
+    def test_natural_vague_international_trip_uses_planning_step_budget(self):
+        settings = {
+            "agent_max_steps": 20,
+            "agent_development_max_steps": 40,
+            "agent_complex_planning_max_steps": 40,
+        }
+        prompt = "我想6月下旬从深圳去釜山玩几天，别太赶，帮我规划一下。"
+
+        budget = resolve_agent_task_budget(prompt, settings)
+
+        self.assertTrue(is_complex_planning_task(prompt))
+        self.assertEqual(budget.max_steps, 40)
+        self.assertEqual(budget.kind, "complex_planning")
+
+    def test_natural_complete_international_trip_uses_planning_step_budget(self):
+        settings = {
+            "agent_max_steps": 20,
+            "agent_development_max_steps": 40,
+            "agent_complex_planning_max_steps": 40,
+        }
+        prompt = "6月18日从深圳去釜山，6月23日回来，2个成年人，中国护照，预算1.6万人民币，想住交通方便的地方，帮我继续做完整方案。"
+
+        budget = resolve_agent_task_budget(prompt, settings)
+
+        self.assertTrue(is_complex_planning_task(prompt))
+        self.assertEqual(budget.max_steps, 40)
+        self.assertEqual(budget.kind, "complex_planning")
+
+    def test_travel_planning_gate_asks_key_questions_before_tools(self):
+        prompt = "我想6月下旬从深圳去釜山玩几天，别太赶，帮我规划一下。"
+
+        clarification = build_travel_planning_clarification(prompt)
+
+        self.assertIsNotNone(clarification)
+        assert clarification is not None
+        self.assertIn("规划前确认", clarification.message)
+        self.assertIn("具体出发和返回日期", clarification.message)
+        self.assertIn("一共几位出行", clarification.message)
+        self.assertTrue("预算" in clarification.message or "护照" in clarification.message)
+        numbered_lines = [
+            line for line in clarification.message.splitlines() if re.match(r"^\d+\. ", line)
+        ]
+        self.assertLessEqual(len(numbered_lines), 3)
+
+    def test_travel_planning_gate_skips_complete_or_explicit_rough_plan(self):
+        complete_prompt = "6月18日从深圳去釜山，6月23日回来，2个成年人，中国护照，预算1.6万人民币，想住交通方便的地方，帮我继续做完整方案。"
+        rough_prompt = "我想6月下旬从深圳去釜山玩几天，先按假设给我一个粗略方案。"
+
+        self.assertIsNone(build_travel_planning_clarification(complete_prompt))
+        self.assertIsNone(build_travel_planning_clarification(rough_prompt))
+
+    def test_travel_planning_gate_skips_commute_route(self):
+        self.assertIsNone(build_travel_planning_clarification("明天从家去公司，帮我规划一下路线。"))
 
     def test_simple_weather_query_stays_on_base_budget(self):
         settings = {
@@ -200,7 +256,7 @@ class TestAgentBridgeTaskLimits(unittest.TestCase):
 
     def test_agent_bridge_uses_planning_budget_for_complex_travel(self):
         bridge, profile, captured = self._make_bridge_and_agent()
-        prompt = "6月10日从广州去首尔，6月15日回来，两个人，预算1万5，帮我规划一下。"
+        prompt = "6月10日从广州去首尔，6月15日回来，两个人，中国护照，预算1万5，帮我规划一下。"
 
         with (
             patch("bridge.agent_bridge.resolve_agent_user_profile", return_value=profile),
@@ -210,6 +266,22 @@ class TestAgentBridgeTaskLimits(unittest.TestCase):
 
         self.assertEqual(reply.type, ReplyType.TEXT)
         self.assertEqual(captured["max_steps"], 40)
+
+    def test_agent_bridge_travel_gate_returns_before_agent_loop(self):
+        bridge, profile, captured = self._make_bridge_and_agent()
+
+        with (
+            patch("bridge.agent_bridge.resolve_agent_user_profile", return_value=profile),
+            patch("bridge.agent_bridge.apply_profile_to_context"),
+        ):
+            reply = bridge.agent_reply(
+                "我想6月下旬从深圳去釜山玩几天，别太赶，帮我规划一下。",
+                self._make_context(),
+            )
+
+        self.assertEqual(reply.type, ReplyType.TEXT)
+        self.assertIn("规划前确认", reply.content)
+        self.assertEqual(captured, {})
 
 
 class TestChatServiceTaskLimits(unittest.TestCase):
@@ -251,7 +323,7 @@ class TestChatServiceTaskLimits(unittest.TestCase):
             _execute_post_process_tools=lambda: None,
         )
         service = ChatService(SimpleNamespace(get_agent=lambda session_id=None: fake_agent))
-        prompt = "6月10日从广州去首尔，6月15日回来，两个人，预算1万5，帮我规划一下。"
+        prompt = "6月10日从广州去首尔，6月15日回来，两个人，中国护照，预算1万5，帮我规划一下。"
 
         with (
             patch("agent.protocol.agent_stream.AgentStreamExecutor", FakeExecutor),
@@ -263,6 +335,31 @@ class TestChatServiceTaskLimits(unittest.TestCase):
             service.run(prompt, session_id="chat-session", send_chunk_fn=lambda _chunk: None)
 
         self.assertEqual(captured["max_turns"], 40)
+
+    def test_chat_service_travel_gate_streams_without_executor(self):
+        fake_agent = SimpleNamespace(
+            model=SimpleNamespace(),
+            tools=[],
+            messages=[],
+            messages_lock=threading.Lock(),
+            get_full_system_prompt=lambda: "system",
+            _execute_post_process_tools=lambda: None,
+        )
+        service = ChatService(SimpleNamespace(get_agent=lambda session_id=None: fake_agent))
+        chunks = []
+
+        with (
+            patch("agent.protocol.agent_stream.AgentStreamExecutor", side_effect=AssertionError("executor should not run")),
+            patch("agent.chat.service.maybe_check_capi_monthly_after_task", return_value={}),
+        ):
+            response = service.run(
+                "我想6月下旬从深圳去釜山玩几天，别太赶，帮我规划一下。",
+                session_id="chat-session",
+                send_chunk_fn=chunks.append,
+            )
+
+        self.assertIn("规划前确认", response)
+        self.assertTrue(any("规划前确认" in chunk.get("delta", "") for chunk in chunks))
 
 
 if __name__ == "__main__":

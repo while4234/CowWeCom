@@ -61,6 +61,96 @@ _ROUND_TRIP_OR_TRAVEL_CONTEXT_PATTERN = re.compile(
 )
 _COMMUTE_CONTEXT_PATTERN = re.compile(r"(通勤|上班|下班|家.{0,6}公司|公司.{0,6}家)")
 
+_TRAVEL_PLAN_INTENT_KEYWORDS = (
+    "规划",
+    "计划",
+    "安排",
+    "方案",
+    "行程",
+    "攻略",
+    "路线",
+    "怎么玩",
+    "玩几天",
+    "帮我规划",
+    "帮我做",
+    "帮我安排",
+    "做完整",
+)
+_TRAVEL_CONTEXT_KEYWORDS = (
+    "旅行",
+    "旅游",
+    "出行",
+    "游玩",
+    "一日游",
+    "多城市",
+    "自驾",
+    "机票",
+    "航班",
+    "高铁",
+    "火车票",
+    "余票",
+    "酒店",
+    "住宿",
+    "景点票",
+    "签证",
+    "入境",
+    "护照",
+    "天气",
+    "预算",
+    "风险",
+    "老人",
+    "儿童",
+    "轮椅",
+    "孕妇",
+)
+_TRAVEL_DESTINATION_KEYWORDS = (
+    "香港",
+    "澳门",
+    "台湾",
+    "日本",
+    "韩国",
+    "釜山",
+    "首尔",
+    "济州",
+    "东京",
+    "大阪",
+    "京都",
+    "曼谷",
+    "清迈",
+    "新加坡",
+    "吉隆坡",
+    "越南",
+    "巴厘岛",
+    "欧洲",
+    "申根",
+    "美国",
+    "洛杉矶",
+    "旧金山",
+    "纽约",
+    "深圳",
+    "广州",
+    "北京",
+    "上海",
+    "成都",
+    "重庆",
+    "西安",
+    "杭州",
+)
+_NATURAL_TRAVEL_DATE_PATTERN = re.compile(
+    r"(\d{1,2}\s*月\s*(上旬|中旬|下旬|\d{1,2}\s*[日号]?)|"
+    r"\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}|"
+    r"明天|后天|大后天|下周|周末|春节|五一|十一|暑假|寒假|"
+    r"\d+\s*(天|晚|日)|[一二三四五六七八九十两]+天|几天|回来|返回|出发)",
+    re.IGNORECASE,
+)
+_NATURAL_TRAVEL_MOVEMENT_PATTERN = re.compile(
+    r"(从.{1,24}(去|到|飞|出发).{1,32}|"
+    r"(去|到|飞).{1,24}(玩|旅行|旅游|出差|住|几天|行程|攻略|规划)|"
+    r"\b(from|to|fly|depart|return|trip|travel|itinerary)\b)",
+    re.IGNORECASE,
+)
+_NATURAL_COMMUTE_KEYWORDS = ("通勤", "上班", "下班", "公司", "回家")
+
 
 @dataclass(frozen=True)
 class AgentTaskBudget:
@@ -83,10 +173,17 @@ def is_development_task(content: Any) -> bool:
     return any(pattern.search(text) for pattern in _DEVELOPMENT_TASK_PATTERNS)
 
 
+def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
 def is_complex_planning_task(content: Any) -> bool:
     text = str(content or "").strip()
     if not text:
         return False
+
+    if _is_natural_language_travel_plan(text):
+        return True
 
     if any(pattern.search(text) for pattern in _COMPLEX_PLANNING_PATTERNS[:1]):
         return True
@@ -117,6 +214,40 @@ def _is_plain_language_travel_plan(text: str, has_plan_intent: bool) -> bool:
         and _TRAVEL_MOVEMENT_PATTERN.search(text)
         and _ROUND_TRIP_OR_TRAVEL_CONTEXT_PATTERN.search(text)
     )
+
+
+def _is_natural_language_travel_plan(text: str) -> bool:
+    lowered = text.casefold()
+    if (
+        _contains_any(text, _NATURAL_COMMUTE_KEYWORDS)
+        and not _contains_any(text, _TRAVEL_CONTEXT_KEYWORDS)
+        and not _contains_any(text, _TRAVEL_DESTINATION_KEYWORDS)
+    ):
+        return False
+
+    has_plan_intent = _contains_any(text, _TRAVEL_PLAN_INTENT_KEYWORDS)
+    if not has_plan_intent:
+        return False
+
+    has_travel_context = (
+        _contains_any(text, _TRAVEL_CONTEXT_KEYWORDS)
+        or _contains_any(text, _TRAVEL_DESTINATION_KEYWORDS)
+        or bool(_NATURAL_TRAVEL_MOVEMENT_PATTERN.search(text))
+        or bool(re.search(r"\b(trip|travel|itinerary|vacation)\b", lowered))
+    )
+    if not has_travel_context:
+        return False
+
+    has_movement_or_destination = (
+        bool(_NATURAL_TRAVEL_MOVEMENT_PATTERN.search(text))
+        or _contains_any(text, _TRAVEL_DESTINATION_KEYWORDS)
+    )
+    has_date_or_duration = bool(_NATURAL_TRAVEL_DATE_PATTERN.search(text))
+    has_multi_tool_topic = sum(
+        1 for keyword in _TRAVEL_CONTEXT_KEYWORDS if keyword in text
+    ) >= 2
+
+    return has_movement_or_destination and (has_date_or_duration or has_multi_tool_topic)
 
 
 def resolve_agent_task_budget(
