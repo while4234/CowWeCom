@@ -53,7 +53,21 @@ Compare realistic options only:
 - Comfort/accessibility
 - Risk and fallback
 
-## 5. 预算拆分
+## 5. 住宿建议/酒店候选
+
+Include this section by default for every itinerary with at least one overnight stay.
+
+- Night split by city:
+- Preferred area or neighborhood:
+- FlyAI/search source used:
+- Hotel candidates or products:
+- Price/inventory status:
+- Commute to main sights, stations, or airports:
+- Cancellation, deposit, preauthorization, and check-in document notes:
+- Accessibility/luggage/elderly-child suitability:
+- If live hotel data is unavailable: list recommended areas and mark specific hotels, rooms, and prices as "待实时查询".
+
+## 6. 预算拆分
 
 Mark every live price as source-backed or unverified:
 
@@ -65,7 +79,7 @@ Mark every live price as source-backed or unverified:
 - Insurance/document costs
 - Buffer
 
-## 6. 证件/入境/签证核验清单
+## 7. 证件/入境/签证核验清单
 
 - Passport/nationality needed:
 - Visa/electronic authorization status:
@@ -74,7 +88,7 @@ Mark every live price as source-backed or unverified:
 - Official source/date:
 - User action:
 
-## 7. 天气与打包
+## 8. 天气与打包
 
 - Weather source:
 - City/country disambiguation:
@@ -82,11 +96,11 @@ Mark every live price as source-backed or unverified:
 - Clothing:
 - Outdoor backup:
 
-## 8. 当地特点
+## 9. 当地特点
 
 Include payment, apps, etiquette, safety, closure days, local transport habits, and booking culture.
 
-## 9. 风险与备选
+## 10. 风险与备选
 
 - Crowds/holidays:
 - Weather:
@@ -95,7 +109,7 @@ Include payment, apps, etiquette, safety, closure days, local transport habits, 
 - Accessibility/health:
 - Plan B:
 
-## 10. 待确认事项
+## 11. 待确认事项
 
 List volatile live-verification items, official checks, or optional preferences that refine the plan without overturning it. Use "待查询" or "待官方核验" where live data is missing.
 

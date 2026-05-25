@@ -55,6 +55,16 @@ Before producing a plan, decide whether missing information would materially cha
 - If the user says to proceed, asks for a rough draft, or enough information exists to make a useful plan, continue with explicit "关键假设" instead of blocking the whole answer.
 - Keep "待确认事项" for volatile live verification, official checks, or optional preferences that refine but do not overturn the plan, such as live ticket inventory, weather, attraction hours, current prices, reservation slots, or flexible dining/hotel preferences.
 
+## Accommodation Defaults
+
+For any trip that includes at least one overnight stay, include accommodation guidance by default even when the user only asks for a general itinerary.
+
+- If destination and check-in/check-out dates are known or can be inferred from the stated outbound/return dates, use `flyai` hotel search first and show 3-5 source-backed hotel candidates or products when available.
+- If FlyAI is unavailable, returns weak/no results, or dates/area are not reliable enough, provide hotel-area recommendations instead and mark specific room inventory and prices as "待实时查询".
+- For multi-city itineraries, split lodging by city and night count before recommending hotels.
+- Tie lodging advice to the route: preferred neighborhood, commute to main sights/stations/airports, late arrival or early departure needs, luggage, elevators, elderly/child accessibility, cancellation policy, deposit/preauthorization, and check-in document requirements.
+- Do not invent hotel names, room availability, prices, star ratings, or refundable policies. Only call them real-time results when backed by FlyAI, user-opened OTA pages, hotel official pages, or another live source.
+
 ## Skill Routing Matrix
 
 Use local skills and sources as follows:
@@ -96,12 +106,13 @@ Use this structure unless the user asks for a narrower answer:
 2. 行程总览
 3. 每日安排
 4. 交通矩阵
-5. 预算拆分
-6. 证件/入境/签证核验清单
-7. 天气与打包
-8. 当地特点
-9. 风险与备选
-10. 待确认事项
+5. 住宿建议/酒店候选
+6. 预算拆分
+7. 证件/入境/签证核验清单
+8. 天气与打包
+9. 当地特点
+10. 风险与备选
+11. 待确认事项
 
 Daily arrangements should include morning, afternoon, evening, transport mode, estimated duration, food/rest suggestions, reservation/ticket/document requirements, and backup options.
 

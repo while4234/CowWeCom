@@ -45,7 +45,16 @@ For flight planning include:
 
 Use FlyAI or user-provided official/OTA pages. Do not invent room or ticket inventory.
 
-Include cancellation policy, deposit/preauthorization, check-in requirements, and timed-entry risk when source-backed.
+For hotels:
+
+- Any itinerary with at least one overnight stay should include lodging guidance by default.
+- When destination and check-in/check-out dates are known or inferable, use FlyAI `search-hotel` through the local wrapper before falling back to generic area advice.
+- For multi-city trips, split hotel searches or area advice by city and night count.
+- If the user provides only a budget but no hotel class, infer a practical value range and state it as an assumption.
+- Include cancellation policy, deposit/preauthorization, check-in requirements, transport convenience, luggage/accessibility fit, and source status when source-backed.
+- If FlyAI is unavailable or returns weak/no data, recommend areas rather than inventing hotel names, and mark specific hotels, room inventory, and prices as "待实时查询".
+
+For attraction tickets, include timed-entry risk, cancellation/refund status, ID requirements, and official reservation checks when source-backed.
 
 ## Cross-Border And International Transport
 

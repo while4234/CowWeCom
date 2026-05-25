@@ -20,7 +20,7 @@
 
 - `amap-cowwechat`: added city-level weather routing through AMap `/v3/weather/weatherInfo`; route, POI, ETA, traffic, and route-density planning remain the main AMap responsibilities.
 - `plugin-12306-ticket`: confirmed stations, tickets, and train-stop queries work for China railway planning. Availability remains volatile and user booking/payment/document submission is out of scope.
-- `flyai`: installed skill files through `clawhub` as optional travel inventory guidance. The local `flyai` CLI is not available on PATH, so real-time FlyAI searches cannot be run until `@fly-ai/flyai-cli` is installed.
+- `flyai`: installed skill files through `clawhub` as optional travel inventory guidance. Use `skills/flyai/scripts/flyai_wrapper.py` for data-returning commands so valid stdout JSON remains usable when the Windows CLI exits nonzero with the known libuv assertion.
 - `quick-weather`: added international city alias and `--country-code` support for Open-Meteo geocoding. It remains the no-key weather fallback and default international weather source.
 
 ## Weather Decision
@@ -104,15 +104,16 @@ Command:
 clawhub inspect flyai --workdir D:\cowwechat --dir skills --no-input
 clawhub install flyai --workdir D:\cowwechat --dir skills --no-input
 flyai --help
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py keyword-search --query "东京酒店"
 ```
 
-Result: inspect and install succeeded for `flyai` version 1.0.15. `flyai --help` failed because the CLI is not installed/on PATH.
+Result: inspect and install succeeded for `flyai` version 1.0.15. Later wrapper smoke returned `ok=true` and preserved FlyAI JSON results while warning that the raw Windows CLI exited nonzero after producing valid JSON.
 
 ## Known Limitations
 
 - Real-time ticket availability may change.
 - 12306 public endpoints may throttle or return non-JSON/anti-bot responses.
-- FlyAI skill files are installed, but real-time FlyAI commands require the local `flyai` CLI.
+- FlyAI skill files are installed; use the local wrapper for real-time data commands and treat wrapper warnings as provenance notes rather than automatic failure.
 - Visa and entry rules require official verification.
 - Weather forecasts degrade with longer lead time.
 - AMap weather requires a configured Web Service key and may fail on permission, quota, or service errors.

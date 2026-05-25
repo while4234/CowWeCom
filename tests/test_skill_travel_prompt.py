@@ -74,3 +74,22 @@ def test_travel_output_template_keeps_pending_items_for_live_or_optional_checks(
     assert "skip this section and state assumptions in \"关键假设\"" in template
     assert "volatile live-verification items" in template
     assert "Do not use this section for major plan-shaping facts" in template
+
+
+def test_travel_skill_includes_default_overnight_hotel_guidance():
+    travel = (PROJECT_ROOT / "skills" / "travel-manager" / "SKILL.md").read_text(encoding="utf-8")
+    template = (PROJECT_ROOT / "skills" / "travel-manager" / "references" / "output-template.md").read_text(
+        encoding="utf-8"
+    )
+    routing = (PROJECT_ROOT / "skills" / "travel-manager" / "references" / "transport-routing.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Accommodation Defaults" in travel
+    assert "at least one overnight stay" in travel
+    assert "住宿建议/酒店候选" in travel
+    assert "use `flyai` hotel search first" in travel
+    assert "住宿建议/酒店候选" in template
+    assert "FlyAI/search source used" in template
+    assert "Any itinerary with at least one overnight stay should include lodging guidance by default" in routing
+    assert "FlyAI `search-hotel`" in routing
