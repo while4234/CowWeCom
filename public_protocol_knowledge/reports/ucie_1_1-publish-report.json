@@ -1,0 +1,720 @@
+{
+  "status": "success",
+  "kb_id": "ucie_1_1",
+  "documents": [
+    {
+      "status": "succeeded",
+      "job": {
+        "id": "48be97b959764e1c899a9ed59dbc727f",
+        "document_id": "9c80c7e49f1cf343c0309aad",
+        "source_path": "public_protocol_knowledge/originals/8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+        "status": "succeeded",
+        "message": "ingested 632 chunks",
+        "error": "",
+        "created_at": 1779702710,
+        "updated_at": 1779702729
+      },
+      "document": {
+        "id": "9c80c7e49f1cf343c0309aad",
+        "title": "UCIe 1.1 Specification",
+        "kb_id": "ucie_1_1",
+        "version_id": "771bc18629d24e6228460a2c",
+        "chunks": 632,
+        "source_spans": 632,
+        "entities": 737,
+        "relations": 2329,
+        "missing_prerequisites": [
+          {
+            "term": "CPU",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "CPU definition",
+            "source_span_id": "4dda4369d07bdd3338f2082f"
+          },
+          {
+            "term": "CXL",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "CXL definition",
+            "source_span_id": "4dda4369d07bdd3338f2082f"
+          },
+          {
+            "term": "H1",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "H1 definition",
+            "source_span_id": "4dda4369d07bdd3338f2082f"
+          },
+          {
+            "term": "H2",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "H2 definition",
+            "source_span_id": "4dda4369d07bdd3338f2082f"
+          },
+          {
+            "term": "FEC",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "FEC definition",
+            "source_span_id": "18264464b0e5104cf709f16b"
+          },
+          {
+            "term": "CRC",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "CRC definition",
+            "source_span_id": "18264464b0e5104cf709f16b"
+          },
+          {
+            "term": "E2E",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "E2E definition",
+            "source_span_id": "18264464b0e5104cf709f16b"
+          },
+          {
+            "term": "UIE",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "UIE definition",
+            "source_span_id": "23d12ff858e4f5816180431b"
+          },
+          {
+            "term": "NOP",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "NOP definition",
+            "source_span_id": "2594dd6b182497ba11de4d3d"
+          },
+          {
+            "term": "IDLE",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "IDLE definition",
+            "source_span_id": "2594dd6b182497ba11de4d3d"
+          },
+          {
+            "term": "LTSSM",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "LTSSM definition",
+            "source_span_id": "2594dd6b182497ba11de4d3d"
+          },
+          {
+            "term": "L0",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "L0 definition",
+            "source_span_id": "2594dd6b182497ba11de4d3d"
+          },
+          {
+            "term": "PI",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "PI definition",
+            "source_span_id": "0d457d250b8985d2762a9aba"
+          },
+          {
+            "term": "ACTIVE",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ACTIVE definition",
+            "source_span_id": "0d457d250b8985d2762a9aba"
+          },
+          {
+            "term": "BER",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "BER definition",
+            "source_span_id": "dddf807d1ee0401053bb942f"
+          },
+          {
+            "term": "MBINIT",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "MBINIT definition",
+            "source_span_id": "dddf807d1ee0401053bb942f"
+          },
+          {
+            "term": "PARAM",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "PARAM definition",
+            "source_span_id": "dddf807d1ee0401053bb942f"
+          },
+          {
+            "term": "GT",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "GT definition",
+            "source_span_id": "dddf807d1ee0401053bb942f"
+          },
+          {
+            "term": "MBTRAIN",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "MBTRAIN definition",
+            "source_span_id": "dddf807d1ee0401053bb942f"
+          },
+          {
+            "term": "RXCLKCAL",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "RXCLKCAL definition",
+            "source_span_id": "dddf807d1ee0401053bb942f"
+          },
+          {
+            "term": "ID",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ID definition",
+            "source_span_id": "dddf807d1ee0401053bb942f"
+          },
+          {
+            "term": "PHY",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "PHY definition",
+            "source_span_id": "ffc0f46272466becb415f440"
+          },
+          {
+            "term": "ESD6",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ESD6 definition",
+            "source_span_id": "ffc0f46272466becb415f440"
+          },
+          {
+            "term": "ESD",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ESD definition",
+            "source_span_id": "ffc0f46272466becb415f440"
+          },
+          {
+            "term": "CDM",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "CDM definition",
+            "source_span_id": "ffc0f46272466becb415f440"
+          },
+          {
+            "term": "M0",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "M0 definition",
+            "source_span_id": "f6795cd64932b97fbe6c751f"
+          },
+          {
+            "term": "M1",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "M1 definition",
+            "source_span_id": "f6795cd64932b97fbe6c751f"
+          },
+          {
+            "term": "M2",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "M2 definition",
+            "source_span_id": "f6795cd64932b97fbe6c751f"
+          },
+          {
+            "term": "M3",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "M3 definition",
+            "source_span_id": "f6795cd64932b97fbe6c751f"
+          },
+          {
+            "term": "SW",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "SW definition",
+            "source_span_id": "0b11a0576572c1eb6b934809"
+          },
+          {
+            "term": "RP",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "RP definition",
+            "source_span_id": "0b11a0576572c1eb6b934809"
+          },
+          {
+            "term": "DSP1",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "DSP1 definition",
+            "source_span_id": "0b11a0576572c1eb6b934809"
+          },
+          {
+            "term": "DSP2",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "DSP2 definition",
+            "source_span_id": "0b11a0576572c1eb6b934809"
+          },
+          {
+            "term": "DSP",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "DSP definition",
+            "source_span_id": "0b11a0576572c1eb6b934809"
+          },
+          {
+            "term": "DVSEC",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "DVSEC definition",
+            "source_span_id": "0b11a0576572c1eb6b934809"
+          },
+          {
+            "term": "RCRB3",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "RCRB3 definition",
+            "source_span_id": "0b11a0576572c1eb6b934809"
+          },
+          {
+            "term": "RCRB",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "RCRB definition",
+            "source_span_id": "0b11a0576572c1eb6b934809"
+          },
+          {
+            "term": "EP",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "EP definition",
+            "source_span_id": "0b11a0576572c1eb6b934809"
+          },
+          {
+            "term": "USP",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "USP definition",
+            "source_span_id": "0b11a0576572c1eb6b934809"
+          },
+          {
+            "term": "RCRB4",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "RCRB4 definition",
+            "source_span_id": "0b11a0576572c1eb6b934809"
+          },
+          {
+            "term": "RO",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "RO definition",
+            "source_span_id": "ed6559e33f09481a9e66cdb5"
+          },
+          {
+            "term": "SBR",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "SBR definition",
+            "source_span_id": "ed6559e33f09481a9e66cdb5"
+          },
+          {
+            "term": "BCTL",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "BCTL definition",
+            "source_span_id": "ed6559e33f09481a9e66cdb5"
+          },
+          {
+            "term": "P2P",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "P2P definition",
+            "source_span_id": "ed6559e33f09481a9e66cdb5"
+          },
+          {
+            "term": "CTL",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "CTL definition",
+            "source_span_id": "ed6559e33f09481a9e66cdb5"
+          },
+          {
+            "term": "RW1C",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "RW1C definition",
+            "source_span_id": "ed6559e33f09481a9e66cdb5"
+          },
+          {
+            "term": "HW",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "HW definition",
+            "source_span_id": "ed6559e33f09481a9e66cdb5"
+          },
+          {
+            "term": "BW",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "BW definition",
+            "source_span_id": "ed6559e33f09481a9e66cdb5"
+          },
+          {
+            "term": "RW1CS",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "RW1CS definition",
+            "source_span_id": "ed6559e33f09481a9e66cdb5"
+          },
+          {
+            "term": "NBYTES",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "NBYTES definition",
+            "source_span_id": "1a813aee74d1aea352acef76"
+          },
+          {
+            "term": "RDI",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "RDI definition",
+            "source_span_id": "1a813aee74d1aea352acef76"
+          },
+          {
+            "term": "NOT",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "NOT definition",
+            "source_span_id": "1a813aee74d1aea352acef76"
+          },
+          {
+            "term": "L1",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "L1 definition",
+            "source_span_id": "1a813aee74d1aea352acef76"
+          },
+          {
+            "term": "L2",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "L2 definition",
+            "source_span_id": "1a813aee74d1aea352acef76"
+          },
+          {
+            "term": "OR",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "OR definition",
+            "source_span_id": "1a813aee74d1aea352acef76"
+          },
+          {
+            "term": "FDI",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "FDI definition",
+            "source_span_id": "1a813aee74d1aea352acef76"
+          },
+          {
+            "term": "PM",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "PM definition",
+            "source_span_id": "b668572be2faad86de1ec4d9"
+          },
+          {
+            "term": "PMNAK",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "PMNAK definition",
+            "source_span_id": "24ab25019c972fb60e662e00"
+          },
+          {
+            "term": "ARB",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ARB definition",
+            "source_span_id": "48d839e62b285f1960aa1071"
+          },
+          {
+            "term": "MUX",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "MUX definition",
+            "source_span_id": "48d839e62b285f1960aa1071"
+          },
+          {
+            "term": "LSM",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "LSM definition",
+            "source_span_id": "d7647f2a95fdb6e82708b9ac"
+          },
+          {
+            "term": "RESET",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "RESET definition",
+            "source_span_id": "853b15799dbfaa8bebf59100"
+          },
+          {
+            "term": "RETRAIN",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "RETRAIN definition",
+            "source_span_id": "853b15799dbfaa8bebf59100"
+          },
+          {
+            "term": "DISABLE",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "DISABLE definition",
+            "source_span_id": "853b15799dbfaa8bebf59100"
+          }
+        ]
+      },
+      "input_path": "D:\\工作内容归档\\SP2100\\ucie\\eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+      "ingested_path": "D:\\工作内容归档\\SP2100\\ucie\\eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf"
+    }
+  ],
+  "failures": [],
+  "pdf_quality": [
+    {
+      "path": "D:\\工作内容归档\\SP2100\\ucie\\eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+      "status": "ok",
+      "extractor": "pymupdf",
+      "page_count": 338,
+      "total_chars": 798724,
+      "average_chars_per_page": 2363.09,
+      "empty_page_ratio": 0.0,
+      "low_fidelity": false,
+      "warnings": []
+    }
+  ],
+  "text_exports": [
+    {
+      "status": "success",
+      "documents_exported": 1,
+      "document_library_root": "C:\\Users\\Hi\\cow",
+      "files": [
+        "knowledge/protocols/ucie_1_1/ucie-1.1-specification-9c80c7e4.md",
+        "knowledge/protocols/ucie_1_1/index.md",
+        "knowledge/protocols/index.md"
+      ],
+      "documents": [
+        {
+          "document_id": "9c80c7e49f1cf343c0309aad",
+          "title": "UCIe 1.1 Specification",
+          "kb_id": "ucie_1_1",
+          "path": "knowledge/protocols/ucie_1_1/ucie-1.1-specification-9c80c7e4.md",
+          "chunks": 632
+        }
+      ]
+    }
+  ],
+  "analysis_documents": [
+    {
+      "status": "success",
+      "source_document_id": "9c80c7e49f1cf343c0309aad",
+      "source_title": "UCIe 1.1 Specification",
+      "analysis_document_path": "knowledge/protocols/ucie_1_1/ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md",
+      "indexed_document": {
+        "id": "192d2065ab81f4697eb6335d",
+        "title": "UCIe 1.1 - Codex Protocol Development Guide",
+        "kb_id": "ucie_1_1",
+        "doc_type": "codex_analysis",
+        "chunks": 11,
+        "source_spans": 11,
+        "entities": 24,
+        "relations": 6
+      }
+    }
+  ],
+  "validation": {
+    "status": "pass",
+    "checks": [
+      {
+        "name": "backend_enabled",
+        "ok": true,
+        "detail": {
+          "enabled": true
+        }
+      },
+      {
+        "name": "sqlite_file_exists",
+        "ok": true,
+        "detail": "public_protocol_knowledge\\indexes\\kb.sqlite"
+      },
+      {
+        "name": "manifest_exists",
+        "ok": true,
+        "detail": "public_protocol_knowledge\\manifest.json"
+      },
+      {
+        "name": "sqlite_integrity",
+        "ok": true,
+        "detail": "ok"
+      },
+      {
+        "name": "document_count",
+        "ok": true,
+        "detail": {
+          "documents": 2,
+          "chunks": 643,
+          "source_spans": 643
+        }
+      },
+      {
+        "name": "chunk_count",
+        "ok": true,
+        "detail": {
+          "documents": 2,
+          "chunks": 643,
+          "source_spans": 643
+        }
+      },
+      {
+        "name": "source_span_coverage",
+        "ok": true,
+        "detail": {
+          "documents": 2,
+          "chunks": 643,
+          "source_spans": 643
+        }
+      },
+      {
+        "name": "ready_documents",
+        "ok": true,
+        "detail": 2
+      },
+      {
+        "name": "source_copy_exists:192d2065ab81f4697eb6335d",
+        "ok": true,
+        "detail": "D:\\CowAgent\\public_protocol_knowledge\\derived\\9c80c7e49f1cf343c0309aad\\ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md"
+      },
+      {
+        "name": "source_hash_matches:192d2065ab81f4697eb6335d",
+        "ok": true,
+        "detail": "UCIe 1.1 - Codex Protocol Development Guide"
+      },
+      {
+        "name": "source_copy_exists:9c80c7e49f1cf343c0309aad",
+        "ok": true,
+        "detail": "D:\\CowAgent\\public_protocol_knowledge\\originals\\8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf"
+      },
+      {
+        "name": "source_hash_matches:9c80c7e49f1cf343c0309aad",
+        "ok": true,
+        "detail": "UCIe 1.1 Specification"
+      },
+      {
+        "name": "query_hit:UCIe Protocol Layer",
+        "ok": true,
+        "detail": {
+          "query": "UCIe Protocol Layer",
+          "hits": 3,
+          "top_title": "UCIe 1.1 Specification",
+          "top_page": 66
+        }
+      },
+      {
+        "name": "query_hit:D2D Adapter",
+        "ok": true,
+        "detail": {
+          "query": "D2D Adapter",
+          "hits": 3,
+          "top_title": "UCIe 1.1 Specification",
+          "top_page": 197
+        }
+      },
+      {
+        "name": "query_hit:UCIe Link Training",
+        "ok": true,
+        "detail": {
+          "query": "UCIe Link Training",
+          "hits": 3,
+          "top_title": "UCIe 1.1 Specification",
+          "top_page": 102
+        }
+      },
+      {
+        "name": "query_hit:Sideband flow control",
+        "ok": true,
+        "detail": {
+          "query": "Sideband flow control",
+          "hits": 3,
+          "top_title": "UCIe 1.1 Specification",
+          "top_page": 6
+        }
+      },
+      {
+        "name": "term_resolved:UCIe",
+        "ok": true,
+        "detail": {
+          "term": "UCIe",
+          "resolved": true,
+          "entity_id": "6a7809728ddbddfdf986b541",
+          "canonical_name": "UCIe",
+          "kb_id": "ucie_1_1",
+          "aliases": [
+            "UCIe"
+          ],
+          "confidence": 0.9,
+          "visited_kb_ids": [
+            "ucie_1_1"
+          ]
+        }
+      },
+      {
+        "name": "term_resolved:FDI",
+        "ok": true,
+        "detail": {
+          "term": "FDI",
+          "resolved": true,
+          "entity_id": "3915ce5e89836e4bf32968d1",
+          "canonical_name": "FDI",
+          "kb_id": "ucie_1_1",
+          "aliases": [
+            "FDI"
+          ],
+          "confidence": 0.72,
+          "visited_kb_ids": [
+            "ucie_1_1"
+          ]
+        }
+      },
+      {
+        "name": "term_resolved:RDI",
+        "ok": true,
+        "detail": {
+          "term": "RDI",
+          "resolved": true,
+          "entity_id": "ac25e0039edc2f6f7471bb0b",
+          "canonical_name": "RDI",
+          "kb_id": "ucie_1_1",
+          "aliases": [
+            "RDI"
+          ],
+          "confidence": 0.72,
+          "visited_kb_ids": [
+            "ucie_1_1"
+          ]
+        }
+      },
+      {
+        "name": "manifest_sources_relative",
+        "ok": true,
+        "detail": [
+          "derived/9c80c7e49f1cf343c0309aad/ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md",
+          "originals/8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+          "derived/ec894ddf5ce99711fd677dfe/amba-4-axi4-stream-protocol-specification-v1.0-ec894ddf-llm-study.md",
+          "originals/5eab83e14d300699_IHI0051A_amba4_axi4_stream_v1_0_protocol_spec.pdf"
+        ]
+      }
+    ],
+    "summary": {
+      "counts": {
+        "documents": 2,
+        "chunks": 643,
+        "source_spans": 643
+      },
+      "documents": [
+        {
+          "id": "192d2065ab81f4697eb6335d",
+          "title": "UCIe 1.1 - Codex Protocol Development Guide",
+          "doc_type": "codex_analysis",
+          "source_path": "public_protocol_knowledge/derived/9c80c7e49f1cf343c0309aad/ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md"
+        },
+        {
+          "id": "9c80c7e49f1cf343c0309aad",
+          "title": "UCIe 1.1 Specification",
+          "doc_type": "document",
+          "source_path": "public_protocol_knowledge/originals/8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf"
+        }
+      ],
+      "resolved_terms": [
+        {
+          "term": "UCIe",
+          "resolved": true,
+          "entity_id": "6a7809728ddbddfdf986b541",
+          "canonical_name": "UCIe",
+          "kb_id": "ucie_1_1",
+          "aliases": [
+            "UCIe"
+          ],
+          "confidence": 0.9,
+          "visited_kb_ids": [
+            "ucie_1_1"
+          ]
+        },
+        {
+          "term": "FDI",
+          "resolved": true,
+          "entity_id": "3915ce5e89836e4bf32968d1",
+          "canonical_name": "FDI",
+          "kb_id": "ucie_1_1",
+          "aliases": [
+            "FDI"
+          ],
+          "confidence": 0.72,
+          "visited_kb_ids": [
+            "ucie_1_1"
+          ]
+        },
+        {
+          "term": "RDI",
+          "resolved": true,
+          "entity_id": "ac25e0039edc2f6f7471bb0b",
+          "canonical_name": "RDI",
+          "kb_id": "ucie_1_1",
+          "aliases": [
+            "RDI"
+          ],
+          "confidence": 0.72,
+          "visited_kb_ids": [
+            "ucie_1_1"
+          ]
+        }
+      ]
+    }
+  },
+  "manifest_path": "public_protocol_knowledge\\manifest.json",
+  "generated_at": 1779702730
+}

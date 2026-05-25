@@ -1,0 +1,248 @@
+{
+  "status": "pass",
+  "checks": [
+    {
+      "name": "backend_enabled",
+      "ok": true,
+      "detail": {
+        "enabled": true
+      }
+    },
+    {
+      "name": "sqlite_file_exists",
+      "ok": true,
+      "detail": "public_protocol_knowledge\\indexes\\kb.sqlite"
+    },
+    {
+      "name": "manifest_exists",
+      "ok": true,
+      "detail": "public_protocol_knowledge\\manifest.json"
+    },
+    {
+      "name": "sqlite_integrity",
+      "ok": true,
+      "detail": "ok"
+    },
+    {
+      "name": "document_count",
+      "ok": true,
+      "detail": {
+        "documents": 2,
+        "chunks": 643,
+        "source_spans": 643
+      }
+    },
+    {
+      "name": "chunk_count",
+      "ok": true,
+      "detail": {
+        "documents": 2,
+        "chunks": 643,
+        "source_spans": 643
+      }
+    },
+    {
+      "name": "source_span_coverage",
+      "ok": true,
+      "detail": {
+        "documents": 2,
+        "chunks": 643,
+        "source_spans": 643
+      }
+    },
+    {
+      "name": "ready_documents",
+      "ok": true,
+      "detail": 2
+    },
+    {
+      "name": "source_copy_exists:192d2065ab81f4697eb6335d",
+      "ok": true,
+      "detail": "D:\\CowAgent\\public_protocol_knowledge\\derived\\9c80c7e49f1cf343c0309aad\\ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md"
+    },
+    {
+      "name": "source_hash_matches:192d2065ab81f4697eb6335d",
+      "ok": true,
+      "detail": "UCIe 1.1 - Codex Protocol Development Guide"
+    },
+    {
+      "name": "source_copy_exists:9c80c7e49f1cf343c0309aad",
+      "ok": true,
+      "detail": "D:\\CowAgent\\public_protocol_knowledge\\originals\\8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf"
+    },
+    {
+      "name": "source_hash_matches:9c80c7e49f1cf343c0309aad",
+      "ok": true,
+      "detail": "UCIe 1.1 Specification"
+    },
+    {
+      "name": "query_hit:UCIe Protocol Layer",
+      "ok": true,
+      "detail": {
+        "query": "UCIe Protocol Layer",
+        "hits": 3,
+        "top_title": "UCIe 1.1 Specification",
+        "top_page": 66
+      }
+    },
+    {
+      "name": "query_hit:D2D Adapter",
+      "ok": true,
+      "detail": {
+        "query": "D2D Adapter",
+        "hits": 3,
+        "top_title": "UCIe 1.1 Specification",
+        "top_page": 197
+      }
+    },
+    {
+      "name": "query_hit:UCIe Link Training",
+      "ok": true,
+      "detail": {
+        "query": "UCIe Link Training",
+        "hits": 3,
+        "top_title": "UCIe 1.1 Specification",
+        "top_page": 102
+      }
+    },
+    {
+      "name": "query_hit:Sideband flow control",
+      "ok": true,
+      "detail": {
+        "query": "Sideband flow control",
+        "hits": 3,
+        "top_title": "UCIe 1.1 Specification",
+        "top_page": 6
+      }
+    },
+    {
+      "name": "term_resolved:UCIe",
+      "ok": true,
+      "detail": {
+        "term": "UCIe",
+        "resolved": true,
+        "entity_id": "6a7809728ddbddfdf986b541",
+        "canonical_name": "UCIe",
+        "kb_id": "ucie_1_1",
+        "aliases": [
+          "UCIe"
+        ],
+        "confidence": 0.9,
+        "visited_kb_ids": [
+          "ucie_1_1"
+        ]
+      }
+    },
+    {
+      "name": "term_resolved:FDI",
+      "ok": true,
+      "detail": {
+        "term": "FDI",
+        "resolved": true,
+        "entity_id": "3915ce5e89836e4bf32968d1",
+        "canonical_name": "FDI",
+        "kb_id": "ucie_1_1",
+        "aliases": [
+          "FDI"
+        ],
+        "confidence": 0.72,
+        "visited_kb_ids": [
+          "ucie_1_1"
+        ]
+      }
+    },
+    {
+      "name": "term_resolved:RDI",
+      "ok": true,
+      "detail": {
+        "term": "RDI",
+        "resolved": true,
+        "entity_id": "ac25e0039edc2f6f7471bb0b",
+        "canonical_name": "RDI",
+        "kb_id": "ucie_1_1",
+        "aliases": [
+          "RDI"
+        ],
+        "confidence": 0.72,
+        "visited_kb_ids": [
+          "ucie_1_1"
+        ]
+      }
+    },
+    {
+      "name": "manifest_sources_relative",
+      "ok": true,
+      "detail": [
+        "derived/9c80c7e49f1cf343c0309aad/ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md",
+        "originals/8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+        "derived/ec894ddf5ce99711fd677dfe/amba-4-axi4-stream-protocol-specification-v1.0-ec894ddf-llm-study.md",
+        "originals/5eab83e14d300699_IHI0051A_amba4_axi4_stream_v1_0_protocol_spec.pdf"
+      ]
+    }
+  ],
+  "summary": {
+    "counts": {
+      "documents": 2,
+      "chunks": 643,
+      "source_spans": 643
+    },
+    "documents": [
+      {
+        "id": "192d2065ab81f4697eb6335d",
+        "title": "UCIe 1.1 - Codex Protocol Development Guide",
+        "doc_type": "codex_analysis",
+        "source_path": "public_protocol_knowledge/derived/9c80c7e49f1cf343c0309aad/ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md"
+      },
+      {
+        "id": "9c80c7e49f1cf343c0309aad",
+        "title": "UCIe 1.1 Specification",
+        "doc_type": "document",
+        "source_path": "public_protocol_knowledge/originals/8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf"
+      }
+    ],
+    "resolved_terms": [
+      {
+        "term": "UCIe",
+        "resolved": true,
+        "entity_id": "6a7809728ddbddfdf986b541",
+        "canonical_name": "UCIe",
+        "kb_id": "ucie_1_1",
+        "aliases": [
+          "UCIe"
+        ],
+        "confidence": 0.9,
+        "visited_kb_ids": [
+          "ucie_1_1"
+        ]
+      },
+      {
+        "term": "FDI",
+        "resolved": true,
+        "entity_id": "3915ce5e89836e4bf32968d1",
+        "canonical_name": "FDI",
+        "kb_id": "ucie_1_1",
+        "aliases": [
+          "FDI"
+        ],
+        "confidence": 0.72,
+        "visited_kb_ids": [
+          "ucie_1_1"
+        ]
+      },
+      {
+        "term": "RDI",
+        "resolved": true,
+        "entity_id": "ac25e0039edc2f6f7471bb0b",
+        "canonical_name": "RDI",
+        "kb_id": "ucie_1_1",
+        "aliases": [
+          "RDI"
+        ],
+        "confidence": 0.72,
+        "visited_kb_ids": [
+          "ucie_1_1"
+        ]
+      }
+    ]
+  }
+}

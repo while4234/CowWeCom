@@ -1,24 +1,135 @@
 {
-  "format": "cowagent-knowledge-backend-v1",
+  "schema_version": 1,
+  "generated_at": 1779702729,
   "sqlite_path": "indexes/kb.sqlite",
   "documents": [
     {
+      "id": "192d2065ab81f4697eb6335d",
+      "title": "UCIe 1.1 - Codex Protocol Development Guide",
+      "source_path": "derived/9c80c7e49f1cf343c0309aad/ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md",
+      "mime_type": "text/markdown",
+      "size": 17542,
+      "content_hash": "7e5d9a4876dfd7b9980efe616cfeb4894f1e854e45e2d6b9ea0cd2a58098955e",
+      "status": "ready",
+      "kb_id": "ucie_1_1",
+      "doc_type": "codex_analysis",
+      "version_id": "794c9f44064c6e3eb42c298c",
+      "document_library_path": "knowledge/protocols/ucie_1_1/ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md",
+      "metadata": {
+        "derived_from_document_id": "9c80c7e49f1cf343c0309aad",
+        "derived_from_title": "UCIe 1.1 Specification",
+        "document_library_path": "knowledge/protocols/ucie_1_1/ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md",
+        "analysis_source": "codex",
+        "model_backend_used": false
+      }
+    },
+    {
+      "id": "9c80c7e49f1cf343c0309aad",
+      "title": "UCIe 1.1 Specification",
+      "source_path": "originals/8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+      "mime_type": "application/pdf",
+      "size": 6420307,
+      "content_hash": "8a86e6986472db04fe08a6a44fc4fb23d1b6e9fdd45bc18e32364185725416b7",
+      "status": "ready",
+      "kb_id": "ucie_1_1",
+      "doc_type": "document",
+      "version_id": "771bc18629d24e6228460a2c",
+      "document_library_path": "knowledge/protocols/ucie_1_1/ucie-1.1-specification-9c80c7e4.md",
+      "metadata": {
+        "suffix": ".pdf",
+        "page_count": 338
+      }
+    },
+    {
       "id": "8c1783c97d886739f66081ec",
       "title": "AMBA 4 AXI4-Stream Protocol Specification v1.0 - LLM Study Guide",
-      "kb_id": "axi4_stream",
-      "version_id": "1685e2f83143647c0818916d",
       "source_path": "derived/ec894ddf5ce99711fd677dfe/amba-4-axi4-stream-protocol-specification-v1.0-ec894ddf-llm-study.md",
+      "mime_type": "text/markdown",
+      "size": 39284,
       "content_hash": "304ca35e67e49eea275974c62a7d0dd09e1933fea77c242418f979b8e879d359",
-      "status": "ready"
+      "status": "ready",
+      "kb_id": "axi4_stream",
+      "doc_type": "llm_study",
+      "version_id": "1685e2f83143647c0818916d",
+      "document_library_path": "knowledge/protocols/axi4_stream/amba-4-axi4-stream-protocol-specification-v1.0-ec894ddf-llm-study.md",
+      "metadata": {
+        "derived_from_document_id": "ec894ddf5ce99711fd677dfe",
+        "derived_from_title": "AMBA 4 AXI4-Stream Protocol Specification v1.0",
+        "document_library_path": "knowledge/protocols/axi4_stream/amba-4-axi4-stream-protocol-specification-v1.0-ec894ddf-llm-study.md",
+        "valid_source_span_refs": [
+          "062458b070ad33c7a823cee0",
+          "09cfe25efede30ce035c7925",
+          "15eff4c751be39ee3d3cdab6",
+          "243af64fd89c2d666a847939",
+          "26fdb40f51a7edd71581a5d7",
+          "362c5c65cb94fd8ef3630c5a",
+          "36eb86332daceae210d72e4f",
+          "3725d6ada3cf073a3080194b",
+          "3c9b953e481ef619efe39ed1",
+          "470dbc56811a3be20b6f660d",
+          "4d8afa02833e7ab11fb29191",
+          "501ba6e2ab5abb41079399e8",
+          "6b1e55e88ae6cb52eabd7e33",
+          "6ed86705017ac4afe6fbb4a3",
+          "725261353f79c252875b71c9",
+          "7369b3fd042d3b07b67448e9",
+          "78680996b6378ce9813db33a",
+          "7b198b439af3955028641ff5",
+          "8407c514d8c3180547f68ca8",
+          "858abb1e3917eb4301125c0f",
+          "8ca8e0edc1481195ed0d6330",
+          "8efbea929e70fd5629d295fe",
+          "92f06596821956e4bc57f2d0",
+          "93f41429c68494624d54d384",
+          "952f841f23776568322b7b61",
+          "9f2139e247adb25ae943e0ab",
+          "9fc8dc6ad47d35fd7c01975a",
+          "a544b06620b1a9e1790130ea",
+          "af0f7699fae9ad5102879593",
+          "bf4cc717ecf01237466528b5",
+          "c5a6814c37c1af3aec19b853",
+          "d669142de8b06f6249ab4709",
+          "d7af90753ac3c155766b8b5c",
+          "e9e303bc018f56c2f65fb996",
+          "ea671140e430a2f0cc0d90ce",
+          "f264f4aeec9810c1b28bc6cd",
+          "f2e93e44dda8c95b80e7e4ce"
+        ],
+        "invalid_source_span_refs": []
+      }
     },
     {
       "id": "ec894ddf5ce99711fd677dfe",
       "title": "AMBA 4 AXI4-Stream Protocol Specification v1.0",
-      "kb_id": "axi4_stream",
-      "version_id": "923a8304fd49bedac5cc7cc3",
       "source_path": "originals/5eab83e14d300699_IHI0051A_amba4_axi4_stream_v1_0_protocol_spec.pdf",
+      "mime_type": "application/pdf",
+      "size": 450103,
       "content_hash": "5eab83e14d3006997372f88370309a3d5cf70b1583c63476e436f2c09b787c82",
-      "status": "ready"
+      "status": "ready",
+      "kb_id": "axi4_stream",
+      "doc_type": "document",
+      "version_id": "923a8304fd49bedac5cc7cc3",
+      "document_library_path": "knowledge/protocols/axi4_stream/amba-4-axi4-stream-protocol-specification-v1.0-ec894ddf.md",
+      "metadata": {
+        "suffix": ".pdf",
+        "page_count": 42
+      }
+    }
+  ],
+  "knowledge_bases": [
+    {
+      "id": "axi4_stream",
+      "name": "axi4_stream",
+      "description": "",
+      "domains": [],
+      "status": "active"
+    },
+    {
+      "id": "ucie_1_1",
+      "name": "ucie_1_1",
+      "description": "",
+      "domains": [],
+      "status": "active"
     }
   ]
 }
