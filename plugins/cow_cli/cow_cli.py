@@ -183,6 +183,8 @@ class CowCliPlugin(Plugin):
             marker in compact or marker in normalized for marker in _SKILL_STANDALONE_LIST_MARKERS
         )
         if (has_skill_context and has_list_request) or has_standalone_list_request:
+            if self._wants_explicit_skill_inventory(text, "list"):
+                return "skill", self._encode_skill_answer_args(text, "list")
             categories = self._find_skill_categories_in_text(text)
             if categories:
                 return "skill", self._encode_skill_answer_args(text, "category", categories=categories)

@@ -318,6 +318,13 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertEqual(payload["question"], "当前支持哪些功能呢")
         self.assertEqual(payload["mode"], "list")
 
+        cmd, args = plugin._parse_command("当前支持哪些 skill 呢")
+        self.assertEqual(cmd, "skill")
+        payload = plugin._decode_skill_answer_args(args.split(None, 1)[1])
+        self.assertEqual(payload["mode"], "list")
+        self.assertEqual(payload["category"], "")
+        self.assertEqual(payload["categories"], [])
+
         cmd, args = plugin._parse_command("你有哪些出行地图功能")
         self.assertEqual(cmd, "skill")
         payload = plugin._decode_skill_answer_args(args.split(None, 1)[1])
