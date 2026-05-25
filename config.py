@@ -16,8 +16,8 @@ _DEFAULT_KNOWLEDGE_BACKEND_CONFIG = {
     "fail_open": True,
     "admin_api_enabled": True,
     "provider_api_enabled": False,
-    "data_dir": "./knowledge_backend",
-    "sqlite_path": "./knowledge_backend/indexes/kb.sqlite",
+    "data_dir": "./public_protocol_knowledge",
+    "sqlite_path": "./public_protocol_knowledge/indexes/kb.sqlite",
     "workspace_root": ".",
     "default_kb_id": "kb_default",
     "ingest": {

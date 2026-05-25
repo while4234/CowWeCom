@@ -1,25 +1,32 @@
-# CowAgent Knowledge Backend
+# Public Protocol Knowledge Backend
 
-This directory is the optional backend knowledge store. A clean CowWeCom
-deployment does not require any prebuilt knowledge index.
+This directory is the committed public protocol knowledge store. It is reserved
+for protocol/specification documents uploaded by an administrator through the
+Web backend, plus the indexed protocol chunks and model-generated study
+documents derived from those uploads.
+
+The current public protocol library contains the AXI4-Stream protocol knowledge
+base. Other personal knowledge bases, conversation summaries, and knowledge-wiki
+outputs do not belong here and must not be committed.
 
 ## What Lives Here
 
-- `indexes/kb.sqlite`: generated SQLite index for parsed documents, chunks,
+- `indexes/kb.sqlite`: generated SQLite index for public protocol documents, chunks,
   source spans, entities, relations, jobs, and search metadata.
 - `originals/`: copied source files used to build the index.
 - `derived/` and `reports/`: generated study documents and validation reports.
 - `manifest.json`: safe portable summary of indexed documents.
 
-Protocol knowledge artifacts in this directory are committed to this repository
-when they come from user-requested protocol/specification ingestion. That
-includes the portable SQLite index, source protocol files, derived model study
-documents, validation reports, and manifest entries. This lets a fresh CowWechat
-deployment reuse already parsed protocol knowledge without uploading and parsing
-the same document again.
+Artifacts in this directory are committed to this repository only when they come
+from administrator Web-backend protocol/specification ingestion. That includes
+the portable SQLite index, source protocol files, derived model study documents,
+validation reports, and manifest entries. This lets a fresh CowWechat deployment
+reuse already parsed public protocol knowledge without uploading and parsing the
+same document again.
 
 Do not use this directory for private chat memory, credentials, local runtime
-state, or non-protocol personal documents. Those stay in ignored runtime
+state, personal knowledge, conversation-generated summaries, knowledge-wiki
+outputs, or non-protocol personal documents. Those stay in ignored runtime
 locations.
 
 ## Runtime Layout
@@ -27,7 +34,7 @@ locations.
 The structured backend store intentionally stays in this project:
 
 ```text
-D:\cowwechat\knowledge_backend
+D:\cowwechat\public_protocol_knowledge
 ```
 
 The Web console and WeChat-facing readable document library use the Agent
@@ -96,12 +103,13 @@ python scripts/generate_knowledge_backend_llm_docs.py
 This is a one-time operation per protocol version unless the original protocol
 file changes or you want to regenerate with a different model/prompt. The
 script writes a Markdown study page to `~/cow/knowledge/protocols/<kb_id>/`,
-stores a portable copy under `knowledge_backend/derived/`, indexes that derived
+stores a portable copy under `public_protocol_knowledge/derived/`, indexes that derived
 copy as `doc_type=llm_study`, and writes a validation report under
-`knowledge_backend/reports/`.
+`public_protocol_knowledge/reports/`.
 
-After generation and validation, commit the updated `knowledge_backend/` files
-so the generated teaching layer moves with the repository.
+After generation and validation, commit the updated
+`public_protocol_knowledge/` files so the generated teaching layer moves with
+the repository.
 
 Quality-check the result before relying on it in WeChat Q&A:
 

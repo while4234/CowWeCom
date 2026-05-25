@@ -78,13 +78,16 @@ Use `.gitignore` as the first source of truth. In this project, never commit:
 - runtime databases, generated indexes, chat logs, local memory dumps, and other
   machine state unless the user explicitly requests a safe export file
 
-Project exception: protocol knowledge backend artifacts under
-`knowledge_backend/` are intended to be portable when they come from uploaded
-protocol/specification ingestion. Commit `knowledge_backend/indexes/kb.sqlite`,
-`knowledge_backend/originals/`, `knowledge_backend/derived/`,
-`knowledge_backend/reports/`, and `knowledge_backend/manifest.json` after
-validation so another machine can reuse the parsed protocol library and
-model-generated study documents without reprocessing the source document.
+Project exception: only administrator Web-backend uploaded protocol/specification
+knowledge is public and portable. These artifacts must live under
+`public_protocol_knowledge/`; commit `public_protocol_knowledge/indexes/kb.sqlite`,
+`public_protocol_knowledge/originals/`, `public_protocol_knowledge/derived/`,
+`public_protocol_knowledge/reports/`, and `public_protocol_knowledge/manifest.json`
+after validation so another machine can reuse the parsed public protocol library
+and model-generated study documents without reprocessing the source document.
+Do not commit personal knowledge, conversation-generated summaries, knowledge-wiki
+outputs, or other non-protocol knowledge artifacts from runtime locations such as
+`knowledge_backend/` or the Agent workspace.
 
 Safe examples and placeholders are allowed only when they contain no real keys:
 

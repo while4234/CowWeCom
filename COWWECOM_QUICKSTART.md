@@ -51,8 +51,9 @@ The WeCom Bot connection is ready when the log includes:
 
 - Do not commit `config.json`, `.env`, logs, runtime databases, or local
   workspace files.
-- `knowledge_backend/indexes/`, `knowledge_backend/originals/`,
-  `knowledge_backend/derived/`, and `knowledge_backend/reports/` are local
-  runtime data and are ignored by Git.
+- Personal knowledge, conversation summaries, and knowledge-wiki outputs are
+  local runtime data and are ignored by Git.
+- Only administrator Web-uploaded public protocol/specification knowledge goes
+  under `public_protocol_knowledge/` and is committed after validation.
 - Push only to this project's `origin` remote after it is changed to the new
   CowWeCom repository.

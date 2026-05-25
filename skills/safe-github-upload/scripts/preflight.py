@@ -16,7 +16,7 @@ from typing import Iterable
 ALLOWLIST = {
     ".env.example",
     ".env.sample",
-    "knowledge_backend/indexes/kb.sqlite",
+    "public_protocol_knowledge/indexes/kb.sqlite",
 }
 
 REQUIRED_IGNORE_RULES = [
@@ -61,8 +61,7 @@ PROTECTED_PATTERNS = [
     "venv*/*",
     "node_modules/*",
     "local/*",
-    "knowledge_backend/indexes/*.sqlite",
-    "knowledge_backend/indexes/*.sqlite3",
+    "knowledge_backend/*",
     "*.sqlite",
     "*.sqlite3",
     "*.db",
@@ -120,11 +119,11 @@ def is_protected(path: str) -> bool:
     lower = normalized.lower()
     if lower in ALLOWLIST:
         return False
-    if lower.startswith("knowledge_backend/originals/"):
+    if lower.startswith("public_protocol_knowledge/originals/"):
         return False
-    if lower.startswith("knowledge_backend/derived/"):
+    if lower.startswith("public_protocol_knowledge/derived/"):
         return False
-    if lower.startswith("knowledge_backend/reports/"):
+    if lower.startswith("public_protocol_knowledge/reports/"):
         return False
     parts = lower.split("/")
     protected_dirs = {".codex", ".playwright-mcp", ".venv", "node_modules", "logs", "secrets"}

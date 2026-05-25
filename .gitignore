@@ -31,17 +31,14 @@ plugins.json
 logs/
 secrets/
 workspace
-# Protocol knowledge backend artifacts are intentionally portable. Commit the
-# parsed index, source protocol files, derived study docs, and validation reports
-# so other CowWechat deployments can reuse already-ingested protocol libraries.
-!knowledge_backend/indexes/
-!knowledge_backend/indexes/kb.sqlite
-!knowledge_backend/originals/
-!knowledge_backend/originals/**
-!knowledge_backend/derived/
-!knowledge_backend/derived/**
-!knowledge_backend/reports/
-!knowledge_backend/reports/**
+knowledge_backend/
+/knowledge/
+/workspace/knowledge/
+# Only administrator Web-backend uploaded protocol/specification knowledge is
+# public project data. Personal/chat/knowledge-wiki generated knowledge stays in
+# ignored runtime locations; public protocol artifacts live here.
+!public_protocol_knowledge/
+!public_protocol_knowledge/**
 config.yaml
 user_datas.pkl
 chatgpt_tool_hub/

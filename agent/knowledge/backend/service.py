@@ -32,7 +32,7 @@ from .storage import (
 )
 
 
-DEFAULT_DB_NAME = "knowledge_backend.sqlite3"
+DEFAULT_DB_NAME = "public_protocol_knowledge/indexes/kb.sqlite"
 FALSE_VALUES = {"", "0", "false", "off", "disabled", "no", "n"}
 TRUE_VALUES = {"1", "true", "on", "enabled", "yes", "y"}
 
@@ -64,7 +64,7 @@ class KnowledgeBackendConfig:
     provider_api_enabled: bool = False
     sqlite_path: Path = Path(DEFAULT_DB_NAME)
     workspace_root: Path = Path(".")
-    data_dir: Path = Path("knowledge_backend")
+    data_dir: Path = Path("public_protocol_knowledge")
     default_kb_id: str = "kb_default"
     fail_open: bool = True
     vector_store: VectorStoreConfig = field(default_factory=VectorStoreConfig)
@@ -96,7 +96,7 @@ class KnowledgeBackendConfig:
                 os.environ.get("KNOWLEDGE_BACKEND_PROVIDER_API_ENABLED")
             ),
             "fail_open": parse_knowledge_backend_enabled(os.environ.get("KNOWLEDGE_BACKEND_FAIL_OPEN", "true")),
-            "data_dir": os.environ.get("KNOWLEDGE_BACKEND_DATA_DIR") or "knowledge_backend",
+            "data_dir": os.environ.get("KNOWLEDGE_BACKEND_DATA_DIR") or "public_protocol_knowledge",
             "sqlite_path": os.environ.get("KNOWLEDGE_BACKEND_SQLITE_PATH") or DEFAULT_DB_NAME,
             "ingest": {
                 "allowed_extensions": _csv(os.environ.get("KNOWLEDGE_BACKEND_ALLOWED_EXTENSIONS"))
@@ -165,7 +165,7 @@ class KnowledgeBackendConfig:
         ).lower()
         sqlite_path = Path(str(mapping.get("sqlite_path") or mapping.get("path") or DEFAULT_DB_NAME)).expanduser()
         workspace_root = Path(str(mapping.get("workspace_root") or ".")).expanduser()
-        data_dir = Path(str(mapping.get("data_dir") or workspace_root / "knowledge_backend")).expanduser()
+        data_dir = Path(str(mapping.get("data_dir") or workspace_root / "public_protocol_knowledge")).expanduser()
         allowed = ingest_raw.get("allowed_extensions") or [".pdf", ".docx", ".txt", ".md"]
         allowed_import_roots = ingest_raw.get("allowed_import_roots") or []
         document_library_root = ingest_raw.get("document_library_root") or ingest_raw.get("docs_root") or ""
