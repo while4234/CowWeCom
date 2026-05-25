@@ -1,6 +1,6 @@
 ---
 name: codex-quota-query
-description: Query the current Codex/GPT subscription quota through the local OpenClaw Codex app-server bridge, with sanitized text/JSON output for manual status checks.
+description: Query the current Codex/GPT/ChatGPT subscription quota, remaining quota, usage, or token usage through the local OpenClaw Codex app-server bridge, with sanitized text/JSON output for manual status checks. Use this instead of local token-usage tracking when the request names Codex, GPT, ChatGPT, OpenAI subscription quota, or current Codex backend usage.
 metadata:
   requires:
     bins: ["python", "node"]
@@ -15,11 +15,13 @@ Use this skill when the user asks to query Codex, GPT, OpenAI, or ChatGPT subscr
 Run from the CowWechat project root:
 
 ```powershell
-.venv\Scripts\python.exe skills\codex-quota-query\scripts\codex_quota.py snapshot
-.venv\Scripts\python.exe skills\codex-quota-query\scripts\codex_quota.py decision --format json
-.venv\Scripts\python.exe skills\codex-quota-query\scripts\check_codex_quota.py --project-dir D:\CowWechat --format text
-.venv\Scripts\python.exe skills\codex-quota-query\scripts\check_codex_quota.py --project-dir D:\CowWechat --format json
+D:\CowWechat\.venv\Scripts\python.exe D:\CowWechat\skills\codex-quota-query\scripts\check_codex_quota.py --project-dir D:\CowWechat --format text --timeout-ms 120000
+D:\CowWechat\.venv\Scripts\python.exe D:\CowWechat\skills\codex-quota-query\scripts\check_codex_quota.py --project-dir D:\CowWechat --format json --timeout-ms 120000
+D:\CowWechat\.venv\Scripts\python.exe D:\CowWechat\skills\codex-quota-query\scripts\codex_quota.py snapshot --timeout-seconds 120
+D:\CowWechat\.venv\Scripts\python.exe D:\CowWechat\skills\codex-quota-query\scripts\codex_quota.py decision --format json --timeout-seconds 120
 ```
+
+In the chat/runtime workspace (`C:\Users\RondleLiu\cow`), do not assume relative `.venv\Scripts\python.exe` points at CowWechat. Prefer the absolute CowWechat venv and script paths above. Natural-language chat requests like "查询 codex 使用量" or "查询当前后端 token 使用量" should be handled by the `/backend quota` fast path when available, so they do not need an Agent reasoning loop.
 
 ## Safety
 

@@ -6,7 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "plugins" / "cow_cli" / "backend_nl.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_MODULE_PATH = PROJECT_ROOT / "plugins" / "cow_cli" / "backend_nl.py"
 _SPEC = importlib.util.spec_from_file_location("cow_cli_backend_nl", _MODULE_PATH)
 _MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
@@ -65,6 +66,16 @@ class TestCowCliBackendNaturalLanguage(unittest.TestCase):
             ("backend", "quota-capi"),
         )
         self.assertIsNone(parse_backend_natural_command("CAPI 月卡和额度卡有什么区别"))
+
+    def test_routes_codex_and_current_backend_quota_queries(self):
+        self.assertEqual(
+            parse_backend_natural_command("\u67e5\u8be2\u4e0bcodex\u4f7f\u7528\u91cf"),
+            ("backend", "quota"),
+        )
+        self.assertEqual(
+            parse_backend_natural_command("\u67e5\u8be2\u4e0b\u5f53\u524d\u540e\u7aeftoken\u4f7f\u7528\u91cf"),
+            ("backend", "quota-current"),
+        )
 
     def test_key_token_secret_questions_are_safe_routed(self):
         self.assertEqual(
@@ -156,6 +167,18 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertIsNone(plugin.execute("如何切换到 CAPI 后端？", session_id="test"))
 
+    def test_execute_current_backend_quota_uses_codex_fast_path(self):
+        plugin = _load_cow_cli_plugin()
+
+        with patch.object(plugin, "_backend_quota", return_value="codex quota ok") as quota:
+            result = plugin.execute(
+                "\u67e5\u8be2\u4e0b\u5f53\u524d\u540e\u7aeftoken\u4f7f\u7528\u91cf",
+                session_id="test",
+            )
+
+        self.assertEqual(result, "codex quota ok")
+        quota.assert_called_once_with()
+
     def test_event_interception_breaks_agent_flow(self):
         from bridge.context import Context, ContextType
         from plugins import Event, EventAction, EventContext
@@ -220,6 +243,25 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertIn("--api-key-env", captured["argv"])
         self.assertEqual(captured["env"]["CAPI_QUOTA_ROUTER_KEY"], "QUOTA-KEY")
         self.assertNotIn("CAPI_MONTHLY_ROUTER_KEY", captured["env"])
+
+    def test_codex_quota_uses_project_wrapper(self):
+        plugin = _load_cow_cli_plugin()
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["cwd"] = kwargs["cwd"]
+            captured["env"] = kwargs["env"]
+            return SimpleNamespace(returncode=0, stdout="codex ok", stderr="")
+
+        with patch("plugins.cow_cli.cow_cli.subprocess.run", side_effect=fake_run):
+            result = plugin.execute("\u67e5\u8be2\u4e0bcodex\u4f7f\u7528\u91cf", session_id="test")
+
+        self.assertEqual(result, "codex ok")
+        self.assertIn("check_codex_quota.py", str(captured["argv"][1]))
+        self.assertIn("--project-dir", captured["argv"])
+        self.assertEqual(Path(captured["cwd"]), PROJECT_ROOT)
+        self.assertEqual(captured["env"]["PYTHONUTF8"], "1")
 
     def test_sensitive_key_question_does_not_return_backend_status(self):
         plugin = _load_cow_cli_plugin()

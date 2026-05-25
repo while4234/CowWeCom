@@ -1,6 +1,6 @@
 ---
 name: token-usage-tracker
-description: Local-only per-user token usage tracking and reporting. Use when the user asks to record, query, summarize, audit, export, reset, rebuild, or separate token usage/token量/用量统计 by current user or multiple users, especially phrases like 当前用户token量, 不同用户独立统计, token用量, API usage, quota, local token stats. This skill stores data locally and never calls network APIs.
+description: Local-only per-user token usage tracking and reporting. Use when the user asks to record, query, summarize, audit, export, reset, rebuild, or separate local CowAgent token usage/token量/用量统计 by current user or multiple users, especially phrases like 当前用户token量, 不同用户独立统计, 本地token用量, local token stats. Do not use for Codex/GPT/ChatGPT/OpenAI subscription quota or current Codex backend usage; those requests belong to codex-quota-query. This skill stores data locally and never calls network APIs.
 metadata:
   requires:
     bins: ["python"]

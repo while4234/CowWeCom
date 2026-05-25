@@ -395,6 +395,9 @@ class CowCliPlugin(Plugin):
         if sub in {"credential-safety", "key-safety", "secret-safety"}:
             return self._backend_credential_safety()
 
+        if sub in {"quota-current", "current-quota", "active-quota"}:
+            return self._backend_current_quota()
+
         quota_backend = self._backend_quota_target(parts)
         if quota_backend:
             return self._backend_capi_quota(quota_backend)
@@ -419,19 +422,32 @@ class CowCliPlugin(Plugin):
             "  /backend capi-monthly    切换到 CAPI 月卡",
             "  /backend auto reset",
             "  /backend quota",
+            "  /backend quota-current",
             "  /backend quota capi",
             "  /backend quota capi-monthly",
         ])
 
     def _backend_quota(self) -> str:
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        script = os.path.join(project_root, "skills", "codex-quota-query", "scripts", "codex_quota.py")
+        script = os.path.join(project_root, "skills", "codex-quota-query", "scripts", "check_codex_quota.py")
         if not os.path.isfile(script):
             return "Codex quota skill is not installed."
+        env = dict(os.environ)
+        env.setdefault("PYTHONUTF8", "1")
         try:
             proc = subprocess.run(
-                [sys.executable, script, "snapshot"],
+                [
+                    sys.executable,
+                    script,
+                    "--project-dir",
+                    project_root,
+                    "--format",
+                    "text",
+                    "--timeout-ms",
+                    "120000",
+                ],
                 cwd=project_root,
+                env=env,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -445,6 +461,16 @@ class CowCliPlugin(Plugin):
         if proc.returncode != 0:
             return "Codex quota query failed:\n{}".format(text[:1200])
         return text or "Codex quota query returned no content."
+
+    def _backend_current_quota(self) -> str:
+        from common.llm_backend_router import BACKEND_CAPI_MONTHLY, BACKEND_CODEX, get_current_backend
+
+        backend = get_current_backend()
+        if backend == BACKEND_CODEX:
+            return self._backend_quota()
+        if backend == BACKEND_CAPI_MONTHLY:
+            return self._backend_capi_quota(BACKEND_CAPI_MONTHLY)
+        return self._backend_capi_quota("capi")
 
     @staticmethod
     def _backend_quota_target(parts) -> str:

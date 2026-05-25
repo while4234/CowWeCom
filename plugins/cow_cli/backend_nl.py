@@ -145,6 +145,40 @@ _QUOTA_CARD_MARKERS = (
     "totalcard",
 )
 
+_CODEX_QUOTA_MARKERS = ("gpt", "chatgpt", "openai")
+
+_CURRENT_BACKEND_QUOTA_MARKERS = (
+    "\u5f53\u524d\u540e\u7aef",
+    "\u73b0\u5728\u540e\u7aef",
+    "\u76ee\u524d\u540e\u7aef",
+    "currentbackend",
+    "activebackend",
+)
+
+_CURRENT_MARKERS = (
+    "\u5f53\u524d",
+    "\u73b0\u5728",
+    "\u76ee\u524d",
+    "current",
+    "active",
+)
+
+_BACKEND_COMPACT_MARKERS = (
+    "\u540e\u7aef",
+    "backend",
+)
+
+_LOCALIZED_QUOTA_MARKERS = (
+    "\u989d\u5ea6",
+    "\u4f59\u989d",
+    "\u5269\u4f59",
+    "\u5269\u4e0b",
+    "\u4f7f\u7528\u91cf",
+    "\u7528\u91cf",
+    "\u6d88\u8017",
+    "\u5230\u671f",
+)
+
 _SENSITIVE_WORD_RE = re.compile(r"\b(api[_ -]?key|key|token|secret)\b", re.IGNORECASE)
 _SENSITIVE_COMPACT_MARKERS = (
     "apikey",
@@ -215,12 +249,12 @@ def parse_backend_natural_command(content: str) -> Optional[BackendCommand]:
     normalized = _normalize(text)
     compact = _compact(text)
 
-    if _looks_like_sensitive_secret_request(normalized, compact):
-        return "backend", "credential-safety"
-
     quota_command = _quota_backend_command(normalized, compact)
     if quota_command:
         return "backend", quota_command
+
+    if _looks_like_sensitive_secret_request(normalized, compact):
+        return "backend", "credential-safety"
 
     if _looks_like_auto_reset(normalized, compact):
         return "backend", "auto reset"
@@ -265,14 +299,23 @@ def _looks_like_capi_monthly(normalized: str, compact: str) -> bool:
 
 
 def _quota_backend_command(normalized: str, compact: str) -> Optional[str]:
-    has_quota_context = any(marker in compact or marker in normalized for marker in _QUOTA_MARKERS)
+    has_quota_context = any(
+        marker in compact or marker in normalized
+        for marker in (*_QUOTA_MARKERS, *_LOCALIZED_QUOTA_MARKERS)
+    )
     if not has_quota_context:
         return None
 
     capi_requested = _CAPI_RE.search(normalized) or "capi" in compact
+    codex_requested = (
+        _CODEX_RE.search(normalized)
+        or "codex" in compact
+        or any(marker in compact or marker in normalized for marker in _CODEX_QUOTA_MARKERS)
+    )
     monthly_requested = _looks_like_capi_monthly(normalized, compact)
+    current_backend_requested = _looks_like_current_backend_quota(normalized, compact)
     quota_card_requested = any(marker in compact or marker in normalized for marker in _QUOTA_CARD_MARKERS)
-    if not (capi_requested or monthly_requested or quota_card_requested):
+    if not (capi_requested or codex_requested or monthly_requested or current_backend_requested or quota_card_requested):
         return None
 
     has_quota_request = any(marker in compact or marker in normalized for marker in _QUOTA_REQUEST_MARKERS)
@@ -281,7 +324,21 @@ def _quota_backend_command(normalized: str, compact: str) -> Optional[str]:
 
     if monthly_requested:
         return "quota-capi-monthly"
-    return "quota-capi"
+    if capi_requested or quota_card_requested:
+        return "quota-capi"
+    if codex_requested:
+        return "quota"
+    if current_backend_requested:
+        return "quota-current"
+    return None
+
+
+def _looks_like_current_backend_quota(normalized: str, compact: str) -> bool:
+    if any(marker in compact for marker in _CURRENT_BACKEND_QUOTA_MARKERS):
+        return True
+    has_backend_context = any(marker in compact or marker in normalized for marker in _BACKEND_COMPACT_MARKERS)
+    has_current_context = any(marker in compact or marker in normalized for marker in _CURRENT_MARKERS)
+    return bool(has_backend_context and has_current_context)
 
 
 def _looks_like_sensitive_secret_request(normalized: str, compact: str) -> bool:
