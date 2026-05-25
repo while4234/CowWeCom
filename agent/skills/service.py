@@ -50,6 +50,26 @@ class SkillService:
         logger.info(f"[SkillService] query: {len(result)} skills found")
         return result
 
+    def catalog(self) -> List[dict]:
+        """
+        Return the cached local skill/function catalog.
+
+        The cache is fingerprinted by local skill files and skills_config.json,
+        so repeated quick replies avoid a full Agent refresh while still seeing
+        installs, edits, enables, and disables.
+        """
+        result = [entry.as_dict() for entry in self.manager.catalog_cache.list_entries()]
+        logger.info(f"[SkillService] catalog: {len(result)} skills found")
+        return result
+
+    def catalog_text(self) -> str:
+        """Return a chat-friendly local skill/function list."""
+        return self.manager.catalog_cache.format_local_list()
+
+    def usage_text(self, name: str) -> str:
+        """Return a chat-friendly usage preview for one local skill."""
+        return self.manager.catalog_cache.format_skill_usage(name)
+
     # ------------------------------------------------------------------
     # add / install
     # ------------------------------------------------------------------
@@ -244,6 +264,12 @@ class SkillService:
         try:
             if action == "query":
                 result_payload = self.query()
+                return {"action": action, "code": 200, "message": "success", "payload": result_payload}
+            elif action == "catalog":
+                result_payload = self.catalog()
+                return {"action": action, "code": 200, "message": "success", "payload": result_payload}
+            elif action == "usage":
+                result_payload = self.usage_text(str(payload.get("name") or ""))
                 return {"action": action, "code": 200, "message": "success", "payload": result_payload}
             elif action == "add":
                 self.add(payload)

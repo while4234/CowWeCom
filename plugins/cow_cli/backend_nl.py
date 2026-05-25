@@ -105,6 +105,87 @@ _MONTHLY_CARD_MARKERS = (
     "capimonth",
 )
 
+_QUOTA_MARKERS = (
+    "额度",
+    "余额",
+    "剩余",
+    "剩下",
+    "用量",
+    "消耗",
+    "套餐",
+    "到期",
+    "quota",
+    "usage",
+    "balance",
+    "remaining",
+    "credit",
+)
+
+_QUOTA_REQUEST_MARKERS = (
+    "查",
+    "查询",
+    "查看",
+    "看下",
+    "看一下",
+    "统计",
+    "多少",
+    "还有",
+    "剩",
+    "show",
+    "check",
+    "current",
+)
+
+_QUOTA_CARD_MARKERS = (
+    "额度卡",
+    "总额度",
+    "总量",
+    "quotacard",
+    "totalquota",
+    "totalcard",
+)
+
+_SENSITIVE_WORD_RE = re.compile(r"\b(api[_ -]?key|key|token|secret)\b", re.IGNORECASE)
+_SENSITIVE_COMPACT_MARKERS = (
+    "apikey",
+    "api_key",
+    "openaiapikey",
+    "openai_api_key",
+    "capiapikey",
+    "capikey",
+    "密钥",
+    "秘钥",
+    "令牌",
+    "口令",
+    "卡密",
+    "激活码",
+)
+
+_SENSITIVE_REQUEST_MARKERS = (
+    "查看",
+    "显示",
+    "告诉",
+    "给我",
+    "发我",
+    "导出",
+    "我的",
+    "当前",
+    "现在",
+    "配置",
+    "配置的",
+    "用的",
+    "是什么",
+    "是多少",
+    "show",
+    "print",
+    "display",
+    "what is",
+    "what's",
+    "current",
+    "configured",
+    "my ",
+)
+
 _STATUS_MARKERS = (
     "状态",
     "当前",
@@ -133,6 +214,13 @@ def parse_backend_natural_command(content: str) -> Optional[BackendCommand]:
 
     normalized = _normalize(text)
     compact = _compact(text)
+
+    if _looks_like_sensitive_secret_request(normalized, compact):
+        return "backend", "credential-safety"
+
+    quota_command = _quota_backend_command(normalized, compact)
+    if quota_command:
+        return "backend", quota_command
 
     if _looks_like_auto_reset(normalized, compact):
         return "backend", "auto reset"
@@ -174,6 +262,51 @@ def _looks_like_capi_monthly(normalized: str, compact: str) -> bool:
     if not capi_requested:
         return False
     return "monthly" in normalized or "month card" in normalized
+
+
+def _quota_backend_command(normalized: str, compact: str) -> Optional[str]:
+    has_quota_context = any(marker in compact or marker in normalized for marker in _QUOTA_MARKERS)
+    if not has_quota_context:
+        return None
+
+    capi_requested = _CAPI_RE.search(normalized) or "capi" in compact
+    monthly_requested = _looks_like_capi_monthly(normalized, compact)
+    quota_card_requested = any(marker in compact or marker in normalized for marker in _QUOTA_CARD_MARKERS)
+    if not (capi_requested or monthly_requested or quota_card_requested):
+        return None
+
+    has_quota_request = any(marker in compact or marker in normalized for marker in _QUOTA_REQUEST_MARKERS)
+    if _looks_like_informational_request(normalized, compact) and not has_quota_request:
+        return None
+
+    if monthly_requested:
+        return "quota-capi-monthly"
+    return "quota-capi"
+
+
+def _looks_like_sensitive_secret_request(normalized: str, compact: str) -> bool:
+    has_sensitive_word = (
+        _SENSITIVE_WORD_RE.search(normalized)
+        or any(marker in compact or marker in normalized for marker in _SENSITIVE_COMPACT_MARKERS)
+    )
+    if not has_sensitive_word:
+        return False
+
+    has_sensitive_action = any(
+        marker in compact or marker in normalized
+        for marker in _SENSITIVE_REQUEST_MARKERS
+    )
+    if has_sensitive_action:
+        return True
+
+    has_backend_context = (
+        _CAPI_RE.search(normalized)
+        or _CODEX_RE.search(normalized)
+        or "openai" in compact
+        or "backend" in normalized
+        or "后端" in compact
+    )
+    return bool(has_backend_context and _looks_like_question(normalized, compact))
 
 
 def _has_request_marker(compact: str) -> bool:

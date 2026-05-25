@@ -2,6 +2,8 @@ import unittest
 import importlib.util
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 _MODULE_PATH = Path(__file__).resolve().parents[1] / "plugins" / "cow_cli" / "backend_nl.py"
@@ -52,6 +54,27 @@ class TestCowCliBackendNaturalLanguage(unittest.TestCase):
             ("backend", "capi_monthly"),
         )
         self.assertIsNone(parse_backend_natural_command("CAPI 月卡和额度卡有什么区别"))
+
+    def test_routes_capi_quota_queries_to_card_specific_provider(self):
+        self.assertEqual(
+            parse_backend_natural_command("查一下 CAPI 月卡剩余额度"),
+            ("backend", "quota-capi-monthly"),
+        )
+        self.assertEqual(
+            parse_backend_natural_command("查询 CAPI 额度卡余额"),
+            ("backend", "quota-capi"),
+        )
+        self.assertIsNone(parse_backend_natural_command("CAPI 月卡和额度卡有什么区别"))
+
+    def test_key_token_secret_questions_are_safe_routed(self):
+        self.assertEqual(
+            parse_backend_natural_command("当前 CAPI key 是什么？"),
+            ("backend", "credential-safety"),
+        )
+        self.assertEqual(
+            parse_backend_natural_command("show my backend token"),
+            ("backend", "credential-safety"),
+        )
 
     def test_switches_to_codex_for_explicit_request(self):
         self.assertEqual(
@@ -145,6 +168,76 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertEqual(e_context.action, EventAction.BREAK_PASS)
         self.assertIn("codex", e_context["reply"].content)
+
+    def test_execute_monthly_quota_uses_monthly_provider_key(self):
+        from config import conf
+
+        conf()["llm_backend"]["providers"] = {
+            "capi": {"api_key": "QUOTA-KEY"},
+            "capi_monthly": {"api_key": "MONTHLY-KEY"},
+        }
+        plugin = _load_cow_cli_plugin()
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["env"] = kwargs["env"]
+            return SimpleNamespace(returncode=0, stdout="monthly ok", stderr="")
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("plugins.cow_cli.cow_cli.subprocess.run", side_effect=fake_run),
+        ):
+            result = plugin.execute("查一下 CAPI 月卡剩余额度", session_id="test")
+
+        self.assertEqual(result, "monthly ok")
+        self.assertIn("--api-key-env", captured["argv"])
+        self.assertEqual(captured["env"]["CAPI_MONTHLY_ROUTER_KEY"], "MONTHLY-KEY")
+        self.assertNotIn("CAPI_QUOTA_ROUTER_KEY", captured["env"])
+
+    def test_execute_quota_card_query_uses_capi_provider_key(self):
+        from config import conf
+
+        conf()["llm_backend"]["providers"] = {
+            "capi": {"api_key": "QUOTA-KEY"},
+            "capi_monthly": {"api_key": "MONTHLY-KEY"},
+        }
+        plugin = _load_cow_cli_plugin()
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["env"] = kwargs["env"]
+            return SimpleNamespace(returncode=0, stdout="quota ok", stderr="")
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("plugins.cow_cli.cow_cli.subprocess.run", side_effect=fake_run),
+        ):
+            result = plugin.execute("查询 CAPI 额度卡余额", session_id="test")
+
+        self.assertEqual(result, "quota ok")
+        self.assertIn("--api-key-env", captured["argv"])
+        self.assertEqual(captured["env"]["CAPI_QUOTA_ROUTER_KEY"], "QUOTA-KEY")
+        self.assertNotIn("CAPI_MONTHLY_ROUTER_KEY", captured["env"])
+
+    def test_sensitive_key_question_does_not_return_backend_status(self):
+        plugin = _load_cow_cli_plugin()
+
+        result = plugin.execute("当前 CAPI key 是什么？", session_id="test")
+
+        self.assertIn("不能显示原始", result)
+        self.assertNotIn("LLM backend status", result)
+        self.assertNotIn("TEST", result)
+
+    def test_skill_natural_language_routes_to_fast_local_catalog(self):
+        plugin = _load_cow_cli_plugin()
+
+        self.assertEqual(plugin._parse_command("本地有哪些 skills"), ("skill", "list"))
+        self.assertEqual(
+            plugin._parse_command("capi-usage-monitor 怎么用"),
+            ("skill", "usage capi-usage-monitor"),
+        )
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ Does NOT match:
 """
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -50,6 +51,10 @@ QUOTA_ALIASES = {
     "查询openai额度",
     "查询codex登录",
 }
+
+_SKILL_CONTEXT_MARKERS = ("技能", "skill", "skills", "函数", "function", "functions")
+_SKILL_LIST_MARKERS = ("有哪些", "有什么", "列出", "列表", "清单", "已安装", "本地", "local", "list", "available", "show")
+_SKILL_USAGE_MARKERS = ("怎么用", "如何用", "用法", "使用方法", "怎么使用", "如何使用", "usage", "help")
 
 
 @plugins.register(
@@ -124,6 +129,10 @@ class CowCliPlugin(Plugin):
         if backend_command is not None:
             return backend_command
 
+        skill_command = self._parse_skill_natural_command(content)
+        if skill_command is not None:
+            return skill_command
+
         if content.startswith("/"):
             rest = content[1:].strip()
             if not rest:
@@ -147,6 +156,27 @@ class CowCliPlugin(Plugin):
             return cmd, args
 
         return None
+
+    def _parse_skill_natural_command(self, content: str):
+        text = str(content or "").strip()
+        if not text:
+            return None
+
+        normalized = text.lower()
+        compact = re.sub(r"[\s,，。.!！?？:：;；\"'`“”‘’（）()\[\]【】<>《》]+", "", normalized)
+        has_skill_context = any(marker in compact or marker in normalized for marker in _SKILL_CONTEXT_MARKERS)
+        has_list_request = any(marker in compact or marker in normalized for marker in _SKILL_LIST_MARKERS)
+        if has_skill_context and has_list_request:
+            return "skill", "list"
+
+        has_usage_request = any(marker in compact or marker in normalized for marker in _SKILL_USAGE_MARKERS)
+        if not has_usage_request:
+            return None
+
+        entry = self._skill_catalog().find_entry_in_text(text)
+        if entry is None:
+            return None
+        return "skill", f"usage {entry.name}"
 
     @staticmethod
     def _suggest_command(cmd: str) -> str:
@@ -322,6 +352,13 @@ class CowCliPlugin(Plugin):
             return describe_status()
 
         sub = parts[0].lower()
+        if sub in {"credential-safety", "key-safety", "secret-safety"}:
+            return self._backend_credential_safety()
+
+        quota_backend = self._backend_quota_target(parts)
+        if quota_backend:
+            return self._backend_capi_quota(quota_backend)
+
         if sub in {"codex", "capi", "capi_monthly", "capi-monthly", "monthly", "capi-month"}:
             backend = normalize_backend(sub)
             set_current_backend(backend, manual=True, reason="cow_cli")
@@ -342,6 +379,8 @@ class CowCliPlugin(Plugin):
             "  /backend capi-monthly    切换到 CAPI 月卡",
             "  /backend auto reset",
             "  /backend quota",
+            "  /backend quota capi",
+            "  /backend quota capi-monthly",
         ])
 
     def _backend_quota(self) -> str:
@@ -366,6 +405,102 @@ class CowCliPlugin(Plugin):
         if proc.returncode != 0:
             return "Codex quota query failed:\n{}".format(text[:1200])
         return text or "Codex quota query returned no content."
+
+    @staticmethod
+    def _backend_quota_target(parts) -> str:
+        if not parts:
+            return ""
+        sub = parts[0].lower()
+        raw = " ".join(parts).lower().replace("_", "-")
+        if sub in {"quota-capi-monthly", "capi-monthly-quota", "monthly-quota"}:
+            return "capi_monthly"
+        if sub in {"quota-capi", "capi-quota", "quota-card", "quota-card-quota"}:
+            return "capi"
+        if sub == "quota" and len(parts) > 1:
+            if any(marker in raw for marker in ("capi-monthly", "monthly", "month", "月卡")):
+                return "capi_monthly"
+            if any(marker in raw for marker in ("capi", "quota-card", "card", "额度卡")):
+                return "capi"
+        if sub in {"capi", "capi-monthly", "capi_monthly", "monthly", "capi-month"} and len(parts) > 1:
+            tail = " ".join(parts[1:]).lower()
+            if any(marker in tail for marker in ("quota", "usage", "balance", "额度", "余额", "用量")):
+                return "capi_monthly" if sub in {"capi-monthly", "capi_monthly", "monthly", "capi-month"} else "capi"
+        return ""
+
+    def _backend_capi_quota(self, backend: str) -> str:
+        from common.llm_backend_router import (
+            BACKEND_CAPI,
+            BACKEND_CAPI_MONTHLY,
+            get_capi_provider_config,
+            resolve_provider_value,
+        )
+        from config import conf
+
+        normalized = BACKEND_CAPI_MONTHLY if backend == BACKEND_CAPI_MONTHLY else BACKEND_CAPI
+        provider = get_capi_provider_config(normalized)
+        api_key = resolve_provider_value(provider, "api_key", "api_key_env")
+        if not api_key and normalized == BACKEND_CAPI:
+            api_key = str(conf().get("open_ai_api_key") or "")
+        if not api_key:
+            label = "CAPI monthly" if normalized == BACKEND_CAPI_MONTHLY else "CAPI quota-card"
+            return f"{label} API key is not configured."
+
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        script = os.path.join(project_root, "skills", "capi-usage-monitor", "scripts", "capi_usage.py")
+        if not os.path.isfile(script):
+            return "CAPI usage monitor skill is not installed."
+
+        env_name = "CAPI_MONTHLY_ROUTER_KEY" if normalized == BACKEND_CAPI_MONTHLY else "CAPI_QUOTA_ROUTER_KEY"
+        env = dict(os.environ)
+        env[env_name] = api_key
+        argv = [
+            sys.executable,
+            script,
+            "snapshot",
+            "--api-key-env",
+            env_name,
+            "--period",
+            "today",
+            "--format",
+            "text",
+        ]
+        if normalized == BACKEND_CAPI_MONTHLY:
+            argv.extend(["--default-daily-quota", str(provider.get("default_daily_quota") or 90)])
+
+        label = "CAPI monthly quota" if normalized == BACKEND_CAPI_MONTHLY else "CAPI quota-card quota"
+        try:
+            proc = subprocess.run(
+                argv,
+                cwd=project_root,
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return f"{label} query timed out."
+        text = self._redact_secret((proc.stdout or proc.stderr or "").strip(), api_key)
+        if proc.returncode != 0:
+            return f"{label} query failed:\n{text[:1200]}"
+        return text or f"{label} query returned no content."
+
+    @staticmethod
+    def _redact_secret(text: str, secret: str) -> str:
+        if not text or not secret:
+            return text
+        replacement = f"{secret[:3]}***{secret[-3:]}" if len(secret) >= 8 else "***"
+        return text.replace(secret, replacement)
+
+    @staticmethod
+    def _backend_credential_safety() -> str:
+        return "\n".join([
+            "我不能显示原始 key、token 或 secret。",
+            "可以查看安全状态：/backend status",
+            "需要配置时，请使用 env_config 设置对应环境变量；回复和日志只应保留掩码或后缀。",
+        ])
 
     # ------------------------------------------------------------------
     # logs
@@ -681,6 +816,8 @@ class CowCliPlugin(Plugin):
             return self._skill_uninstall(sub_args)
         elif sub == "info":
             return self._skill_info(sub_args)
+        elif sub in {"usage", "use"}:
+            return self._skill_usage(sub_args)
         elif sub == "enable":
             return self._skill_set_enabled(sub_args, True)
         elif sub == "disable":
@@ -694,6 +831,7 @@ class CowCliPlugin(Plugin):
                 "  install <名称>   安装技能\n"
                 "  uninstall <名称> 卸载技能\n"
                 "  info <名称>      查看技能详情\n"
+                "  usage <名称>     查看技能用法\n"
                 "  enable <名称>    启用技能\n"
                 "  disable <名称>   禁用技能"
             )
@@ -711,54 +849,24 @@ class CowCliPlugin(Plugin):
         except Exception as e:
             logger.debug(f"[CowCli] skill refresh skipped: {e}")
 
+    @staticmethod
+    def _skill_catalog():
+        from agent.skills.cache import get_skill_catalog_cache
+        from cli.utils import get_builtin_skills_dir, get_skills_dir
+
+        return get_skill_catalog_cache(
+            builtin_dir=get_builtin_skills_dir(),
+            custom_dir=get_skills_dir(),
+        )
+
+    @staticmethod
+    def _invalidate_skill_catalog():
+        from agent.skills.cache import invalidate_skill_catalog_cache
+
+        invalidate_skill_catalog_cache()
+
     def _skill_list_local(self) -> str:
-        from cli.utils import load_skills_config, get_skills_dir, get_builtin_skills_dir
-        self._refresh_skill_manager()
-        config = load_skills_config()
-
-        if not config:
-            skills_dir = get_skills_dir()
-            builtin_dir = get_builtin_skills_dir()
-            entries = []
-            for d, source in [(builtin_dir, "builtin"), (skills_dir, "custom")]:
-                if not os.path.isdir(d):
-                    continue
-                for name in sorted(os.listdir(d)):
-                    skill_path = os.path.join(d, name)
-                    if os.path.isdir(skill_path) and not name.startswith("."):
-                        if os.path.exists(os.path.join(skill_path, "SKILL.md")):
-                            entries.append({"name": name, "source": source, "enabled": True})
-            if not entries:
-                return "暂无已安装的技能\n\n💡 /skill list --remote 浏览技能广场"
-            config = {e["name"]: e for e in entries}
-
-        sorted_entries = sorted(config.values(), key=lambda e: e.get("name", ""))
-        enabled_count = sum(1 for e in sorted_entries if e.get("enabled", True))
-
-        lines = [f"📦 已安装的技能 ({enabled_count}/{len(sorted_entries)})", ""]
-        for entry in sorted_entries:
-            name = entry.get("name", "")
-            enabled = entry.get("enabled", True)
-            source = entry.get("source", "")
-            icon = "✅" if enabled else "⏸️"
-            display = entry.get("display_name", "") or name
-            desc = entry.get("description", "")
-            if len(desc) > 50:
-                desc = desc[:47] + "…"
-            line = f"{icon} {display}"
-            if display != name:
-                line += f" ({name})"
-            if desc:
-                line += f"\n   {desc}"
-            if source:
-                line += f"\n   来源: {source}"
-            lines.append(line)
-            lines.append("")
-
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("💡 /skill list --remote  浏览技能广场")
-        lines.append("💡 /skill info <名称>     查看详情")
-        return "\n".join(lines)
+        return self._skill_catalog().format_local_list()
 
     def _skill_list(self, args: str) -> str:
         parts = args.strip().split()
@@ -876,6 +984,7 @@ class CowCliPlugin(Plugin):
             if not result.installed:
                 return "\n".join(result.messages) if result.messages else "未找到可安装的技能"
 
+            self._invalidate_skill_catalog()
             return self._format_install_result(result)
         except FuturesTimeout:
             return "安装超时，请稍后重试或检查网络连接"
@@ -935,6 +1044,7 @@ class CowCliPlugin(Plugin):
             except Exception:
                 pass
 
+        self._invalidate_skill_catalog()
         return f"✅ 技能 '{name}' 已卸载"
 
     @staticmethod
@@ -1018,6 +1128,11 @@ class CowCliPlugin(Plugin):
             result += f"\n\n... ({len(lines) - 30} more lines)"
         return result
 
+    def _skill_usage(self, name: str) -> str:
+        if not name:
+            return "请指定技能名称: /skill usage <名称>"
+        return self._skill_catalog().format_skill_usage(name)
+
     def _skill_set_enabled(self, name: str, enabled: bool) -> str:
         if not name:
             action = "启用" if enabled else "禁用"
@@ -1045,6 +1160,7 @@ class CowCliPlugin(Plugin):
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=4, ensure_ascii=False)
 
+        self._invalidate_skill_catalog()
         action = "启用" if enabled else "禁用"
         icon = "✅" if enabled else "⬚"
         return f"{icon} 技能 '{name}' 已{action}"

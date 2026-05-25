@@ -1,6 +1,6 @@
 ---
 name: capi-usage-monitor
-description: Query and locally monitor CAPI/Codex intermediary quota and usage from https://omilg.com/dhh8888/login by logging in with the configured OPENAI_API_KEY, which is also the CAPI activation/API key in this workspace. Use when the user asks to check capi/codex中转站剩余额度、总额度、用量统计、usage、余额、套餐、到期时间, diagnose configuration, export history, or create daily midnight snapshots for quick later review. Supports local snapshot history and CSV export; API keys are read from env/argument and never persisted.
+description: Query and locally monitor CAPI/Codex intermediary quota and usage from https://omilg.com/dhh8888/login. Use the capi provider/key for quota-card checks and capi_monthly provider/key for monthly-card checks. Use when the user asks to check capi/codex中转站剩余额度、总额度、用量统计、usage、余额、套餐、到期时间, diagnose configuration, export history, or create daily midnight snapshots for quick later review. Supports local snapshot history and CSV export; API keys are read from env/argument and never persisted.
 metadata:
   requires:
     bins: ["python"]
@@ -13,7 +13,10 @@ Use this skill to query quota/usage for the CAPI/Codex usage dashboard at:
 
 `https://omilg.com/dhh8888/login`
 
-In this workspace, **the CAPI key and `OPENAI_API_KEY` are the same key**. Treat the configured `OPENAI_API_KEY` as the default CAPI activation/API key unless the user explicitly overrides it.
+In this workspace, the quota-card CAPI key normally comes from the `capi`
+provider, whose default environment variable is `OPENAI_API_KEY`. Monthly-card
+queries must use the `capi_monthly` provider/key, normally
+`CAPI_MONTHLY_API_KEY`, not the quota-card key.
 
 The frontend currently uses these backend APIs:
 
@@ -27,8 +30,9 @@ Prefer API mode over browser automation. Browser automation is only a fallback f
 ## Security Rules
 
 - Do not store the raw API key / activation code in files.
-- Default key source in this workspace: `OPENAI_API_KEY`.
-- Optional override key sources: `CAPI_API_KEY`, `CAPI_ACTIVATION_CODE`, `CAPI_CARD`, `--api-key`, or `--api-key-env`.
+- Default quota-card key source in this workspace: the `capi` provider, usually `OPENAI_API_KEY`.
+- Default monthly-card key source in this workspace: the `capi_monthly` provider, usually `CAPI_MONTHLY_API_KEY`.
+- Optional script-level override key sources: `CAPI_API_KEY`, `CAPI_ACTIVATION_CODE`, `CAPI_CARD`, `--api-key`, or `--api-key-env`.
 - Snapshot files store only `key_hash = sha256(key)[:16]` and `key_suffix` for identification.
 - Do not print the full key in replies or logs.
 - If the user asks to configure the key, use `env_config` and keep values masked.
@@ -70,7 +74,7 @@ If no usable key is configured, `doctor` shows `api_key_configured: false`. In t
 
 ### Query Current Quota and Usage
 
-Use the default configured key (`OPENAI_API_KEY` in this workspace):
+Use the default configured quota-card key (`OPENAI_API_KEY` in this workspace):
 
 ```bash
 python "<base_dir>/scripts/capi_usage.py" snapshot --period today
@@ -99,10 +103,16 @@ Save a local snapshot:
 python "<base_dir>/scripts/capi_usage.py" snapshot --period today --save
 ```
 
-Use a specific env variable only when overriding the default:
+Use a specific env variable only when overriding the default. For monthly-card
+queries, route through the `capi_monthly` provider/key and pass that key via a
+temporary environment variable:
 
 ```bash
 python "<base_dir>/scripts/capi_usage.py" snapshot --api-key-env CAPI_API_KEY --period today
+```
+
+```bash
+python "<base_dir>/scripts/capi_usage.py" snapshot --api-key-env CAPI_MONTHLY_API_KEY --period today --format text
 ```
 
 Or pass key directly only if necessary:

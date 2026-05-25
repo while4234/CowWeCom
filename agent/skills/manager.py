@@ -10,6 +10,7 @@ from common.log import logger
 from agent.skills.types import Skill, SkillEntry, SkillSnapshot
 from agent.skills.loader import SkillLoader
 from agent.skills.formatter import format_skill_entries_for_prompt
+from agent.skills.cache import SkillCatalogCache
 
 SKILLS_CONFIG_FILE = "skills_config.json"
 
@@ -42,6 +43,7 @@ class SkillManager:
 
         self.loader = SkillLoader()
         self.skills: Dict[str, SkillEntry] = {}
+        self.catalog_cache = SkillCatalogCache(self.builtin_dir, self.custom_dir, loader=self.loader)
 
         # Load skills on initialization
         self.refresh_skills()
@@ -53,6 +55,7 @@ class SkillManager:
             custom_dir=self.custom_dir,
         )
         self._sync_skills_config()
+        self.catalog_cache.refresh_from_entries(self.skills, self.skills_config)
         logger.debug(f"SkillManager: Loaded {len(self.skills)} skills")
 
     # ------------------------------------------------------------------
@@ -140,6 +143,7 @@ class SkillManager:
             raise ValueError(f"skill '{name}' not found in config")
         self.skills_config[name]["enabled"] = enabled
         self._save_skills_config()
+        self.catalog_cache.refresh_from_entries(self.skills, self.skills_config)
 
     def get_skills_config(self) -> Dict[str, dict]:
         """
