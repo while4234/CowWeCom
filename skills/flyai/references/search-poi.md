@@ -14,10 +14,10 @@
 
 ### Examples
 
-```bash
-flyai search-poi --city-name "杭州" --keyword "西湖" --category "山湖田园"
-flyai search-poi --city-name "北京" --poi-level 5
-flyai search-poi --city-name "西安" --category "历史古迹"
+```powershell
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-poi --city-name "杭州" --keyword "西湖" --category "山湖田园"
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-poi --city-name "北京" --poi-level 5
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-poi --city-name "西安" --category "历史古迹"
 ```
 
 ### Output Example

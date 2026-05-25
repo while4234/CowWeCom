@@ -21,12 +21,12 @@
 
 ### Examples
 
-```bash
-flyai keyword-search --query "France visa"
-flyai keyword-search --query "Hangzhou group tour"
-flyai keyword-search --query "Hangzhou 3-day trip"
-flyai keyword-search --query "Shanghai cruise"
-flyai keyword-search --query "Hong Kong SIM card"
+```powershell
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py keyword-search --query "France visa"
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py keyword-search --query "Hangzhou group tour"
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py keyword-search --query "Hangzhou 3-day trip"
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py keyword-search --query "Shanghai cruise"
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py keyword-search --query "Hong Kong SIM card"
 ```
 
 ### Output Example

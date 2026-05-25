@@ -48,22 +48,49 @@ metadata:
 ---
 
 # FlyAI — Travel, Flight & Hotel Search and Booking
-Use `flyai-cli` to call Fliggy MCP services for travel search and booking scenarios.
-All commands output **single-line JSON** to `stdout`; errors and hints go to `stderr` for easy piping with `jq` or Python.
+Use the local wrapper script to call `flyai-cli` for Fliggy MCP travel search and booking scenarios.
+Prefer the wrapper on Windows/CowWechat because the raw CLI can print valid JSON and then exit nonzero with a known libuv assertion.
 
 ## Quick Start
 
 1. **Install CLI**：`npm i -g @fly-ai/flyai-cli`
-2. **Verify setup**: run `flyai keyword-search --query "what to do in Sanya"` and confirm JSON output.
-3. **List commands**: run `flyai --help`.
+2. **Verify setup through the wrapper**: run `.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py keyword-search --query "what to do in Sanya"` and confirm JSON output.
+3. **List commands**: run `flyai --help`; use the wrapper for data-returning commands.
 4. **Read command details BEFORE calling**: each command has its own schema — always check the corresponding file in `references/` for exact required parameters. Do NOT guess or reuse formats from other commands.
+
+## Windows-safe Wrapper
+
+Prefer this form from the CowWechat repository root:
+
+```powershell
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py keyword-search --query "what to do in Sanya"
+```
+
+The wrapper runs the local `flyai` CLI and always prints a JSON envelope:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "status": 0
+  },
+  "_flyai_wrapper": {
+    "flyai_exit_code": 1,
+    "warnings": [
+      "flyai CLI exited nonzero after producing JSON because of the known Windows libuv assertion; using stdout JSON."
+    ]
+  }
+}
+```
+
+Use `result` as the original FlyAI response. If `_flyai_wrapper.warnings` is not empty, mention the warning briefly when reporting provenance. When the raw CLI exits nonzero after valid success JSON because of the known Windows libuv assertion, the wrapper exits `0` and keeps the structured result usable. For other nonzero exits, inspect the returned `ok`, `error`, and `_flyai_wrapper` fields.
+
+Security rule: never put API keys in prompts, commands, logs, or user-facing output. The wrapper redacts key-like fields and bearer tokens from returned diagnostics, but callers must still avoid echoing secrets.
 
 ## Configuration
 The tool can make trial without any API keys. For enhanced results, configure optional APIs:
 
-```
-flyai config set FLYAI_API_KEY "your-key"
-```
+Use the Windows User environment or FlyAI's local config command to store `FLYAI_API_KEY`. Do not print the key value in chat or terminal logs.
 
 ## Core Capabilities
 

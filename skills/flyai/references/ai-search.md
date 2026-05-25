@@ -10,9 +10,9 @@
 
 ### Examples
 
-```bash
-flyai ai-search --query "五一去杭州玩三天，预算人均2000，想住西湖附近，推荐行程和酒店"
-flyai ai-search --query "下周从上海去东京，优先直飞，帮我找性价比高的航班和酒店"
+```powershell
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py ai-search --query "五一去杭州玩三天，预算人均2000，想住西湖附近，推荐行程和酒店"
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py ai-search --query "下周从上海去东京，优先直飞，帮我找性价比高的航班和酒店"
 ```
 
 ### Output Example

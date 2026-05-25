@@ -11,9 +11,9 @@
 
 ### Examples
 
-```bash
-flyai search-marriott-package --keyword "上海"
-flyai search-marriott-package --keyword "JW万豪" --sort-type price_asc
+```powershell
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-marriott-package --keyword "上海"
+.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-marriott-package --keyword "JW万豪" --sort-type price_asc
 ```
 
 ### Output Example
