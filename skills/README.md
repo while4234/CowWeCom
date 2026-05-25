@@ -62,6 +62,7 @@ with machine setup notes and any required user-provided keys.
 | `pdf` | Read, extract, split, merge, rotate, watermark, create, and secure PDF files. | No external API key. |
 | `plugin-12306-ticket` | Query China Railway 12306 tickets, stations, and train route information through local public 12306 endpoints. | No external API key; needs Python network access. |
 | `playwright-browser-control` | Use Playwright MCP with a dedicated persistent Chrome profile for browser automation and web validation. | No API key; requires local Playwright MCP and Chrome profile setup. |
+| `project-restart` | Restart the current CowWechat/CowAgent project service when an admin says 重启, 重启项目, or 重启服务. | No external API key; needs Python. |
 | `pptx` | Create, read, edit, and extract content from PowerPoint `.pptx` decks. | No external API key. |
 | `quick-weather` | Fetch fast current weather and forecasts through Open-Meteo. | No external API key; needs Python network access. |
 | `reliable-search` | Search with Serper/Brave provider fallback. | `SERPER_API_KEY` or `BRAVE_API_KEY` supplied by the user. |
