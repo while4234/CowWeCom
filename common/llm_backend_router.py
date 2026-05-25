@@ -688,6 +688,29 @@ def record_monthly_quota_check(
     return state
 
 
+def record_monthly_daily_reset(*, now: Optional[datetime] = None) -> Dict[str, Any]:
+    now = now or datetime.now()
+    provider = get_capi_provider_config(BACKEND_CAPI_MONTHLY)
+    total = _number_or_zero(provider.get("default_daily_quota") or 90)
+    previous = load_state()
+    previous_monthly = previous.get("monthly_card") if isinstance(previous.get("monthly_card"), dict) else {}
+    previous["monthly_card"] = {
+        "last_checked_at": previous_monthly.get("last_checked_at", ""),
+        "last_reset_at": now.isoformat(timespec="seconds"),
+        "mode": "daily",
+        "total": total,
+        "used": 0.0,
+        "remaining": total,
+        "remaining_percent": 100.0 if total > 0 else 0.0,
+        "progress": 0.0,
+        "expire_at": previous_monthly.get("expire_at"),
+        "last_action": "daily_monthly_card_reset",
+    }
+    previous["updated_at"] = now.isoformat(timespec="seconds")
+    save_state(previous)
+    return previous
+
+
 def evaluate_midnight_backend_route(
     quota_payload: Optional[Mapping[str, Any]] = None,
     *,
@@ -711,12 +734,13 @@ def evaluate_midnight_backend_route(
     if bool(auto_cfg.get("prefer_capi_monthly_at_check_time", True)) and has_capi_monthly_credentials():
         if not _run_capi_connectivity_check(BACKEND_CAPI_MONTHLY, checker):
             return _record_capi_connectivity_fallback(BACKEND_CAPI_MONTHLY, now=now)
-        return record_auto_check(
+        record_auto_check(
             decision="switched_to_capi_monthly",
             reason="daily_monthly_card_reset",
             switched_backend=BACKEND_CAPI_MONTHLY,
             now=now,
         )
+        return record_monthly_daily_reset(now=now)
 
     if not _run_capi_connectivity_check(BACKEND_CAPI, checker):
         return _record_capi_connectivity_fallback(BACKEND_CAPI, now=now)

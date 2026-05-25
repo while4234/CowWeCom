@@ -170,6 +170,37 @@ class TestCodexBackendRouter(unittest.TestCase):
         self.assertEqual(state["auto"]["last_decision"], "switched_to_capi_monthly")
         self.assertEqual(get_current_backend(), BACKEND_CAPI_MONTHLY)
 
+    def test_midnight_monthly_reset_replaces_stale_low_quota_status(self):
+        conf()["llm_backend"]["providers"]["capi_monthly"] = {
+            "api_key": "TEST-MONTHLY-KEY",
+            "default_daily_quota": 90,
+        }
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+        save_state({
+            "current_backend": BACKEND_CAPI,
+            "monthly_card": {
+                "total": 90,
+                "used": 90,
+                "remaining": 0,
+                "remaining_percent": 0,
+                "progress": 100,
+                "last_action": "monthly_quota_low",
+            },
+        })
+
+        state = evaluate_midnight_backend_route(
+            quota_payload=weekly_payload(used_percent=99),
+            capi_connectivity_checker=lambda backend: True,
+            now=now,
+        )
+
+        monthly = state["monthly_card"]
+        self.assertEqual(state["current_backend"], BACKEND_CAPI_MONTHLY)
+        self.assertEqual(state["auto"]["last_reason"], "daily_monthly_card_reset")
+        self.assertEqual(monthly["last_action"], "daily_monthly_card_reset")
+        self.assertEqual(monthly["remaining"], 90.0)
+        self.assertEqual(monthly["total"], 90.0)
+
     def test_midnight_uses_codex_when_monthly_capi_probe_fails(self):
         conf()["llm_backend"]["providers"]["capi_monthly"] = {"api_key": "TEST-MONTHLY-KEY"}
         now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
