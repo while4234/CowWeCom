@@ -16,7 +16,7 @@ from bridge.reply import Reply, ReplyType
 from channel.file_cache import get_file_cache
 from channel.image_recognition import ImageRecognitionManager, reset_image_recognition_manager
 from channel.web.web_channel import ChannelsHandler
-from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
+from channel.wecom_bot.wecom_bot_channel import MARKDOWN_TEXT_CHUNK_LIMIT, WecomBotChannel
 from common.agent_task_runtime import SessionRuntime
 from config import conf
 
@@ -685,6 +685,49 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         self.assertTrue(payload["body"]["stream"]["finish"])
         self.assertIn("thinking", content)
         self.assertTrue(content.endswith("final answer"))
+
+    def test_long_final_stream_reply_sends_active_followup_chunks(self):
+        ws = FakeWebSocket()
+        self.channel._ws = ws
+        self.channel._connected = True
+        self.channel._stream_states["req-long"] = {
+            "stream_id": "stream-long",
+            "committed": "",
+            "current": "",
+            "last_push_time": 0,
+            "last_push_len": 0,
+            "mention_user_ids": [],
+            "mention_display_names": [],
+        }
+        long_text = "A" * (MARKDOWN_TEXT_CHUNK_LIMIT + 25)
+
+        with patch("channel.wecom_bot.wecom_bot_channel.time.sleep", lambda _: None):
+            sent = self.channel._send_text(long_text, "wecom-user-1", False, req_id="req-long")
+
+        self.assertTrue(sent)
+        self.assertEqual(len(ws.sent), 2)
+        first, second = ws.sent
+        self.assertEqual(first["cmd"], "aibot_respond_msg")
+        self.assertTrue(first["body"]["stream"]["finish"])
+        self.assertLessEqual(len(first["body"]["stream"]["content"]), MARKDOWN_TEXT_CHUNK_LIMIT)
+        self.assertEqual(second["cmd"], "aibot_send_msg")
+        self.assertEqual(second["body"]["msgtype"], "markdown")
+        self.assertTrue(second["body"]["markdown"]["content"].startswith("(2/2)\n\n"))
+
+    def test_long_active_text_splits_into_markdown_chunks(self):
+        ws = FakeWebSocket()
+        self.channel._ws = ws
+        self.channel._connected = True
+        long_text = "B" * (MARKDOWN_TEXT_CHUNK_LIMIT + 25)
+
+        with patch("channel.wecom_bot.wecom_bot_channel.time.sleep", lambda _: None):
+            sent = self.channel._send_text(long_text, "wecom-user-1", False)
+
+        self.assertTrue(sent)
+        self.assertEqual(len(ws.sent), 2)
+        self.assertEqual(ws.sent[0]["cmd"], "aibot_send_msg")
+        self.assertFalse(ws.sent[0]["body"]["markdown"]["content"].startswith("(1/2)"))
+        self.assertTrue(ws.sent[1]["body"]["markdown"]["content"].startswith("(2/2)\n\n"))
 
     def test_active_send_text_result_reports_websocket_send_failure(self):
         class BrokenWebSocket:

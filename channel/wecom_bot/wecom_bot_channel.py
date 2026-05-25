@@ -37,6 +37,8 @@ WECOM_WS_URL = "wss://openws.work.weixin.qq.com"
 HEARTBEAT_INTERVAL = 30
 SUBSCRIBE_ACK_TIMEOUT = 20
 MEDIA_CHUNK_SIZE = 512 * 1024  # 512KB per chunk (before base64 encoding)
+MARKDOWN_TEXT_CHUNK_LIMIT = 3500
+LONG_REPLY_PART_DELAY_SECONDS = 0.2
 
 
 def _wecom_group_actor_id(channel_type: str, chat_id: str) -> str:
@@ -1029,6 +1031,57 @@ class WecomBotChannel(ChatChannel):
             return streamed_content
         return cls._append_stream_segment(committed, final_content)
 
+    @staticmethod
+    def _split_text_chunks(content: str, limit: int = MARKDOWN_TEXT_CHUNK_LIMIT) -> list:
+        text = str(content or "").strip()
+        if not text:
+            return [""]
+        if len(text) <= limit:
+            return [text]
+
+        chunks = []
+        remaining = text
+        soft_floor = max(1, int(limit * 0.55))
+        while len(remaining) > limit:
+            cut = remaining.rfind("\n\n", 0, limit + 1)
+            if cut < soft_floor:
+                cut = remaining.rfind("\n", 0, limit + 1)
+            if cut < soft_floor:
+                cut = remaining.rfind(" ", 0, limit + 1)
+            if cut <= 0:
+                cut = limit
+
+            chunk = remaining[:cut].rstrip()
+            if not chunk:
+                chunk = remaining[:limit]
+            chunks.append(chunk)
+            remaining = remaining[len(chunk):].lstrip()
+
+        if remaining:
+            chunks.append(remaining)
+        return chunks
+
+    def _send_markdown_chunks(
+        self,
+        chunks: list,
+        receiver: str,
+        is_group: bool,
+        *,
+        start_index: int = 1,
+        total: int = None,
+    ) -> bool:
+        total = total or len(chunks)
+        for offset, chunk in enumerate(chunks):
+            part_index = start_index + offset
+            content = str(chunk or "")
+            if total > 1 and part_index > 1:
+                content = f"({part_index}/{total})\n\n{content}"
+            if not self._active_send_markdown(content, receiver, is_group):
+                return False
+            if offset < len(chunks) - 1:
+                time.sleep(LONG_REPLY_PART_DELAY_SECONDS)
+        return True
+
     def _send_text(
         self,
         content: str,
@@ -1053,12 +1106,14 @@ class WecomBotChannel(ChatChannel):
                 mention_display_names,
                 enabled=bool(is_group),
             )
+            chunks = self._split_text_chunks(final_content)
+            primary_content = chunks[0]
 
             # Brief pause so the server finishes processing the last intermediate chunk
             # before receiving the finish packet
             time.sleep(0.15)
 
-            return self._ws_send({
+            sent = self._ws_send({
                 "cmd": "aibot_respond_msg",
                 "headers": {"req_id": req_id},
                 "body": {
@@ -1066,10 +1121,28 @@ class WecomBotChannel(ChatChannel):
                     "stream": {
                         "id": stream_id,
                         "finish": True,
-                        "content": final_content,
+                        "content": primary_content,
                     },
                 },
             })
+            if not sent:
+                return False
+            if len(chunks) > 1:
+                logger.info(
+                    "[WecomBot] Splitting long stream reply into %s parts (chars=%s)",
+                    len(chunks),
+                    len(final_content),
+                )
+                extras_sent = self._send_markdown_chunks(
+                    chunks[1:],
+                    receiver,
+                    is_group,
+                    start_index=2,
+                    total=len(chunks),
+                )
+                if not extras_sent:
+                    logger.warning("[WecomBot] Failed to send one or more long reply follow-up chunks")
+            return True
         else:
             content = self._with_mentions(
                 content,
@@ -1077,7 +1150,14 @@ class WecomBotChannel(ChatChannel):
                 mention_display_names,
                 enabled=bool(is_group),
             )
-            return self._active_send_markdown(content, receiver, is_group)
+            chunks = self._split_text_chunks(content)
+            if len(chunks) > 1:
+                logger.info(
+                    "[WecomBot] Splitting long active text into %s parts (chars=%s)",
+                    len(chunks),
+                    len(content),
+                )
+            return self._send_markdown_chunks(chunks, receiver, is_group, total=len(chunks))
 
     @staticmethod
     def _as_list(value) -> list:
