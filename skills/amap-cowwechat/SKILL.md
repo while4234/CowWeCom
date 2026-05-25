@@ -46,6 +46,8 @@ metadata:
 高德 路线 北京南站 到 故宫
 高德 驾车 北京南站 到 故宫
 高德 公交 北京南站 到 故宫
+高德 天气 成都
+高德 天气预报 成都
 高德 路况 家 公司
 高德 路况 北京南站 到 故宫
 高德 查 五环路 路况
@@ -65,6 +67,7 @@ metadata:
 - `commute_status`：查询上班/下班通勤。
 - `route_plan`：查询自定义路线。
 - `traffic_status`：查询路况。默认基础版优先解析驾车路线返回的 `tmcs`；当 `AMAP_ENABLE_ADVANCED_TRAFFIC=true` 且 Key 有权限时，可按道路、圆形区域或矩形区域补充高级交通态势。
+- `weather`：查询城市实时天气或天气预报。先把城市名解析为高德 adcode，再调用天气接口；缺少城市且没有默认城市时先追问。
 - `analyze_travel_route`：分析旅游路线合理性并推荐分段交通方式。
 - `geocode`、`reverse_geocode`、`poi_search`：地点解析和 POI 查询。
 
@@ -78,6 +81,8 @@ python "<base_dir>\scripts\amap_cowwechat.py" traffic "北京南站" "故宫" --
 python "<base_dir>\scripts\amap_cowwechat.py" traffic-road "东三环" --adcode 110000
 python "<base_dir>\scripts\amap_cowwechat.py" traffic-circle "116.305776,39.986414" --radius 3000
 python "<base_dir>\scripts\amap_cowwechat.py" traffic-rectangle "116.351147,39.966309;116.357134,39.968727"
+python "<base_dir>\scripts\amap_cowwechat.py" weather 成都 --type live
+python "<base_dir>\scripts\amap_cowwechat.py" weather 成都 --type forecast --json
 python "<base_dir>\scripts\amap_cowwechat.py" travel "北京：故宫、景山公园、南锣鼓巷、三里屯"
 ```
 
@@ -104,10 +109,21 @@ python "<base_dir>\scripts\amap_cowwechat.py" traffic-road "东三环" --adcode 
 - 降级不应让通勤、路线规划、ETA 或旅游路线分析失败；回复中可简短说明“高级路况不可用，已使用路线实时路况估算”。
 - 不要重试到刷额度；同一次用户请求内最多尝试必要的一次高级查询，然后使用基础结果。
 
+## 天气查询
+
+天气只支持城市级查询。用户给出“成都”“北京市”这类城市名时，先通过地理编码拿到 `adcode`，再请求 `/v3/weather/weatherInfo`：
+
+- 实时天气使用 `extensions=base`，适合回答“现在天气怎么样”“要不要带伞/外套”。
+- 天气预报使用 `extensions=all`，适合回答“未来几天天气”“周末适不适合出行”。
+- 如果用户只说“查天气”且上下文没有城市，先问城市；不要要求用户提供 Key。
+- 如果返回权限、配额、限流、Key 无效或服务未开通错误，直接说明高德天气接口不可用和安全错误信息；不要输出 Key，也不要尝试重复请求刷额度。
+- 如果天气接口不可用，但用户还需要出行建议，可基于路线/路况能力继续回答交通部分，并说明天气数据暂不可用。
+
 ## 高德 API 要求
 
 - 地理编码：`/v3/geocode/geo`
 - 逆地理编码：`/v3/geocode/regeo`
+- 天气查询：`/v3/weather/weatherInfo`，城市名必须先解析为 adcode；`live` 使用 `extensions=base`，`forecast` 使用 `extensions=all`
 - POI 搜索：优先 `/v5/place/text`，权限不足时降级 `/v3/place/text`
 - 路线规划：优先 v5 驾车、步行、骑行、电动车、公交换乘接口
 - 驾车路线默认请求 `show_fields=cost,tmcs,navi,polyline,cities`
@@ -122,6 +138,7 @@ python "<base_dir>\scripts\amap_cowwechat.py" traffic-road "东三环" --adcode 
 - 预计耗时和 ETA
 - 距离
 - 当前路况
+- 实时天气、温度、湿度、风力，或未来几天白天/夜间天气和温度
 - 主要拥堵路段
 - 备选路线
 - 风险提示和调整建议

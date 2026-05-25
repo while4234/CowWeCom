@@ -54,6 +54,52 @@ class TrafficStatusResult:
 
 
 @dataclass
+class WeatherLive:
+    city: str
+    adcode: str
+    province: str = ""
+    weather: str = ""
+    temperature_c: str = ""
+    wind_direction: str = ""
+    wind_power: str = ""
+    humidity_percent: str = ""
+    report_time: str = ""
+
+
+@dataclass
+class WeatherForecastDay:
+    date: str
+    week: str = ""
+    day_weather: str = ""
+    night_weather: str = ""
+    day_temp_c: str = ""
+    night_temp_c: str = ""
+    day_wind: str = ""
+    night_wind: str = ""
+    day_power: str = ""
+    night_power: str = ""
+
+
+@dataclass
+class WeatherForecast:
+    city: str
+    adcode: str
+    province: str = ""
+    report_time: str = ""
+    casts: List[WeatherForecastDay] = field(default_factory=list)
+
+
+@dataclass
+class WeatherResult:
+    city: str
+    adcode: str
+    weather_type: str
+    live: Optional[WeatherLive] = None
+    forecast: Optional[WeatherForecast] = None
+    raw: Optional[Dict[str, Any]] = None
+
+
+@dataclass
 class RouteStep:
     instruction: str = ""
     road_name: str = ""

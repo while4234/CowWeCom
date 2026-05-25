@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from agent.tools.amap.client import AmapApiError, AmapClient
-from agent.tools.amap.formatter import format_commute, format_traffic_status, format_travel_analysis
+from agent.tools.amap.formatter import format_commute, format_traffic_status, format_travel_analysis, format_weather
 from agent.tools.amap.models import (
     CommuteResult,
     CongestionSegment,
@@ -21,6 +21,10 @@ from agent.tools.amap.models import (
     TrafficStatusResult,
     TravelLeg,
     TravelRouteAnalysis,
+    WeatherForecast,
+    WeatherForecastDay,
+    WeatherLive,
+    WeatherResult,
 )
 from agent.tools.amap.state import AmapStateStore
 
@@ -29,6 +33,11 @@ LONLAT_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 ROUTE_SHOW_FIELDS = "cost,tmcs,navi,polyline,cities"
 TRAFFIC_STATUS_EXTENSIONS = "all"
 DEFAULT_TRAFFIC_LEVEL = 5
+WEATHER_ENDPOINT = "/v3/weather/weatherInfo"
+WEATHER_EXTENSIONS = {
+    "live": "base",
+    "forecast": "all",
+}
 DRIVING_STRATEGIES: List[Tuple[str, str]] = [
     ("32", "高德推荐"),
     ("33", "躲避拥堵"),
@@ -138,6 +147,45 @@ class AmapService:
             city=str(comp.get("city") or comp.get("province") or ""),
             adcode=str(comp.get("adcode") or ""),
         )
+
+    def resolve_city_adcode(self, city: str = "") -> GeoPoint:
+        raw = str(city or "").strip()
+        if _is_adcode(raw):
+            return GeoPoint(name=raw, location="", address=raw, city=raw, adcode=raw)
+
+        city_query = raw or self.default_city
+        if not city_query and self.default_adcode:
+            return GeoPoint(
+                name=self.default_city or self.default_adcode,
+                location="",
+                address=self.default_city or self.default_adcode,
+                city=self.default_city,
+                adcode=self.default_adcode,
+            )
+        if not city_query:
+            raise AmapServiceError("天气查询需要城市名称或 adcode，例如“成都”或“510100”。")
+
+        point = self.geocode(city_query, city_query)
+        if not point.adcode:
+            raise AmapServiceError(f"无法解析城市 adcode：{city_query}。")
+        return point
+
+    def weather(self, city: str, weather_type: str = "live") -> WeatherResult:
+        normalized_type = _normalize_weather_type(weather_type)
+        city_point = self.resolve_city_adcode(city)
+        data = self.client.request(
+            WEATHER_ENDPOINT,
+            {
+                "city": city_point.adcode,
+                "extensions": WEATHER_EXTENSIONS[normalized_type],
+            },
+        )
+        if normalized_type == "forecast":
+            return self._parse_weather_forecast(data, city_point)
+        return self._parse_weather_live(data, city_point)
+
+    weather_info = weather
+    get_weather = weather
 
     @staticmethod
     def normalize_congestion_status(status: Any) -> str:
@@ -419,6 +467,65 @@ class AmapService:
             unknown_percent=_to_float(evaluation.get("unknown")),
             roads=roads,
             warning=warning,
+            raw=data,
+        )
+
+    def _parse_weather_live(self, data: Dict[str, Any], city_point: GeoPoint) -> WeatherResult:
+        lives = data.get("lives") or []
+        if not lives:
+            raise AmapServiceError(f"高德未返回实时天气：{city_point.name or city_point.adcode}。")
+        item = lives[0] or {}
+        live = WeatherLive(
+            city=str(item.get("city") or city_point.city or city_point.name),
+            adcode=str(item.get("adcode") or city_point.adcode),
+            province=str(item.get("province") or ""),
+            weather=str(item.get("weather") or ""),
+            temperature_c=str(item.get("temperature_float") or item.get("temperature") or ""),
+            wind_direction=str(item.get("winddirection") or ""),
+            wind_power=str(item.get("windpower") or ""),
+            humidity_percent=str(item.get("humidity_float") or item.get("humidity") or ""),
+            report_time=str(item.get("reporttime") or ""),
+        )
+        return WeatherResult(
+            city=live.city,
+            adcode=live.adcode,
+            weather_type="live",
+            live=live,
+            raw=data,
+        )
+
+    def _parse_weather_forecast(self, data: Dict[str, Any], city_point: GeoPoint) -> WeatherResult:
+        forecasts = data.get("forecasts") or []
+        if not forecasts:
+            raise AmapServiceError(f"高德未返回天气预报：{city_point.name or city_point.adcode}。")
+        item = forecasts[0] or {}
+        casts = [
+            WeatherForecastDay(
+                date=str(cast.get("date") or ""),
+                week=str(cast.get("week") or ""),
+                day_weather=str(cast.get("dayweather") or ""),
+                night_weather=str(cast.get("nightweather") or ""),
+                day_temp_c=str(cast.get("daytemp_float") or cast.get("daytemp") or ""),
+                night_temp_c=str(cast.get("nighttemp_float") or cast.get("nighttemp") or ""),
+                day_wind=str(cast.get("daywind") or ""),
+                night_wind=str(cast.get("nightwind") or ""),
+                day_power=str(cast.get("daypower") or ""),
+                night_power=str(cast.get("nightpower") or ""),
+            )
+            for cast in item.get("casts") or []
+        ]
+        forecast = WeatherForecast(
+            city=str(item.get("city") or city_point.city or city_point.name),
+            adcode=str(item.get("adcode") or city_point.adcode),
+            province=str(item.get("province") or ""),
+            report_time=str(item.get("reporttime") or ""),
+            casts=casts,
+        )
+        return WeatherResult(
+            city=forecast.city,
+            adcode=forecast.adcode,
+            weather_type="forecast",
+            forecast=forecast,
             raw=data,
         )
 
@@ -992,6 +1099,27 @@ def _traffic_level(value: Any) -> int:
     return level
 
 
+def _normalize_weather_type(value: Any) -> str:
+    raw = str(value or "live").strip().lower()
+    mapping = {
+        "live": "live",
+        "base": "live",
+        "实时": "live",
+        "当前": "live",
+        "forecast": "forecast",
+        "all": "forecast",
+        "预报": "forecast",
+        "天气预报": "forecast",
+    }
+    if raw not in mapping:
+        raise AmapServiceError("天气类型只支持 live 或 forecast。")
+    return mapping[raw]
+
+
+def _is_adcode(value: str) -> bool:
+    return bool(re.fullmatch(r"\d{6}", str(value or "").strip()))
+
+
 def _normalize_rectangle(value: str) -> str:
     raw = str(value or "").strip().replace("；", ";")
     parts = [part.strip() for part in raw.split(";") if part.strip()]
@@ -1130,6 +1258,10 @@ def format_travel_result(result: TravelRouteAnalysis) -> str:
 
 def format_traffic_result(result: TrafficStatusResult) -> str:
     return format_traffic_status(result)
+
+
+def format_weather_result(result: WeatherResult) -> str:
+    return format_weather(result)
 
 
 def load_skill_frontmatter(skills_root: str) -> Dict[str, Any]:

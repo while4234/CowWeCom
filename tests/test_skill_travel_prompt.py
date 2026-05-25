@@ -25,7 +25,8 @@ def test_travel_and_amap_are_available_together_when_amap_key_is_configured(monk
     assert "<unavailable_skills>" not in prompt
     assert "<name>amap-cowwechat</name>" in prompt
     assert "<name>travel-manager</name>" in prompt
-    assert "Pair with amap-cowwechat" in prompt
+    assert "amap-cowwechat" in prompt
+    assert "plugin-12306-ticket" in prompt
     assert "AMap Web Service" in prompt
 
 
@@ -50,4 +51,4 @@ def test_travel_skill_docs_cross_reference_each_other():
     assert "amap-cowwechat" in travel
     assert "ETA" in travel
     assert "traffic" in travel
-    assert "transport-mode" in travel
+    assert "交通方式" in travel

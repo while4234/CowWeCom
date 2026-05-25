@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 from agent.tools.base_tool import BaseTool, ToolResult
 from agent.tools.amap.client import AmapApiError, AmapClient, MissingAmapKeyError
-from agent.tools.amap.formatter import format_route, format_traffic_status
+from agent.tools.amap.formatter import format_route, format_traffic_status, format_weather
 from agent.tools.amap.models import RoutePlan, TrafficStatusResult
 from agent.tools.amap.models import public_dict
 from agent.tools.amap.service import (
@@ -26,9 +26,9 @@ class AmapTool(BaseTool):
     name: str = "amap"
     description: str = (
         "Use AMap Web Service APIs for Chinese commute, route planning, traffic, ETA, "
-        "POI/geocoding, and travel route reasonableness analysis. "
+        "weather, POI/geocoding, and travel route reasonableness analysis. "
         "Supports actions: set_profile_location, commute_status, route_plan, "
-        "traffic_status, analyze_travel_route, geocode, reverse_geocode, poi_search."
+        "traffic_status, weather, analyze_travel_route, geocode, reverse_geocode, poi_search."
     )
     params: dict = {
         "type": "object",
@@ -40,6 +40,7 @@ class AmapTool(BaseTool):
                     "commute_status",
                     "route_plan",
                     "traffic_status",
+                    "weather",
                     "analyze_travel_route",
                     "geocode",
                     "reverse_geocode",
@@ -77,7 +78,12 @@ class AmapTool(BaseTool):
             },
             "adcode": {
                 "type": "string",
-                "description": "AMap adcode. Preferred for advanced road traffic queries."
+                "description": "AMap adcode. Preferred for advanced road traffic and weather queries."
+            },
+            "weather_type": {
+                "type": "string",
+                "enum": ["live", "forecast"],
+                "description": "For weather: live for realtime weather, forecast for weather forecast."
             },
             "traffic_query_type": {
                 "type": "string",
@@ -168,6 +174,12 @@ class AmapTool(BaseTool):
                     level=int(args.get("level") or 5),
                 )
                 return self._traffic_success(result, args)
+            if action == "weather":
+                result = service.weather(
+                    args.get("city") or args.get("place") or args.get("adcode") or "",
+                    args.get("weather_type") or args.get("type") or "live",
+                )
+                return self._success(format_weather(result), result, args)
             if action == "analyze_travel_route":
                 return self._analyze_travel_route(service, args)
             if action == "geocode":

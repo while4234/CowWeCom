@@ -27,6 +27,16 @@ CITY_COORDS: dict[str, dict[str, Any]] = {
     "西安": {"name": "西安", "admin1": "陕西", "latitude": 34.3416, "longitude": 108.9398, "timezone": "Asia/Shanghai"},
 }
 
+INTERNATIONAL_CITY_ALIASES: dict[str, dict[str, str]] = {
+    "东京": {"name": "Tokyo", "country_code": "JP"},
+    "東京": {"name": "Tokyo", "country_code": "JP"},
+    "纽约": {"name": "New York", "country_code": "US"},
+    "紐約": {"name": "New York", "country_code": "US"},
+    "首尔": {"name": "Seoul", "country_code": "KR"},
+    "首爾": {"name": "Seoul", "country_code": "KR"},
+    "巴黎": {"name": "Paris", "country_code": "FR"},
+}
+
 WEATHER_WORDS = ("天气", "气温", "温度", "降雨", "降水", "下雨", "风力", "风速", "冷不冷", "热不热")
 CN_WEEKDAYS = "一二三四五六日"
 CODE_TEXT = {
@@ -78,6 +88,9 @@ def normalize_place(text: str) -> str:
     for city in CITY_COORDS:
         if city in raw:
             return city
+    for alias in INTERNATIONAL_CITY_ALIASES:
+        if alias in raw:
+            return alias
     cleaned = re.sub(r"(今天|今日|明天|后天|大后天|未来\d+天|现在|当前|最新|请|帮我|查一下|查下|查询|看看|的)", "", raw)
     for word in WEATHER_WORDS:
         cleaned = cleaned.replace(word, "")
@@ -105,20 +118,61 @@ def parse_dates(text: str, days_arg: int | None) -> list[dt.date]:
     return [today]
 
 
-def geocode(place: str) -> dict[str, Any]:
-    if place in CITY_COORDS:
+def normalize_country_code(country_code: str | None) -> str | None:
+    if not country_code:
+        return None
+    normalized = country_code.strip().upper()
+    if not re.fullmatch(r"[A-Z]{2}", normalized):
+        raise ValueError("country code must be a two-letter ISO code, such as JP, US, KR, or FR")
+    return normalized
+
+
+def country_code_arg(value: str) -> str:
+    try:
+        return normalize_country_code(value) or ""
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def alias_for(place: str) -> dict[str, str] | None:
+    return INTERNATIONAL_CITY_ALIASES.get(place.strip())
+
+
+def geocode_language(place: str) -> str:
+    return "en" if re.search(r"[A-Za-z]", place) else "zh"
+
+
+def geocode(place: str, country_code: str | None = None) -> dict[str, Any]:
+    normalized_country_code = normalize_country_code(country_code)
+    if place in CITY_COORDS and normalized_country_code in (None, "CN"):
         return CITY_COORDS[place]
+    alias = alias_for(place)
+    query = alias["name"] if alias else place
+    effective_country_code = normalized_country_code or (alias["country_code"] if alias else None)
+    params = {"name": query, "count": 5, "language": geocode_language(query), "format": "json"}
+    if effective_country_code:
+        params["countryCode"] = effective_country_code
     url = "https://geocoding-api.open-meteo.com/v1/search?" + urllib.parse.urlencode(
-        {"name": place, "count": 5, "language": "zh", "format": "json"}
+        params
     )
     data = fetch_json(url, timeout=10)
     results = data.get("results") or []
     if not results:
-        raise RuntimeError(f"没有查到 {place} 的天气定位结果")
-    first = results[0]
+        country_hint = f"（{effective_country_code}）" if effective_country_code else ""
+        raise RuntimeError(f"没有查到 {place}{country_hint} 的天气定位结果")
+    first = next(
+        (
+            item
+            for item in results
+            if effective_country_code and str(item.get("country_code") or "").upper() == effective_country_code
+        ),
+        results[0],
+    )
     return {
         "name": first.get("name") or place,
         "admin1": first.get("admin1") or "",
+        "country": first.get("country") or "",
+        "country_code": first.get("country_code") or effective_country_code or "",
         "latitude": first.get("latitude"),
         "longitude": first.get("longitude"),
         "timezone": first.get("timezone") or "Asia/Shanghai",
@@ -160,8 +214,8 @@ def advice(item: dict[str, Any]) -> str:
     return "；".join(tips[:3])
 
 
-def lookup(place: str, dates: list[dt.date]) -> dict[str, Any]:
-    location = geocode(place)
+def lookup(place: str, dates: list[dt.date], country_code: str | None = None) -> dict[str, Any]:
+    location = geocode(place, country_code=country_code)
     start, end = min(dates), max(dates)
     url = "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(
         {
@@ -216,6 +270,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Fast weather lookup using Open-Meteo.")
     parser.add_argument("text", nargs="*", help="Weather query text")
     parser.add_argument("--place", help="Explicit place/city")
+    parser.add_argument("--country-code", type=country_code_arg, help="Optional ISO country code to bias geocoding, such as JP or US")
     parser.add_argument("--days", type=int, help="Number of days from today, max 16")
     parser.add_argument("--json", action="store_true", help="Return raw JSON")
     args = parser.parse_args()
@@ -223,7 +278,7 @@ def main() -> int:
     place = args.place or normalize_place(text)
     if not place:
         raise SystemExit("请提供城市，例如：python quick_weather.py \"明天成都天气\"")
-    bundle = lookup(place, parse_dates(text, args.days))
+    bundle = lookup(place, parse_dates(text, args.days), country_code=args.country_code)
     if args.json:
         print(json.dumps(bundle, ensure_ascii=False, default=str, indent=2))
     else:

@@ -34,6 +34,7 @@ from agent.tools.amap.service import (  # noqa: E402
     format_commute_result,
     format_traffic_result,
     format_travel_result,
+    format_weather_result,
     parse_points_text,
 )
 
@@ -82,6 +83,16 @@ def main() -> int:
     traffic_rectangle = subparsers.add_parser("traffic-rectangle", help="Analyze advanced traffic status inside a rectangle.")
     traffic_rectangle.add_argument("rectangle", help="left-bottom lon,lat;right-top lon,lat")
     traffic_rectangle.add_argument("--level", type=int, default=5)
+
+    weather = subparsers.add_parser("weather", help="Query AMap live weather or forecast by city.")
+    weather.add_argument("city", help="City name or adcode, e.g. 成都 or 510100.")
+    weather.add_argument("--type", dest="weather_type", default="live", choices=["live", "forecast"])
+    weather.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Print normalized JSON instead of Chinese summary.",
+    )
 
     travel = subparsers.add_parser("travel", help="Analyze travel route reasonableness.")
     travel.add_argument("text", help="Example: 北京：故宫、景山公园、南锣鼓巷")
@@ -152,6 +163,9 @@ def _run_command(service: AmapService, args: argparse.Namespace) -> dict[str, An
             level=args.level,
         )
         return {"summary": format_traffic_result(result), "data": result}
+    if args.command == "weather":
+        result = service.weather(args.city, args.weather_type)
+        return {"summary": format_weather_result(result), "data": result}
     if args.command == "travel":
         city, points = parse_points_text(args.text)
         result = service.analyze_travel_route(points, args.city or city)

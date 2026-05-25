@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Iterable, List
 
-from agent.tools.amap.models import CommuteResult, RoutePlan, TrafficStatusResult, TravelRouteAnalysis
+from agent.tools.amap.models import CommuteResult, RoutePlan, TrafficStatusResult, TravelRouteAnalysis, WeatherResult
 
 
 MODE_LABELS = {
@@ -138,6 +138,45 @@ def format_traffic_status(result: TrafficStatusResult) -> str:
     return "\n".join(lines)
 
 
+def format_weather(result: WeatherResult) -> str:
+    if result.live:
+        live = result.live
+        lines = [
+            f"{live.city or result.city}实时天气",
+            "",
+            f"天气：{live.weather or '未知'}",
+        ]
+        if live.temperature_c:
+            lines.append(f"温度：{live.temperature_c}℃")
+        if live.humidity_percent:
+            lines.append(f"湿度：{live.humidity_percent}%")
+        wind = _join_nonempty([live.wind_direction, live.wind_power])
+        if wind:
+            lines.append(f"风力：{wind}")
+        if live.report_time:
+            lines.append(f"发布时间：{live.report_time}")
+        return "\n".join(lines)
+
+    forecast = result.forecast
+    if not forecast:
+        return f"{result.city or result.adcode}天气：未返回可用数据"
+
+    lines = [
+        f"{forecast.city or result.city}天气预报",
+        "",
+    ]
+    for item in forecast.casts[:4]:
+        day_weather = item.day_weather or "未知"
+        night_weather = item.night_weather or "未知"
+        temp = _format_temperature_range(item.night_temp_c, item.day_temp_c)
+        wind = _join_nonempty([item.day_wind, item.day_power])
+        suffix = f"，{wind}" if wind else ""
+        lines.append(f"{item.date}：白天{day_weather}，夜间{night_weather}{temp}{suffix}")
+    if forecast.report_time:
+        lines.append(f"发布时间：{forecast.report_time}")
+    return "\n".join(lines)
+
+
 def _format_segments(route: RoutePlan) -> List[str]:
     if not route.congestion_segments:
         return ["", "主要拥堵：未返回详细路况段"]
@@ -175,6 +214,20 @@ def _traffic_query_text(result: TrafficStatusResult) -> str:
         "rectangle": "矩形区域",
     }
     return f"{labels.get(result.query_type, result.query_type)} {result.query}".strip()
+
+
+def _format_temperature_range(low: str, high: str) -> str:
+    if low and high:
+        return f"，{low}~{high}℃"
+    if high:
+        return f"，最高 {high}℃"
+    if low:
+        return f"，最低 {low}℃"
+    return ""
+
+
+def _join_nonempty(values: Iterable[str]) -> str:
+    return " ".join(str(value).strip() for value in values if str(value).strip())
 
 
 def join_warnings(warnings: Iterable[str]) -> str:

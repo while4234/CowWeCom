@@ -452,6 +452,107 @@ def test_tool_schema_loads_with_expected_actions():
     assert "traffic_query_type" in serialized
     assert "road_name" in serialized
     assert "rectangle" in serialized
+    assert "weather" in serialized
+    assert "weather_type" in serialized
+
+
+def test_weather_live_resolves_city_adcode_and_parses_result(tmp_path):
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, endpoint, params=None):
+            self.calls.append((endpoint, dict(params or {})))
+            if endpoint == "/v3/geocode/geo":
+                return {
+                    "status": "1",
+                    "infocode": "10000",
+                    "geocodes": [
+                        {
+                            "formatted_address": "四川省成都市",
+                            "location": "104.066541,30.572269",
+                            "adcode": "510100",
+                            "city": "成都市",
+                        }
+                    ],
+                }
+            if endpoint == "/v3/weather/weatherInfo":
+                return {
+                    "status": "1",
+                    "infocode": "10000",
+                    "lives": [
+                        {
+                            "province": "四川",
+                            "city": "成都市",
+                            "adcode": "510100",
+                            "weather": "阴",
+                            "temperature": "26",
+                            "winddirection": "东南",
+                            "windpower": "≤3",
+                            "humidity": "66",
+                            "reporttime": "2026-05-25 17:00:00",
+                        }
+                    ],
+                }
+            raise AssertionError(endpoint)
+
+    service = AmapService(client=FakeClient(), state=AmapStateStore(tmp_path))
+
+    result = service.weather("成都", "live")
+
+    assert value(result, "weather_type") == "live"
+    assert value(result, "adcode") == "510100"
+    assert value(result, "live", "weather") == "阴"
+    assert value(result, "live", "temperature_c") == "26"
+    assert service.client.calls[0][0] == "/v3/geocode/geo"
+    assert service.client.calls[1] == (
+        "/v3/weather/weatherInfo",
+        {"city": "510100", "extensions": "base"},
+    )
+
+
+def test_weather_forecast_accepts_adcode_without_geocoding():
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, endpoint, params=None):
+            self.calls.append((endpoint, dict(params or {})))
+            assert endpoint == "/v3/weather/weatherInfo"
+            return {
+                "status": "1",
+                "infocode": "10000",
+                "forecasts": [
+                    {
+                        "province": "四川",
+                        "city": "成都市",
+                        "adcode": "510100",
+                        "reporttime": "2026-05-25 17:00:00",
+                        "casts": [
+                            {
+                                "date": "2026-05-26",
+                                "week": "2",
+                                "dayweather": "小雨",
+                                "nightweather": "阴",
+                                "daytemp": "28",
+                                "nighttemp": "21",
+                                "daywind": "东南",
+                                "daypower": "≤3",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+    service = AmapService(client=FakeClient())
+
+    result = service.weather("510100", "forecast")
+
+    assert value(result, "weather_type") == "forecast"
+    assert value(result, "forecast", "casts", default=[])[0].day_weather == "小雨"
+    assert service.client.calls == [
+        ("/v3/weather/weatherInfo", {"city": "510100", "extensions": "all"})
+    ]
 
 
 def test_advanced_traffic_road_parses_evaluation_and_roads():
