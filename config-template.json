@@ -233,6 +233,12 @@
     }
   },
   "skill": {
+    "amap-cowwechat": {
+      "webservice_key": "",
+      "webservice_key_env": "AMAP_WEBSERVICE_KEY",
+      "fallback_key_env": "SKILL_AMAP_COWWECHAT_WEBSERVICE_KEY",
+      "legacy_key_env": "AMAP_KEY"
+    },
     "image-generation": {
       "runtime": "codex_auth",
       "codex_auth_file": ""

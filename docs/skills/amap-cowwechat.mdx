@@ -1,0 +1,78 @@
+---
+title: AMap CowWechat
+description: Configure 高德地图 / AMap commute, route, traffic, and travel planning support in CowWechat.
+---
+
+# AMap CowWechat
+
+`amap-cowwechat` is a built-in Skill for 高德地图 / AMap Web Service lookups in CowWechat. It is intended for commute ETA, route planning, traffic status, distance checks, geocoding, and lightweight travel advice.
+
+## Setup
+
+Create a 高德开放平台 Web Service API key, then configure one of these environment variables:
+
+```text
+AMAP_WEBSERVICE_KEY=your-webservice-key
+```
+
+Accepted aliases:
+
+```text
+SKILL_AMAP_COWWECHAT_WEBSERVICE_KEY=your-webservice-key
+AMAP_KEY=your-webservice-key
+```
+
+`AMAP_WEBSERVICE_KEY` is the preferred name. `AMAP_KEY` is kept for compatibility with existing local setups.
+
+You can also use the CowWechat environment configuration tool:
+
+```text
+env_config(action="set", key="AMAP_WEBSERVICE_KEY", value="your-webservice-key")
+```
+
+## Commands
+
+Use natural Chinese requests in chat:
+
+```text
+高德 查路线 北京南站 到 首都机场
+高德 通勤 从 公司 到 家
+高德 路况 中关村 到 望京
+高德 计算距离 上海虹桥站 到 人民广场
+高德 旅游路线 杭州西湖 半天
+```
+
+The Skill should ask for missing city, origin, destination, travel mode, or departure time when those details are required.
+
+## Examples
+
+```text
+我: 高德 查一下从深圳北站到宝安机场现在开车要多久
+CowWechat: 返回驾车时间、距离、主要路线、拥堵提示，并说明实时路况可能变化。
+```
+
+```text
+我: 明早 8 点从家到公司怎么走
+CowWechat: 如果没有保存的家/公司地址，先询问具体起点和终点；信息完整后再规划通勤路线。
+```
+
+```text
+我: 高德 看下西湖半天游路线
+CowWechat: 根据地点和时间窗口给出适合的游览顺序、交通方式和注意事项。
+```
+
+## Common Errors
+
+- Missing key: configure `AMAP_WEBSERVICE_KEY` or one of the accepted aliases.
+- Wrong key type: use a Web Service key, not an Android, iOS, or browser-only key.
+- Permission denied: enable the required Web Service APIs in 高德开放平台.
+- Ambiguous place: include city or district, such as "北京 朝阳 望京".
+- Quota or rate limit reached: wait for quota reset or check the 高德开放平台 console.
+- Unstable ETA: traffic estimates are time-sensitive and may differ from the final route in the AMap app.
+
+## Security
+
+- Do not paste real AMap keys into documentation, screenshots, Git commits, or issue comments.
+- Prefer environment variables or `env_config`; never hard-code keys in Skill files.
+- If a key was shared in chat or committed accidentally, rotate it in 高德开放平台.
+- Keep `config-template.json` placeholders empty. It must not contain real secrets.

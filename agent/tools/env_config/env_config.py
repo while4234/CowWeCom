@@ -21,6 +21,9 @@ API_KEY_REGISTRY = {
     "LINKAI_API_KEY": "LinkAI智能体平台 API 密钥，支持多种模型切换",
     # 搜索服务
     "BOCHA_API_KEY": "博查 AI 搜索 API 密钥 ",
+    # 地图与出行服务
+    "AMAP_WEBSERVICE_KEY": "高德地图 Web Service API 密钥（推荐，用于路线、路况、通勤和出行查询）",
+    "AMAP_KEY": "高德地图 API 密钥兼容别名（建议优先使用 AMAP_WEBSERVICE_KEY）",
 }
 
 class EnvConfig(BaseTool):
@@ -53,6 +56,8 @@ class EnvConfig(BaseTool):
                     "- GEMINI_API_KEY: Google Gemini API\n"
                     "- LINKAI_API_KEY: LinkAI platform\n"
                     "- BOCHA_API_KEY: Bocha AI search (博查搜索)\n"
+                    "- AMAP_WEBSERVICE_KEY: AMap Web Service (高德路线/路况/通勤)\n"
+                    "- AMAP_KEY: AMap API key alias (高德兼容别名)\n"
                     "Use exact key names (case-sensitive, all uppercase with underscores)"
                 )
             },
