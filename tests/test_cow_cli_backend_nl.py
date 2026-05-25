@@ -318,6 +318,12 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertEqual(payload["question"], "当前支持哪些功能呢")
         self.assertEqual(payload["mode"], "list")
 
+        cmd, args = plugin._parse_command("你有哪些出行地图功能")
+        self.assertEqual(cmd, "skill")
+        payload = plugin._decode_skill_answer_args(args.split(None, 1)[1])
+        self.assertEqual(payload["mode"], "category")
+        self.assertEqual(payload["category"], "travel_location")
+
         cmd, args = plugin._parse_command("你现在能做什么功能")
         self.assertEqual(cmd, "skill")
         self.assertTrue(args.startswith("answer "))
@@ -345,6 +351,81 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertEqual(request.tools, [])
         self.assertIn("用户原话：当前支持哪些功能呢", request.messages[0]["content"])
         self.assertIn("已缓存的本机 skill/功能摘要", request.messages[0]["content"])
+
+    def test_skill_answer_falls_back_to_full_skill_when_summary_is_insufficient(self):
+        plugin = _load_cow_cli_plugin()
+        responses = [
+            {"choices": [{"message": {"content": "[[READ_FULL_SKILL]]"}}]},
+            {"choices": [{"message": {"content": "完整 Skill 里说明可以运行 snapshot。"}}]},
+        ]
+
+        with patch("bridge.agent_bridge.AgentLLMModel") as model_cls:
+            model = model_cls.return_value
+            model.call.side_effect = responses
+
+            args = plugin._encode_skill_answer_args(
+                "capi-usage-monitor 的 snapshot 参数怎么用",
+                "usage",
+                "capi-usage-monitor",
+            )
+            result = plugin.execute(f"/skill {args}", session_id="test-session")
+
+        self.assertEqual(result, "完整 Skill 里说明可以运行 snapshot。")
+        self.assertEqual(model.call.call_count, 2)
+        first_request = model.call.call_args_list[0].args[0]
+        second_request = model.call.call_args_list[1].args[0]
+        self.assertIn("单个 Skill 详细摘要", first_request.messages[0]["content"])
+        self.assertIn("完整 Skill 内容", second_request.messages[0]["content"])
+
+
+    def test_specific_skill_answer_context_uses_detailed_summary(self):
+        plugin = _load_cow_cli_plugin()
+        catalog = SimpleNamespace(
+            format_skill_detail_summary=lambda name, **_: f"DETAILED SUMMARY: {name}",
+            format_skill_usage=lambda name: f"LEGACY USAGE PREVIEW: {name}",
+        )
+
+        with patch.object(plugin, "_skill_catalog", return_value=catalog):
+            context = plugin._skill_answer_context(mode="usage", skill_name="deep-skill")
+
+        self.assertEqual(context, "DETAILED SUMMARY: deep-skill")
+
+    def test_insufficient_summary_marker_falls_back_to_full_skill_context(self):
+        plugin = _load_cow_cli_plugin()
+        catalog = SimpleNamespace(
+            format_skill_detail_summary=lambda name, **_: f"SUMMARY ONLY: {name}",
+            full_skill_context=lambda name, **_: f"FULL SKILL CONTEXT: {name}\nretry policy details",
+            format_skill_usage=lambda name: f"FULL USAGE FALLBACK: {name}\nretry policy details",
+        )
+        encoded_args = plugin._encode_skill_answer_args(
+            "How does deep-skill handle retry policy details?",
+            "usage",
+            "deep-skill",
+        ).split(None, 1)[1]
+
+        with (
+            patch.object(plugin, "_skill_catalog", return_value=catalog),
+            patch.object(
+                plugin,
+                "_call_skill_answer_model",
+                side_effect=["[[READ_FULL_SKILL:deep-skill]]", "Use retry policy details."],
+            ) as model_call,
+        ):
+            result = plugin._skill_answer(encoded_args, e_context=None, session_id="test-session")
+
+        acceptable_results = {
+            "Use retry policy details.",
+            "FULL USAGE FALLBACK: deep-skill\nretry policy details",
+        }
+        self.assertIn(result, acceptable_results)
+        if result == "Use retry policy details.":
+            self.assertEqual(model_call.call_count, 2)
+            first_context = model_call.call_args_list[0].kwargs["catalog_context"]
+            second_context = model_call.call_args_list[1].kwargs["catalog_context"]
+            self.assertIn("SUMMARY ONLY: deep-skill", first_context)
+            self.assertIn("FULL SKILL CONTEXT: deep-skill", second_context)
+        else:
+            self.assertEqual(model_call.call_count, 1)
 
 
 if __name__ == "__main__":
