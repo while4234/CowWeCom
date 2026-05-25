@@ -11,8 +11,16 @@ deployment does not require any prebuilt knowledge index.
 - `derived/` and `reports/`: generated study documents and validation reports.
 - `manifest.json`: safe portable summary of indexed documents.
 
-The generated index, originals, derived files, and reports are ignored by Git so
-the public baseline stays small and free of local private knowledge.
+Protocol knowledge artifacts in this directory are committed to this repository
+when they come from user-requested protocol/specification ingestion. That
+includes the portable SQLite index, source protocol files, derived model study
+documents, validation reports, and manifest entries. This lets a fresh CowWechat
+deployment reuse already parsed protocol knowledge without uploading and parsing
+the same document again.
+
+Do not use this directory for private chat memory, credentials, local runtime
+state, or non-protocol personal documents. Those stay in ignored runtime
+locations.
 
 ## Runtime Layout
 
@@ -91,6 +99,9 @@ script writes a Markdown study page to `~/cow/knowledge/protocols/<kb_id>/`,
 stores a portable copy under `knowledge_backend/derived/`, indexes that derived
 copy as `doc_type=llm_study`, and writes a validation report under
 `knowledge_backend/reports/`.
+
+After generation and validation, commit the updated `knowledge_backend/` files
+so the generated teaching layer moves with the repository.
 
 Quality-check the result before relying on it in WeChat Q&A:
 

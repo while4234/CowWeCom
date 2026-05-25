@@ -110,6 +110,29 @@ class SafeGithubUploadSkillTest(unittest.TestCase):
         self.assertIn("knowledge_backend/indexes/kb.sqlite", payload["staged_files"])
         self.assertNotIn("knowledge_backend/indexes/kb.sqlite", payload["protected_staged"])
 
+    def test_preflight_allows_protocol_knowledge_artifacts(self):
+        index_dir = self.root / "knowledge_backend" / "indexes"
+        originals_dir = self.root / "knowledge_backend" / "originals"
+        derived_dir = self.root / "knowledge_backend" / "derived" / "axi"
+        reports_dir = self.root / "knowledge_backend" / "reports"
+        for path in (index_dir, originals_dir, derived_dir, reports_dir):
+            path.mkdir(parents=True, exist_ok=True)
+        (index_dir / "kb.sqlite").write_bytes(b"portable protocol index")
+        (originals_dir / "axi.pdf").write_bytes(b"%PDF protocol spec")
+        (derived_dir / "study.md").write_text("# Study\n", encoding="utf-8")
+        (reports_dir / "study-report.json").write_text("{}\n", encoding="utf-8")
+        run_git(self.root, "add", "knowledge_backend")
+
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "ok")
+        self.assertNotIn("knowledge_backend/indexes/kb.sqlite", payload["protected_staged"])
+        self.assertNotIn("knowledge_backend/originals/axi.pdf", payload["protected_staged"])
+        self.assertNotIn("knowledge_backend/derived/axi/study.md", payload["protected_staged"])
+        self.assertNotIn("knowledge_backend/reports/study-report.json", payload["protected_staged"])
+
 
 if __name__ == "__main__":
     unittest.main()

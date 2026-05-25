@@ -22,6 +22,7 @@ These rules are mandatory for Codex sessions working in `D:\CowWechat`.
 
 - Stage path-specifically. Do not use broad `git add .` when unrelated local changes exist.
 - Never stage secrets, credentials, tokens, cookies, local auth files, logs, generated runtime state, `.env`, `config.json`, `.codex/`, `.playwright-mcp/`, virtual environments, or local databases.
+- Exception: protocol knowledge backend artifacts under `knowledge_backend/` are project data, not disposable runtime state. When a protocol PDF/spec has been uploaded, parsed, indexed, exported, or supplemented with model-generated study docs, commit the portable `knowledge_backend/indexes/kb.sqlite`, `originals/`, `derived/`, `reports/`, and `manifest.json` after validation so other deployments can reuse the protocol library without re-parsing.
 - Respect `.gitignore` and the project `safe-github-upload` skill rules.
 - For CowWechat skill work, keep both copies synchronized:
   - Repository copy: `D:\CowWechat\skills\<skill-name>\`

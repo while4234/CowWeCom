@@ -16,6 +16,7 @@ from typing import Iterable
 ALLOWLIST = {
     ".env.example",
     ".env.sample",
+    "knowledge_backend/indexes/kb.sqlite",
 }
 
 REQUIRED_IGNORE_RULES = [
@@ -118,6 +119,12 @@ def is_protected(path: str) -> bool:
     normalized = normalize_path(path)
     lower = normalized.lower()
     if lower in ALLOWLIST:
+        return False
+    if lower.startswith("knowledge_backend/originals/"):
+        return False
+    if lower.startswith("knowledge_backend/derived/"):
+        return False
+    if lower.startswith("knowledge_backend/reports/"):
         return False
     parts = lower.split("/")
     protected_dirs = {".codex", ".playwright-mcp", ".venv", "node_modules", "logs", "secrets"}

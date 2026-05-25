@@ -78,6 +78,14 @@ Use `.gitignore` as the first source of truth. In this project, never commit:
 - runtime databases, generated indexes, chat logs, local memory dumps, and other
   machine state unless the user explicitly requests a safe export file
 
+Project exception: protocol knowledge backend artifacts under
+`knowledge_backend/` are intended to be portable when they come from uploaded
+protocol/specification ingestion. Commit `knowledge_backend/indexes/kb.sqlite`,
+`knowledge_backend/originals/`, `knowledge_backend/derived/`,
+`knowledge_backend/reports/`, and `knowledge_backend/manifest.json` after
+validation so another machine can reuse the parsed protocol library and
+model-generated study documents without reprocessing the source document.
+
 Safe examples and placeholders are allowed only when they contain no real keys:
 
 - `.env.example`
@@ -119,5 +127,5 @@ reporting.
 - If validation fails, fix the issue before committing. If the user insists on a
   commit with known failures, document the failure in `GIT_NOTES.md` and the
   final response.
-- If a runtime file such as `knowledge_backend/indexes/kb.sqlite` is modified,
-  leave it unstaged unless the user explicitly asked to publish that artifact.
+- If a runtime database outside the protocol knowledge backend is modified,
+  leave it unstaged unless the user explicitly asked to publish a safe export.

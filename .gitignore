@@ -31,10 +31,17 @@ plugins.json
 logs/
 secrets/
 workspace
-knowledge_backend/indexes/*.sqlite
-knowledge_backend/originals/
-knowledge_backend/derived/
-knowledge_backend/reports/
+# Protocol knowledge backend artifacts are intentionally portable. Commit the
+# parsed index, source protocol files, derived study docs, and validation reports
+# so other CowWechat deployments can reuse already-ingested protocol libraries.
+!knowledge_backend/indexes/
+!knowledge_backend/indexes/kb.sqlite
+!knowledge_backend/originals/
+!knowledge_backend/originals/**
+!knowledge_backend/derived/
+!knowledge_backend/derived/**
+!knowledge_backend/reports/
+!knowledge_backend/reports/**
 config.yaml
 user_datas.pkl
 chatgpt_tool_hub/
