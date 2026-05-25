@@ -71,7 +71,7 @@ def main() -> int:
     check("manifest_exists", manifest_path.is_file(), str(manifest_path))
 
     if config.sqlite_path.is_file():
-        with sqlite3.connect(str(config.sqlite_path)) as conn:
+        with _connect_readonly_sqlite(config.sqlite_path) as conn:
             integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         check("sqlite_integrity", integrity == "ok", integrity)
 
@@ -161,6 +161,11 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _connect_readonly_sqlite(path: Path):
+    uri_path = Path(path).resolve().as_posix()
+    return sqlite3.connect(f"file:{uri_path}?mode=ro&immutable=1", uri=True)
 
 
 def _relative_or_name(root: Path, path: Any) -> str:

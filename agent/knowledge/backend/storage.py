@@ -25,19 +25,35 @@ from .models import (
 class KnowledgeStorage:
     """SQLite-backed document metadata and chunk search."""
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, read_only: bool = False):
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self.read_only = bool(read_only)
+        self.conn = self._connect()
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
-        self.fts5_available = self._check_fts5_support()
-        self._init_schema()
+        if self.read_only:
+            self.fts5_available = self._detect_existing_fts()
+        else:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.fts5_available = self._check_fts5_support()
+            self._init_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        if self.read_only:
+            uri_path = self.db_path.resolve().as_posix()
+            # Published indexes are queried as static artifacts; immutable avoids WAL/SHM sidecars.
+            return sqlite3.connect(
+                f"file:{uri_path}?mode=ro&immutable=1",
+                uri=True,
+                check_same_thread=False,
+            )
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        return sqlite3.connect(str(self.db_path), check_same_thread=False)
 
     def close(self) -> None:
         if self.conn:
-            self.conn.commit()
+            if not self.read_only:
+                self.conn.commit()
             self.conn.close()
             self.conn = None
 
@@ -496,6 +512,18 @@ class KnowledgeStorage:
             self.conn.execute("DROP TABLE IF EXISTS knowledge_fts_probe")
             return True
         except sqlite3.OperationalError:
+            return False
+
+    def _detect_existing_fts(self) -> bool:
+        try:
+            row = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chunks_fts'"
+            ).fetchone()
+            if not row:
+                return False
+            self.conn.execute("SELECT rowid FROM chunks_fts LIMIT 1").fetchone()
+            return True
+        except sqlite3.DatabaseError:
             return False
 
     def _init_schema(self) -> None:

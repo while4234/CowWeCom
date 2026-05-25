@@ -137,6 +137,18 @@ def test_qdrant_backend_falls_back_to_fts_when_client_dependency_is_missing(monk
     assert backend.search("needle") == []
 
 
+def test_search_missing_sqlite_index_does_not_create_runtime_database(tmp_path):
+    db_path = tmp_path / "missing.db"
+    config = _config(tmp_path, enabled=True, sqlite_path=db_path)
+
+    backend = build_knowledge_backend(config)
+
+    assert backend.search("needle") == []
+    assert not db_path.exists()
+    assert not db_path.with_name(f"{db_path.name}-wal").exists()
+    assert not db_path.with_name(f"{db_path.name}-shm").exists()
+
+
 def test_required_qdrant_backend_disables_when_client_dependency_is_missing(monkeypatch, tmp_path):
     monkeypatch.setitem(__import__("sys").modules, "qdrant_client", None)
     config = _config(

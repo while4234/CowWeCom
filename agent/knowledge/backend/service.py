@@ -320,7 +320,9 @@ class KnowledgeBackendService:
     def list_documents(self) -> List[Dict[str, Any]]:
         if not self.config.enabled:
             return []
-        storage = self._backend._get_storage()
+        storage = self._backend._get_read_storage()
+        if storage is None:
+            return []
         return [
             {
                 "id": document.id,
@@ -342,14 +344,19 @@ class KnowledgeBackendService:
     def list_knowledge_bases(self) -> List[Dict[str, Any]]:
         if not self.config.enabled:
             return []
-        return [kb.to_dict() for kb in self._backend._get_storage().list_knowledge_bases()]
+        storage = self._backend._get_read_storage()
+        if storage is None:
+            return []
+        return [kb.to_dict() for kb in storage.list_knowledge_bases()]
 
     def export_document_library(self, document_id: str = "") -> Dict[str, Any]:
         """Export indexed backend documents into the visible Markdown knowledge library."""
 
         if not self.config.enabled:
             return {"status": "disabled", "message": "local knowledge backend is disabled", "files": []}
-        storage = self._backend._get_storage()
+        storage = self._backend._get_read_storage()
+        if storage is None:
+            return {"status": "success", "documents_exported": 0, "files": []}
         documents = storage.list_documents()
         if document_id:
             documents = [document for document in documents if document.id == document_id]
@@ -404,7 +411,9 @@ class KnowledgeBackendService:
         if not _llm_builder_enabled(self.config):
             return {"status": "disabled", "message": "knowledge_backend.llm_builder.enabled is false"}
 
-        storage = self._backend._get_storage()
+        storage = self._backend._get_read_storage()
+        if storage is None:
+            return {"status": "error", "message": "source document not found"}
         source_document = _select_llm_source_document(storage.list_documents(), document_id=document_id)
         if source_document is None:
             return {"status": "error", "message": "source document not found"}
@@ -516,7 +525,7 @@ class KnowledgeBackendService:
             },
         )
         build = self._backend._builder.build(document, chunks)
-        self._backend._get_storage().save_document(
+        self._backend._get_storage(writable=True).save_document(
             document,
             build.chunks,
             source_spans=build.source_spans,
@@ -543,7 +552,9 @@ class KnowledgeBackendService:
 
         if not self.config.enabled:
             return {"entities": [], "relations": []}
-        storage = self._backend._get_storage()
+        storage = self._backend._get_read_storage()
+        if storage is None:
+            return {"mode": mode, "entities": [], "relations": []}
         entities = [_entity_payload(entity) for entity in storage.list_entities()]
         relations = [_relation_payload(relation) for relation in storage.list_relations()]
         return {"mode": mode, "entities": entities, "relations": relations}
@@ -1490,8 +1501,8 @@ class LocalKnowledgeBackend:
         fts5_available = False
         if self.enabled and sqlite_status and sqlite_status.available:
             try:
-                storage = self._get_storage()
-                fts5_available = bool(storage.fts5_available)
+                storage = self._get_read_storage()
+                fts5_available = bool(storage.fts5_available) if storage is not None else False
             except Exception as exc:
                 statuses["sqlite3"] = type(sqlite_status)(
                     name="sqlite3",
@@ -1513,7 +1524,7 @@ class LocalKnowledgeBackend:
             return self._disabled_response("ingest")
 
         source = Path(file_path).expanduser().resolve()
-        storage = self._get_storage()
+        storage = self._get_storage(writable=True)
         stored_source_path = _portable_source_path(source, self.workspace_root)
         job = storage.create_job(uuid.uuid4().hex, stored_source_path)
         try:
@@ -1580,7 +1591,10 @@ class LocalKnowledgeBackend:
     def job_status(self, job_id: str) -> Dict[str, Any]:
         if not self.enabled:
             return self._disabled_response("job_status")
-        job = self._get_storage().get_job(job_id)
+        storage = self._get_read_storage()
+        if storage is None:
+            return {"status": "not_found", "job": None}
+        job = storage.get_job(job_id)
         if not job:
             return {"status": "not_found", "job": None}
         return {"status": job.status, "job": job.to_dict()}
@@ -1596,7 +1610,8 @@ class LocalKnowledgeBackend:
         if not self.enabled:
             return self._disabled_response("search")
         expanded_query = self._expand_query_aliases(query)
-        hits = self._get_storage().search(expanded_query, limit=max(1, int(limit or 5)))
+        storage = self._get_read_storage()
+        hits = storage.search(expanded_query, limit=max(1, int(limit or 5))) if storage is not None else []
         if kb_ids:
             kb_set = {str(kb_id) for kb_id in kb_ids}
             hits = [hit for hit in hits if hit.kb_id in kb_set]
@@ -1620,7 +1635,8 @@ class LocalKnowledgeBackend:
         if not self.enabled:
             return self._disabled_response("query")
         expanded_query = self._expand_query_aliases(question)
-        hits = self._get_storage().search(expanded_query, limit=max(1, int(limit or 5)))
+        storage = self._get_read_storage()
+        hits = storage.search(expanded_query, limit=max(1, int(limit or 5))) if storage is not None else []
         if kb_ids:
             kb_set = {str(kb_id) for kb_id in kb_ids}
             hits = [hit for hit in hits if hit.kb_id in kb_set]
@@ -1662,7 +1678,15 @@ class LocalKnowledgeBackend:
         kb_ids: Optional[Iterable[str]] = None,
         visited_kb_ids: Optional[Iterable[str]] = None,
     ) -> Dict[str, Any]:
-        storage = self._get_storage()
+        storage = self._get_read_storage()
+        if storage is None:
+            return {
+                "entities": [
+                    {"term": str(term), "resolved": False, "visited_kb_ids": list(visited_kb_ids or kb_ids or [])}
+                    for term in terms or []
+                ],
+                "visited_kb_ids": list(visited_kb_ids or kb_ids or []),
+            }
         visited = list(visited_kb_ids or kb_ids or [])
         allowed_kbs = {str(kb_id) for kb_id in (kb_ids or []) if kb_id}
         entities = []
@@ -1697,7 +1721,9 @@ class LocalKnowledgeBackend:
         visited_kb_ids: Optional[Iterable[str]] = None,
         trace_id: str = "",
     ) -> Dict[str, Any]:
-        storage = self._get_storage()
+        storage = self._get_read_storage()
+        if storage is None:
+            return {"nodes": [], "links": [], "trace_id": trace_id, "visited_kb_ids": list(visited_kb_ids or [])}
         max_hops = max(1, int(max_hops or 1))
         start = storage.resolve_entity(term or entity_id)
         if start is None:
@@ -1737,7 +1763,16 @@ class LocalKnowledgeBackend:
         visited_kb_ids: Optional[Iterable[str]] = None,
         trace_id: str = "",
     ) -> Dict[str, Any]:
-        storage = self._get_storage()
+        storage = self._get_read_storage()
+        if storage is None:
+            return {
+                "status": "insufficient",
+                "supported": False,
+                "claim": claim,
+                "evidence": [],
+                "trace_id": trace_id,
+                "visited_kb_ids": list(visited_kb_ids or []),
+            }
         span_ids = [span_id for span_id in (candidate_span_ids or []) if span_id]
         spans = storage.get_source_spans(span_ids) if span_ids else []
         if not spans:
@@ -1764,7 +1799,10 @@ class LocalKnowledgeBackend:
         if not self.enabled:
             return self._disabled_response("stats")
         try:
-            return {"status": "ok", **self._get_storage().health()}
+            storage = self._get_read_storage()
+            if storage is None:
+                return {"status": "ok", **self._empty_health()}
+            return {"status": "ok", **storage.health()}
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
 
@@ -1815,9 +1853,17 @@ class LocalKnowledgeBackend:
             logger.error(f"[LocalKnowledgeBackend] dispatch error: action={action}, error={exc}", exc_info=True)
             return {"action": action, "code": 500, "message": str(exc), "payload": None}
 
-    def _get_storage(self) -> KnowledgeStorage:
+    def _get_read_storage(self) -> Optional[KnowledgeStorage]:
+        if self._storage is None and not self.db_path.is_file():
+            return None
+        return self._get_storage(writable=False)
+
+    def _get_storage(self, writable: bool = False) -> KnowledgeStorage:
+        if self._storage is not None and writable and self._storage.read_only:
+            self._storage.close()
+            self._storage = None
         if self._storage is None:
-            self._storage = KnowledgeStorage(self.db_path)
+            self._storage = KnowledgeStorage(self.db_path, read_only=not writable)
         return self._storage
 
     def _build_chunks(
@@ -1853,7 +1899,9 @@ class LocalKnowledgeBackend:
 
     def _expand_query_aliases(self, query: str) -> str:
         query = str(query or "")
-        storage = self._get_storage()
+        storage = self._get_read_storage()
+        if storage is None:
+            return query
         additions: List[str] = []
         for term in _claim_terms(query):
             entity = storage.resolve_entity(term)
@@ -1890,3 +1938,22 @@ class LocalKnowledgeBackend:
     @staticmethod
     def _disabled_response(action: str) -> Dict[str, Any]:
         return {"status": "disabled", "action": action, "message": "local knowledge backend is disabled"}
+
+    def _empty_health(self) -> Dict[str, Any]:
+        return {
+            "sqlite": True,
+            "fts5": False,
+            "db_path": str(self.db_path),
+            **{
+                key: 0
+                for key in (
+                    "knowledge_bases",
+                    "documents",
+                    "chunks",
+                    "source_spans",
+                    "entities",
+                    "relations",
+                    "jobs",
+                )
+            },
+        }

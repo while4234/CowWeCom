@@ -1,3 +1,4 @@
+import hashlib
 import inspect
 import sqlite3
 from pathlib import Path
@@ -54,6 +55,17 @@ def _assert_trace(response, trace_id):
     return response
 
 
+def _sha256_file(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _sqlite_sidecars(db_path):
+    return [
+        db_path.with_name(f"{db_path.name}-wal"),
+        db_path.with_name(f"{db_path.name}-shm"),
+    ]
+
+
 def test_ingestion_persists_source_spans_with_chunks_and_search_citations(tmp_path):
     service = _service(tmp_path)
     _ingest_text(
@@ -88,6 +100,33 @@ def test_ingestion_persists_source_spans_with_chunks_and_search_citations(tmp_pa
     assert query_result["citations"][0]["document_id"] == hit["document_id"]
     assert query_result["citations"][0]["page_start"] == 1
     assert query_result["citations"][0]["page_end"] == 1
+
+
+def test_query_existing_index_does_not_mutate_sqlite_file_or_create_sidecars(tmp_path):
+    service = _service(tmp_path)
+    _ingest_text(
+        service,
+        "axi-stream.md",
+        "# AXI Stream\n\nTVALID and TREADY create a source-backed handshake.",
+    )
+    service.close()
+
+    db_path = service.config.sqlite_path
+    before_hash = _sha256_file(db_path)
+    for sidecar in _sqlite_sidecars(db_path):
+        assert not sidecar.exists()
+
+    reader = _service(tmp_path)
+    try:
+        assert reader.search("TVALID TREADY handshake", limit=1)
+        assert reader.query("What creates the handshake?", limit=1)["citations"]
+        assert reader.list_documents()
+    finally:
+        reader.close()
+
+    assert _sha256_file(db_path) == before_hash
+    for sidecar in _sqlite_sidecars(db_path):
+        assert not sidecar.exists()
 
 
 def test_graph_builder_contract_extracts_entities_relations_confidence_status(tmp_path):
