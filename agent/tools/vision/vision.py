@@ -516,7 +516,10 @@ class Vision(BaseTool):
         # here, because by the time we reach this branch the tool.vision.model
         # routing has already been attempted (and either matched the main bot
         # or failed to find a provider).
-        main_model_name = conf().get("model") or None
+        model_attr = getattr(self.model, "model", None)
+        if not isinstance(model_attr, str) or not model_attr.strip():
+            model_attr = None
+        main_model_name = model_attr or conf().get("model") or None
 
         return VisionProvider(
             name=_MAIN_MODEL_PROVIDER_NAME,
@@ -536,7 +539,7 @@ class Vision(BaseTool):
         # otherwise the OpenAI endpoint would 400 on a vendor-specific name.
         model_override = preferred_model if (
             preferred_model and preferred_model.lower().startswith(_OPENAI_MODEL_PREFIXES)
-        ) else None
+        ) else self._resolve_openai_fallback_model()
         wire_api = (
             conf().get("open_ai_wire_api")
             or conf().get("openai_wire_api")
@@ -550,6 +553,19 @@ class Vision(BaseTool):
             model_override=model_override,
             wire_api=wire_api,
         )
+
+    @staticmethod
+    def _resolve_openai_fallback_model() -> Optional[str]:
+        try:
+            from common.llm_backend_router import get_capi_provider_config
+
+            routed_model = str(get_capi_provider_config().get("model") or "").strip()
+            if routed_model.lower().startswith(_OPENAI_MODEL_PREFIXES):
+                return routed_model
+        except Exception:
+            pass
+        configured = str(conf().get("model") or "").strip()
+        return configured if configured.lower().startswith(_OPENAI_MODEL_PREFIXES) else None
 
     def _build_linkai_provider(self, preferred_model: Optional[str] = None) -> Optional[VisionProvider]:
         api_key = conf().get("linkai_api_key") or os.environ.get("LINKAI_API_KEY")

@@ -295,6 +295,65 @@ class TestCodexDirectBot(unittest.TestCase):
         self.assertNotIn("max_output_tokens", fake_transport.payload)
         self.assertNotIn("prompt_cache_retention", fake_transport.payload)
 
+    def test_call_vision_uses_codex_auth_and_keeps_image_payload(self):
+        from models.codex.codex_bot import CodexBot
+
+        class FakeCredential:
+            def resolve_access_tokens(self):
+                return {"access_token": "test-token", "account_id": "acc_test"}
+
+        class FakeTransport:
+            payload = None
+            tokens = None
+
+            def stream_responses(self, payload, tokens, *, config=None, request_id=""):
+                self.payload = payload
+                self.tokens = tokens
+                yield {"type": "response.output_text.delta", "delta": "A gray car in a parking garage."}
+                yield {
+                    "type": "response.completed",
+                    "response": {
+                        "model": payload["model"],
+                        "output": [],
+                        "usage": {"input_tokens": 8, "output_tokens": 7, "total_tokens": 15},
+                    },
+                }
+
+        fake_transport = FakeTransport()
+        provider = {
+            "model": "gpt-5.5",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "endpoint_path": "/responses",
+            "reasoning_effort": "xhigh",
+            "tools_enabled": True,
+        }
+        records = []
+        with patch.object(CodexBot, "_provider_config", staticmethod(lambda: provider)):
+            with patch.object(
+                CodexBot,
+                "_record_prompt_cache_usage",
+                lambda self, usage, **kwargs: records.append((usage, kwargs)),
+            ):
+                bot = CodexBot(credential_source=FakeCredential(), transport=fake_transport)
+                result = bot.call_vision(
+                    image_url="data:image/png;base64,AAAA",
+                    question="Identify this image.",
+                    model="gpt-5.5",
+                    reasoning_effort="low",
+                    reasoning_effort_locked=True,
+                )
+
+        self.assertEqual(result["content"], "A gray car in a parking garage.")
+        self.assertEqual(fake_transport.tokens["access_token"], "test-token")
+        self.assertEqual(fake_transport.payload["model"], "gpt-5.5")
+        self.assertEqual(fake_transport.payload["reasoning"]["effort"], "low")
+        self.assertIn("Analyze the provided image", fake_transport.payload["instructions"])
+        self.assertNotIn("max_output_tokens", fake_transport.payload)
+        content = fake_transport.payload["input"][0]["content"]
+        self.assertIn({"type": "input_text", "text": "Identify this image."}, content)
+        self.assertIn({"type": "input_image", "image_url": "data:image/png;base64,AAAA"}, content)
+        self.assertEqual(records[0][0]["total_tokens"], 15)
+
 
 if __name__ == "__main__":
     unittest.main()

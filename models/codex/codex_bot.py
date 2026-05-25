@@ -35,6 +35,8 @@ TEXT_ONLY_DIRECTIVE = (
 class CodexBot(Bot, OpenAICompatibleBot):
     """Codex backend using the user's current Codex login."""
 
+    supports_vision = True
+
     def __init__(
         self,
         *,
@@ -161,6 +163,78 @@ class CodexBot(Bot, OpenAICompatibleBot):
                 "status_code": 500,
             }
 
+    def call_vision(self, image_url: str, question: str,
+                    model: Optional[str] = None,
+                    max_tokens: int = 1000,
+                    reasoning_effort: Optional[str] = None,
+                    reasoning_effort_locked: bool = False) -> dict:
+        """Analyze an image through the Codex authenticated Responses endpoint."""
+        try:
+            request = {
+                "model": normalize_codex_model_name(model or self._configured_model()),
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": question},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                }],
+            }
+            payload = build_responses_payload(
+                request,
+                store=False,
+                reasoning_effort=self._resolve_codex_reasoning_effort({
+                    "reasoning_effort": reasoning_effort,
+                    "reasoning_effort_locked": reasoning_effort_locked,
+                }),
+            )
+            payload["instructions"] = self._codex_vision_instructions()
+            payload.update(
+                self._build_prompt_cache_options(
+                    payload.get("model"),
+                    {"model": payload.get("model"), "channel_type": "vision"},
+                )
+            )
+            payload.pop("prompt_cache_retention", None)
+            # ChatGPT Codex rejects max_output_tokens on some models; keep the
+            # vision prompt concise instead of forwarding Chat-style max_tokens.
+            payload.pop("max_output_tokens", None)
+            payload["stream"] = True
+            payload["store"] = False
+
+            request_id = uuid4().hex[:12]
+            tokens = self._credential_source.resolve_access_tokens()
+            events = self._transport.stream_responses(
+                payload,
+                tokens,
+                config=self._client_config(),
+                request_id=request_id,
+            )
+            data = chat_chunks_to_chat_completion(
+                responses_stream_events_to_chat_chunks(events),
+                model=payload.get("model"),
+            )
+            usage = data.get("usage") or {}
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            self._record_prompt_cache_usage(
+                usage,
+                request_payload=payload,
+                metadata={"model": payload.get("model"), "channel_type": "vision"},
+                wire_api="codex",
+            )
+            return {
+                "model": data.get("model") or payload.get("model"),
+                "content": content,
+                "usage": {
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                },
+            }
+        except Exception as exc:
+            logger.error("[CODEX] call_vision error: %s", exc)
+            return {"error": True, "message": str(exc)}
+
     @staticmethod
     def _codex_tools_enabled() -> bool:
         provider = CodexBot._provider_config()
@@ -278,6 +352,13 @@ class CodexBot(Bot, OpenAICompatibleBot):
     def _with_text_only_directive(instructions: str) -> str:
         parts = [str(instructions or "").strip(), TEXT_ONLY_DIRECTIVE]
         return "\n\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _codex_vision_instructions() -> str:
+        return (
+            "Analyze the provided image and answer the user's question directly. "
+            "Keep the reply concise and natural. Mention uncertainty when the image is unclear."
+        )
 
     def _chat_chunks(self, events: Iterable[dict[str, Any]], *, allow_tools: bool = False):
         warned_tool_call = False
