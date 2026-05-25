@@ -230,17 +230,45 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertNotIn("LLM backend status", result)
         self.assertNotIn("TEST", result)
 
-    def test_skill_natural_language_routes_to_fast_local_catalog(self):
+    def test_skill_natural_language_routes_to_model_grounded_catalog_answer(self):
         plugin = _load_cow_cli_plugin()
 
-        self.assertEqual(plugin._parse_command("本地有哪些 skills"), ("skill", "list"))
-        self.assertEqual(plugin._parse_command("当前支持哪些功能呢"), ("skill", "list"))
-        self.assertEqual(plugin._parse_command("你现在能做什么功能"), ("skill", "list"))
-        self.assertEqual(
-            plugin._parse_command("capi-usage-monitor 怎么用"),
-            ("skill", "usage capi-usage-monitor"),
-        )
+        self.assertEqual(plugin._parse_command("/skill list"), ("skill", "list"))
+
+        cmd, args = plugin._parse_command("当前支持哪些功能呢")
+        self.assertEqual(cmd, "skill")
+        self.assertTrue(args.startswith("answer "))
+        payload = plugin._decode_skill_answer_args(args.split(None, 1)[1])
+        self.assertEqual(payload["question"], "当前支持哪些功能呢")
+        self.assertEqual(payload["mode"], "list")
+
+        cmd, args = plugin._parse_command("你现在能做什么功能")
+        self.assertEqual(cmd, "skill")
+        self.assertTrue(args.startswith("answer "))
+
+        cmd, args = plugin._parse_command("capi-usage-monitor 怎么用")
+        payload = plugin._decode_skill_answer_args(args.split(None, 1)[1])
+        self.assertEqual(payload["mode"], "usage")
+        self.assertEqual(payload["skill"], "capi-usage-monitor")
         self.assertIsNone(plugin._parse_command("帮我开发一个新功能"))
+
+    def test_skill_natural_language_answer_uses_cached_catalog_context_model_call(self):
+        plugin = _load_cow_cli_plugin()
+        mocked_response = {"choices": [{"message": {"content": "可以先用本机技能列表看能力。"}}]}
+
+        with patch("bridge.agent_bridge.AgentLLMModel") as model_cls:
+            model = model_cls.return_value
+            model.call.return_value = mocked_response
+
+            result = plugin.execute("当前支持哪些功能呢", session_id="test-session")
+
+        self.assertEqual(result, "可以先用本机技能列表看能力。")
+        request = model.call.call_args.args[0]
+        self.assertEqual(request.reasoning_effort, "medium")
+        self.assertTrue(request.reasoning_effort_locked)
+        self.assertEqual(request.tools, [])
+        self.assertIn("用户原话：当前支持哪些功能呢", request.messages[0]["content"])
+        self.assertIn("已缓存的本机 skill/功能摘要", request.messages[0]["content"])
 
 
 if __name__ == "__main__":

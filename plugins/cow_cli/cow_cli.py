@@ -15,6 +15,8 @@ Does NOT match:
   /开头但不是已知命令
 """
 
+import base64
+import json
 import os
 import re
 import subprocess
@@ -59,6 +61,10 @@ _SKILL_LIST_MARKERS = (
     "本地", "local", "list", "available", "show",
 )
 _SKILL_USAGE_MARKERS = ("怎么用", "如何用", "用法", "使用方法", "怎么使用", "如何使用", "usage", "help")
+_SKILL_STANDALONE_LIST_MARKERS = (
+    "你能做什么", "你会什么", "你可以做什么", "能帮我做什么",
+    "当前支持哪些", "现在支持哪些", "当前支持什么", "现在支持什么",
+)
 
 
 @plugins.register(
@@ -165,22 +171,52 @@ class CowCliPlugin(Plugin):
         text = str(content or "").strip()
         if not text:
             return None
+        if text.startswith("/") or text.lower().startswith("cow "):
+            return None
 
         normalized = text.lower()
         compact = re.sub(r"[\s,，。.!！?？:：;；\"'`“”‘’（）()\[\]【】<>《》]+", "", normalized)
         has_skill_context = any(marker in compact or marker in normalized for marker in _SKILL_CONTEXT_MARKERS)
         has_list_request = any(marker in compact or marker in normalized for marker in _SKILL_LIST_MARKERS)
-        if has_skill_context and has_list_request:
-            return "skill", "list"
+        has_standalone_list_request = any(
+            marker in compact or marker in normalized for marker in _SKILL_STANDALONE_LIST_MARKERS
+        )
+        if (has_skill_context and has_list_request) or has_standalone_list_request:
+            return "skill", self._encode_skill_answer_args(text, "list")
 
         has_usage_request = any(marker in compact or marker in normalized for marker in _SKILL_USAGE_MARKERS)
         if not has_usage_request:
             return None
 
         entry = self._skill_catalog().find_entry_in_text(text)
-        if entry is None:
-            return None
-        return "skill", f"usage {entry.name}"
+        if entry is not None:
+            return "skill", self._encode_skill_answer_args(text, "usage", entry.name)
+        if has_skill_context:
+            return "skill", self._encode_skill_answer_args(text, "usage")
+        return None
+
+    @staticmethod
+    def _encode_skill_answer_args(question: str, mode: str, skill_name: str = "") -> str:
+        payload = {
+            "question": str(question or "").strip(),
+            "mode": str(mode or "list").strip() or "list",
+            "skill": str(skill_name or "").strip(),
+        }
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
+        return f"answer {encoded}"
+
+    @staticmethod
+    def _decode_skill_answer_args(encoded: str) -> dict:
+        raw = str(encoded or "").strip()
+        if not raw:
+            return {}
+        try:
+            data = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8"))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
 
     @staticmethod
     def _suggest_command(cmd: str) -> str:
@@ -805,7 +841,7 @@ class CowCliPlugin(Plugin):
     # skill
     # ------------------------------------------------------------------
 
-    def _cmd_skill(self, args: str, e_context, **_) -> str:
+    def _cmd_skill(self, args: str, e_context, **kwargs) -> str:
         parts = args.strip().split(None, 1)
         sub = parts[0].lower() if parts else ""
         sub_args = parts[1].strip() if len(parts) > 1 else ""
@@ -822,6 +858,8 @@ class CowCliPlugin(Plugin):
             return self._skill_info(sub_args)
         elif sub in {"usage", "use"}:
             return self._skill_usage(sub_args)
+        elif sub == "answer":
+            return self._skill_answer(sub_args, e_context, session_id=kwargs.get("session_id", ""))
         elif sub == "enable":
             return self._skill_set_enabled(sub_args, True)
         elif sub == "disable":
@@ -881,6 +919,132 @@ class CowCliPlugin(Plugin):
                     page = max(1, int(parts[i + 1]))
             return self._skill_list_remote(page=page)
         return self._skill_list_local()
+
+    def _skill_answer(self, encoded_args: str, e_context, session_id: str = "") -> str:
+        payload = self._decode_skill_answer_args(encoded_args)
+        question = str(payload.get("question") or "").strip()
+        mode = str(payload.get("mode") or "list").strip() or "list"
+        skill_name = str(payload.get("skill") or "").strip()
+        if not question:
+            return self._skill_list_local()
+
+        catalog_context = self._skill_answer_context(mode=mode, skill_name=skill_name)
+        fallback = self._skill_answer_fallback(mode=mode, skill_name=skill_name)
+        try:
+            answer = self._call_skill_answer_model(
+                question=question,
+                catalog_context=catalog_context,
+                e_context=e_context,
+                session_id=session_id,
+            )
+            if answer:
+                return answer
+        except Exception as exc:
+            logger.warning(f"[CowCli] skill catalog model answer failed: {exc}")
+        return fallback
+
+    def _skill_answer_context(self, mode: str = "list", skill_name: str = "", max_chars: int = 12000) -> str:
+        catalog = self._skill_catalog()
+        if skill_name:
+            return catalog.format_skill_usage(skill_name)[:max_chars]
+
+        entries = sorted(
+            catalog.snapshot().entries,
+            key=lambda entry: (not entry.enabled, entry.name),
+        )
+        if not entries:
+            return "暂无已安装的技能/功能。"
+
+        lines = ["本机已缓存的技能/功能摘要："]
+        for entry in entries:
+            status = "启用" if entry.enabled else "禁用"
+            label = entry.display_name or entry.name
+            desc = " ".join(str(entry.description or "").split())
+            line = f"- {label} ({entry.name}) [{status}]"
+            if entry.source:
+                line += f" 来源: {entry.source}"
+            if desc:
+                line += f": {desc if len(desc) <= 180 else desc[:177] + '...'}"
+            lines.append(line)
+            if sum(len(item) + 1 for item in lines) >= max_chars:
+                lines.append("...（其余技能已省略；可让用户缩小范围继续问）")
+                break
+        return "\n".join(lines)[:max_chars]
+
+    def _skill_answer_fallback(self, mode: str = "list", skill_name: str = "") -> str:
+        if skill_name:
+            return self._skill_usage(skill_name)
+        return self._skill_list_local()
+
+    def _call_skill_answer_model(self, question: str, catalog_context: str, e_context, session_id: str = "") -> str:
+        from agent.protocol import LLMRequest
+        from bridge.agent_bridge import AgentLLMModel
+        from bridge.bridge import Bridge
+
+        llm = AgentLLMModel(Bridge())
+        try:
+            context = e_context["context"] if e_context is not None else None
+        except Exception:
+            context = None
+        if context is not None:
+            llm.channel_type = context.get("channel_type", "") or context.get("channel", "")
+            llm.session_id = session_id or context.get("session_id", "") or context.get("from_user_id", "")
+            llm.user_id = context.get("from_user_id", "") or context.get("receiver", "")
+            llm.user_label = context.get("actual_user_nickname", "") or context.get("from_user_nickname", "")
+        elif session_id:
+            llm.session_id = session_id
+
+        system = (
+            "你是 CowWechat 的本机功能说明助手。"
+            "你只能依据用户问题和已缓存的本机 skill/功能摘要回答；不要重新扫描、不要假装执行工具。"
+            "不要逐字照抄缓存清单，除非用户明确要求完整清单。"
+            "如果用户是在问能做什么，按用户关心的方向做简洁归类；如果是在问某个功能怎么用，给可直接发送的说法或命令。"
+            "如果缓存里没有对应能力，直接说明没看到匹配的本机 skill，并建议用户描述具体目标让完整 Agent 处理。"
+            "不要泄露密钥、token、私有配置、完整本地路径或内部实现细节。"
+            "使用自然中文，控制在 8 行以内。"
+        )
+        user = (
+            f"用户原话：{question}\n\n"
+            f"已缓存的本机 skill/功能摘要：\n{catalog_context}\n\n"
+            "请结合用户原话回答，不要把上面的摘要原样贴回去。"
+        )
+        response = llm.call(
+            LLMRequest(
+                messages=[{"role": "user", "content": user}],
+                system=system,
+                max_tokens=800,
+                temperature=0.2,
+                tools=[],
+                request_timeout=45,
+                reasoning_effort="medium",
+                reasoning_effort_locked=True,
+                cache_shape_metadata={"request_kind": "cow_cli_skill_catalog_answer"},
+            )
+        )
+        return self._extract_model_text(response)
+
+    @staticmethod
+    def _extract_model_text(response) -> str:
+        if not isinstance(response, dict) or response.get("error"):
+            return ""
+        choices = response.get("choices") or []
+        if choices:
+            message = choices[0].get("message") or {}
+            content = message.get("content")
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        text = item.get("text") or item.get("content")
+                        if text:
+                            parts.append(str(text))
+                    elif item:
+                        parts.append(str(item))
+                return "\n".join(parts).strip()
+        content = response.get("content")
+        return str(content or "").strip()
 
     _REMOTE_PAGE_SIZE = 10
 
