@@ -332,6 +332,37 @@ def test_state_store_cache_and_home_company_update(tmp_path):
     assert value(company, "address") == "国贸"
 
 
+def test_set_profile_location_prefers_poi_search(tmp_path):
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, endpoint, params=None):
+            self.calls.append((endpoint, dict(params or {})))
+            if endpoint == "/v5/place/text":
+                return {
+                    "pois": [
+                        {
+                            "name": "Wangjing SOHO",
+                            "location": "116.480881,39.996236",
+                            "address": "Wangjing Street",
+                            "cityname": "Beijing",
+                            "adcode": "110105",
+                        }
+                    ]
+                }
+            raise AssertionError(f"Unexpected endpoint: {endpoint}")
+
+    client = FakeClient()
+    service = AmapService(client=client, state=AmapStateStore(path=tmp_path / "amap-state.json"))
+
+    point = service.set_profile_location("home", "Wangjing SOHO", city="Beijing")
+
+    assert point.location == "116.480881,39.996236"
+    assert client.calls[0][0] == "/v5/place/text"
+    assert all(call[0] != "/v3/geocode/geo" for call in client.calls)
+
+
 def test_poi_v5_fallback_to_v3(monkeypatch):
     fake_http = FakeHttp(
         {"status": "0", "infocode": "40000", "info": "SERVICE_NOT_AVAILABLE"},

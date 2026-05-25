@@ -153,7 +153,10 @@ class AmapService:
                 return point
             address_env = os.environ.get("AMAP_HOME_ADDRESS" if alias == "home" else "AMAP_COMPANY_ADDRESS", "").strip()
             if address_env:
-                point = self.geocode(address_env, city)
+                try:
+                    point = self.geocode(address_env, city)
+                except Exception:
+                    point = self.poi_search(address_env, city)
                 point.name = "家" if alias == "home" else "公司"
                 return point
             raise AmapServiceError(f"还没有配置{'家' if alias == 'home' else '公司'}，请先发送“高德 设置{'家' if alias == 'home' else '公司'} 详细地址”。")
@@ -169,7 +172,7 @@ class AmapService:
         return self.geocode(raw, city)
 
     def set_profile_location(self, kind: str, place: str, city: str = "") -> GeoPoint:
-        point = self.resolve_point(place, city, prefer_poi=False)
+        point = self.resolve_point(place, city, prefer_poi=True)
         normalized = "company" if _normalize_place_alias(kind) == "company" else "home"
         point.name = "公司" if normalized == "company" else "家"
         self.state.set_profile_location(normalized, point)
