@@ -18,6 +18,12 @@ metadata:
 
 优先调用内置 `amap` Agent 工具。需要排查或给定结构化命令时，可以运行本 Skill 的 CLI 包装脚本。
 
+如果用户要的是完整旅行或一日游规划，而不只是单纯查询路线/路况，应同时读取 `travel-manager` 的 `SKILL.md`：
+
+- `travel-manager` 负责行程结构、景点取舍、节奏、餐饮/休息/预算/同行人约束和最终规划表达。
+- `amap-cowwechat` 负责地点解析、路线顺序校验、分段 ETA、距离、当前路况和交通方式对比。
+- 对“规划成都一日游”“明天在成都玩一天”“路线怎么安排、用什么交通、堵不堵”这类请求，两者是互补 Skill，不应只读取其中一个。
+
 ## Key 安全
 
 - 只读取 Web Service Key，不使用 Android/iOS/小程序/JS SDK Key。
