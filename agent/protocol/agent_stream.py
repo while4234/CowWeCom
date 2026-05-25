@@ -1255,14 +1255,20 @@ class AgentStreamExecutor:
 
             current_backend = get_current_backend()
             quota_exhausted = is_capi_quota_exhausted_error(error_str)
+            capi_runtime_fallback_error = (
+                current_backend in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY}
+                and is_capi_runtime_fallback_error(error_str)
+            )
+            if capi_runtime_fallback_error:
+                is_retryable = True
             fallback_attempted = set(_capi_fallback_attempted or set())
             should_runtime_fallback = (
                     current_backend in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY}
                     and current_backend not in fallback_attempted
-                    and is_capi_runtime_fallback_error(error_str)
+                    and capi_runtime_fallback_error
                     and (
                         quota_exhausted
-                        or (first_visible_text_at is None and retry_count >= max_retries)
+                        or retry_count >= max_retries
                     )
             )
             if should_runtime_fallback:

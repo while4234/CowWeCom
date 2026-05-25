@@ -218,6 +218,10 @@ class TestCodexBackendRouter(unittest.TestCase):
     def test_capi_runtime_fallback_error_classifier_covers_riko_failure(self):
         self.assertTrue(is_capi_runtime_fallback_error("{'raw': 'Internal Server Error'} (Status: 500)"))
         self.assertTrue(is_capi_runtime_fallback_error("provider_network_error: ConnectionResetError(10054)"))
+        self.assertTrue(is_capi_runtime_fallback_error("ConnectError: getaddrinfo failed"))
+        self.assertTrue(is_capi_runtime_fallback_error("RemoteDisconnected: remote end closed connection"))
+        self.assertTrue(is_capi_runtime_fallback_error("ReadTimeout: request timed out"))
+        self.assertTrue(is_capi_runtime_fallback_error("Stream interrupted: ChunkedEncodingError"))
         self.assertTrue(is_capi_runtime_fallback_error("Concurrency limit exceeded for account (Status: 429)"))
         self.assertTrue(is_capi_runtime_fallback_error("Payment Required: monthly quota exhausted (Status: 402)"))
         self.assertFalse(is_capi_runtime_fallback_error("invalid_request_error (Status: 400)"))
