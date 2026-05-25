@@ -50,7 +50,7 @@ _CATEGORY_SPECS: Dict[str, Dict[str, object]] = {
     },
     "system_dev": {
         "label": "系统开发运维",
-        "keywords": ("代码", "git", "github", "上传", "部署", "skill", "安全", "guard", "quota", "token", "额度", "自进化", "backend", "浏览器控制"),
+        "keywords": ("代码", "git", "github", "上传", "部署", "skill开发", "skill安装", "skill同步", "安全", "guard", "quota", "token", "额度", "自进化", "backend", "浏览器控制"),
     },
     "other": {
         "label": "其他",

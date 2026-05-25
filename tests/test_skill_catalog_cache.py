@@ -164,6 +164,14 @@ class SkillCatalogCacheTest(unittest.TestCase):
             self.assertIn("shopping-helper", summary)
             self.assertNotIn("stock-analysis", summary)
 
+    def test_generic_skill_word_does_not_match_system_dev_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog = SkillCatalogCache(str(root / "builtin"), str(root / "custom"))
+
+            self.assertEqual(catalog.find_categories_in_text("当前支持哪些 skill 呢"), [])
+            self.assertEqual(catalog.find_category_in_text("当前支持哪些 skill 呢"), "")
+
     def test_category_summary_reports_no_installed_skill_for_empty_category(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
