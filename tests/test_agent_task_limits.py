@@ -7,7 +7,12 @@ from agent.protocol.agent import Agent
 from bridge.agent_bridge import AgentBridge
 from bridge.context import Context
 from bridge.reply import ReplyType
-from common.agent_task_limits import is_development_task, resolve_agent_max_steps
+from common.agent_task_limits import (
+    is_complex_planning_task,
+    is_development_task,
+    resolve_agent_max_steps,
+    resolve_agent_task_budget,
+)
 from config import conf
 
 
@@ -16,10 +21,38 @@ class TestAgentTaskLimits(unittest.TestCase):
         settings = {
             "agent_max_steps": 20,
             "agent_development_max_steps": 40,
+            "agent_complex_planning_max_steps": 40,
         }
 
         self.assertEqual(resolve_agent_max_steps("帮我开发代码并补测试", settings), 40)
         self.assertEqual(resolve_agent_max_steps("讲一个简短故事", settings), 20)
+
+    def test_complex_travel_planning_uses_planning_step_budget(self):
+        settings = {
+            "agent_max_steps": 20,
+            "agent_development_max_steps": 40,
+            "agent_complex_planning_max_steps": 40,
+        }
+        prompt = (
+            "6月2日从北京出发，先坐高铁去上海，再从上海飞东京玩5天，"
+            "请帮我做完整旅行方案，包含高铁余票、机票、东京天气、签证、每日行程、预算和风险。"
+        )
+
+        budget = resolve_agent_task_budget(prompt, settings)
+
+        self.assertTrue(is_complex_planning_task(prompt))
+        self.assertEqual(budget.max_steps, 40)
+        self.assertEqual(budget.kind, "complex_planning")
+
+    def test_simple_weather_query_stays_on_base_budget(self):
+        settings = {
+            "agent_max_steps": 20,
+            "agent_development_max_steps": 40,
+            "agent_complex_planning_max_steps": 40,
+        }
+
+        self.assertFalse(is_complex_planning_task("帮我查一下成都天气"))
+        self.assertEqual(resolve_agent_task_budget("帮我查一下成都天气", settings).max_steps, 20)
 
     def test_development_budget_never_lowers_base_budget(self):
         settings = {
@@ -70,6 +103,7 @@ class TestAgentBridgeTaskLimits(unittest.TestCase):
         conf().update({
             "agent_max_steps": 20,
             "agent_development_max_steps": 40,
+            "agent_complex_planning_max_steps": 40,
             "agent_max_context_turns": 20,
         })
 
@@ -137,6 +171,19 @@ class TestAgentBridgeTaskLimits(unittest.TestCase):
 
         self.assertEqual(reply.type, ReplyType.TEXT)
         self.assertEqual(captured["max_steps"], 20)
+
+    def test_agent_bridge_uses_planning_budget_for_complex_travel(self):
+        bridge, profile, captured = self._make_bridge_and_agent()
+        prompt = "上海飞东京5天，帮我做完整旅行方案，包含机票、酒店、天气、签证、预算和风险"
+
+        with (
+            patch("bridge.agent_bridge.resolve_agent_user_profile", return_value=profile),
+            patch("bridge.agent_bridge.apply_profile_to_context"),
+        ):
+            reply = bridge.agent_reply(prompt, self._make_context())
+
+        self.assertEqual(reply.type, ReplyType.TEXT)
+        self.assertEqual(captured["max_steps"], 40)
 
 
 if __name__ == "__main__":

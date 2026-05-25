@@ -50,6 +50,7 @@ const I18N = {
         config_max_turns: '最大记忆轮次', config_max_turns_hint: '一问一答为一轮，超过后会智能压缩处理',
         config_max_steps: '最大执行步数', config_max_steps_hint: '单次对话中 Agent 最多调用工具的次数',
         config_dev_max_steps: '开发任务步数', config_dev_max_steps_hint: '检测到代码开发、调试、测试或仓库操作时，单次任务允许的最大步骤数',
+        config_planning_max_steps: '复杂规划步数', config_planning_max_steps_hint: '检测到旅行、多工具方案规划时，单次任务允许的最大步骤数',
         config_enable_thinking: '深度思考', config_enable_thinking_hint: '是否启用深度思考模式',
         config_channel_type: '通道类型',
         config_provider: '模型厂商', config_model_name: '模型',
@@ -168,6 +169,7 @@ const I18N = {
         config_max_turns: 'Max Memory Turns', config_max_turns_hint: 'One Q&A pair = one turn, auto-compressed when exceeded',
         config_max_steps: 'Max Steps', config_max_steps_hint: 'Max tool calls the Agent can make in a single conversation',
         config_dev_max_steps: 'Development Steps', config_dev_max_steps_hint: 'Max steps for code development, debugging, testing, or repository tasks',
+        config_planning_max_steps: 'Planning Steps', config_planning_max_steps_hint: 'Max steps for travel and other complex multi-tool planning tasks',
         config_enable_thinking: 'Deep Thinking', config_enable_thinking_hint: 'Enable deep thinking mode',
         config_channel_type: 'Channel Type',
         config_provider: 'Provider', config_model_name: 'Model',
@@ -2596,6 +2598,7 @@ function initConfigView(data) {
     document.getElementById('cfg-max-turns').value = data.agent_max_context_turns || 20;
     document.getElementById('cfg-max-steps').value = data.agent_max_steps || 20;
     document.getElementById('cfg-dev-max-steps').value = data.agent_development_max_steps || 40;
+    document.getElementById('cfg-planning-max-steps').value = data.agent_complex_planning_max_steps || 40;
     document.getElementById('cfg-enable-thinking').checked = data.enable_thinking === true;
 
     const pwdInput = document.getElementById('cfg-password');
@@ -2867,6 +2870,7 @@ function saveAgentConfig() {
         agent_max_context_turns: parseInt(document.getElementById('cfg-max-turns').value) || 20,
         agent_max_steps: parseInt(document.getElementById('cfg-max-steps').value) || 20,
         agent_development_max_steps: parseInt(document.getElementById('cfg-dev-max-steps').value) || 40,
+        agent_complex_planning_max_steps: parseInt(document.getElementById('cfg-planning-max-steps').value) || 40,
         enable_thinking: document.getElementById('cfg-enable-thinking').checked,
     };
 

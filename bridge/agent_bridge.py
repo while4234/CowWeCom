@@ -12,7 +12,7 @@ from bridge.bridge import Bridge
 from bridge.context import Context
 from bridge.reply import Reply, ReplyType
 from common import const
-from common.agent_task_limits import is_development_task, resolve_agent_max_steps
+from common.agent_task_limits import resolve_agent_task_budget
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common.log import logger
 from common.utils import expand_path
@@ -679,7 +679,6 @@ class AgentBridge:
             # Create event handler for logging and channel communication
             event_handler = AgentEventHandler(context=context, original_callback=on_event)
             cancellation_token = context.get("_cancellation_token") if context else None
-            task_is_development = is_development_task(query)
             tool_error_lesson_snapshot = self._collect_tool_error_lesson_snapshot(workspace_root)
             
             # Filter tools based on context
@@ -744,15 +743,18 @@ class AgentBridge:
                 # Use agent's run_stream method with event handler
                 run_stream_start = monotonic()
                 max_steps_override = context.get("_agent_max_steps") if context else None
-                run_max_steps = resolve_agent_max_steps(
+                task_budget = resolve_agent_task_budget(
                     query,
                     conf(),
                     override=max_steps_override,
                 )
+                task_budget_kind = (
+                    context.get("_agent_task_budget_kind") if context else None
+                ) or task_budget.kind
                 logger.info(
-                    "[AgentBridge] Using max_steps=%s development_task=%s",
-                    run_max_steps,
-                    task_is_development,
+                    "[AgentBridge] Using max_steps=%s task_budget_kind=%s",
+                    task_budget.max_steps,
+                    task_budget_kind,
                 )
                 monthly_backend_used = True
                 response = agent.run_stream(
@@ -760,7 +762,7 @@ class AgentBridge:
                     on_event=event_handler.handle_event,
                     clear_history=clear_history,
                     cancellation_token=cancellation_token,
-                    max_steps=run_max_steps,
+                    max_steps=task_budget.max_steps,
                 )
                 run_stream_elapsed = elapsed(run_stream_start)
             finally:

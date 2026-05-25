@@ -1194,7 +1194,7 @@ class ConfigHandler:
         "zhipu_ai_api_key", "dashscope_api_key", "moonshot_api_key",
         "ark_api_key", "minimax_api_key", "linkai_api_key", "custom_api_key",
         "agent_max_context_tokens", "agent_max_context_turns", "agent_max_steps",
-        "agent_development_max_steps",
+        "agent_development_max_steps", "agent_complex_planning_max_steps",
         "enable_thinking", "web_password",
     }
 
@@ -1256,6 +1256,7 @@ class ConfigHandler:
                 "agent_max_context_turns": local_config.get("agent_max_context_turns", 20),
                 "agent_max_steps": local_config.get("agent_max_steps", 20),
                 "agent_development_max_steps": local_config.get("agent_development_max_steps", 40),
+                "agent_complex_planning_max_steps": local_config.get("agent_complex_planning_max_steps", 40),
                 "enable_thinking": bool(local_config.get("enable_thinking", False)),
                 "api_bases": api_bases,
                 "api_keys": api_keys_masked,
@@ -1292,6 +1293,7 @@ class ConfigHandler:
                     "agent_max_context_turns",
                     "agent_max_steps",
                     "agent_development_max_steps",
+                    "agent_complex_planning_max_steps",
                 ):
                     value = int(value)
                 if key in ("use_linkai", "enable_thinking"):

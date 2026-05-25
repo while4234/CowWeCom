@@ -933,7 +933,12 @@ class AgentStreamExecutor:
                 final_response or "",
             )
             logger.info(f"[Agent] 🏁 完成 ({turn}轮)")
-            self._emit_event("agent_end", {"final_response": final_response})
+            self._emit_event("agent_end", {
+                "final_response": final_response,
+                "outcome_status": outcome_status,
+                "outcome_failure_reason": outcome_failure_reason or "",
+                "turn": turn,
+            })
 
         return final_response
 

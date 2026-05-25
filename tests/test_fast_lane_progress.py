@@ -158,7 +158,7 @@ class TestFastLaneProgress(unittest.TestCase):
                 repeat_notice_seconds=90.0,
             )
             self.assertIsNotNone(first)
-            self.assertIn("还在处理", first)
+            self.assertIn("正在处理这条需求", first)
             runtime.mark_visible_output("silence_notice")
             self.assertIsNone(
                 runtime.claim_silence_notice(
@@ -360,6 +360,47 @@ class TestFastLaneProgress(unittest.TestCase):
 
         self.assertEqual(len(fake_channel.sent), 1)
         self.assertIn("单次尝试", fake_channel.sent[0])
+
+    def test_completion_notice_is_sent_for_successful_long_agent_task(self):
+        channel = make_channel_without_thread()
+        sent = []
+        channel._send_plain_text = (
+            lambda context, text, track_visible=True, visible_source="send": sent.append(text)
+        )
+        runtime = SessionRuntime()
+        runtime.start_task("long task", max_turns=40)
+        runtime.update_progress("turn_start", {"turn": 12})
+        runtime.update_progress("agent_end", {"outcome_status": "success", "turn": 12})
+
+        channel._send_completion_notice_if_needed(make_text_context("long task"), runtime)
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("本轮已完成（共 12 轮", sent[0])
+        self.assertIn("请向上滑一下", sent[0])
+
+    def test_completion_notice_is_suppressed_for_short_or_failed_tasks(self):
+        channel = make_channel_without_thread()
+        sent = []
+        channel._send_plain_text = (
+            lambda context, text, track_visible=True, visible_source="send": sent.append(text)
+        )
+
+        short_runtime = SessionRuntime()
+        short_runtime.start_task("short task", max_turns=40)
+        short_runtime.update_progress("turn_start", {"turn": 9})
+        short_runtime.update_progress("agent_end", {"outcome_status": "success", "turn": 9})
+        channel._send_completion_notice_if_needed(make_text_context("short task"), short_runtime)
+
+        failed_runtime = SessionRuntime()
+        failed_runtime.start_task("failed task", max_turns=10)
+        failed_runtime.update_progress("turn_start", {"turn": 10})
+        failed_runtime.update_progress(
+            "agent_end",
+            {"outcome_status": "max_turns_exhausted", "outcome_failure_reason": "max_turns_exhausted"},
+        )
+        channel._send_completion_notice_if_needed(make_text_context("failed task"), failed_runtime)
+
+        self.assertEqual(sent, [])
 
     def test_non_stream_message_update_does_not_reset_visible_output_until_send(self):
         runtime = SessionRuntime()

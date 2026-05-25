@@ -10,7 +10,7 @@ from bridge.context import *
 from bridge.reply import *
 from channel.channel import Channel
 from channel.image_recognition import get_image_recognition_manager
-from common.agent_task_limits import resolve_agent_max_steps
+from common.agent_task_limits import resolve_agent_task_budget
 from common.agent_task_runtime import SessionRuntime, TaskPolicy
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common import memory
@@ -559,6 +559,8 @@ class ChatChannel(Channel):
                 send_elapsed = elapsed(send_start)
                 if sent is not False and runtime and hasattr(runtime, "mark_visible_output"):
                     runtime.mark_visible_output("final_reply")
+                    if reply.type == ReplyType.TEXT:
+                        self._send_completion_notice_if_needed(context, runtime)
         except Exception as e:
             final_phase = "error"
             if runtime:
@@ -860,6 +862,18 @@ class ChatChannel(Channel):
         repeat = _safe_float(conf().get("long_task_silence_repeat_notice_seconds", 90), 90.0)
         return max(0.0, first), max(0.0, second), max(0.0, repeat)
 
+    @staticmethod
+    def _long_task_completion_notice_enabled() -> bool:
+        return bool(conf().get("long_task_completion_notice_enabled", True))
+
+    @staticmethod
+    def _long_task_completion_notice_min_turns() -> int:
+        try:
+            value = int(conf().get("long_task_completion_notice_min_turns", 10) or 10)
+        except (TypeError, ValueError):
+            value = 10
+        return max(1, value)
+
     def _send_silence_notice(self, context: Context, notice: str):
         return self._send_plain_text(
             context,
@@ -891,6 +905,19 @@ class ChatChannel(Channel):
             name=f"long-task-watchdog-{hash_id(context.get('session_id'))}",
         )
         thread.start()
+
+    def _send_completion_notice_if_needed(self, context: Context, runtime: SessionRuntime):
+        if not self._long_task_completion_notice_enabled():
+            return
+        min_turns = self._long_task_completion_notice_min_turns()
+        if not runtime.should_send_completion_notice(min_turns):
+            return
+        self._send_plain_text(
+            context,
+            runtime.completion_notice_text(),
+            True,
+            "completion_notice",
+        )
 
     def produce(self, context: Context):
         if context.type == ContextType.IMAGE and self._register_image_recognition_context(context):
@@ -978,12 +1005,13 @@ class ChatChannel(Channel):
                         context = runtime.queue.get()
                         dequeued_at = monotonic()
                         context["_latency_dequeued_at"] = dequeued_at
-                        agent_max_steps = resolve_agent_max_steps(context.content, conf())
-                        context["_agent_max_steps"] = agent_max_steps
+                        task_budget = resolve_agent_task_budget(context.content, conf())
+                        context["_agent_max_steps"] = task_budget.max_steps
+                        context["_agent_task_budget_kind"] = task_budget.kind
                         task_summary = context.get("_visible_task_summary") or context.content
                         token = runtime.start_task(
                             task_summary,
-                            max_turns=agent_max_steps,
+                            max_turns=task_budget.max_steps,
                         )
                         context["_session_runtime"] = runtime
                         context["_cancellation_token"] = token

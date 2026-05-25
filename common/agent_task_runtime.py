@@ -69,6 +69,8 @@ class ProgressSnapshot:
     last_cached_tokens: int = 0
     last_reasoning_tokens: int = 0
     error: str = ""
+    outcome_status: str = ""
+    outcome_failure_reason: str = ""
 
     def update(self, event_type: str, data: Optional[Dict[str, Any]] = None) -> None:
         data = data or {}
@@ -115,8 +117,11 @@ class ProgressSnapshot:
                 details.get("reasoning_tokens"), self.last_reasoning_tokens
             )
         elif event_type == "agent_end":
+            self.turn = _safe_int(data.get("turn"), self.turn)
+            self.outcome_status = sanitize_identifier(data.get("outcome_status", "success"))
+            self.outcome_failure_reason = sanitize_identifier(data.get("outcome_failure_reason", ""))
             if not self.cancel_requested:
-                self.phase = "done"
+                self.phase = "done" if self.outcome_status == "success" else "error"
         elif event_type == "cancelled":
             self.cancel_requested = True
             self.phase = "cancel_requested"
@@ -193,6 +198,8 @@ class SessionRuntime:
         with self.lock:
             if self.running_task and self.running_task.token.is_cancelled():
                 phase = "cancel_requested"
+            elif phase == "done" and self.progress.outcome_status and self.progress.outcome_status != "success":
+                phase = "error"
             self.progress.pending_count = self.queue.qsize()
             self.progress.mark_finished(phase)
             self.running_task = None
@@ -361,9 +368,28 @@ class SessionRuntime:
             parts.append("建议把需求拆成更小一步，或换一种描述方式让我继续尝试。")
             return "\n".join(parts)
 
+    def should_send_completion_notice(self, min_turns: int = 10) -> bool:
+        with self.lock:
+            progress = self.progress
+            if progress.cancel_requested:
+                return False
+            if progress.outcome_status and progress.outcome_status != "success":
+                return False
+            return progress.turn >= max(1, int(min_turns or 1)) and bool(progress.started_at)
+
+    def completion_notice_text(self, now: Optional[float] = None) -> str:
+        with self.lock:
+            progress = self.progress
+            now = monotonic() if now is None else now
+            elapsed_text = format_seconds(elapsed(progress.started_at, now)) if progress.started_at else "未知"
+            return (
+                f"本轮已完成（共 {progress.turn} 轮，用时 {elapsed_text}）。"
+                "完整结果在上一条消息；手机端如果没看到，请向上滑一下。"
+            )
+
     def _silence_notice_text(self, now: float) -> str:
         progress = self.progress
-        parts = ["还在处理这条需求，只是刚才一段时间没有新的可见输出，我先报个进度。"]
+        parts = ["正在处理这条需求，只是刚才一段时间没有新的可见输出，我先报个进度。"]
         if progress.task_summary:
             parts.append(f"任务：{progress.task_summary}。")
         if progress.started_at:
