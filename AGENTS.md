@@ -32,6 +32,12 @@ checkout path.
   - Repository copy: `<project-root>\skills\<skill-name>\`
   - Runtime copy: `C:\Users\RondleLiu\cow\skills\<skill-name>\`
 
+## README Must Track Code
+
+- Any task that changes project code, runtime behavior, channels, configuration, tests, skills, safety policy, deployment flow, or user-visible capabilities must update the root `README.md` in the same commit set. At minimum, add or refresh the current Chinese update-log entry; when behavior/config/support scope changes, update the relevant README sections too.
+- When `git fetch`, `git pull`, or `git rebase` shows that `origin/main` has new code commits and those commits did not update the root `README.md`, Codex must automatically update `README.md` to cover those remote code changes before finishing the task, committing, or pushing.
+- Keep the root README Chinese, CowWeCom-focused, and aligned with actually developed/tested Weixin and WeCom scope. Do not reintroduce upstream promotional/contact material or unverified channel setup instructions.
+
 ## Required CowWeCom Publish Flow
 
 1. Run the safe upload preflight before staging:
@@ -40,11 +46,12 @@ checkout path.
    $env:PYTHONUTF8='1'
    py -3 "$root\skills\safe-github-upload\scripts\preflight.py" --root $root
    ```
-2. Stage only intentional source, tests, docs, safe templates, and skill files.
-3. Run preflight again after staging.
-4. Inspect staged files with `git diff --cached --name-status` and `git diff --cached --check`.
-5. Run focused validation for the changed area.
-6. Update `GIT_NOTES.md` and `.codex/HANDOFF.md` when the task changed project state.
-7. Commit with a concise message.
-8. Push to `origin` on the current branch.
-9. Final response must include commit hash, push result, validation, and any unrelated uncommitted files left behind.
+2. Update root `README.md` for every code change or newly discovered remote code change that lacks a matching README update.
+3. Stage only intentional source, tests, docs, safe templates, and skill files.
+4. Run preflight again after staging.
+5. Inspect staged files with `git diff --cached --name-status` and `git diff --cached --check`.
+6. Run focused validation for the changed area.
+7. Update `GIT_NOTES.md` and `.codex/HANDOFF.md` when the task changed project state.
+8. Commit with a concise message.
+9. Push to `origin` on the current branch.
+10. Final response must include commit hash, push result, validation, and any unrelated uncommitted files left behind.
