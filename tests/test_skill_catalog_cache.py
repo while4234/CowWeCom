@@ -164,6 +164,41 @@ class SkillCatalogCacheTest(unittest.TestCase):
             self.assertIn("shopping-helper", summary)
             self.assertNotIn("stock-analysis", summary)
 
+    def test_travel_day_trip_query_maps_to_travel_location_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            catalog = SkillCatalogCache(str(root / "builtin"), str(root / "custom"))
+
+            categories = catalog.find_categories_in_text("有没有规划成都明日一日游的 skill")
+
+            self.assertEqual(categories, ["travel_location"])
+
+    def test_travel_category_surfaces_travel_manager_and_amap_pairing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            builtin = root / "builtin"
+            custom = root / "custom"
+            write_skill(
+                builtin / "amap-cowwechat",
+                "amap-cowwechat",
+                "使用高德地图提供路线、路况、ETA 和旅游路线分析。",
+                body="## 协同\n高德负责路线、ETA、路况和交通方式对比。\n",
+            )
+            write_skill(
+                builtin / "travel-manager",
+                "travel-manager",
+                "Comprehensive travel planning for city one-day trips. Pair with amap-cowwechat for route and traffic decisions.",
+                body="## 协同\ntravel-manager 负责行程结构，amap-cowwechat 负责路线证据。\n",
+            )
+
+            catalog = SkillCatalogCache(str(builtin), str(custom))
+            summary = catalog.category_summary("travel_location")
+
+            self.assertIn("amap-cowwechat", summary)
+            self.assertIn("travel-manager", summary)
+            self.assertIn("行程结构", summary)
+            self.assertIn("路线证据", summary)
+
     def test_generic_skill_word_does_not_match_system_dev_category(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -171,6 +206,29 @@ class SkillCatalogCacheTest(unittest.TestCase):
 
             self.assertEqual(catalog.find_categories_in_text("当前支持哪些 skill 呢"), [])
             self.assertEqual(catalog.find_category_in_text("当前支持哪些 skill 呢"), "")
+
+    def test_inventory_summary_uses_chinese_skill_names_and_followup_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            builtin = root / "builtin"
+            custom = root / "custom"
+            write_skill(
+                builtin / "frontend-design",
+                "frontend-design",
+                "Expert frontend design guidelines for creating beautiful, modern UIs.",
+                body="## Usage\nBuild a dashboard.\n",
+            )
+
+            catalog = SkillCatalogCache(str(builtin), str(custom))
+            summary = catalog.inventory_summary_zh()
+            entry = catalog.find_entry_in_text("前端界面设计怎么用")
+
+            self.assertIn("前端界面设计", summary)
+            self.assertIn("现代化网页", summary)
+            self.assertIn("想看某个 Skill 的详细用法", summary)
+            self.assertNotIn("Expert frontend design guidelines", summary)
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry.name, "frontend-design")
 
     def test_category_summary_reports_no_installed_skill_for_empty_category(self):
         with tempfile.TemporaryDirectory() as tmp:

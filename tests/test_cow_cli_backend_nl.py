@@ -482,6 +482,12 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
     def test_explicit_skill_inventory_bypasses_model_and_returns_full_overview(self):
         plugin = _load_cow_cli_plugin()
         catalog = SimpleNamespace(
+            inventory_summary_zh=lambda **_: (
+                "当前已启用的本机 Skill 共 5 个：\n"
+                "- 技能甲\n"
+                "- 技能乙\n"
+                "想看某个 Skill 的详细用法，直接问“某某怎么用”。"
+            ),
             overview_summary=lambda **_: (
                 "本机技能/功能总览：\n"
                 "- Skill A\n"
@@ -503,8 +509,8 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         ):
             result = plugin._skill_answer(encoded_args, e_context=None, session_id="test-session")
 
-        self.assertIn("Skill A", result)
-        self.assertIn("Skill E", result)
+        self.assertIn("技能甲", result)
+        self.assertIn("想看某个 Skill 的详细用法", result)
         model_call.assert_not_called()
         router_call.assert_not_called()
 

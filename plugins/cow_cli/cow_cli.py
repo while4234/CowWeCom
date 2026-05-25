@@ -987,7 +987,9 @@ class CowCliPlugin(Plugin):
         if not question:
             return self._skill_list_local()
         if self._wants_explicit_skill_inventory(question, mode, skill_name, category, categories):
-            return self._call_catalog_text(self._skill_catalog().overview_summary, max_chars=20000)
+            catalog = self._skill_catalog()
+            formatter = getattr(catalog, "inventory_summary_zh", catalog.overview_summary)
+            return self._call_catalog_text(formatter, max_chars=20000)
         categories = self._resolve_skill_answer_categories(
             question=question,
             mode=mode,

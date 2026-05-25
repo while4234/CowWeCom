@@ -22,7 +22,11 @@ FULL_SKILL_FALLBACK_PREFIX = "[[READ_FULL_SKILL"
 _CATEGORY_SPECS: Dict[str, Dict[str, object]] = {
     "travel_location": {
         "label": "出行地图",
-        "keywords": ("高德", "地图", "路线", "路况", "通勤", "旅行", "旅游", "出行", "交通", "天气", "12306", "火车", "票", "travel", "weather", "amap"),
+        "keywords": (
+            "高德", "地图", "路线", "路况", "通勤", "旅行", "旅游", "旅行规划", "旅游规划",
+            "行程", "景点", "一日游", "周末游", "游玩", "出行", "交通", "天气", "12306",
+            "火车", "票", "travel", "itinerary", "weather", "amap",
+        ),
     },
     "media_content": {
         "label": "内容媒体",
@@ -56,6 +60,45 @@ _CATEGORY_SPECS: Dict[str, Dict[str, object]] = {
         "label": "其他",
         "keywords": (),
     },
+}
+
+_SKILL_CHINESE_SUMMARIES: Dict[str, Tuple[str, str]] = {
+    "a2e-daily-checkin": ("A2E 每日签到", "打开 A2E 视频站点并完成每日奖励签到、状态检查和维护。"),
+    "amap-cowwechat": ("高德通勤与旅行路线", "查询通勤 ETA、路线规划、路况、地理编码、POI 和旅游路线合理性。"),
+    "bdpan-storage": ("百度网盘文件管理", "管理百度网盘文件，支持上传、下载、转存、分享、搜索和整理。"),
+    "bilibili-all-in-one": ("哔哩哔哩工具箱", "监控 B 站热点、处理视频下载、字幕、播放和发布相关任务。"),
+    "capi-usage-monitor": ("CAPI/Codex 中转站额度监控", "查询 CAPI/Codex 中转额度、余额、用量、套餐、到期时间和历史快照。"),
+    "code-update": ("CowWechat 代码更新", "从 GitHub 安全拉取或同步项目代码，保护本地配置和运行状态。"),
+    "codex-quota-query": ("Codex / GPT 订阅额度查询", "查询 Codex、GPT、ChatGPT 后端额度、剩余额度和使用情况，并做脱敏输出。"),
+    "cowagent-self-evolution": ("CowAgent 自进化记录", "记录和复用本地运行经验、故障处理和可迁移的开发教训。"),
+    "daily-douyin-video-harvester": ("每日抖音热点视频采集", "抓取抖音热点视频，筛选适合评论或素材使用的内容并发送到企业微信。"),
+    "daily-meme-harvester": ("每日热梗图片采集", "从中文社交网站抓取、去重、排序和下载高热度梗图或热点图片。"),
+    "docx": ("Word 文档处理", "创建、读取、编辑和转换 Word 文档。"),
+    "fast-market-price": ("快速行情价格查询", "查询股票、基金、加密货币、黄金等市场价格和行情。"),
+    "find-skills-skill": ("社区 Skill 搜索与评估", "搜索 ClawHub/OpenClaw 社区 Skill，做安全审查、本地化和安装建议。"),
+    "frontend-design": ("前端界面设计", "设计和实现现代化网页、工具界面、仪表盘和交互体验。"),
+    "fund-invest-advisor": ("基金投资顾问", "分析基金、定投、组合和市场配置建议。"),
+    "github": ("GitHub 仓库管理", "处理 GitHub 仓库、接口、议题、拉取请求、发布和推送相关任务。"),
+    "image-generation": ("图片生成与编辑", "根据文字或参考图生成、修改图片、插画、头像、素材和视觉方案。"),
+    "knowledge-wiki": ("个人知识库管理", "整理文章、文档、对话沉淀和知识库条目。"),
+    "markdown-converter": ("Markdown 格式转换", "把 PDF、Word、PPT、Excel、网页、CSV 等文件转换为 Markdown。"),
+    "pdf": ("PDF 文件处理", "读取、提取、合并、拆分、转换或分析 PDF 文件。"),
+    "playwright-browser-control": ("浏览器自动化控制", "使用本机浏览器打开网页、点击、输入、截图和测试网站流程。"),
+    "plugin-12306-ticket": ("12306 车票查询", "查询火车票余票、车站编码和列车经停路线。"),
+    "pptx": ("PPT 演示文稿处理", "创建、读取、编辑和转换 PowerPoint 演示文稿。"),
+    "quick-weather": ("快速天气查询", "查询当前天气和未来天气预报，无需额外 API Key。"),
+    "reliable-search": ("可靠网页搜索", "使用多搜索源做网页检索、资料核查和搜索故障降级。"),
+    "safe-github-upload": ("安全提交与推送代码", "对代码上传 GitHub 做预检、脱敏检查、路径级提交和安全推送。"),
+    "shopping-lite-compare": ("购物比价助手", "比较商品价格、规格、优惠和购买建议。"),
+    "skill-creator": ("Skill 创建与安装", "创建、安装、更新和验证本地 Skill。"),
+    "skill-guard": ("Skill 安全审查", "安装或同步社区 Skill 前做安全检查和风险评估。"),
+    "stock-analysis": ("股票分析", "分析股票和加密货币行情、财务数据、走势和投资线索。"),
+    "takeout-lite-recommender": ("外卖推荐助手", "根据口味、预算、位置和偏好推荐外卖或餐饮选择。"),
+    "token-usage-tracker": ("Token 用量统计", "记录、查询、汇总、导出和审计本地 token 使用情况。"),
+    "travel-manager": ("旅行管家", "规划旅行行程、目的地、交通、预算、证件和多城市安排。"),
+    "wechat-article-search": ("微信公众号文章搜索", "按关键词搜索微信公众号文章并整理标题、摘要、来源和链接。"),
+    "wecom-cli": ("企业微信 CLI", "处理企业微信联系人、消息、文档、日程、会议、待办和智能表格。"),
+    "xlsx": ("Excel 表格处理", "读取、编辑、修复、分析和生成 Excel 或电子表格文件。"),
 }
 
 
@@ -184,6 +227,7 @@ class SkillCatalogCache:
             aliases = {
                 _normalize_lookup(entry.name),
                 _normalize_lookup(entry.display_name),
+                _normalize_lookup(_skill_chinese_title(entry)),
             }
             if any(alias and alias in normalized_text for alias in aliases):
                 matches.append(entry)
@@ -237,6 +281,31 @@ class SkillCatalogCache:
                 if _text_size(lines) >= max_chars:
                     lines.append("...（其余技能已省略；请让用户缩小分类或指定 Skill 名称。）")
                     return "\n".join(lines)[:max_chars]
+        return "\n".join(lines)[:max_chars]
+
+    def inventory_summary_zh(self, max_chars: int = 20000) -> str:
+        entries = sorted(
+            [entry for entry in self.snapshot().entries if entry.enabled],
+            key=lambda entry: (entry.category_label, entry.name),
+        )
+        if not entries:
+            return "当前没有看到已启用的本机 Skill。"
+
+        grouped: Dict[str, List[SkillCatalogEntry]] = {}
+        for entry in entries:
+            grouped.setdefault(entry.category_label or "其他", []).append(entry)
+
+        lines = [f"当前已启用的本机 Skill 共 {len(entries)} 个，按方向整理如下："]
+        for category_label in sorted(grouped):
+            lines.append(f"\n## {category_label}")
+            for entry in grouped[category_label]:
+                lines.append(f"- {_skill_chinese_title(entry)}：{_skill_chinese_summary(entry)}")
+                if _text_size(lines) >= max_chars:
+                    lines.append("...（清单过长，后续 Skill 已省略；你可以指定分类或某个 Skill 继续问。）")
+                    return "\n".join(lines)[:max_chars]
+
+        lines.append("")
+        lines.append("想看某个 Skill 的详细用法，直接问“某某怎么用”，或把你要做的事说出来，我会再展开对应的 Skill。")
         return "\n".join(lines)[:max_chars]
 
     def category_summary_for_text(self, text: str, max_chars: int = 9000) -> Optional[str]:
@@ -537,6 +606,32 @@ def _one_line(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
+def _has_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
+
+
+def _skill_chinese_title(entry: SkillCatalogEntry) -> str:
+    override = _SKILL_CHINESE_SUMMARIES.get(entry.name)
+    if override:
+        return override[0]
+    if _has_cjk(entry.display_name):
+        return entry.display_name
+    if _has_cjk(entry.name):
+        return entry.name
+    return entry.display_name or entry.name
+
+
+def _skill_chinese_summary(entry: SkillCatalogEntry) -> str:
+    override = _SKILL_CHINESE_SUMMARIES.get(entry.name)
+    if override:
+        return override[1]
+    for candidate in (entry.description, entry.compact_summary):
+        if _has_cjk(candidate):
+            return _shorten(_one_line(candidate), 120)
+    title = _skill_chinese_title(entry)
+    return f"处理与“{title}”相关的任务；如需细节可以单独询问。"
+
+
 def _normalize_category(value: object) -> str:
     raw = str(value or "").strip().lower().replace("-", "_")
     if raw in _CATEGORY_SPECS:
@@ -664,8 +759,9 @@ def _extract_command_lines(content: str, limit: int = 12) -> List[str]:
 def _extract_relevant_sections(body: str, max_chars: int = 6500) -> str:
     keywords = (
         "summary", "overview", "usage", "how to use", "commands", "examples", "when to use",
-        "workflow", "safety", "configuration", "api", "功能", "用法", "使用", "命令", "示例",
-        "触发", "流程", "配置", "安全", "输出", "限制", "错误", "高级",
+        "workflow", "cooperation", "coordination", "pairing", "safety", "configuration", "api",
+        "功能", "用法", "使用", "命令", "示例", "触发", "流程", "协同", "配合", "合作",
+        "配置", "安全", "输出", "限制", "错误", "高级",
     )
     lines = body.splitlines()
     chunks: List[str] = []
