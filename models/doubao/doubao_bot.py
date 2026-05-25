@@ -150,7 +150,8 @@ class DoubaoBot(Bot):
 
     def call_vision(self, image_url: str, question: str,
                     model: Optional[str] = None,
-                    max_tokens: int = 1000) -> dict:
+                    max_tokens: int = 1000,
+                    **kwargs) -> dict:
         """Analyze an image using Doubao (Volcengine Ark) OpenAI-compatible API."""
         try:
             vision_model = model or self.args.get("model", "doubao-seed-2-0-pro-260215")

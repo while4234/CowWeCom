@@ -152,7 +152,8 @@ class ZHIPUAIBot(Bot, ZhipuAIImage):
 
     def call_vision(self, image_url: str, question: str,
                     model: Optional[str] = None,
-                    max_tokens: int = 1000) -> dict:
+                    max_tokens: int = 1000,
+                    **kwargs) -> dict:
         """Analyze an image using ZhipuAI OpenAI-compatible SDK.
         Always uses glm-5v-turbo — the text models (glm-5-turbo etc.) do not support vision.
         """

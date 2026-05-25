@@ -366,24 +366,16 @@ class WecomBotChannel(ChatChannel):
 
         if wecom_msg.ctype == ContextType.IMAGE:
             if hasattr(wecom_msg, "image_path") and wecom_msg.image_path:
-                if not is_group and self._single_chat_image_recognition_enabled():
-                    context = self._compose_context(
-                        ContextType.IMAGE,
-                        wecom_msg.image_path,
-                        isgroup=False,
-                        msg=wecom_msg,
-                        no_need_at=True,
-                    )
-                    if context:
-                        self._remember_social_bridge_user(context, wecom_msg)
-                        if req_id:
-                            mention_user_ids, mention_display_names = self._reply_mention_target(context)
-                            context["on_event"] = self._make_stream_callback(
-                                req_id,
-                                mention_user_ids=mention_user_ids,
-                                mention_display_names=mention_display_names,
-                            )
-                        self.produce(context)
+                context = self._compose_context(
+                    ContextType.IMAGE,
+                    wecom_msg.image_path,
+                    isgroup=is_group,
+                    msg=wecom_msg,
+                    no_need_at=True,
+                )
+                if context:
+                    self._remember_social_bridge_user(context, wecom_msg)
+                    if self._register_image_recognition_context(context):
                         return
                 file_cache.add(session_id, wecom_msg.image_path, file_type="image")
                 logger.info(f"[WecomBot] Image cached for session {session_id}")
@@ -411,6 +403,7 @@ class WecomBotChannel(ChatChannel):
                 wecom_msg.content = wecom_msg.content + "\n" + "\n".join(file_refs)
                 logger.info(f"[WecomBot] Attached {len(cached_files)} cached file(s)")
                 file_cache.clear(session_id)
+            wecom_msg.content = self._append_image_recognition_context(session_id, wecom_msg.content)
 
         context = self._compose_context(
             wecom_msg.ctype,
@@ -578,7 +571,7 @@ class WecomBotChannel(ChatChannel):
             """Push current stream content to wecom (throttled unless forced)."""
             now = time.time()
             if not force and now - state["last_push_time"] < 0.1:
-                return
+                return False
             content = self._with_mentions(
                 state["committed"] + state["current"],
                 state.get("mention_user_ids"),
@@ -586,24 +579,25 @@ class WecomBotChannel(ChatChannel):
                 enabled=True,
             )
             if len(content) == state["last_push_len"]:
-                return
+                return False
+            sent = self._ws_send({
+                "cmd": "aibot_respond_msg",
+                "headers": {"req_id": req_id},
+                "body": {
+                    "msgtype": "stream",
+                    "stream": {
+                        "id": state["stream_id"],
+                        "finish": False,
+                        "content": content,
+                    },
+                },
+            })
+            if not sent:
+                logger.warning("[WecomBot] Stream push failed")
+                return False
             state["last_push_time"] = now
             state["last_push_len"] = len(content)
-            try:
-                self._ws_send({
-                    "cmd": "aibot_respond_msg",
-                    "headers": {"req_id": req_id},
-                    "body": {
-                        "msgtype": "stream",
-                        "stream": {
-                            "id": state["stream_id"],
-                            "finish": False,
-                            "content": content,
-                        },
-                    },
-                })
-            except Exception as e:
-                logger.warning(f"[WecomBot] Stream push failed: {e}")
+            return True
 
         def on_event(event: dict):
             event_type = event.get("type")
@@ -614,12 +608,14 @@ class WecomBotChannel(ChatChannel):
 
             if event_type == "turn_start":
                 state["current"] = ""
+                return False
 
             elif event_type == "message_update":
                 delta = data.get("delta", "")
                 if delta:
                     state["current"] += delta
-                    _push_stream(state)
+                    return _push_stream(state)
+                return False
 
             elif event_type == "message_end":
                 tool_calls = data.get("tool_calls", [])
@@ -630,7 +626,8 @@ class WecomBotChannel(ChatChannel):
                 else:
                     state["committed"] += state["current"]
                     state["current"] = ""
-                _push_stream(state, force=True)
+                return _push_stream(state, force=True)
+            return False
 
         return on_event
 
@@ -902,6 +899,23 @@ class WecomBotChannel(ChatChannel):
                 mention_display_names=mention_display_names,
             )
 
+    def _send_silence_notice(self, context: Context, notice: str):
+        receiver = context.get("receiver", "")
+        is_group = bool(context.get("isgroup", False))
+        mention_user_ids, mention_display_names = self._reply_mention_target(context)
+        sent = self._send_text(
+            notice,
+            receiver,
+            is_group,
+            req_id=None,
+            mention_user_ids=mention_user_ids,
+            mention_display_names=mention_display_names,
+        )
+        runtime = context.get("_session_runtime") if context else None
+        if sent is not False and runtime and hasattr(runtime, "mark_visible_output"):
+            runtime.mark_visible_output("silence_notice")
+        return sent
+
     def active_send_text_result(self, receiver: str, text: str, is_group: bool = False, **kwargs) -> dict:
         """Proactively send text to a reachable WeCom chat and return a normalized result."""
         clean_receiver = str(receiver or "").strip()
@@ -960,6 +974,32 @@ class WecomBotChannel(ChatChannel):
     # Respond message (via websocket)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _append_stream_segment(prefix: str, segment: str) -> str:
+        prefix = str(prefix or "")
+        segment = str(segment or "")
+        if not prefix:
+            return segment
+        if not segment:
+            return prefix
+        if prefix.endswith("\n\n---\n\n"):
+            return prefix + segment
+        return prefix.rstrip() + "\n\n---\n\n" + segment
+
+    @classmethod
+    def _merge_final_stream_content(cls, state: dict, content: str) -> str:
+        committed = str(state.get("committed") or "")
+        current = str(state.get("current") or "")
+        final_content = str(content or "")
+        streamed_content = committed + current
+        if not final_content.strip():
+            return streamed_content
+        if not streamed_content.strip():
+            return final_content
+        if final_content.strip() in streamed_content:
+            return streamed_content
+        return cls._append_stream_segment(committed, final_content)
+
     def _send_text(
         self,
         content: str,
@@ -973,7 +1013,7 @@ class WecomBotChannel(ChatChannel):
         if req_id:
             state = self._stream_states.pop(req_id, None)
             if state:
-                final_content = state["committed"] if state["committed"] else content
+                final_content = self._merge_final_stream_content(state, content)
                 stream_id = state["stream_id"]
             else:
                 final_content = content

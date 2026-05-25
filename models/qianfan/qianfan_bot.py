@@ -153,7 +153,7 @@ class QianfanBot(Bot, OpenAICompatibleBot):
             return {"completion_tokens": 0, "content": "我现在有点累了，等会再来吧"}
 
     def call_vision(self, image_url: str, question: str,
-                    model: str = None, max_tokens: int = 1000) -> dict:
+                    model: str = None, max_tokens: int = 1000, **kwargs) -> dict:
         vision_model = model or DEFAULT_VISION_MODEL
         payload = {
             "model": vision_model,

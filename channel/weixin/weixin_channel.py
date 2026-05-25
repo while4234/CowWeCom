@@ -505,23 +505,23 @@ class WeixinChannel(ChatChannel):
 
         if wx_msg.ctype == ContextType.IMAGE:
             if hasattr(wx_msg, "image_path") and wx_msg.image_path:
-                if self._single_chat_image_recognition_enabled():
-                    context = self._compose_context(
-                        ContextType.IMAGE,
-                        wx_msg.image_path,
-                        isgroup=False,
-                        msg=wx_msg,
-                        no_need_at=True,
-                    )
-                    if context:
-                        if wechat_id:
-                            context["wechat_id"] = wechat_id
-                            context["user_label"] = wechat_id
-                        if nickname:
-                            context["display_name"] = nickname
-                            context["user_nickname"] = nickname
-                        self._remember_social_bridge_user(context, from_user, context_token, wechat_id, nickname)
-                        self.produce(context)
+                context = self._compose_context(
+                    ContextType.IMAGE,
+                    wx_msg.image_path,
+                    isgroup=False,
+                    msg=wx_msg,
+                    no_need_at=True,
+                )
+                if context:
+                    if wechat_id:
+                        context["wechat_id"] = wechat_id
+                        context["user_label"] = wechat_id
+                    if nickname:
+                        context["display_name"] = nickname
+                        context["user_nickname"] = nickname
+                    self._remember_social_bridge_user(context, from_user, context_token, wechat_id, nickname)
+                    context["context_token"] = context_token
+                    if self._register_image_recognition_context(context):
                         return
                 file_cache.add(session_id, wx_msg.image_path, file_type="image")
                 logger.info(f"[Weixin] Image cached for session {session_id}")
@@ -547,6 +547,7 @@ class WeixinChannel(ChatChannel):
                         refs.append(f"[文件: {fpath}]")
                 wx_msg.content = wx_msg.content + "\n" + "\n".join(refs)
                 file_cache.clear(session_id)
+            wx_msg.content = self._append_image_recognition_context(session_id, wx_msg.content)
 
         context = self._compose_context(
             wx_msg.ctype,

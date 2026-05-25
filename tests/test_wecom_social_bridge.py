@@ -13,8 +13,10 @@ from bridge.agent_bridge import AgentBridge
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
 from channel.file_cache import get_file_cache
+from channel.image_recognition import ImageRecognitionManager, reset_image_recognition_manager
 from channel.web.web_channel import ChannelsHandler
 from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
+from common.agent_task_runtime import SessionRuntime
 from config import conf
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
@@ -68,6 +70,7 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         self.channel._ws = None
         conf().clear()
         conf().update(self._config_backup)
+        reset_image_recognition_manager(None)
 
     def _dispatch_text_message(
         self,
@@ -195,9 +198,14 @@ class TestWecomBotSocialBridge(unittest.TestCase):
             conf()["single_chat_image_recognition"] = True
             produced = []
             self.channel.produce = produced.append
+            sent = []
+            self.channel._send_plain_text = lambda context, text, *args, **kwargs: sent.append(text)
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            reset_image_recognition_manager(manager)
             get_file_cache().clear("wecom-user-image")
 
-            with patch("channel.wecom_bot.wecom_bot_message._decrypt_media", return_value=PNG_BYTES):
+            with patch("channel.wecom_bot.wecom_bot_message._decrypt_media", return_value=PNG_BYTES), \
+                    patch.object(ImageRecognitionManager, "_recognize_image", return_value="A small test image."):
                 self.channel._handle_msg_callback(
                     {
                         "cmd": "aibot_msg_callback",
@@ -213,23 +221,16 @@ class TestWecomBotSocialBridge(unittest.TestCase):
                     }
                 )
 
-            self.assertEqual(len(produced), 1)
-            context = produced[0]
-            self.assertEqual(context.type, ContextType.IMAGE)
-            self.assertEqual(context["session_id"], "wecom-user-image")
-            self.assertEqual(context["receiver"], "wecom-user-image")
-            self.assertEqual(context["actor_id"], "wecom_bot:wecom-user-image")
-            self.assertTrue(Path(context.content).exists())
+            self.assertEqual(produced, [])
             self.assertEqual(get_file_cache().get("wecom-user-image"), [])
-
-            auto_context = self.channel._compose_private_image_recognition_context(context)
-            self.assertEqual(auto_context.type, ContextType.TEXT)
-            self.assertEqual(auto_context["origin_ctype"], ContextType.IMAGE)
-            self.assertIn("请先识别这张图片", auto_context.content)
-            self.assertIn("短期对话上下文", auto_context.content)
-            self.assertIn("长期记忆", auto_context.content)
-            self.assertIn("[图片:", auto_context.content)
-            self.assertIn(str(context.content), auto_context.content)
+            followup_context = manager.build_followup_context("wecom-user-image", wait_seconds=2)
+            record = manager.latest_for_session("wecom-user-image")
+            self.assertIsNotNone(record)
+            self.assertEqual(record.status, "done")
+            self.assertTrue(Path(record.image_path).exists())
+            self.assertIn("A small test image.", followup_context)
+            self.assertIn("[image:", followup_context)
+            self.assertTrue(any("A small test image." in text for text in sent))
 
     def test_group_image_stays_cached_for_explicit_followup(self):
         with tempfile.TemporaryDirectory() as workspace:
@@ -237,9 +238,12 @@ class TestWecomBotSocialBridge(unittest.TestCase):
             conf()["single_chat_image_recognition"] = True
             produced = []
             self.channel.produce = produced.append
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            reset_image_recognition_manager(manager)
             get_file_cache().clear("group-image-chat")
 
-            with patch("channel.wecom_bot.wecom_bot_message._decrypt_media", return_value=PNG_BYTES):
+            with patch("channel.wecom_bot.wecom_bot_message._decrypt_media", return_value=PNG_BYTES), \
+                    patch.object(ImageRecognitionManager, "_recognize_image", return_value="Group image summary."):
                 self.channel._handle_msg_callback(
                     {
                         "cmd": "aibot_msg_callback",
@@ -257,10 +261,13 @@ class TestWecomBotSocialBridge(unittest.TestCase):
                 )
 
             self.assertEqual(produced, [])
-            cached_files = get_file_cache().get("group-image-chat")
-            self.assertEqual(len(cached_files), 1)
-            self.assertEqual(cached_files[0]["type"], "image")
-            self.assertTrue(Path(cached_files[0]["path"]).exists())
+            self.assertEqual(get_file_cache().get("group-image-chat"), [])
+            followup_context = manager.build_followup_context("group-image-chat", wait_seconds=2)
+            record = manager.latest_for_session("group-image-chat")
+            self.assertIsNotNone(record)
+            self.assertEqual(record.status, "done")
+            self.assertTrue(Path(record.image_path).exists())
+            self.assertIn("Group image summary.", followup_context)
             get_file_cache().clear("group-image-chat")
 
     def test_group_messages_share_group_level_session_conversation_and_memory(self):
@@ -612,6 +619,66 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         payload = ws.sent[0]
         self.assertEqual(payload["body"]["chat_type"], 2)
         self.assertEqual(payload["body"]["markdown"]["content"], "@Alice\n好的")
+
+    def test_stream_push_failure_does_not_advance_visible_cursor(self):
+        ws = FakeWebSocket()
+        self.channel._ws = ws
+        self.channel._connected = False
+        on_event = self.channel._make_stream_callback("req-stream")
+
+        delivered = on_event({"type": "message_update", "data": {"delta": "partial"}})
+
+        self.assertFalse(delivered)
+        self.assertEqual(ws.sent, [])
+        self.assertEqual(self.channel._stream_states["req-stream"]["last_push_len"], 0)
+
+    def test_silence_notice_does_not_finish_active_stream(self):
+        ws = FakeWebSocket()
+        self.channel._ws = ws
+        self.channel._connected = True
+        self.channel._make_stream_callback("req-stream")
+        runtime = SessionRuntime()
+        runtime.start_task("long task")
+        context = {
+            "receiver": "wecom-user-1",
+            "isgroup": False,
+            "msg": SimpleNamespace(req_id="req-stream"),
+            "_session_runtime": runtime,
+        }
+
+        sent = self.channel._send_silence_notice(context, "still working")
+
+        self.assertTrue(sent)
+        self.assertIn("req-stream", self.channel._stream_states)
+        self.assertEqual(len(ws.sent), 1)
+        payload = ws.sent[0]
+        self.assertEqual(payload["cmd"], "aibot_send_msg")
+        self.assertEqual(payload["body"]["msgtype"], "markdown")
+        self.assertEqual(payload["body"]["markdown"]["content"], "still working")
+        self.assertEqual(runtime.last_visible_output_source, "silence_notice")
+
+    def test_final_stream_reply_is_merged_with_committed_content(self):
+        ws = FakeWebSocket()
+        self.channel._ws = ws
+        self.channel._connected = True
+        self.channel._stream_states["req-final"] = {
+            "stream_id": "stream-1",
+            "committed": "thinking\n\n---\n\n",
+            "current": "",
+            "last_push_time": 0,
+            "last_push_len": 0,
+            "mention_user_ids": [],
+            "mention_display_names": [],
+        }
+
+        sent = self.channel._send_text("final answer", "wecom-user-1", False, req_id="req-final")
+
+        self.assertTrue(sent)
+        payload = ws.sent[0]
+        content = payload["body"]["stream"]["content"]
+        self.assertTrue(payload["body"]["stream"]["finish"])
+        self.assertIn("thinking", content)
+        self.assertTrue(content.endswith("final answer"))
 
     def test_active_send_text_result_reports_websocket_send_failure(self):
         class BrokenWebSocket:

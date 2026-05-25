@@ -47,10 +47,16 @@ def make_channel_without_thread():
     return channel
 
 
+def set_runtime_start(runtime, started_at):
+    runtime.running_task.started_at = started_at
+    runtime.progress.started_at = started_at
+    runtime.last_visible_output_at = started_at
+
+
 class TestFastLaneProgress(unittest.TestCase):
     def test_long_task_notice_defaults_start_at_ten_seconds_then_sparse_repeat(self):
         with patch("channel.chat_channel.conf", return_value={}):
-            self.assertEqual(ChatChannel._long_task_notice_seconds(), (10.0, 90.0))
+            self.assertEqual(ChatChannel._long_task_notice_seconds(), (10.0, 45.0, 90.0))
 
     def test_progress_queries_are_classified_as_control(self):
         channel = make_channel_without_thread()
@@ -133,27 +139,143 @@ class TestFastLaneProgress(unittest.TestCase):
     def test_silence_notice_is_thresholded_while_task_runs(self):
         runtime = SessionRuntime()
         runtime.start_task("long task")
-        runtime.last_visible_output_at = 100.0
+        set_runtime_start(runtime, 100.0)
 
-        with patch("common.agent_task_runtime.monotonic", side_effect=[109.0, 110.0, 199.0, 200.0]):
-            self.assertIsNone(runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0))
-            first = runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0)
+        with patch(
+            "common.agent_task_runtime.monotonic",
+            side_effect=[109.0, 110.0, 110.0, 154.0, 155.0, 155.0, 244.0, 245.0],
+        ):
+            self.assertIsNone(
+                runtime.claim_silence_notice(
+                    first_notice_seconds=10.0,
+                    second_notice_seconds=45.0,
+                    repeat_notice_seconds=90.0,
+                )
+            )
+            first = runtime.claim_silence_notice(
+                first_notice_seconds=10.0,
+                second_notice_seconds=45.0,
+                repeat_notice_seconds=90.0,
+            )
             self.assertIsNotNone(first)
             self.assertIn("还在处理", first)
-            self.assertIsNone(runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0))
-            repeat = runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0)
+            runtime.mark_visible_output("silence_notice")
+            self.assertIsNone(
+                runtime.claim_silence_notice(
+                    first_notice_seconds=10.0,
+                    second_notice_seconds=45.0,
+                    repeat_notice_seconds=90.0,
+                )
+            )
+            second = runtime.claim_silence_notice(
+                first_notice_seconds=10.0,
+                second_notice_seconds=45.0,
+                repeat_notice_seconds=90.0,
+            )
+            self.assertIsNotNone(second)
+            runtime.mark_visible_output("silence_notice")
+            self.assertIsNone(
+                runtime.claim_silence_notice(
+                    first_notice_seconds=10.0,
+                    second_notice_seconds=45.0,
+                    repeat_notice_seconds=90.0,
+                )
+            )
+            repeat = runtime.claim_silence_notice(
+                first_notice_seconds=10.0,
+                second_notice_seconds=45.0,
+                repeat_notice_seconds=90.0,
+            )
             self.assertIsNotNone(repeat)
 
-    def test_visible_output_resets_silence_notice_timer(self):
+    def test_model_text_skips_first_notice_and_uses_second_notice_delay(self):
         runtime = SessionRuntime()
         runtime.start_task("long task")
-        runtime.last_visible_output_at = 100.0
+        set_runtime_start(runtime, 100.0)
 
-        with patch("common.agent_task_runtime.monotonic", side_effect=[110.0, 150.0, 159.0, 160.0]):
-            self.assertIsNotNone(runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0))
+        with patch("common.agent_task_runtime.monotonic", side_effect=[105.0, 114.0, 149.0, 150.0]):
             runtime.mark_visible_output("message_update")
-            self.assertIsNone(runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0))
-            self.assertIsNotNone(runtime.claim_silence_notice(first_notice_seconds=10.0, repeat_notice_seconds=90.0))
+            self.assertIsNone(
+                runtime.claim_silence_notice(
+                    first_notice_seconds=10.0,
+                    second_notice_seconds=45.0,
+                    repeat_notice_seconds=90.0,
+                )
+            )
+            self.assertIsNone(
+                runtime.claim_silence_notice(
+                    first_notice_seconds=10.0,
+                    second_notice_seconds=45.0,
+                    repeat_notice_seconds=90.0,
+                )
+            )
+            self.assertIsNotNone(
+                runtime.claim_silence_notice(
+                    first_notice_seconds=10.0,
+                    second_notice_seconds=45.0,
+                    repeat_notice_seconds=90.0,
+                )
+            )
+
+    def test_control_progress_does_not_delay_first_silence_notice(self):
+        runtime = SessionRuntime()
+        runtime.start_task("long task")
+        set_runtime_start(runtime, 100.0)
+
+        with patch("common.agent_task_runtime.monotonic", side_effect=[105.0, 110.0]):
+            runtime.mark_visible_output("control_progress")
+            self.assertIsNotNone(
+                runtime.claim_silence_notice(
+                    first_notice_seconds=10.0,
+                    second_notice_seconds=45.0,
+                    repeat_notice_seconds=90.0,
+                )
+            )
+
+    def test_failed_stream_callback_does_not_reset_visible_output(self):
+        runtime = SessionRuntime()
+        runtime.start_task("long task")
+        set_runtime_start(runtime, 100.0)
+        context = make_text_context("long task")
+        context["_session_runtime"] = runtime
+        context["on_event"] = lambda event: False
+        handler = AgentEventHandler(context=context, original_callback=context["on_event"])
+
+        with patch("common.agent_task_runtime.monotonic", side_effect=[105.0]):
+            handler.handle_event({"type": "message_update", "data": {"delta": "working"}})
+
+        self.assertEqual(runtime.last_visible_output_at, 100.0)
+        self.assertFalse(runtime.model_text_sent)
+
+    def test_successful_stream_callback_marks_model_output_visible(self):
+        runtime = SessionRuntime()
+        runtime.start_task("long task")
+        set_runtime_start(runtime, 100.0)
+        context = make_text_context("long task")
+        context["_session_runtime"] = runtime
+        context["on_event"] = lambda event: True
+        handler = AgentEventHandler(context=context, original_callback=context["on_event"])
+
+        with patch("common.agent_task_runtime.monotonic", side_effect=[105.0, 106.0]):
+            handler.handle_event({"type": "message_update", "data": {"delta": "working"}})
+
+        self.assertEqual(runtime.last_visible_output_at, 106.0)
+        self.assertTrue(runtime.model_text_sent)
+
+    def test_stream_callback_without_success_return_does_not_mark_model_output_visible(self):
+        runtime = SessionRuntime()
+        runtime.start_task("long task")
+        set_runtime_start(runtime, 100.0)
+        context = make_text_context("long task")
+        context["_session_runtime"] = runtime
+        context["on_event"] = lambda event: None
+        handler = AgentEventHandler(context=context, original_callback=context["on_event"])
+
+        with patch("common.agent_task_runtime.monotonic", side_effect=[105.0, 106.0]):
+            handler.handle_event({"type": "message_update", "data": {"delta": "working"}})
+
+        self.assertEqual(runtime.last_visible_output_at, 100.0)
+        self.assertFalse(runtime.model_text_sent)
 
     def test_silence_notice_is_suppressed_after_finish_or_cancel(self):
         finished_runtime = SessionRuntime()

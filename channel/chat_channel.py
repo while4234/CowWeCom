@@ -9,6 +9,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from bridge.context import *
 from bridge.reply import *
 from channel.channel import Channel
+from channel.image_recognition import get_image_recognition_manager
 from common.agent_task_limits import resolve_agent_max_steps
 from common.agent_task_runtime import SessionRuntime, TaskPolicy
 from common.latency import elapsed, format_seconds, hash_id, monotonic
@@ -61,6 +62,110 @@ class ChatChannel(Channel):
     @staticmethod
     def _single_chat_image_recognition_enabled() -> bool:
         return bool(conf().get("single_chat_image_recognition", True))
+
+    @staticmethod
+    def _background_image_recognition_enabled() -> bool:
+        return bool(conf().get("background_image_recognition_enabled", True))
+
+    def _register_image_recognition_context(self, context: Context) -> bool:
+        if not context or context.type != ContextType.IMAGE:
+            return False
+        if not self._background_image_recognition_enabled():
+            return False
+        if not context.get("isgroup", False) and not self._single_chat_image_recognition_enabled():
+            return False
+
+        image_path = str(context.content or "").strip()
+        if not image_path:
+            return False
+
+        try:
+            from channel.image_recognition import get_image_recognition_manager
+
+            msg = context.get("msg")
+            session_id = str(context.get("session_id") or "").strip()
+            sender_label = (
+                str(context.get("group_sender_label") or "").strip()
+                or str(getattr(msg, "actual_user_nickname", "") or "").strip()
+                or str(getattr(msg, "from_user_nickname", "") or "").strip()
+            )
+            record = get_image_recognition_manager().register_image(
+                session_id=session_id,
+                channel_type=str(context.get("channel_type") or self.channel_type or ""),
+                image_path=image_path,
+                is_group=bool(context.get("isgroup", False)),
+                msg_id=str(getattr(msg, "msg_id", "") or ""),
+                sender_label=sender_label,
+            )
+            if not record:
+                return False
+            logger.info(
+                "[ImageRecognition] registered image session=%s group=%s new_job=%s",
+                hash_id(session_id),
+                bool(context.get("isgroup", False)),
+                bool(record.started_new_job),
+            )
+            if not context.get("isgroup", False):
+                self._schedule_private_image_recognition_reply(context, record)
+            return True
+        except Exception as e:
+            logger.warning("[ImageRecognition] failed to register image: %s", e, exc_info=True)
+            return False
+
+    def _schedule_private_image_recognition_reply(self, context: Context, record) -> None:
+        try:
+            from channel.image_recognition import get_image_recognition_manager
+
+            manager = get_image_recognition_manager()
+            cached_reply = manager.public_reply_for(record)
+            if cached_reply and not manager.is_auto_reply_suppressed(record.record_id):
+                control_pool.submit(self._send_plain_text, context, cached_reply)
+                return
+            if not getattr(record, "started_new_job", False):
+                return
+
+            def _send_result(done_record) -> None:
+                if manager.is_auto_reply_suppressed(getattr(done_record, "record_id", "")):
+                    return
+                wait_seconds = 0.0
+                try:
+                    configured_wait = conf().get("image_recognition_followup_wait_seconds", 6)
+                    wait_seconds = 6.0 if configured_wait in (None, "") else float(configured_wait)
+                except (TypeError, ValueError):
+                    wait_seconds = 6.0
+                if wait_seconds > 0:
+                    time.sleep(wait_seconds)
+                if manager.is_auto_reply_suppressed(getattr(done_record, "record_id", "")):
+                    return
+                text = manager.public_reply_for(done_record)
+                if text:
+                    self._send_plain_text(context, text)
+
+            if not manager.add_done_callback(record, _send_result):
+                latest = manager.get_record(record.record_id)
+                if latest and latest.status in {"done", "error"}:
+                    _send_result(latest)
+        except Exception as e:
+            logger.debug("[ImageRecognition] failed to schedule private reply: %s", e)
+
+    def _append_image_recognition_context(self, session_id: str, content: str) -> str:
+        if not self._background_image_recognition_enabled():
+            return content
+        if "[Recent image context]" in str(content or ""):
+            return content
+        try:
+            from channel.image_recognition import get_image_recognition_manager
+
+            manager = get_image_recognition_manager()
+            if manager.classify_followup_intent(content) == "none":
+                return content
+            extra = manager.build_followup_context(session_id, wait_seconds=0)
+        except Exception as e:
+            logger.debug("[ImageRecognition] failed to build followup context: %s", e)
+            extra = ""
+        if not extra:
+            return content
+        return f"{content.rstrip()}{extra}"
 
     @staticmethod
     def _private_image_recognition_prompt() -> str:
@@ -187,10 +292,11 @@ class ChatChannel(Channel):
     ):
         reply = Reply(ReplyType.TEXT, text)
         reply = self._decorate_reply(context, reply)
-        self._send_reply(context, reply)
+        sent = self._send_reply(context, reply)
         runtime = context.get("_session_runtime") if context else None
-        if track_visible and runtime and hasattr(runtime, "mark_visible_output"):
+        if sent is not False and track_visible and runtime and hasattr(runtime, "mark_visible_output"):
             runtime.mark_visible_output(visible_source)
+        return sent
 
     def _handle_control_progress(self, context: Context, runtime: SessionRuntime, include_eta_note: bool = False):
         self._send_plain_text(
@@ -408,6 +514,11 @@ class ChatChannel(Channel):
             else:
                 context.type = ContextType.TEXT
             context.content = content.strip()
+            if context.type == ContextType.TEXT:
+                context.content = self._append_image_recognition_context(
+                    context.get("session_id", ""),
+                    context.content,
+                )
             if "desire_rtype" not in context and conf().get("always_reply_voice") and ReplyType.VOICE not in self.NOT_SUPPORT_REPLYTYPE:
                 context["desire_rtype"] = ReplyType.VOICE
         elif context.type == ContextType.VOICE:
@@ -443,9 +554,9 @@ class ChatChannel(Channel):
 
                 # reply的发送步骤
                 send_start = monotonic()
-                self._send_reply(context, reply)
+                sent = self._send_reply(context, reply)
                 send_elapsed = elapsed(send_start)
-                if runtime and hasattr(runtime, "mark_visible_output"):
+                if sent is not False and runtime and hasattr(runtime, "mark_visible_output"):
                     runtime.mark_visible_output("final_reply")
         except Exception as e:
             final_phase = "error"
@@ -475,7 +586,7 @@ class ChatChannel(Channel):
     def _schedule_post_task_self_evolution(context: Context):
         if not context:
             return
-        payload = context.pop("_self_evolution_post_task", None)
+        payload = context.kwargs.pop("_self_evolution_post_task", None)
         if not payload:
             return
         try:
@@ -526,6 +637,8 @@ class ChatChannel(Channel):
                     else:
                         return
             elif context.type == ContextType.IMAGE:  # 图片消息
+                if self._register_image_recognition_context(context):
+                    return
                 auto_context = self._compose_private_image_recognition_context(context)
                 if auto_context:
                     logger.info(
@@ -601,19 +714,21 @@ class ChatChannel(Channel):
                 # Web channel renders images/videos inline via renderMarkdown,
                 # so skip the extract-and-send step to avoid duplicate media.
                 if reply.type == ReplyType.TEXT and context.get("channel_type") != "web":
-                    self._extract_and_send_images(reply, context)
+                    return self._extract_and_send_images(reply, context)
                 elif reply.type == ReplyType.TEXT:
-                    self._send(reply, context)
+                    return self._send(reply, context)
                 # 如果是图片回复但带有文本内容，先发文本再发图片
                 elif reply.type == ReplyType.IMAGE_URL and hasattr(reply, 'text_content') and reply.text_content:
                     # 先发送文本
                     text_reply = Reply(ReplyType.TEXT, reply.text_content)
-                    self._send(text_reply, context)
+                    text_sent = self._send(text_reply, context)
                     # 短暂延迟后发送图片
                     time.sleep(0.3)
-                    self._send(reply, context)
+                    media_sent = self._send(reply, context)
+                    return text_sent is not False and media_sent is not False
                 else:
-                    self._send(reply, context)
+                    return self._send(reply, context)
+        return False
     
     def _extract_and_send_images(self, reply: Reply, context: Context):
         """
@@ -654,7 +769,7 @@ class ChatChannel(Channel):
             
             # Send text first (the frontend will embed video players via renderMarkdown).
             logger.info(f"[chat_channel] Sending text content before media: {reply.content[:100]}...")
-            self._send(reply, context)
+            text_sent = self._send(reply, context)
             logger.info(f"[chat_channel] Text sent, now sending {len(media_items)} media item(s)")
             
             for i, (url, media_type) in enumerate(media_items):
@@ -685,7 +800,8 @@ class ChatChannel(Channel):
                     logger.error(f"[chat_channel] Failed to send {media_type} {url}: {e}")
         else:
             # 没有媒体文件，正常发送文本
-                self._send(reply, context)
+                return self._send(reply, context)
+        return text_sent
 
     def _send(self, reply: Reply, context: Context, retry_cnt=0):
         try:
@@ -696,14 +812,16 @@ class ChatChannel(Channel):
                     context.get("session_id", ""),
                     reply.type,
                 )
+            return sent is not False
         except Exception as e:
             logger.error("[chat_channel] sendMsg error: {}".format(str(e)))
             if isinstance(e, NotImplementedError):
-                return
+                return False
             logger.exception(e)
             if retry_cnt < 2:
                 time.sleep(3 + 3 * retry_cnt)
-                self._send(reply, context, retry_cnt + 1)
+                return self._send(reply, context, retry_cnt + 1)
+            return False
 
     def _success_callback(self, session_id, **kwargs):  # 线程正常结束时的回调函数
         logger.debug("Worker return success, session_id = {}".format(session_id))
@@ -737,29 +855,33 @@ class ChatChannel(Channel):
     @staticmethod
     def _long_task_notice_seconds():
         first = _safe_float(conf().get("long_task_silence_first_notice_seconds", 10), 10.0)
+        second = _safe_float(conf().get("long_task_silence_second_notice_seconds", 45), 45.0)
         repeat = _safe_float(conf().get("long_task_silence_repeat_notice_seconds", 90), 90.0)
-        return max(0.0, first), max(0.0, repeat)
+        return max(0.0, first), max(0.0, second), max(0.0, repeat)
+
+    def _send_silence_notice(self, context: Context, notice: str):
+        return self._send_plain_text(
+            context,
+            notice,
+            True,
+            "silence_notice",
+        )
 
     def _start_silence_watchdog(self, context: Context, runtime: SessionRuntime, token):
         if not self._long_task_expectation_enabled():
             return
 
-        first_notice_seconds, repeat_notice_seconds = self._long_task_notice_seconds()
+        first_notice_seconds, second_notice_seconds, repeat_notice_seconds = self._long_task_notice_seconds()
 
         def _watch():
             while runtime.has_running() and not token.is_cancelled():
                 notice = runtime.claim_silence_notice(
                     first_notice_seconds=first_notice_seconds,
+                    second_notice_seconds=second_notice_seconds,
                     repeat_notice_seconds=repeat_notice_seconds,
                 )
                 if notice:
-                    control_pool.submit(
-                        self._send_plain_text,
-                        context,
-                        notice,
-                        True,
-                        "silence_notice",
-                    )
+                    control_pool.submit(self._send_silence_notice, context, notice)
                 time.sleep(1.0)
 
         thread = threading.Thread(
@@ -770,12 +892,27 @@ class ChatChannel(Channel):
         thread.start()
 
     def produce(self, context: Context):
+        if context.type == ContextType.IMAGE and self._register_image_recognition_context(context):
+            logger.info(
+                "[Latency][Queue] bypass image recognition session=%s",
+                hash_id(context.get("session_id", "")),
+            )
+            return
+
         session_id = context["session_id"]
         enqueued_at = monotonic()
         context["_latency_enqueued_at"] = enqueued_at
         if "_latency_received_at" not in context:
             context["_latency_received_at"] = enqueued_at
         runtime = self._get_or_create_runtime(session_id)
+        if context.type == ContextType.TEXT:
+            try:
+                content = context.get("_visible_task_summary") or context.content
+                if get_image_recognition_manager().handle_text(self, context, content):
+                    logger.info("[ImageRecognition] handled image follow-up session=%s", hash_id(session_id))
+                    return
+            except Exception as e:
+                logger.debug("[ImageRecognition] follow-up routing skipped: %s", e)
         policy, payload = self._classify_fast_lane(context, runtime)
 
         if policy == TaskPolicy.CONTROL_PROGRESS:

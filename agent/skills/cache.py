@@ -371,7 +371,10 @@ def _find_usage_section(body: str) -> str:
         match = re.match(r"^(#{1,3})\s+(.+?)\s*$", line)
         if not match:
             continue
+        level = len(match.group(1))
         title = match.group(2).strip().lower()
+        if level == 1 and title not in headings:
+            continue
         if any(marker in title for marker in headings):
             start = index
             break

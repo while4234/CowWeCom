@@ -152,6 +152,9 @@ class SessionRuntime:
         self.last_queue_notice_at = 0.0
         self.last_visible_output_at = 0.0
         self.last_visible_output_source = ""
+        self.last_agent_reply_at = 0.0
+        self.last_agent_reply_source = ""
+        self.model_text_sent = False
         self.last_silence_notice_at = 0.0
         self.silence_notice_count = 0
 
@@ -178,6 +181,9 @@ class SessionRuntime:
             )
             self.last_visible_output_at = now
             self.last_visible_output_source = "task_start"
+            self.last_agent_reply_at = 0.0
+            self.last_agent_reply_source = ""
+            self.model_text_sent = False
             self.last_silence_notice_at = 0.0
             self.silence_notice_count = 0
             self.last_queue_notice_at = 0.0
@@ -198,16 +204,26 @@ class SessionRuntime:
 
     def mark_visible_output(self, source: str = "") -> None:
         with self.lock:
-            self.last_visible_output_at = monotonic()
-            self.last_visible_output_source = sanitize_identifier(source or "visible_output")
-            if self.last_visible_output_source != "silence_notice":
-                self.last_silence_notice_at = 0.0
-                self.silence_notice_count = 0
+            now = monotonic()
+            source = sanitize_identifier(source or "visible_output")
+            self.last_visible_output_at = now
+            self.last_visible_output_source = source
+            if source in _MODEL_OUTPUT_SOURCES:
+                self.last_agent_reply_at = now
+                self.last_agent_reply_source = source
+                self.model_text_sent = True
+            elif source == "silence_notice":
+                self.last_agent_reply_at = now
+                self.last_agent_reply_source = source
+                if not self.last_silence_notice_at:
+                    self.last_silence_notice_at = now
+                    self.silence_notice_count += 1
 
     def claim_silence_notice(
         self,
-        first_notice_seconds: float = 45.0,
-        repeat_notice_seconds: float = 120.0,
+        first_notice_seconds: float = 10.0,
+        second_notice_seconds: float = 45.0,
+        repeat_notice_seconds: float = 90.0,
     ) -> Optional[str]:
         with self.lock:
             if not self.running_task:
@@ -215,14 +231,20 @@ class SessionRuntime:
             if self.running_task.token.is_cancelled() or self.progress.cancel_requested:
                 return None
             now = monotonic()
-            visible_at = self.last_visible_output_at or self.running_task.started_at
-            notice_at = self.last_silence_notice_at
-            if notice_at:
-                silence_for = now - max(visible_at, notice_at)
-                required = max(0.0, float(repeat_notice_seconds))
-            else:
-                silence_for = now - visible_at
+            if not self.model_text_sent and self.silence_notice_count == 0:
+                anchor_at = self.running_task.started_at
                 required = max(0.0, float(first_notice_seconds))
+            else:
+                anchor_at = (
+                    self.last_agent_reply_at
+                    or self.last_silence_notice_at
+                    or self.running_task.started_at
+                )
+                if self.silence_notice_count < 2:
+                    required = max(0.0, float(second_notice_seconds))
+                else:
+                    required = max(0.0, float(repeat_notice_seconds))
+            silence_for = now - anchor_at
             if silence_for < required:
                 return None
             self.last_silence_notice_at = now
@@ -370,6 +392,13 @@ _SECRET_RE = re.compile(
 )
 _WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s\"'<>]+")
 _POSIX_PATH_RE = re.compile(r"(?<!\w)/(?:[\w.-]+/){2,}[\w.-]+")
+_MODEL_OUTPUT_SOURCES = {
+    "message_update",
+    "message_end",
+    "stream_push",
+    "intermediate_send",
+    "final_reply",
+}
 
 
 def sanitize_preview(value: Any, limit: int = 80) -> str:

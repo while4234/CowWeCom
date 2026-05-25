@@ -157,7 +157,8 @@ class DashscopeBot(Bot):
 
     def call_vision(self, image_url: str, question: str,
                     model: Optional[str] = None,
-                    max_tokens: int = 1000) -> dict:
+                    max_tokens: int = 1000,
+                    **kwargs) -> dict:
         """Analyze an image using DashScope MultiModalConversation API."""
         try:
             dashscope.api_key = self.api_key

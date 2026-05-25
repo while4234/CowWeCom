@@ -17,6 +17,7 @@ Provider resolution:
 """
 
 import base64
+import inspect
 import os
 import subprocess
 import tempfile
@@ -124,6 +125,10 @@ class Vision(BaseTool):
                 "type": "string",
                 "description": "Question to ask about the image",
             },
+            "reasoning_effort": {
+                "type": "string",
+                "description": "Optional reasoning effort for Responses-capable vision calls",
+            },
         },
         "required": ["image", "question"],
     }
@@ -138,6 +143,8 @@ class Vision(BaseTool):
     def execute(self, args: Dict[str, Any]) -> ToolResult:
         image = args.get("image", "").strip()
         question = args.get("question", "").strip()
+        reasoning_effort = self._resolve_reasoning_effort(args)
+        max_tokens = self._resolve_max_tokens(args)
 
         if not image:
             return ToolResult.fail("Error: 'image' parameter is required")
@@ -163,10 +170,19 @@ class Vision(BaseTool):
         # Default model is only used as a last-resort placeholder for providers
         # whose VisionProvider.model_override is None (e.g. raw OpenAI provider
         # when the user did not configure tool.vision.model).
-        return self._call_with_fallback(providers, DEFAULT_MODEL, question, image_content)
+        return self._call_with_fallback(
+            providers,
+            DEFAULT_MODEL,
+            question,
+            image_content,
+            reasoning_effort=reasoning_effort,
+            max_tokens=max_tokens,
+        )
 
     def _call_with_fallback(self, providers: List[VisionProvider], model: str,
-                            question: str, image_content: dict) -> ToolResult:
+                            question: str, image_content: dict,
+                            reasoning_effort: Optional[str] = None,
+                            max_tokens: int = MAX_TOKENS) -> ToolResult:
         """Try each provider in order; fall back to the next one on failure."""
         errors: List[str] = []
         for i, provider in enumerate(providers):
@@ -175,9 +191,23 @@ class Vision(BaseTool):
                 logger.info(f"[Vision] Trying provider '{provider.name}' "
                             f"with model '{use_model}' ({i + 1}/{len(providers)})")
                 if provider.use_bot:
-                    result = self._call_via_bot(use_model, question, image_content, provider)
+                    result = self._call_via_bot(
+                        use_model,
+                        question,
+                        image_content,
+                        provider,
+                        reasoning_effort=reasoning_effort,
+                        max_tokens=max_tokens,
+                    )
                 else:
-                    result = self._call_api(provider, use_model, question, image_content)
+                    result = self._call_api(
+                        provider,
+                        use_model,
+                        question,
+                        image_content,
+                        reasoning_effort=reasoning_effort,
+                        max_tokens=max_tokens,
+                    )
                 logger.info(f"[Vision] ✅ Success via {provider.name} (model={use_model})")
                 return result
             except VisionAPIError as e:
@@ -196,6 +226,28 @@ class Vision(BaseTool):
         return ToolResult.fail(
             "Error: All Vision API providers failed.\n" + "\n".join(f"  - {err}" for err in errors)
         )
+
+    def _resolve_reasoning_effort(self, args: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        args = args or {}
+        value = (
+            args.get("reasoning_effort")
+            or self.config.get("reasoning_effort")
+            or self.config.get("model_reasoning_effort")
+        )
+        try:
+            from models.openai.responses_api_adapter import normalize_reasoning_effort
+
+            return normalize_reasoning_effort(value)
+        except Exception:
+            raw = str(value or "").strip().lower()
+            return raw if raw in {"none", "low", "medium", "high", "xhigh", "max"} else None
+
+    def _resolve_max_tokens(self, args: Optional[Dict[str, Any]] = None) -> int:
+        args = args or {}
+        try:
+            return int(args.get("max_tokens") or self.config.get("max_tokens") or MAX_TOKENS)
+        except (TypeError, ValueError):
+            return MAX_TOKENS
 
     def _resolve_providers(self) -> List[VisionProvider]:
         """
@@ -520,7 +572,9 @@ class Vision(BaseTool):
         )
 
     def _call_via_bot(self, model: str, question: str, image_content: dict,
-                      provider: Optional[VisionProvider] = None) -> ToolResult:
+                      provider: Optional[VisionProvider] = None,
+                      reasoning_effort: Optional[str] = None,
+                      max_tokens: int = MAX_TOKENS) -> ToolResult:
         """
         Call a model's call_vision with vendor-native API format.
         Uses the provider's _fallback_bot if set, otherwise the main model bot.
@@ -537,12 +591,22 @@ class Vision(BaseTool):
             raise VisionAPIError("No image URL in content block")
 
         try:
-            response = bot.call_vision(
-                image_url=image_url,
-                question=question,
-                model=model,
-                max_tokens=MAX_TOKENS,
-            )
+            kwargs = {
+                "image_url": image_url,
+                "question": question,
+                "model": model,
+                "max_tokens": max_tokens,
+            }
+            try:
+                params = inspect.signature(bot.call_vision).parameters
+                accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+                if reasoning_effort and ("reasoning_effort" in params or accepts_kwargs):
+                    kwargs["reasoning_effort"] = reasoning_effort
+                if reasoning_effort and ("reasoning_effort_locked" in params or accepts_kwargs):
+                    kwargs["reasoning_effort_locked"] = True
+            except (TypeError, ValueError):
+                pass
+            response = bot.call_vision(**kwargs)
         except Exception as e:
             raise VisionAPIError(f"call_vision failed: {e}")
 
@@ -678,7 +742,9 @@ class Vision(BaseTool):
         return path
 
     def _call_api(self, provider: VisionProvider, model: str,
-                  question: str, image_content: dict) -> ToolResult:
+                  question: str, image_content: dict,
+                  reasoning_effort: Optional[str] = None,
+                  max_tokens: int = MAX_TOKENS) -> ToolResult:
         """
         Call a single provider's Vision API.
         Raises VisionAPIError on recoverable failures so the caller can try
@@ -686,6 +752,7 @@ class Vision(BaseTool):
         """
         payload = {
             "model": model,
+            "max_tokens": max_tokens,
             "messages": [
                 {
                     "role": "user",
@@ -702,7 +769,8 @@ class Vision(BaseTool):
                 payload,
                 store=not bool(conf().get("disable_response_storage", False)),
                 reasoning_effort=(
-                    conf().get("model_reasoning_effort")
+                    reasoning_effort
+                    or conf().get("model_reasoning_effort")
                     or (conf().get("reasoning_effort") if conf().get("enable_thinking", False) else None)
                 ),
             )
@@ -722,6 +790,8 @@ class Vision(BaseTool):
             chunks = responses_stream_events_to_chat_chunks(events)
             data = chat_chunks_to_chat_completion(chunks, model=model)
         else:
+            if reasoning_effort:
+                payload["reasoning_effort"] = reasoning_effort
             headers = {
                 "Authorization": f"Bearer {provider.api_key}",
                 "Content-Type": "application/json",

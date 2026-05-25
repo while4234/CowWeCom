@@ -65,8 +65,11 @@ class AgentEventHandler:
             self._handle_tool_execution_end(data)
         
         # Call original callback if provided
+        callback_result = None
         if self.original_callback:
-            self.original_callback(event)
+            callback_result = self.original_callback(event)
+        if self._event_sent_visible_model_text(event_type, data, callback_result):
+            self._mark_visible_output(event_type)
 
     def _mark_visible_output(self, source):
         """Tell session runtime that user-visible output has been produced."""
@@ -87,8 +90,6 @@ class AgentEventHandler:
         """Handle message update event (streaming content text)"""
         delta = data.get("delta", "")
         self.current_content += delta
-        if delta and self.context and self.context.get("on_event"):
-            self._mark_visible_output("message_update")
     
     def _handle_message_end(self, data):
         """Handle message end event"""
@@ -141,10 +142,20 @@ class AgentEventHandler:
             try:
                 from bridge.reply import Reply, ReplyType
                 reply = Reply(ReplyType.TEXT, message)
-                self._mark_visible_output("intermediate_send")
-                self.channel._send(reply, self.context)
+                sent = self.channel._send(reply, self.context)
+                if sent is not False:
+                    self._mark_visible_output("intermediate_send")
             except Exception as e:
                 logger.debug(f"[AgentEventHandler] Failed to send to channel: {e}")
+
+    def _event_sent_visible_model_text(self, event_type, data, callback_result) -> bool:
+        if not self.context or not self.context.get("on_event"):
+            return False
+        if event_type == "message_update" and not data.get("delta"):
+            return False
+        if event_type not in {"message_update", "message_end"}:
+            return False
+        return callback_result is True
     
     def log_summary(self):
         """Log execution summary - simplified"""

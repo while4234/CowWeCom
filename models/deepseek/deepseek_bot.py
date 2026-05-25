@@ -639,7 +639,8 @@ class DeepSeekBot(Bot, OpenAICompatibleBot):
 
     def call_vision(self, image_url: str, question: str,
                     model: Optional[str] = None,
-                    max_tokens: int = 1000) -> dict:
+                    max_tokens: int = 1000,
+                    **kwargs) -> dict:
         """Analyse an image via DeepSeek's OpenAI-compatible /chat/completions endpoint."""
         try:
             vision_model = model or self.args.get("model", const.DEEPSEEK_V4_FLASH)

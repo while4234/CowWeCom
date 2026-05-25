@@ -47,10 +47,10 @@ class SkillCatalogCacheTest(unittest.TestCase):
             catalog = SkillCatalogCache(str(builtin), str(custom))
             text = catalog.format_local_list()
 
-            self.assertIn("本地技能/函数", text)
+            self.assertIn("本地技能/功能", text)
             self.assertIn("alpha Display (alpha)", text)
             self.assertIn("Beta Manual (beta)", text)
-            self.assertIn("⏸️", text)
+            self.assertIn("[off]", text)
 
     def test_refreshes_when_skill_file_changes(self):
         with tempfile.TemporaryDirectory() as tmp:

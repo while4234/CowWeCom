@@ -234,7 +234,8 @@ class GoogleGeminiBot(Bot):
 
     def call_vision(self, image_url: str, question: str,
                     model: Optional[str] = None,
-                    max_tokens: int = 1000) -> dict:
+                    max_tokens: int = 1000,
+                    **kwargs) -> dict:
         """Analyze an image using Gemini REST API."""
         try:
             model_name = model or self.model or "gemini-2.0-flash"

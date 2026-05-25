@@ -659,7 +659,9 @@ class OpenAICompatibleBot:
 
     def call_vision(self, image_url: str, question: str,
                     model: Optional[str] = None,
-                    max_tokens: int = 1000) -> dict:
+                    max_tokens: int = 1000,
+                    reasoning_effort: Optional[str] = None,
+                    reasoning_effort_locked: bool = False) -> dict:
         """Analyze an image using the configured OpenAI-compatible wire API."""
         try:
             api_config = self.get_api_config()
@@ -679,12 +681,16 @@ class OpenAICompatibleBot:
                 "messages": messages,
                 "max_tokens": max_tokens,
             }
+            normalized_effort = self._resolve_reasoning_effort({
+                "reasoning_effort": reasoning_effort,
+                "reasoning_effort_locked": reasoning_effort_locked,
+            })
             client = self._get_http_client()
             if is_responses_wire_api(self._get_wire_api(api_config)):
                 response_payload = build_responses_payload(
                     payload,
                     store=self._resolve_response_store(),
-                    reasoning_effort=self._resolve_reasoning_effort(),
+                    reasoning_effort=normalized_effort,
                 )
                 events = client.responses(
                     api_key=api_key,
@@ -696,6 +702,8 @@ class OpenAICompatibleBot:
                 chunks = responses_stream_events_to_chat_chunks(events)
                 data = chat_chunks_to_chat_completion(chunks, model=vision_model)
             else:
+                if normalized_effort:
+                    payload["reasoning_effort"] = normalized_effort
                 data = client.chat_completions(
                     api_key=api_key,
                     api_base=api_base,

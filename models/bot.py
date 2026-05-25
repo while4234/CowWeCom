@@ -15,7 +15,8 @@ class Bot(object):
         call_with_tools(messages, tools=None, stream=False, **kwargs)
             -> dict | generator  (OpenAI-compatible format)
 
-        call_vision(image_url, question, model=None, max_tokens=1000)
+        call_vision(image_url, question, model=None, max_tokens=1000,
+                    reasoning_effort=None, reasoning_effort_locked=False)
             -> dict with keys: model, content, usage  (or error/message)
 
     These are NOT defined here to avoid shadowing concrete implementations

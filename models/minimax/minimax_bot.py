@@ -179,7 +179,8 @@ class MinimaxBot(Bot):
 
     def call_vision(self, image_url: str, question: str,
                     model: Optional[str] = None,
-                    max_tokens: int = 1000) -> dict:
+                    max_tokens: int = 1000,
+                    **kwargs) -> dict:
         """Analyze an image using MiniMax OpenAI-compatible API.
         Always uses MiniMax-Text-01 — other MiniMax models do not support vision.
         """

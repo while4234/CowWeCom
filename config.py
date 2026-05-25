@@ -162,6 +162,13 @@ available_setting = {
     "single_chat_prefix": ["bot", "@bot"],  # 私聊时文本需要包含该前缀才能触发机器人回复
     "single_chat_image_recognition": True,  # 私聊收到单张图片时是否自动识图并回复
     "single_chat_image_recognition_prompt": "请先识别这张图片，再结合当前短期对话上下文和可用的长期记忆来回答用户。不要只给图片说明；如果图片与已知偏好、任务、人物或正在讨论的事情相关，请把这些上下文一起用于回复。图中文字请提取关键内容；看不清时说明不确定之处。",
+    "background_image_recognition_enabled": True,
+    "image_recognition_result_ttl_seconds": 86400,
+    "image_recognition_image_ttl_seconds": 604800,
+    "image_recognition_followup_wait_seconds": 6,
+    "image_recognition_workers": 2,
+    "image_recognition_max_tokens": 700,
+    "image_recognition_prompt": "Identify this image for a later chat follow-up. Keep it natural and short. Mention the main subject, visible action or scene, important text/OCR, and uncertainty if needed. Do not use report headings or formal sections unless the image itself is a document where key text matters.",
     "single_chat_reply_prefix": "[bot] ",  # 私聊时自动回复的前缀，用于区分真人
     "single_chat_reply_suffix": "",  # 私聊时自动回复的后缀，\n 可以换行
     "group_chat_prefix": ["@bot"],  # 群聊时包含该前缀则会触发机器人回复
