@@ -1,78 +1,97 @@
 ---
-title: AMap CowWechat
-description: Configure 高德地图 / AMap commute, route, traffic, and travel planning support in CowWechat.
+title: 高德通勤与旅行路线
+description: 为 CowWechat 配置高德地图 Web Service，用于通勤、路况、ETA、路线规划和旅游路线合理性分析。
 ---
 
-# AMap CowWechat
+# 高德通勤与旅行路线
 
-`amap-cowwechat` is a built-in Skill for 高德地图 / AMap Web Service lookups in CowWechat. It is intended for commute ETA, route planning, traffic status, distance checks, geocoding, and lightweight travel advice.
+`amap-cowwechat` 是 CowWechat 内置 Skill，使用高德地图 Web Service API 查询通勤时间、实时路况、路线 ETA、POI、地理编码，并为旅游路线分析交通方式和行程合理性。
 
-## Setup
+## 创建 Key
 
-Create a 高德开放平台 Web Service API key, then configure one of these environment variables:
+在高德开放平台创建应用：
+
+1. 新建应用时，应用类型建议选择“出行”。
+2. 添加 Key 时，服务平台选择“Web服务”。
+3. 当前 Windows/CowWechat 项目不需要 Android、iOS、微信小程序 Key。
+4. 暂时不需要 Web 端 JS API Key；只有后续在浏览器或 WebView 中渲染地图路线时才需要额外申请。
+
+## 配置环境变量
+
+推荐配置：
 
 ```text
 AMAP_WEBSERVICE_KEY=your-webservice-key
 ```
 
-Accepted aliases:
+兼容别名：
 
 ```text
 SKILL_AMAP_COWWECHAT_WEBSERVICE_KEY=your-webservice-key
 AMAP_KEY=your-webservice-key
 ```
 
-`AMAP_WEBSERVICE_KEY` is the preferred name. `AMAP_KEY` is kept for compatibility with existing local setups.
-
-You can also use the CowWechat environment configuration tool:
+也可以通过 CowWechat 的环境变量工具配置：
 
 ```text
-env_config(action="set", key="AMAP_WEBSERVICE_KEY", value="your-webservice-key")
+请帮我设置 AMAP_WEBSERVICE_KEY 为 <your-webservice-key>
 ```
 
-## Commands
+不要提交 `.env`、`config.json` 或任何包含真实 Key 的文件。
 
-Use natural Chinese requests in chat:
+## 支持命令
 
 ```text
-高德 查路线 北京南站 到 首都机场
-高德 通勤 从 公司 到 家
-高德 路况 中关村 到 望京
-高德 计算距离 上海虹桥站 到 人民广场
-高德 旅游路线 杭州西湖 半天
+高德 设置家 北京市朝阳区望京SOHO
+高德 设置公司 北京市海淀区中关村软件园
+高德 上班
+高德 通勤
+高德 家到公司
+高德 下班
+高德 公司到家
+高德 路线 北京南站 到 故宫
+高德 驾车 北京南站 到 故宫
+高德 公交 北京南站 到 故宫
+高德 路况 家 公司
+高德 路况 北京南站 到 故宫
+高德 规划旅游 北京：故宫、景山公园、南锣鼓巷、三里屯
+高德 分析路线 上海：外滩 -> 豫园 -> 陆家嘴 -> 迪士尼
 ```
 
-The Skill should ask for missing city, origin, destination, travel mode, or departure time when those details are required.
-
-## Examples
+## 示例输出
 
 ```text
-我: 高德 查一下从深圳北站到宝安机场现在开车要多久
-CowWechat: 返回驾车时间、距离、主要路线、拥堵提示，并说明实时路况可能变化。
+家 → 公司
+
+推荐：躲避拥堵
+预计耗时：42 分钟
+预计到达：09:18
+距离：28.4 公里
+当前路况：整体缓行
+
+主要拥堵：
+1. 东三环北路：拥堵，约 1.8 公里
+2. 建国路：缓行，约 2.4 公里
+
+备选：
+- 高德推荐：45 分钟
+- 费用较低：51 分钟
 ```
 
-```text
-我: 明早 8 点从家到公司怎么走
-CowWechat: 如果没有保存的家/公司地址，先询问具体起点和终点；信息完整后再规划通勤路线。
-```
+旅游路线会输出推荐顺序、每段交通方式、每段耗时、总交通耗时、合理性评分、风险提示和调整建议。
 
-```text
-我: 高德 看下西湖半天游路线
-CowWechat: 根据地点和时间窗口给出适合的游览顺序、交通方式和注意事项。
-```
+## 常见错误
 
-## Common Errors
+- 未配置 Key：设置 `AMAP_WEBSERVICE_KEY`。
+- Key 类型不对：请使用“Web服务”Key，不是 Android/iOS/JS SDK Key。
+- 权限不足：在高德开放平台检查 Web Service API 权限。
+- 地址解析失败：补充城市、区县、道路或门牌号。
+- 额度不足或限流：检查高德控制台配额和调用频率。
+- ETA 不稳定：实时路况会变化，最终时间以出发时查询为准。
 
-- Missing key: configure `AMAP_WEBSERVICE_KEY` or one of the accepted aliases.
-- Wrong key type: use a Web Service key, not an Android, iOS, or browser-only key.
-- Permission denied: enable the required Web Service APIs in 高德开放平台.
-- Ambiguous place: include city or district, such as "北京 朝阳 望京".
-- Quota or rate limit reached: wait for quota reset or check the 高德开放平台 console.
-- Unstable ETA: traffic estimates are time-sensitive and may differ from the final route in the AMap app.
+## 安全说明
 
-## Security
-
-- Do not paste real AMap keys into documentation, screenshots, Git commits, or issue comments.
-- Prefer environment variables or `env_config`; never hard-code keys in Skill files.
-- If a key was shared in chat or committed accidentally, rotate it in 高德开放平台.
-- Keep `config-template.json` placeholders empty. It must not contain real secrets.
+- 不要把真实 Key 写入源码、文档、日志、截图、Issue 或 Git 提交。
+- 日志和回复只能显示脱敏信息，或完全不显示 Key。
+- 如果 Key 已经在聊天或代码里暴露，建议在高德后台轮换。
+- 如后续做 Web 地图展示，需要单独申请 Web 端 JS API Key，不能复用 Web Service Key。
