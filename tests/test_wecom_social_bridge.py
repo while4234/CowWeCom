@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -196,6 +197,7 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as workspace:
             conf()["agent_workspace"] = workspace
             conf()["single_chat_image_recognition"] = True
+            conf()["image_recognition_followup_wait_seconds"] = 0
             produced = []
             self.channel.produce = produced.append
             sent = []
@@ -205,7 +207,8 @@ class TestWecomBotSocialBridge(unittest.TestCase):
             get_file_cache().clear("wecom-user-image")
 
             with patch("channel.wecom_bot.wecom_bot_message._decrypt_media", return_value=PNG_BYTES), \
-                    patch.object(ImageRecognitionManager, "_recognize_image", return_value="A small test image."):
+                    patch.object(ImageRecognitionManager, "_recognize_image", return_value="A small test image."), \
+                    patch.object(ImageRecognitionManager, "_synthesize_casual_reply", return_value=""):
                 self.channel._handle_msg_callback(
                     {
                         "cmd": "aibot_msg_callback",
@@ -220,6 +223,9 @@ class TestWecomBotSocialBridge(unittest.TestCase):
                         },
                     }
                 )
+                deadline = time.time() + 1
+                while not sent and time.time() < deadline:
+                    time.sleep(0.01)
 
             self.assertEqual(produced, [])
             self.assertEqual(get_file_cache().get("wecom-user-image"), [])

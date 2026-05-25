@@ -117,34 +117,35 @@ class ChatChannel(Channel):
             from channel.image_recognition import get_image_recognition_manager
 
             manager = get_image_recognition_manager()
-            cached_reply = manager.public_reply_for(record)
-            if cached_reply and not manager.is_auto_reply_suppressed(record.record_id):
-                control_pool.submit(self._send_plain_text, context, cached_reply)
-                return
-            if not getattr(record, "started_new_job", False):
-                return
-
-            def _send_result(done_record) -> None:
+            def _send_result(done_record, delay: bool = True) -> None:
                 if manager.is_auto_reply_suppressed(getattr(done_record, "record_id", "")):
                     return
                 wait_seconds = 0.0
-                try:
-                    configured_wait = conf().get("image_recognition_followup_wait_seconds", 6)
-                    wait_seconds = 6.0 if configured_wait in (None, "") else float(configured_wait)
-                except (TypeError, ValueError):
-                    wait_seconds = 6.0
+                if delay:
+                    try:
+                        configured_wait = conf().get("image_recognition_followup_wait_seconds", 6)
+                        wait_seconds = 6.0 if configured_wait in (None, "") else float(configured_wait)
+                    except (TypeError, ValueError):
+                        wait_seconds = 6.0
                 if wait_seconds > 0:
                     time.sleep(wait_seconds)
                 if manager.is_auto_reply_suppressed(getattr(done_record, "record_id", "")):
                     return
-                text = manager.public_reply_for(done_record)
+                text = manager.public_reply_for(done_record, context=context)
                 if text:
                     self._send_plain_text(context, text)
+
+            cached = manager.get_record(record.record_id) or record
+            if cached.status in {"done", "error"} and not manager.is_auto_reply_suppressed(record.record_id):
+                control_pool.submit(_send_result, cached, False)
+                return
+            if not getattr(record, "started_new_job", False):
+                return
 
             if not manager.add_done_callback(record, _send_result):
                 latest = manager.get_record(record.record_id)
                 if latest and latest.status in {"done", "error"}:
-                    _send_result(latest)
+                    _send_result(latest, False)
         except Exception as e:
             logger.debug("[ImageRecognition] failed to schedule private reply: %s", e)
 

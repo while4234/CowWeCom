@@ -9,7 +9,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from common.log import logger
 from common.utils import expand_path
@@ -292,7 +292,7 @@ class ImageRecognitionManager:
             self._ensure_record_current(record)
             record = self.latest_for_session(session_id) or record
             if record.status == "done" and self._record_result_is_fresh(record, time.time()):
-                channel._send_plain_text(context, self.format_public_reply(record, intent, user_text))
+                channel._send_plain_text(context, self.public_reply_for(record, intent, user_text, context=context))
                 return True
             if record.status == "pending":
                 def _send_followup(done_record) -> None:
@@ -300,7 +300,7 @@ class ImageRecognitionManager:
                         return
                     channel._send_plain_text(
                         context,
-                        self.format_public_reply(done_record, intent, user_text),
+                        self.public_reply_for(done_record, intent, user_text, context=context),
                     )
 
                 if not self.add_done_callback(record, _send_followup):
@@ -315,31 +315,194 @@ class ImageRecognitionManager:
     def classify_followup_intent(self, content: str) -> str:
         return self._classify_followup_intent(content)
 
-    def public_reply_for(self, record: Optional[ImageRecognitionRecord]) -> str:
-        return self.format_public_reply(record, "default", "")
+    def public_reply_for(
+        self,
+        record: Optional[ImageRecognitionRecord],
+        intent: str = "default",
+        user_text: str = "",
+        context: Any = None,
+    ) -> str:
+        return self.format_public_reply(record, intent, user_text, context=context)
 
     def format_public_reply(
         self,
         record: Optional[ImageRecognitionRecord],
         intent: str = "default",
         user_text: str = "",
+        context: Any = None,
     ) -> str:
         if not record:
             return ""
         latest = self.get_record(record.record_id) or record
         if latest.status == "done" and latest.result:
+            if intent in {"default", "related"}:
+                synthesized = self._synthesize_casual_reply(latest, intent, user_text, context)
+                if synthesized:
+                    return synthesized
             result = self._short_result(latest.result)
             if intent == "explicit":
-                return f"我看了下，这张图大概是：{result}"
+                return f"这张图里主要是：{result}"
             if intent == "related":
                 prefix = user_text.strip(" ，,。")
                 if prefix:
-                    return f"{prefix}。我这边也记下了：{result}"
-                return f"我记下了：{result}"
-            return f"我看了下，这张图像是{result}"
+                    return f"{prefix}，我记下了。看起来还有这些细节：{result}"
+                return f"我记下了，这张里看起来是{result}"
+            return f"这张看起来是{result}"
         if latest.status == "error":
             return "这张图我刚才没识别清楚，你可以再问我一次，我会换个方式处理。"
         return ""
+
+    def _synthesize_casual_reply(
+        self,
+        record: ImageRecognitionRecord,
+        intent: str,
+        user_text: str,
+        context: Any = None,
+    ) -> str:
+        try:
+            from agent.protocol import LLMRequest
+            from bridge.agent_bridge import AgentLLMModel
+            from bridge.bridge import Bridge
+
+            llm = AgentLLMModel(Bridge())
+            session_id = self._context_get(context, "conversation_id") or self._context_get(context, "session_id")
+            if session_id:
+                llm.session_id = session_id
+            llm.channel_type = self._context_get(context, "channel_type") or record.channel_type
+            llm.user_id = self._context_get(context, "memory_user_id") or self._context_get(context, "from_user_id")
+            llm.user_label = (
+                self._context_get(context, "actual_user_nickname")
+                or self._context_get(context, "from_user_nickname")
+                or record.sender_label
+            )
+
+            memory_context = self._collect_memory_context(context)
+            conversation_context = self._collect_recent_conversation_context(context)
+            system = (
+                "你是一个在私聊里回复朋友照片的助手。"
+                "图片事实已经由后台识图给出，你不要再声称自己重新识图，也不要写报告、不要中英混杂、不要说“识别结果/这张图像是/我看了下”。"
+                "结合用户长期记忆和最近对话，用像朋友随口聊天一样的中文回复。"
+                "如果用户只是随手发图且没有文字，回复 1-2 句，轻松自然，可以有一点幽默或关心。"
+                "如果用户补了一句相关文字，就接住用户那句话自然回应。"
+                "不要把菜品、物体逐项机械列完；不要编造看不见的细节。"
+            )
+            user = (
+                f"用户发图后的文字意图：{intent}\n"
+                f"用户补充文字：{user_text.strip() or '（没有补充文字，像随手发图）'}\n"
+                f"后台识图事实：{record.result.strip()}\n\n"
+                f"长期记忆摘要：\n{memory_context or '未检索到'}\n\n"
+                f"最近短期对话：\n{conversation_context or '未检索到'}\n\n"
+                "请直接给要发给用户的一小段自然回复。"
+            )
+            response = llm.call(
+                LLMRequest(
+                    messages=[{"role": "user", "content": user}],
+                    system=system,
+                    max_tokens=220,
+                    temperature=0.7,
+                    tools=[],
+                    request_timeout=45,
+                    reasoning_effort="medium",
+                    reasoning_effort_locked=True,
+                    cache_shape_metadata={"request_kind": "private_image_casual_reply"},
+                )
+            )
+            return self._extract_model_text(response)
+        except Exception as exc:
+            logger.debug("[ImageRecognition] casual reply synthesis failed: %s", exc)
+            return ""
+
+    def _collect_memory_context(self, context: Any, limit: int = 2200) -> str:
+        memory_user_id = self._context_get(context, "memory_user_id") or self._context_get(context, "from_user_id")
+        if not memory_user_id:
+            return ""
+        workspace = Path(expand_path(conf().get("agent_workspace", "~/cow") or "~/cow"))
+        user_dir = workspace / "memory" / "users" / str(memory_user_id)
+        profile = self._read_file_tail(user_dir / "USER.md", min(900, limit))
+        remaining = max(0, limit - len(profile))
+        memory = self._read_file_tail(user_dir / "MEMORY.md", remaining) if remaining else ""
+        return "\n".join(part for part in (profile, memory) if part).strip()
+
+    def _collect_recent_conversation_context(self, context: Any, max_turns: int = 4, limit: int = 2200) -> str:
+        session_id = self._context_get(context, "conversation_id") or self._context_get(context, "session_id")
+        if not session_id:
+            return ""
+        try:
+            from agent.memory import get_conversation_store
+
+            messages = get_conversation_store().load_messages(str(session_id), max_turns=max_turns)
+        except Exception as exc:
+            logger.debug("[ImageRecognition] recent conversation context unavailable: %s", exc)
+            return ""
+
+        lines: List[str] = []
+        for message in messages[-(max_turns * 2):]:
+            role = str(message.get("role") or "").strip()
+            text = self._message_text(message.get("content"))
+            if not text or "[Recent image context]" in text:
+                continue
+            label = "用户" if role == "user" else "助手"
+            lines.append(f"{label}: {text}")
+        text = "\n".join(lines)
+        return text[-limit:]
+
+    @staticmethod
+    def _message_text(content: Any, limit: int = 500) -> str:
+        if isinstance(content, str):
+            return " ".join(content.split())[:limit]
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+            return " ".join(" ".join(parts).split())[:limit]
+        if isinstance(content, dict):
+            return " ".join(str(content.get("text") or content.get("content") or "").split())[:limit]
+        return ""
+
+    @staticmethod
+    def _context_get(context: Any, key: str, default: str = "") -> str:
+        if context is None:
+            return default
+        try:
+            value = context.get(key, default)
+        except Exception:
+            value = default
+        return str(value or default).strip()
+
+    @staticmethod
+    def _read_file_tail(path: Path, limit: int) -> str:
+        if limit <= 0 or not path.exists() or not path.is_file():
+            return ""
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return ""
+        return text[-limit:].strip()
+
+    @staticmethod
+    def _extract_model_text(response: Any) -> str:
+        if not isinstance(response, dict) or response.get("error"):
+            return ""
+        choices = response.get("choices") or []
+        if choices:
+            message = choices[0].get("message") or {}
+            content = message.get("content")
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list):
+                parts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        text = item.get("text") or item.get("content")
+                        if text:
+                            parts.append(str(text))
+                    elif item:
+                        parts.append(str(item))
+                return "\n".join(parts).strip()
+        return str(response.get("content") or "").strip()
 
     def suppress_auto_reply(self, record_id: str) -> None:
         if record_id:

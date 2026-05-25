@@ -8,7 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.tools.vision.vision import Vision
-from channel.image_recognition import ImageRecognitionManager, reset_image_recognition_manager
+from bridge.context import Context, ContextType
+from channel.image_recognition import ImageRecognitionManager, ImageRecognitionRecord, reset_image_recognition_manager
 from channel.weixin.weixin_channel import WeixinChannel
 from config import conf
 
@@ -95,6 +96,62 @@ class TestImageRecognitionManager(unittest.TestCase):
             self.assertIsNone(manager.latest_for_session("session-b"))
             self.assertFalse(copied.exists())
 
+    def test_default_public_reply_uses_medium_model_with_memory_and_recent_context(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            conf()["agent_workspace"] = workspace
+            user_dir = Path(workspace) / "memory" / "users" / "user-a"
+            user_dir.mkdir(parents=True)
+            (user_dir / "USER.md").write_text("当前称呼：小刘\n偏好：轻松自然的聊天。", encoding="utf-8")
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            record = ImageRecognitionRecord(
+                record_id="record-a",
+                session_id="session-a",
+                channel_type="wecom_bot",
+                image_hash="hash-a",
+                image_path=str(Path(workspace) / "meal.png"),
+                is_group=False,
+                status="done",
+                result="A tray meal with rice, soup, vegetables, braised meat, and an egg.",
+                completed_at=time.time(),
+            )
+            with manager._lock:
+                manager._records[record.record_id] = record
+
+            context = Context(
+                ContextType.IMAGE,
+                record.image_path,
+                kwargs={
+                    "session_id": "session-a",
+                    "conversation_id": "session-a",
+                    "memory_user_id": "user-a",
+                    "channel_type": "wecom_bot",
+                },
+            )
+            fake_store = SimpleNamespace(
+                load_messages=lambda *args, **kwargs: [
+                    {"role": "user", "content": "今天中午随便吃点。"},
+                    {"role": "assistant", "content": "行，吃点舒服的。"},
+                ]
+            )
+            mocked_response = {"choices": [{"message": {"content": "这饭看着挺完整啊，有菜有汤有蛋有肉。"}}]}
+
+            with patch("agent.memory.get_conversation_store", return_value=fake_store), \
+                    patch("bridge.agent_bridge.AgentLLMModel") as model_cls:
+                model = model_cls.return_value
+                model.call.return_value = mocked_response
+
+                reply = manager.public_reply_for(record, context=context)
+
+            self.assertEqual(reply, "这饭看着挺完整啊，有菜有汤有蛋有肉。")
+            request = model.call.call_args.args[0]
+            self.assertEqual(request.reasoning_effort, "medium")
+            self.assertTrue(request.reasoning_effort_locked)
+            self.assertEqual(request.tools, [])
+            prompt = request.messages[0]["content"]
+            self.assertIn("后台识图事实：A tray meal", prompt)
+            self.assertIn("当前称呼：小刘", prompt)
+            self.assertIn("今天中午随便吃点", prompt)
+
 
 class TestVisionReasoningEffort(unittest.TestCase):
     def test_call_via_bot_passes_low_reasoning_effort_and_max_tokens(self):
@@ -179,15 +236,17 @@ class TestWeixinImageRecognition(unittest.TestCase):
             }
 
             with patch("channel.weixin.weixin_message.download_media_from_cdn", side_effect=fake_download), \
-                    patch.object(ImageRecognitionManager, "_recognize_image", return_value="Weixin image summary."):
+                    patch.object(ImageRecognitionManager, "_recognize_image", return_value="Weixin image summary."), \
+                    patch.object(ImageRecognitionManager, "_synthesize_casual_reply", return_value=""):
                 channel._process_message(raw_msg)
+
+                deadline = time.time() + 1
+                while not sent and time.time() < deadline:
+                    time.sleep(0.01)
 
             self.assertEqual(produced, [])
             followup_context = manager.build_followup_context("wx-user-a", wait_seconds=2)
             self.assertIn("Weixin image summary.", followup_context)
-            deadline = time.time() + 1
-            while not sent and time.time() < deadline:
-                time.sleep(0.01)
             self.assertTrue(any("Weixin image summary." in text for text in sent))
 
 
