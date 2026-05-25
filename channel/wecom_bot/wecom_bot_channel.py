@@ -35,6 +35,7 @@ from agent.user_profiles import safe_actor_slug
 
 WECOM_WS_URL = "wss://openws.work.weixin.qq.com"
 HEARTBEAT_INTERVAL = 30
+SUBSCRIBE_ACK_TIMEOUT = 20
 MEDIA_CHUNK_SIZE = 512 * 1024  # 512KB per chunk (before base64 encoding)
 
 
@@ -135,6 +136,7 @@ class WecomBotChannel(ChatChannel):
         self._ws = None
         self._ws_thread = None
         self._heartbeat_thread = None
+        self._subscribe_timeout_timer = None
         self._connected = False
         self._stop_event = threading.Event()
         self._pending_responses = {}  # req_id -> (threading.Event, result_holder)
@@ -164,6 +166,7 @@ class WecomBotChannel(ChatChannel):
     def stop(self):
         logger.info("[WecomBot] stop() called")
         self._stop_event.set()
+        self._cancel_subscribe_timeout()
         if self._ws:
             try:
                 self._ws.close()
@@ -180,6 +183,7 @@ class WecomBotChannel(ChatChannel):
         def _on_open(ws):
             logger.info("[WecomBot] WebSocket connected, sending subscribe...")
             self._send_subscribe()
+            self._arm_subscribe_timeout(ws)
 
         def _on_message(ws, raw):
             try:
@@ -193,6 +197,7 @@ class WecomBotChannel(ChatChannel):
 
         def _on_close(ws, close_status_code, close_msg):
             logger.warning(f"[WecomBot] WebSocket closed: status={close_status_code}, msg={close_msg}")
+            self._cancel_subscribe_timeout()
             self._connected = False
             if not self._stop_event.is_set():
                 logger.info("[WecomBot] Will reconnect in 5s...")
@@ -251,6 +256,29 @@ class WecomBotChannel(ChatChannel):
             },
         })
 
+    def _arm_subscribe_timeout(self, ws, timeout: float = SUBSCRIBE_ACK_TIMEOUT):
+        self._cancel_subscribe_timeout()
+
+        def close_if_unsubscribed():
+            if self._stop_event.is_set() or self._connected or ws is not self._ws:
+                return
+            logger.warning("[WecomBot] Subscribe ack timed out; closing websocket to reconnect")
+            try:
+                ws.close()
+            except Exception as e:
+                logger.warning(f"[WecomBot] Failed to close websocket after subscribe timeout: {e}")
+
+        timer = threading.Timer(timeout, close_if_unsubscribed)
+        timer.daemon = True
+        self._subscribe_timeout_timer = timer
+        timer.start()
+
+    def _cancel_subscribe_timeout(self):
+        timer = self._subscribe_timeout_timer
+        self._subscribe_timeout_timer = None
+        if timer:
+            timer.cancel()
+
     def _start_heartbeat(self):
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             return
@@ -305,6 +333,7 @@ class WecomBotChannel(ChatChannel):
         # Subscribe response (only handle once before connected)
         if errcode is not None and cmd == "":
             if not self._connected:
+                self._cancel_subscribe_timeout()
                 if errcode == 0:
                     logger.info("[WecomBot] ✅ Subscribe success")
                     self._connected = True
