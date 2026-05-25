@@ -24,6 +24,7 @@ API_KEY_REGISTRY = {
     # 地图与出行服务
     "AMAP_WEBSERVICE_KEY": "高德地图 Web Service API 密钥（推荐，用于路线、路况、通勤和出行查询）",
     "AMAP_KEY": "高德地图 API 密钥兼容别名（建议优先使用 AMAP_WEBSERVICE_KEY）",
+    "AMAP_ENABLE_ADVANCED_TRAFFIC": "是否启用高德高级交通态势查询（true/false；需要高德后台开通高级服务权限）",
 }
 
 class EnvConfig(BaseTool):
@@ -57,6 +58,7 @@ class EnvConfig(BaseTool):
                     "- LINKAI_API_KEY: LinkAI platform\n"
                     "- BOCHA_API_KEY: Bocha AI search (博查搜索)\n"
                     "- AMAP_WEBSERVICE_KEY: AMap Web Service (高德路线/路况/通勤)\n"
+                    "- AMAP_ENABLE_ADVANCED_TRAFFIC: Enable AMap advanced traffic status (true/false)\n"
                     "- AMAP_KEY: AMap API key alias (高德兼容别名)\n"
                     "Use exact key names (case-sensitive, all uppercase with underscores)"
                 )

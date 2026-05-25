@@ -449,6 +449,145 @@ def test_tool_schema_loads_with_expected_actions():
     assert params.get("type") == "object"
     assert "properties" in params
     assert_contains_any(serialized, ["geocode", "route", "poi", "home", "company"])
+    assert "traffic_query_type" in serialized
+    assert "road_name" in serialized
+    assert "rectangle" in serialized
+
+
+def test_advanced_traffic_road_parses_evaluation_and_roads():
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, endpoint, params=None):
+            self.calls.append((endpoint, dict(params or {})))
+            assert endpoint == "/v3/traffic/status/road"
+            return {
+                "status": "1",
+                "infocode": "10000",
+                "trafficinfo": {
+                    "description": "东三环当前局部拥堵",
+                    "evaluation": {
+                        "status": "3",
+                        "expedite": "20",
+                        "congested": "40",
+                        "blocked": "35",
+                        "unknown": "5",
+                    },
+                    "roads": [
+                        {
+                            "name": "东三环",
+                            "status": "3",
+                            "direction": "由北向南",
+                            "speed": "18",
+                            "polyline": "116.1,39.1;116.2,39.2",
+                        }
+                    ],
+                },
+            }
+
+    service = AmapService(
+        client=FakeClient(),
+        enable_advanced_traffic=True,
+        default_adcode="110000",
+    )
+
+    result = service.traffic_status("东三环", query_type="road")
+
+    assert value(result, "query_type") == "road"
+    assert value(result, "status") == "congested"
+    assert value(result, "congested_percent") == 35
+    assert value(result, "roads", default=[])[0].name == "东三环"
+    endpoint, params = service.client.calls[0]
+    assert endpoint == "/v3/traffic/status/road"
+    assert params["name"] == "东三环"
+    assert params["adcode"] == "110000"
+    assert params["extensions"] == "all"
+
+
+def test_advanced_traffic_disabled_requires_explicit_enable():
+    service = AmapService(client=object(), enable_advanced_traffic=False, default_adcode="110000")
+
+    with pytest.raises(service_mod.AmapServiceError):
+        service.traffic_status("东三环", query_type="road")
+
+
+def test_advanced_traffic_permission_error_returns_degraded_summary():
+    class FakeClient:
+        def request(self, endpoint, params=None):
+            raise AmapApiError("高德接口返回失败: SERVICE_NOT_AVAILABLE", info="SERVICE_NOT_AVAILABLE", infocode="40000")
+
+    service = AmapService(client=FakeClient(), enable_advanced_traffic=True, default_adcode="110000")
+
+    result = service.traffic_status("东三环", query_type="road")
+    blob = text_blob(result)
+
+    assert value(result, "status") == "unknown"
+    assert "高级交通态势不可用" in blob
+    assert "40000" in blob
+
+
+def test_traffic_status_route_still_uses_basic_tmcs_when_destination_present():
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, endpoint, params=None):
+            self.calls.append((endpoint, dict(params or {})))
+            return {
+                "status": "1",
+                "infocode": "10000",
+                "route": {
+                    "paths": [
+                        {
+                            "distance": "1000",
+                            "duration": "600",
+                            "steps": [{"tmcs": [{"road": "测试路", "status": "缓行", "distance": "300"}]}],
+                        }
+                    ]
+                },
+            }
+
+    service = AmapService(client=FakeClient(), enable_advanced_traffic=False)
+
+    result = service.traffic_status("116.100000,39.100000", "116.200000,39.200000")
+
+    assert value(result, "mode") == "driving"
+    assert service.client.calls[0][0] == "/v5/direction/driving"
+    assert value(result, "congestion_summary") == "整体缓行"
+
+
+def test_advanced_traffic_circle_bounds_radius_and_parses_roads():
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, endpoint, params=None):
+            self.calls.append((endpoint, dict(params or {})))
+            return {
+                "status": "1",
+                "infocode": "10000",
+                "trafficinfo": {
+                    "evaluation": {"status": "1", "expedite": "90", "congested": "5", "blocked": "0"},
+                    "roads": [{"name": "彩和坊路", "status": "1", "speed": "35"}],
+                },
+            }
+
+    service = AmapService(client=FakeClient(), enable_advanced_traffic=True)
+
+    result = service.advanced_traffic_circle("116.3057764,39.98641364", radius=9000)
+
+    assert value(result, "query_type") == "circle"
+    assert value(result, "status") == "smooth"
+    assert service.client.calls[0][0] == "/v3/traffic/status/circle"
+    assert service.client.calls[0][1]["radius"] == 4999
+
+
+def test_advanced_traffic_rectangle_validates_size():
+    service = AmapService(client=object(), enable_advanced_traffic=True)
+
+    with pytest.raises(service_mod.AmapServiceError):
+        service.advanced_traffic_rectangle("116.000000,39.000000;117.000000,40.000000")
 
 
 def test_tool_manager_can_load_amap_tool(monkeypatch):

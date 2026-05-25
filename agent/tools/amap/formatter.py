@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Iterable, List
 
-from agent.tools.amap.models import CommuteResult, RoutePlan, TravelRouteAnalysis
+from agent.tools.amap.models import CommuteResult, RoutePlan, TrafficStatusResult, TravelRouteAnalysis
 
 
 MODE_LABELS = {
@@ -109,6 +109,35 @@ def format_travel_analysis(analysis: TravelRouteAnalysis) -> str:
     return "\n".join(lines)
 
 
+def format_traffic_status(result: TrafficStatusResult) -> str:
+    lines = [
+        "交通态势",
+        "",
+        f"查询：{_traffic_query_text(result)}",
+        f"当前路况：{_status_label(result.status)}",
+    ]
+    if result.description:
+        lines.append(f"综述：{result.description}")
+    lines.extend([
+        f"畅通占比：{result.expedite_percent:g}%",
+        f"缓行占比：{result.slow_percent:g}%",
+        f"拥堵占比：{result.congested_percent:g}%",
+    ])
+    if result.unknown_percent:
+        lines.append(f"未知占比：{result.unknown_percent:g}%")
+    if result.roads:
+        lines.append("")
+        lines.append("重点道路：")
+        for index, road in enumerate(result.roads[:5], 1):
+            suffix = f"，均速约 {road.speed_kmh} km/h" if road.speed_kmh else ""
+            direction = f"（{road.direction}）" if road.direction else ""
+            lines.append(f"{index}. {road.name or '未命名道路'}{direction}：{_status_label(road.status)}{suffix}")
+    if result.warning:
+        lines.append("")
+        lines.append(f"提示：{result.warning}")
+    return "\n".join(lines)
+
+
 def _format_segments(route: RoutePlan) -> List[str]:
     if not route.congestion_segments:
         return ["", "主要拥堵：未返回详细路况段"]
@@ -137,6 +166,15 @@ def _status_label(status: str) -> str:
         "severe_congested": "严重拥堵",
     }
     return labels.get(status, status or "未知")
+
+
+def _traffic_query_text(result: TrafficStatusResult) -> str:
+    labels = {
+        "road": "道路",
+        "circle": "圆形区域",
+        "rectangle": "矩形区域",
+    }
+    return f"{labels.get(result.query_type, result.query_type)} {result.query}".strip()
 
 
 def join_warnings(warnings: Iterable[str]) -> str:

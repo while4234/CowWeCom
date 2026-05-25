@@ -91,8 +91,12 @@ CLI 包装器示例：
 python "<base_dir>\scripts\amap_cowwechat.py" traffic "北京南站" "故宫" --city 北京
 
 $env:AMAP_ENABLE_ADVANCED_TRAFFIC='true'
-python "<base_dir>\scripts\amap_cowwechat.py" traffic "北京南站" "故宫" --city 北京
+python "<base_dir>\scripts\amap_cowwechat.py" traffic-road "东三环" --adcode 110000
+python "<base_dir>\scripts\amap_cowwechat.py" traffic-circle "116.305776,39.986414" --radius 3000
+python "<base_dir>\scripts\amap_cowwechat.py" traffic-rectangle "116.351147,39.966309;116.357134,39.968727"
 ```
+
+`traffic` 保持起终点路线 `tmcs` 路况查询；`traffic-road`、`traffic-circle` 和 `traffic-rectangle` 会调用高德高级交通态势接口，需要对应权限。
 
 ## 示例输出
 

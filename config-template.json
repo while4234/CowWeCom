@@ -237,7 +237,10 @@
       "webservice_key": "",
       "webservice_key_env": "AMAP_WEBSERVICE_KEY",
       "fallback_key_env": "SKILL_AMAP_COWWECHAT_WEBSERVICE_KEY",
-      "legacy_key_env": "AMAP_KEY"
+      "legacy_key_env": "AMAP_KEY",
+      "default_city": "",
+      "default_adcode": "",
+      "enable_advanced_traffic": false
     },
     "image-generation": {
       "runtime": "codex_auth",

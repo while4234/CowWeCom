@@ -7,16 +7,18 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from agent.tools.amap.client import AmapApiError, AmapClient
-from agent.tools.amap.formatter import format_commute, format_travel_analysis
+from agent.tools.amap.formatter import format_commute, format_traffic_status, format_travel_analysis
 from agent.tools.amap.models import (
     CommuteResult,
     CongestionSegment,
     GeoPoint,
     RoutePlan,
     RouteStep,
+    TrafficRoad,
+    TrafficStatusResult,
     TravelLeg,
     TravelRouteAnalysis,
 )
@@ -25,6 +27,8 @@ from agent.tools.amap.state import AmapStateStore
 
 LONLAT_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
 ROUTE_SHOW_FIELDS = "cost,tmcs,navi,polyline,cities"
+TRAFFIC_STATUS_EXTENSIONS = "all"
+DEFAULT_TRAFFIC_LEVEL = 5
 DRIVING_STRATEGIES: List[Tuple[str, str]] = [
     ("32", "高德推荐"),
     ("33", "躲避拥堵"),
@@ -67,10 +71,24 @@ class AmapService:
     ):
         self.client = client or AmapClient()
         self.state = state or AmapStateStore()
-        self.default_city = default_city or os.environ.get("AMAP_DEFAULT_CITY", "").strip()
-        self.default_adcode = default_adcode or os.environ.get("AMAP_DEFAULT_ADCODE", "").strip()
+        self.default_city = (
+            default_city
+            or os.environ.get("AMAP_DEFAULT_CITY", "").strip()
+            or os.environ.get("SKILL_AMAP_COWWECHAT_DEFAULT_CITY", "").strip()
+        )
+        self.default_adcode = (
+            default_adcode
+            or os.environ.get("AMAP_DEFAULT_ADCODE", "").strip()
+            or os.environ.get("SKILL_AMAP_COWWECHAT_DEFAULT_ADCODE", "").strip()
+        )
         if enable_advanced_traffic is None:
-            enable_advanced_traffic = _parse_bool(os.environ.get("AMAP_ENABLE_ADVANCED_TRAFFIC", "false"))
+            enable_advanced_traffic = _parse_bool(
+                os.environ.get("AMAP_ENABLE_ADVANCED_TRAFFIC")
+                or os.environ.get("SKILL_AMAP_COWWECHAT_ENABLE_ADVANCED_TRAFFIC")
+                or "false"
+            )
+        else:
+            enable_advanced_traffic = _parse_bool(enable_advanced_traffic)
         self.enable_advanced_traffic = enable_advanced_traffic
 
     def geocode(self, address: str, city: str = "") -> GeoPoint:
@@ -243,8 +261,166 @@ class AmapService:
             raise AmapServiceError("高德未返回可用路线。")
         return plans[0]
 
-    def traffic_status(self, origin: str, destination: str, city: str = "") -> RoutePlan:
-        return self.route_plan(origin, destination, "driving", city=city, include_alternatives=True)
+    def traffic_status(
+        self,
+        origin: str = "",
+        destination: str = "",
+        city: str = "",
+        *,
+        query_type: str = "auto",
+        road_name: str = "",
+        location: str = "",
+        radius: int = 1000,
+        rectangle: str = "",
+        adcode: str = "",
+        level: int = DEFAULT_TRAFFIC_LEVEL,
+    ) -> Union[RoutePlan, TrafficStatusResult]:
+        query_type = str(query_type or "auto").strip().lower()
+        if query_type in ("road", "道路"):
+            query = road_name or origin
+            try:
+                return self.advanced_traffic_road(query, city=city, adcode=adcode, level=level)
+            except AmapApiError as exc:
+                return _advanced_traffic_unavailable("road", query, exc)
+        if query_type in ("circle", "nearby", "附近", "圆形区域"):
+            query_location = location or origin
+            if not LONLAT_RE.match(str(query_location or "")):
+                query_location = self.resolve_point(query_location, city, prefer_poi=True).location
+            try:
+                return self.advanced_traffic_circle(query_location, radius=radius, level=level)
+            except AmapApiError as exc:
+                return _advanced_traffic_unavailable("circle", str(query_location), exc)
+        if query_type in ("rectangle", "rect", "矩形区域"):
+            query = rectangle or origin
+            try:
+                return self.advanced_traffic_rectangle(query, level=level)
+            except AmapApiError as exc:
+                return _advanced_traffic_unavailable("rectangle", query, exc)
+
+        if destination:
+            return self.route_plan(origin, destination, "driving", city=city, include_alternatives=True)
+
+        if not self.enable_advanced_traffic:
+            raise AmapServiceError("高级交通态势未开启。请设置 AMAP_ENABLE_ADVANCED_TRAFFIC=true 后重启，或输入“高德 路线 起点 到 终点”使用基础路况。")
+        place = road_name or origin or location
+        if LONLAT_RE.match(str(place or "")):
+            try:
+                return self.advanced_traffic_circle(place, radius=radius, level=level)
+            except AmapApiError as exc:
+                return _advanced_traffic_unavailable("circle", str(place), exc)
+        try:
+            return self.advanced_traffic_road(place, city=city, adcode=adcode, level=level)
+        except AmapApiError as exc:
+            return _advanced_traffic_unavailable("road", str(place), exc)
+
+    def advanced_traffic_road(
+        self,
+        road_name: str,
+        *,
+        city: str = "",
+        adcode: str = "",
+        level: int = DEFAULT_TRAFFIC_LEVEL,
+    ) -> TrafficStatusResult:
+        self._ensure_advanced_traffic_enabled()
+        road_name = str(road_name or "").strip()
+        if not road_name:
+            raise AmapServiceError("道路名不能为空，例如“东三环”。")
+        resolved_adcode = str(adcode or self.default_adcode or "").strip()
+        resolved_city = str(city or self.default_city or "").strip()
+        if not resolved_adcode and not resolved_city:
+            raise AmapServiceError("道路交通态势需要 city 或 adcode，建议配置 AMAP_DEFAULT_ADCODE。")
+        params: Dict[str, Any] = {
+            "name": road_name,
+            "level": _traffic_level(level),
+            "extensions": TRAFFIC_STATUS_EXTENSIONS,
+        }
+        if resolved_adcode:
+            params["adcode"] = resolved_adcode
+        else:
+            params["city"] = resolved_city
+        data = self.client.request("/v3/traffic/status/road", params)
+        return self._parse_traffic_status(data, "road", road_name)
+
+    def advanced_traffic_circle(
+        self,
+        location: str,
+        *,
+        radius: int = 1000,
+        level: int = DEFAULT_TRAFFIC_LEVEL,
+    ) -> TrafficStatusResult:
+        self._ensure_advanced_traffic_enabled()
+        normalized_location = self._normalize_lonlat(location)
+        bounded_radius = max(1, min(4999, _to_int(radius) or 1000))
+        data = self.client.request(
+            "/v3/traffic/status/circle",
+            {
+                "location": normalized_location,
+                "radius": bounded_radius,
+                "level": _traffic_level(level),
+                "extensions": TRAFFIC_STATUS_EXTENSIONS,
+            },
+        )
+        return self._parse_traffic_status(data, "circle", f"{normalized_location} 半径 {bounded_radius} 米")
+
+    def advanced_traffic_rectangle(
+        self,
+        rectangle: str,
+        *,
+        level: int = DEFAULT_TRAFFIC_LEVEL,
+    ) -> TrafficStatusResult:
+        self._ensure_advanced_traffic_enabled()
+        normalized_rectangle = _normalize_rectangle(rectangle)
+        data = self.client.request(
+            "/v3/traffic/status/rectangle",
+            {
+                "rectangle": normalized_rectangle,
+                "level": _traffic_level(level),
+                "extensions": TRAFFIC_STATUS_EXTENSIONS,
+            },
+        )
+        return self._parse_traffic_status(data, "rectangle", normalized_rectangle)
+
+    def _ensure_advanced_traffic_enabled(self) -> None:
+        if not self.enable_advanced_traffic:
+            raise AmapServiceError("高级交通态势未开启。请设置 AMAP_ENABLE_ADVANCED_TRAFFIC=true 后重启。")
+
+    def _parse_traffic_status(
+        self,
+        data: Dict[str, Any],
+        query_type: str,
+        query: str,
+    ) -> TrafficStatusResult:
+        traffic_info = data.get("trafficinfo") or data.get("trafficInfo") or {}
+        if not isinstance(traffic_info, dict):
+            traffic_info = {}
+        evaluation = traffic_info.get("evaluation") or data.get("evaluation") or {}
+        if not isinstance(evaluation, dict):
+            evaluation = {}
+
+        description = str(
+            traffic_info.get("description")
+            or evaluation.get("description")
+            or ""
+        )
+        status = normalize_congestion_status(evaluation.get("status") or traffic_info.get("status"))
+        roads = _parse_traffic_roads(traffic_info.get("roads") or data.get("roads") or [])
+        warning = ""
+        if not roads:
+            warning = "未返回道路明细，可能是接口仅返回基础态势或该区域暂无道路数据。"
+
+        return TrafficStatusResult(
+            query_type=query_type,
+            query=query,
+            description=description,
+            status=status,
+            expedite_percent=_to_float(evaluation.get("expedite")),
+            slow_percent=_to_float(evaluation.get("congested")),
+            congested_percent=_to_float(evaluation.get("blocked")),
+            unknown_percent=_to_float(evaluation.get("unknown")),
+            roads=roads,
+            warning=warning,
+            raw=data,
+        )
 
     def get_commute_status(
         self,
@@ -700,6 +876,45 @@ def normalize_congestion_status(value: Any) -> str:
     return "unknown"
 
 
+def _parse_traffic_roads(raw_roads: Any) -> List[TrafficRoad]:
+    if isinstance(raw_roads, dict):
+        raw_items = [raw_roads]
+    elif isinstance(raw_roads, list):
+        raw_items = raw_roads
+    else:
+        raw_items = []
+
+    roads: List[TrafficRoad] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        roads.append(
+            TrafficRoad(
+                name=str(raw.get("name") or ""),
+                status=normalize_congestion_status(raw.get("status")),
+                direction=str(raw.get("direction") or ""),
+                speed_kmh=_to_int(raw.get("speed")),
+                polyline=str(raw.get("polyline") or ""),
+            )
+        )
+    roads.sort(
+        key=lambda road: (
+            -STATUS_SEVERITY.get(road.status, 0),
+            road.speed_kmh if road.speed_kmh else 9999,
+        )
+    )
+    return roads
+
+
+def _advanced_traffic_unavailable(query_type: str, query: str, exc: AmapApiError) -> TrafficStatusResult:
+    return TrafficStatusResult(
+        query_type=query_type,
+        query=query,
+        status="unknown",
+        warning=f"高级交通态势不可用：{exc.safe_message()}。基础路线规划和 tmcs 路况仍可使用。",
+    )
+
+
 def _important_congestion_segments(segments: List[CongestionSegment]) -> List[CongestionSegment]:
     interesting = [seg for seg in segments if seg.status in ("slow", "congested", "severe_congested")]
     interesting.sort(key=lambda seg: (seg.severity_score, seg.distance_meters), reverse=True)
@@ -768,6 +983,25 @@ def _normalize_mode(mode: str) -> str:
         "bus": "transit",
     }
     return mapping.get(raw, raw)
+
+
+def _traffic_level(value: Any) -> int:
+    level = _to_int(value)
+    if level < 1 or level > 6:
+        return DEFAULT_TRAFFIC_LEVEL
+    return level
+
+
+def _normalize_rectangle(value: str) -> str:
+    raw = str(value or "").strip().replace("；", ";")
+    parts = [part.strip() for part in raw.split(";") if part.strip()]
+    if len(parts) != 2:
+        raise AmapServiceError("矩形区域格式无效，应为 左下经纬度;右上经纬度，例如 116.351147,39.966309;116.357134,39.968727。")
+    first = AmapService._normalize_lonlat(parts[0])
+    second = AmapService._normalize_lonlat(parts[1])
+    if _haversine_meters(first, second) > 10000:
+        raise AmapServiceError("矩形区域对角线不能超过 10 公里，请缩小查询范围。")
+    return f"{first};{second}"
 
 
 def _normalize_place_alias(value: str) -> str:
@@ -892,6 +1126,10 @@ def format_commute_result(result: CommuteResult) -> str:
 
 def format_travel_result(result: TravelRouteAnalysis) -> str:
     return format_travel_analysis(result)
+
+
+def format_traffic_result(result: TrafficStatusResult) -> str:
+    return format_traffic_status(result)
 
 
 def load_skill_frontmatter(skills_root: str) -> Dict[str, Any]:

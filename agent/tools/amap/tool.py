@@ -7,7 +7,8 @@ from typing import Any, Dict, List
 
 from agent.tools.base_tool import BaseTool, ToolResult
 from agent.tools.amap.client import AmapApiError, AmapClient, MissingAmapKeyError
-from agent.tools.amap.formatter import format_route
+from agent.tools.amap.formatter import format_route, format_traffic_status
+from agent.tools.amap.models import RoutePlan, TrafficStatusResult
 from agent.tools.amap.models import public_dict
 from agent.tools.amap.service import (
     AmapService,
@@ -74,6 +75,35 @@ class AmapTool(BaseTool):
                 "type": "string",
                 "description": "Default city/region hint for geocoding, POI, and transit."
             },
+            "adcode": {
+                "type": "string",
+                "description": "AMap adcode. Preferred for advanced road traffic queries."
+            },
+            "traffic_query_type": {
+                "type": "string",
+                "enum": ["auto", "road", "circle", "rectangle"],
+                "description": "For traffic_status: route-derived auto, road name, circle area, or rectangle area."
+            },
+            "road_name": {
+                "type": "string",
+                "description": "Road name for advanced traffic_status road query, e.g. 东三环."
+            },
+            "location": {
+                "type": "string",
+                "description": "Center lon,lat or place for advanced traffic_status circle query."
+            },
+            "radius": {
+                "type": "integer",
+                "description": "Circle radius in meters for advanced traffic_status. Maximum 4999."
+            },
+            "rectangle": {
+                "type": "string",
+                "description": "Rectangle as left-bottom lon,lat;right-top lon,lat. Diagonal must be within 10km."
+            },
+            "level": {
+                "type": "integer",
+                "description": "Traffic road level 1-6. Default 5."
+            },
             "points": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -125,12 +155,19 @@ class AmapTool(BaseTool):
                 )
                 return self._success(format_route(route, title="推荐"), route, args)
             if action == "traffic_status":
-                route = service.traffic_status(
+                result = service.traffic_status(
                     args.get("origin") or args.get("place") or "",
                     args.get("destination") or "",
                     city=args.get("city") or "",
+                    query_type=args.get("traffic_query_type") or "auto",
+                    road_name=args.get("road_name") or "",
+                    location=args.get("location") or "",
+                    radius=int(args.get("radius") or 1000),
+                    rectangle=args.get("rectangle") or "",
+                    adcode=args.get("adcode") or "",
+                    level=int(args.get("level") or 5),
                 )
-                return self._success(format_route(route, title="路况"), route, args)
+                return self._traffic_success(result, args)
             if action == "analyze_travel_route":
                 return self._analyze_travel_route(service, args)
             if action == "geocode":
@@ -165,6 +202,7 @@ class AmapTool(BaseTool):
             state=AmapStateStore(cache_dir),
             default_city=self.config.get("default_city", ""),
             default_adcode=self.config.get("default_adcode", ""),
+            enable_advanced_traffic=self.config.get("enable_advanced_traffic"),
         )
 
     def _set_profile_location(self, service: AmapService, args: Dict[str, Any]) -> ToolResult:
@@ -194,3 +232,9 @@ class AmapTool(BaseTool):
         if args.get("include_raw") and hasattr(payload, "raw"):
             data["raw"] = getattr(payload, "raw")
         return ToolResult.success({"summary": summary, "data": data})
+
+    @staticmethod
+    def _traffic_success(payload: RoutePlan | TrafficStatusResult, args: Dict[str, Any]) -> ToolResult:
+        if isinstance(payload, TrafficStatusResult):
+            return AmapTool._success(format_traffic_status(payload), payload, args)
+        return AmapTool._success(format_route(payload, title="路况"), payload, args)

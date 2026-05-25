@@ -29,6 +29,31 @@ class CongestionSegment:
 
 
 @dataclass
+class TrafficRoad:
+    name: str
+    status: str
+    direction: str = ""
+    speed_kmh: int = 0
+    polyline: str = ""
+
+
+@dataclass
+class TrafficStatusResult:
+    query_type: str
+    query: str
+    description: str = ""
+    status: str = "unknown"
+    expedite_percent: float = 0.0
+    slow_percent: float = 0.0
+    congested_percent: float = 0.0
+    unknown_percent: float = 0.0
+    roads: List[TrafficRoad] = field(default_factory=list)
+    source: str = "advanced_traffic"
+    warning: str = ""
+    raw: Optional[Dict[str, Any]] = None
+
+
+@dataclass
 class RouteStep:
     instruction: str = ""
     road_name: str = ""

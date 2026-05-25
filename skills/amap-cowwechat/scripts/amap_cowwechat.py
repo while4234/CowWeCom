@@ -30,7 +30,9 @@ from agent.tools.amap.models import public_dict  # noqa: E402
 from agent.tools.amap.service import (  # noqa: E402
     AmapService,
     AmapServiceError,
+    LONLAT_RE,
     format_commute_result,
+    format_traffic_result,
     format_travel_result,
     parse_points_text,
 )
@@ -64,6 +66,22 @@ def main() -> int:
     traffic.add_argument("origin")
     traffic.add_argument("destination")
     traffic.add_argument("--city", default="")
+
+    traffic_road = subparsers.add_parser("traffic-road", help="Analyze advanced traffic status for one road.")
+    traffic_road.add_argument("name")
+    traffic_road.add_argument("--city", default="")
+    traffic_road.add_argument("--adcode", default="")
+    traffic_road.add_argument("--level", type=int, default=5)
+
+    traffic_circle = subparsers.add_parser("traffic-circle", help="Analyze advanced traffic status around a point.")
+    traffic_circle.add_argument("location", help="Center lon,lat or a place name.")
+    traffic_circle.add_argument("--city", default="")
+    traffic_circle.add_argument("--radius", type=int, default=1000)
+    traffic_circle.add_argument("--level", type=int, default=5)
+
+    traffic_rectangle = subparsers.add_parser("traffic-rectangle", help="Analyze advanced traffic status inside a rectangle.")
+    traffic_rectangle.add_argument("rectangle", help="left-bottom lon,lat;right-top lon,lat")
+    traffic_rectangle.add_argument("--level", type=int, default=5)
 
     travel = subparsers.add_parser("travel", help="Analyze travel route reasonableness.")
     travel.add_argument("text", help="Example: 北京：故宫、景山公园、南锣鼓巷")
@@ -107,6 +125,33 @@ def _run_command(service: AmapService, args: argparse.Namespace) -> dict[str, An
     if args.command == "traffic":
         route = service.traffic_status(args.origin, args.destination, city=args.city)
         return {"summary": format_route(route, "路况"), "data": route}
+    if args.command == "traffic-road":
+        result = service.traffic_status(
+            args.name,
+            city=args.city,
+            query_type="road",
+            adcode=args.adcode,
+            level=args.level,
+        )
+        return {"summary": format_traffic_result(result), "data": result}
+    if args.command == "traffic-circle":
+        location = args.location
+        if not LONLAT_RE.match(str(location or "")):
+            location = service.resolve_point(location, args.city, prefer_poi=True).location
+        result = service.traffic_status(
+            location,
+            query_type="circle",
+            radius=args.radius,
+            level=args.level,
+        )
+        return {"summary": format_traffic_result(result), "data": result}
+    if args.command == "traffic-rectangle":
+        result = service.traffic_status(
+            args.rectangle,
+            query_type="rectangle",
+            level=args.level,
+        )
+        return {"summary": format_traffic_result(result), "data": result}
     if args.command == "travel":
         city, points = parse_points_text(args.text)
         result = service.analyze_travel_route(points, args.city or city)
