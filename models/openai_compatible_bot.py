@@ -340,8 +340,13 @@ class OpenAICompatibleBot:
         params = dict(request_params)
         params.pop("stream", None)
         cache_metadata = params.pop("_cache_metadata", {}) or {}
+        api_config = api_config or {}
         # Translate legacy SDK timeout kwarg to our HTTP client kwarg.
-        timeout = params.pop("request_timeout", None) or params.pop("timeout", None)
+        timeout = (
+            params.pop("request_timeout", None)
+            or params.pop("timeout", None)
+            or api_config.get("request_timeout_seconds")
+        )
         try:
             client = self._get_http_client()
             wire_api = self._get_wire_api(api_config)
@@ -419,7 +424,12 @@ class OpenAICompatibleBot:
         params = dict(request_params)
         params.pop("stream", None)
         cache_metadata = params.pop("_cache_metadata", {}) or {}
-        timeout = params.pop("request_timeout", None) or params.pop("timeout", None)
+        api_config = api_config or {}
+        timeout = (
+            params.pop("request_timeout", None)
+            or params.pop("timeout", None)
+            or api_config.get("request_timeout_seconds")
+        )
         try:
             client = self._get_http_client()
             wire_api = self._get_wire_api(api_config)

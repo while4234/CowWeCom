@@ -44,6 +44,7 @@ DEFAULT_LLM_BACKEND_CONFIG: Dict[str, Any] = {
             "api_base_env": "OPENAI_API_BASE",
             "wire_api": "",
             "model": "",
+            "request_timeout_seconds": 120,
             "connectivity_timeout_seconds": 12,
         },
         "capi_monthly": {
@@ -54,6 +55,7 @@ DEFAULT_LLM_BACKEND_CONFIG: Dict[str, Any] = {
             "api_base_env": "OPENAI_API_BASE",
             "wire_api": "",
             "model": "",
+            "request_timeout_seconds": 120,
             "connectivity_timeout_seconds": 12,
             "default_daily_quota": 90,
         },
@@ -120,6 +122,21 @@ def resolve_provider_value(provider: Mapping[str, Any], value_key: str, env_key:
     return str(value) if value else ""
 
 
+def _provider_timeout_seconds(
+    provider: Mapping[str, Any],
+    key: str,
+    default: float,
+    *,
+    minimum: float = 1.0,
+    maximum: float = 600.0,
+) -> float:
+    try:
+        timeout = float(provider.get(key) or default)
+    except (TypeError, ValueError):
+        timeout = default
+    return max(minimum, min(float(timeout), maximum))
+
+
 def get_effective_openai_api_config(backend: Optional[str] = None) -> Dict[str, Any]:
     """Return route-aware OpenAI-compatible API settings for the active CAPI backend."""
     from config import conf
@@ -142,6 +159,11 @@ def get_effective_openai_api_config(backend: Optional[str] = None) -> Dict[str, 
         "wire_api": wire_api,
         "model": model,
         "backend": normalized_backend,
+        "request_timeout_seconds": _provider_timeout_seconds(
+            provider,
+            "request_timeout_seconds",
+            120.0,
+        ),
     }
 
 
@@ -179,13 +201,16 @@ def check_capi_connectivity(backend: Optional[str] = None, *, timeout_seconds: O
         )
         return False
 
-    timeout = timeout_seconds
-    if timeout is None:
-        try:
-            timeout = float(provider.get("connectivity_timeout_seconds") or 12)
-        except (TypeError, ValueError):
-            timeout = 12.0
-    timeout = max(1.0, min(float(timeout), 60.0))
+    timeout = (
+        max(1.0, min(float(timeout_seconds), 60.0))
+        if timeout_seconds is not None
+        else _provider_timeout_seconds(
+            provider,
+            "connectivity_timeout_seconds",
+            12.0,
+            maximum=60.0,
+        )
+    )
     client = OpenAIHTTPClient(proxy=conf().get("proxy") or None, timeout=timeout)
     payload = {
         "model": model,
@@ -196,28 +221,22 @@ def check_capi_connectivity(backend: Optional[str] = None, *, timeout_seconds: O
     try:
         if is_responses_wire_api(routed.get("wire_api")):
             responses_payload = build_responses_payload(payload, store=False)
-            response = client.responses(
+            stream = client.responses(
                 api_key=api_key,
                 api_base=api_base or None,
                 timeout=timeout,
-                stream=False,
+                stream=True,
                 **responses_payload,
             )
         else:
-            response = client.chat_completions(
+            stream = client.chat_completions(
                 api_key=api_key,
                 api_base=api_base or None,
                 timeout=timeout,
-                stream=False,
+                stream=True,
                 **payload,
             )
-        if isinstance(response, dict) and response.get("error"):
-            logger.warning(
-                "[LLMBackend] CAPI connectivity probe failed: backend=%s status=%s message=%s",
-                normalized_backend,
-                response.get("status_code", ""),
-                str(response.get("message", ""))[:180],
-            )
+        if not _capi_stream_probe_succeeded(stream, normalized_backend):
             return False
         logger.info("[LLMBackend] CAPI connectivity probe succeeded: backend=%s", normalized_backend)
         return True
@@ -236,6 +255,21 @@ def check_capi_connectivity(backend: Optional[str] = None, *, timeout_seconds: O
             str(e)[:180],
         )
         return False
+
+
+def _capi_stream_probe_succeeded(stream: Any, backend: str) -> bool:
+    for event in stream:
+        if isinstance(event, dict) and event.get("error"):
+            logger.warning(
+                "[LLMBackend] CAPI connectivity probe failed: backend=%s status=%s message=%s",
+                backend,
+                event.get("status_code", ""),
+                str(event.get("message") or event.get("error") or "")[:180],
+            )
+            return False
+        return True
+    logger.warning("[LLMBackend] CAPI connectivity probe failed: backend=%s empty stream", backend)
+    return False
 
 
 def is_capi_runtime_fallback_error(error: Any) -> bool:

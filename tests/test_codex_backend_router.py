@@ -10,6 +10,7 @@ from common.llm_backend_router import (
     BACKEND_CAPI,
     BACKEND_CAPI_MONTHLY,
     BACKEND_CODEX,
+    check_capi_connectivity,
     evaluate_auto_switch,
     evaluate_midnight_backend_route,
     get_effective_openai_api_config,
@@ -279,6 +280,67 @@ class TestCodexBackendRouter(unittest.TestCase):
         self.assertEqual(routed["api_base"], "https://quota.example/v1")
         self.assertEqual(routed["wire_api"], "responses")
         self.assertEqual(routed["model"], "gpt-5.5")
+        self.assertEqual(routed["request_timeout_seconds"], 120.0)
+
+    def test_capi_connectivity_uses_streaming_responses_probe(self):
+        conf()["llm_backend"]["current_backend"] = BACKEND_CAPI_MONTHLY
+        conf()["llm_backend"]["providers"] = {
+            "capi": {
+                "api_base": "https://quota.example/openai",
+                "wire_api": "responses",
+                "model": "gpt-5.5",
+            },
+            "capi_monthly": {
+                "api_key": "MONTHLY-KEY",
+            },
+        }
+        calls = []
+
+        class FakeClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            def responses(self, **kwargs):
+                calls.append(kwargs)
+                return iter([{"type": "response.created"}])
+
+        with patch("models.openai.openai_http_client.OpenAIHTTPClient", FakeClient):
+            ok = check_capi_connectivity(BACKEND_CAPI_MONTHLY, timeout_seconds=3)
+
+        self.assertTrue(ok)
+        self.assertEqual(calls[0]["api_key"], "MONTHLY-KEY")
+        self.assertEqual(calls[0]["api_base"], "https://quota.example/openai")
+        self.assertEqual(calls[0]["stream"], True)
+        self.assertEqual(calls[0]["timeout"], 3.0)
+
+    def test_capi_connectivity_reports_stream_error_as_failure(self):
+        conf()["llm_backend"]["current_backend"] = BACKEND_CAPI_MONTHLY
+        conf()["llm_backend"]["providers"] = {
+            "capi": {
+                "api_base": "https://quota.example/openai",
+                "wire_api": "responses",
+                "model": "gpt-5.5",
+            },
+            "capi_monthly": {
+                "api_key": "MONTHLY-KEY",
+            },
+        }
+
+        class FakeClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            def responses(self, **_kwargs):
+                return iter([{
+                    "error": {"message": "upstream unavailable"},
+                    "message": "upstream unavailable",
+                    "status_code": 503,
+                }])
+
+        with patch("models.openai.openai_http_client.OpenAIHTTPClient", FakeClient):
+            ok = check_capi_connectivity(BACKEND_CAPI_MONTHLY, timeout_seconds=3)
+
+        self.assertFalse(ok)
 
     def test_quota_backend_defaults_to_capi_api_key_env(self):
         conf()["llm_backend"]["current_backend"] = BACKEND_CAPI

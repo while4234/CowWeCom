@@ -153,7 +153,8 @@
         "api_base": "",
         "api_base_env": "OPENAI_API_BASE",
         "wire_api": "",
-        "model": ""
+        "model": "",
+        "request_timeout_seconds": 120
       },
       "capi_monthly": {
         "label": "CAPI monthly card",
@@ -163,6 +164,7 @@
         "api_base_env": "OPENAI_API_BASE",
         "wire_api": "",
         "model": "",
+        "request_timeout_seconds": 120,
         "default_daily_quota": 90
       }
     },

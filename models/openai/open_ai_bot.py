@@ -59,6 +59,7 @@ class OpenAIBot(Bot, OpenAIImage, OpenAICompatibleBot):
             'api_key': routed.get("api_key") or conf().get("open_ai_api_key"),
             'api_base': routed.get("api_base") or conf().get("open_ai_api_base"),
             'model': routed.get("model") or conf().get("model", "text-davinci-003"),
+            'request_timeout_seconds': routed.get("request_timeout_seconds"),
             'default_temperature': conf().get("temperature", 0.9),
             'default_top_p': conf().get("top_p", 1.0),
             'default_frequency_penalty': conf().get("frequency_penalty", 0.0),
