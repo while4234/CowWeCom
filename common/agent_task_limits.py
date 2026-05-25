@@ -42,6 +42,25 @@ _COMPLEX_PLANNING_TOPIC_PATTERNS = tuple(
     )
 )
 
+_DATE_OR_DURATION_PATTERN = re.compile(
+    r"(\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?|\d{1,2}月\d{1,2}日|"
+    r"明天|后天|大后天|下周|周[一二三四五六日天]|星期[一二三四五六日天]|"
+    r"[一二三四五六七八九十\d]+天|\b\d+\s*days?\b)",
+    re.IGNORECASE,
+)
+_TRAVEL_MOVEMENT_PATTERN = re.compile(
+    r"(从.{1,24}(去|到|飞|出发).{1,24}|去.{1,24}|到.{1,24}|"
+    r"\b(from|to|fly|depart|return)\b)",
+    re.IGNORECASE,
+)
+_ROUND_TRIP_OR_TRAVEL_CONTEXT_PATTERN = re.compile(
+    r"(回来|返回|返程|回程|往返|来回|回国|返航|\breturn\b|\bround\s*trip\b|"
+    r"预算|费用|价格|两个人|[一二三四五六七八九十\d]+个人|"
+    r"首尔|东京|大阪|京都|曼谷|新加坡|香港|澳门|台湾|欧洲|美国|韩国|日本)",
+    re.IGNORECASE,
+)
+_COMMUTE_CONTEXT_PATTERN = re.compile(r"(通勤|上班|下班|家.{0,6}公司|公司.{0,6}家)")
+
 
 @dataclass(frozen=True)
 class AgentTaskBudget:
@@ -80,9 +99,24 @@ def is_complex_planning_task(content: Any) -> bool:
         keyword in text
         for keyword in ("方案", "规划", "安排", "路线", "每天", "每日", "完整", "帮我做", "帮我定")
     )
+    if _is_plain_language_travel_plan(text, has_plan_intent):
+        return True
+
     has_travel_inventory = any(pattern.search(text) for pattern in _COMPLEX_PLANNING_TOPIC_PATTERNS[1:5])
     has_travel_context = any(pattern.search(text) for pattern in _COMPLEX_PLANNING_TOPIC_PATTERNS[:1])
     return has_plan_intent and has_travel_inventory and (has_travel_context or topic_hits >= 2)
+
+
+def _is_plain_language_travel_plan(text: str, has_plan_intent: bool) -> bool:
+    if not has_plan_intent:
+        return False
+    if _COMMUTE_CONTEXT_PATTERN.search(text):
+        return False
+    return bool(
+        _DATE_OR_DURATION_PATTERN.search(text)
+        and _TRAVEL_MOVEMENT_PATTERN.search(text)
+        and _ROUND_TRIP_OR_TRAVEL_CONTEXT_PATTERN.search(text)
+    )
 
 
 def resolve_agent_task_budget(

@@ -104,7 +104,7 @@ Command:
 clawhub inspect flyai --workdir D:\cowwechat --dir skills --no-input
 clawhub install flyai --workdir D:\cowwechat --dir skills --no-input
 flyai --help
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py keyword-search --query "东京酒店"
+python skills\flyai\scripts\flyai_wrapper.py keyword-search --query "东京酒店"
 ```
 
 Result: inspect and install succeeded for `flyai` version 1.0.15. Later wrapper smoke returned `ok=true` and preserved FlyAI JSON results while warning that the raw Windows CLI exited nonzero after producing valid JSON.

@@ -22,8 +22,8 @@
 ### Examples
 
 ```powershell
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-hotel --dest-name "杭州" --poi-name "西湖" --check-in-date 2026-03-10 --check-out-date 2026-03-12
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-hotel --dest-name "三亚" --hotel-stars "4,5" --sort rate_desc --max-price 800
+python skills\flyai\scripts\flyai_wrapper.py search-hotel --dest-name "杭州" --poi-name "西湖" --check-in-date 2026-03-10 --check-out-date 2026-03-12
+python skills\flyai\scripts\flyai_wrapper.py search-hotel --dest-name "三亚" --hotel-stars "4,5" --sort rate_desc --max-price 800
 ```
 
 ### Output Example

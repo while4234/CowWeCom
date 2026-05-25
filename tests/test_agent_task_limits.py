@@ -44,6 +44,20 @@ class TestAgentTaskLimits(unittest.TestCase):
         self.assertEqual(budget.max_steps, 40)
         self.assertEqual(budget.kind, "complex_planning")
 
+    def test_plain_language_round_trip_planning_uses_planning_step_budget(self):
+        settings = {
+            "agent_max_steps": 20,
+            "agent_development_max_steps": 40,
+            "agent_complex_planning_max_steps": 40,
+        }
+        prompt = "6月10日从广州去首尔，6月15日回来，两个人，预算1万5，帮我规划一下。"
+
+        budget = resolve_agent_task_budget(prompt, settings)
+
+        self.assertTrue(is_complex_planning_task(prompt))
+        self.assertEqual(budget.max_steps, 40)
+        self.assertEqual(budget.kind, "complex_planning")
+
     def test_simple_weather_query_stays_on_base_budget(self):
         settings = {
             "agent_max_steps": 20,
@@ -53,6 +67,17 @@ class TestAgentTaskLimits(unittest.TestCase):
 
         self.assertFalse(is_complex_planning_task("帮我查一下成都天气"))
         self.assertEqual(resolve_agent_task_budget("帮我查一下成都天气", settings).max_steps, 20)
+
+    def test_commute_route_query_stays_on_base_budget(self):
+        settings = {
+            "agent_max_steps": 20,
+            "agent_development_max_steps": 40,
+            "agent_complex_planning_max_steps": 40,
+        }
+        prompt = "明天从家去公司，帮我规划一下路线"
+
+        self.assertFalse(is_complex_planning_task(prompt))
+        self.assertEqual(resolve_agent_task_budget(prompt, settings).max_steps, 20)
 
     def test_development_budget_never_lowers_base_budget(self):
         settings = {
@@ -174,7 +199,7 @@ class TestAgentBridgeTaskLimits(unittest.TestCase):
 
     def test_agent_bridge_uses_planning_budget_for_complex_travel(self):
         bridge, profile, captured = self._make_bridge_and_agent()
-        prompt = "上海飞东京5天，帮我做完整旅行方案，包含机票、酒店、天气、签证、预算和风险"
+        prompt = "6月10日从广州去首尔，6月15日回来，两个人，预算1万5，帮我规划一下。"
 
         with (
             patch("bridge.agent_bridge.resolve_agent_user_profile", return_value=profile),

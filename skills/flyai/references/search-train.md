@@ -33,10 +33,10 @@
 ### Examples
 
 ```powershell
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-train --origin "北京" --destination "上海"
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-train --origin "北京" --destination "上海" --dep-date 2026-03-15
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-train --origin "上海" --destination "杭州" --dep-date 2026-03-20 --journey-type 1 --seat-class-name "second class"
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-train --origin "北京" --destination "上海" --dep-date 2026-03-15 --max-price 800 --sort-type 3
+python skills\flyai\scripts\flyai_wrapper.py search-train --origin "北京" --destination "上海"
+python skills\flyai\scripts\flyai_wrapper.py search-train --origin "北京" --destination "上海" --dep-date 2026-03-15
+python skills\flyai\scripts\flyai_wrapper.py search-train --origin "上海" --destination "杭州" --dep-date 2026-03-20 --journey-type 1 --seat-class-name "second class"
+python skills\flyai\scripts\flyai_wrapper.py search-train --origin "北京" --destination "上海" --dep-date 2026-03-15 --max-price 800 --sort-type 3
 ```
 
 ### Output Example

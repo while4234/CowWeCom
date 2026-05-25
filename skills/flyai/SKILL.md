@@ -54,17 +54,21 @@ Prefer the wrapper on Windows/CowWechat because the raw CLI can print valid JSON
 ## Quick Start
 
 1. **Install CLI**：`npm i -g @fly-ai/flyai-cli`
-2. **Verify setup through the wrapper**: run `.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py keyword-search --query "what to do in Sanya"` and confirm JSON output.
+2. **Verify setup through the wrapper**: run `python skills\flyai\scripts\flyai_wrapper.py keyword-search --query "what to do in Sanya"` and confirm JSON output.
 3. **List commands**: run `flyai --help`; use the wrapper for data-returning commands.
 4. **Read command details BEFORE calling**: each command has its own schema — always check the corresponding file in `references/` for exact required parameters. Do NOT guess or reuse formats from other commands.
 
 ## Windows-safe Wrapper
 
-Prefer this form from the CowWechat repository root:
+Prefer this workspace-relative form from the current CowAgent workspace or the CowWechat repository root:
 
 ```powershell
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py keyword-search --query "what to do in Sanya"
+python skills\flyai\scripts\flyai_wrapper.py keyword-search --query "what to do in Sanya"
 ```
+
+Do not hard-code machine-specific roots such as `D:\CowWechat`, `C:\Users\<user>\cow`, or repo-only `.venv\Scripts\python.exe` in Agent commands. CowAgent syncs skills into the active workspace, so `skills\flyai\...` should resolve relative to that workspace across machines.
+
+The wrapper locates the raw FlyAI CLI with `FLYAI_BIN` first and then `PATH`. If a deployment cannot find `flyai`, configure `FLYAI_BIN` locally on that machine instead of changing skill prompts to absolute paths.
 
 The wrapper runs the local `flyai` CLI and always prints a JSON envelope:
 

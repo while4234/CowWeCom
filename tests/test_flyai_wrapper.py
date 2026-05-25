@@ -6,6 +6,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WRAPPER_PATH = PROJECT_ROOT / "skills" / "flyai" / "scripts" / "flyai_wrapper.py"
+FLYAI_DOCS_ROOT = PROJECT_ROOT / "skills" / "flyai"
 
 
 def _load_wrapper():
@@ -95,3 +96,13 @@ def test_json_can_be_extracted_from_stdout_with_extra_text():
     assert exit_code == 0
     assert response["ok"] is True
     assert response["result"] == {"status": 0, "message": "success"}
+
+
+def test_flyai_docs_use_runtime_relative_wrapper_commands():
+    docs = [FLYAI_DOCS_ROOT / "SKILL.md", *sorted((FLYAI_DOCS_ROOT / "references").glob("*.md"))]
+
+    for path in docs:
+        content = path.read_text(encoding="utf-8")
+        assert ".venv\\Scripts\\python.exe skills\\flyai\\scripts\\flyai_wrapper.py" not in content
+        if "flyai_wrapper.py" in content:
+            assert "python skills\\flyai\\scripts\\flyai_wrapper.py" in content

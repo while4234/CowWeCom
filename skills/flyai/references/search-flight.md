@@ -32,9 +32,9 @@
 ### Examples
 
 ```powershell
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-flight --origin "北京" --destination "上海" --dep-date 2026-03-15
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-flight --origin "上海" --destination "东京" --dep-date 2026-03-20 --back-date 2026-03-25 --journey-type 1
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-flight --origin "北京" --destination "上海" --dep-date 2026-03-15 --sort-type 3
+python skills\flyai\scripts\flyai_wrapper.py search-flight --origin "北京" --destination "上海" --dep-date 2026-03-15
+python skills\flyai\scripts\flyai_wrapper.py search-flight --origin "上海" --destination "东京" --dep-date 2026-03-20 --back-date 2026-03-25 --journey-type 1
+python skills\flyai\scripts\flyai_wrapper.py search-flight --origin "北京" --destination "上海" --dep-date 2026-03-15 --sort-type 3
 ```
 
 ### Output Example

@@ -12,8 +12,8 @@
 ### Examples
 
 ```powershell
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-marriott-package --keyword "上海"
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-marriott-package --keyword "JW万豪" --sort-type price_asc
+python skills\flyai\scripts\flyai_wrapper.py search-marriott-package --keyword "上海"
+python skills\flyai\scripts\flyai_wrapper.py search-marriott-package --keyword "JW万豪" --sort-type price_asc
 ```
 
 ### Output Example

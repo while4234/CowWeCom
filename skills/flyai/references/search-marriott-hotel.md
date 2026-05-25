@@ -20,8 +20,8 @@
 ### Examples
 
 ```powershell
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-marriott-hotel --dest-name "上海" --hotel-brands "万豪酒店,喜来登" --check-in-date 2026-03-20 --check-out-date 2026-03-22
-.venv\Scripts\python.exe skills\flyai\scripts\flyai_wrapper.py search-marriott-hotel --dest-name "杭州" --hotel-name "杭州JW万豪酒店" --sort price_asc --max-price 1200
+python skills\flyai\scripts\flyai_wrapper.py search-marriott-hotel --dest-name "上海" --hotel-brands "万豪酒店,喜来登" --check-in-date 2026-03-20 --check-out-date 2026-03-22
+python skills\flyai\scripts\flyai_wrapper.py search-marriott-hotel --dest-name "杭州" --hotel-name "杭州JW万豪酒店" --sort price_asc --max-price 1200
 ```
 
 ### Output Example
