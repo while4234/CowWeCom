@@ -8,7 +8,7 @@ into the CHAT socket protocol format (content chunks with segment_id, tool_calls
 import time
 from typing import Callable, Optional
 
-from common.agent_task_limits import is_development_task, resolve_agent_max_steps
+from common.agent_task_limits import is_development_task, resolve_agent_task_budget
 from common.capi_monthly_monitor import maybe_check_capi_monthly_after_task
 from common.llm_backend_router import get_current_backend
 from common.log import logger
@@ -195,14 +195,19 @@ class ChatService:
         from agent.protocol.agent_stream import AgentStreamExecutor
         workspace_root = conf().get("agent_workspace", "~/cow")
         tool_error_lesson_snapshot = self._collect_tool_error_lesson_snapshot(workspace_root)
-        run_max_steps = resolve_agent_max_steps(query, conf())
+        task_budget = resolve_agent_task_budget(query, conf())
+        logger.info(
+            "[ChatService] Using max_steps=%s task_budget_kind=%s",
+            task_budget.max_steps,
+            task_budget.kind,
+        )
 
         executor = AgentStreamExecutor(
             agent=agent,
             model=agent.model,
             system_prompt=full_system_prompt,
             tools=agent.tools,
-            max_turns=run_max_steps,
+            max_turns=task_budget.max_steps,
             on_event=on_event,
             messages=messages_copy,
             max_context_turns=max_context_turns,

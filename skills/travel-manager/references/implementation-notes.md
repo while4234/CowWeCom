@@ -23,6 +23,12 @@
 - `flyai`: installed skill files through `clawhub` as optional travel inventory guidance. Use `skills/flyai/scripts/flyai_wrapper.py` for data-returning commands so valid stdout JSON remains usable when the Windows CLI exits nonzero with the known libuv assertion.
 - `quick-weather`: added international city alias and `--country-code` support for Open-Meteo geocoding. It remains the no-key weather fallback and default international weather source.
 
+## Local Path Portability
+
+- Runtime examples should be run from the CowWechat repository root and use relative script paths such as `python skills\flyai\scripts\flyai_wrapper.py ...`.
+- When a skill CLI is launched from a runtime skill copy on another machine, set `COWWECHAT_ROOT` to the repository root so shared imports resolve without hard-coded drive letters.
+- `amap-cowwechat` checks the current directory, script parents, `COWWECHAT_ROOT`, `COWWECHAT_REPO_ROOT`, and `COWAGENT_ROOT` before legacy local fallbacks.
+
 ## Weather Decision
 
 - AMap weather available: code path and CLI are present, but no AMap Web Service key is configured in this shell, so only the missing-key path was validated.
@@ -101,8 +107,9 @@ Result: Chengdu, Tokyo, and New York returned Open-Meteo weather summaries with 
 Command:
 
 ```powershell
-clawhub inspect flyai --workdir D:\cowwechat --dir skills --no-input
-clawhub install flyai --workdir D:\cowwechat --dir skills --no-input
+$env:COWWECHAT_ROOT = (Get-Location).Path
+clawhub inspect flyai --workdir $env:COWWECHAT_ROOT --dir skills --no-input
+clawhub install flyai --workdir $env:COWWECHAT_ROOT --dir skills --no-input
 flyai --help
 python skills\flyai\scripts\flyai_wrapper.py keyword-search --query "东京酒店"
 ```

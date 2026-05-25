@@ -11,14 +11,16 @@ from agent.protocol.models import LLMRequest, LLMModel
 from agent.protocol.message_utils import sanitize_claude_messages, compress_turn_to_text_only
 from agent.tools.base_tool import BaseTool, ToolResult
 from common.agent_task_runtime import TaskCancelled
+from common.codex_quota_query import query_codex_quota_json
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common.log import logger
 from common.llm_backend_router import (
     BACKEND_CAPI,
     BACKEND_CAPI_MONTHLY,
-    BACKEND_CODEX,
     get_current_backend,
+    is_capi_quota_exhausted_error,
     is_capi_runtime_fallback_error,
+    select_capi_runtime_fallback_backend,
     set_current_backend,
 )
 from common.llm_usage_tracker import normalize_usage, stable_metadata_hash
@@ -944,7 +946,8 @@ class AgentStreamExecutor:
 
     def _call_llm_stream(self, retry_on_empty=True, retry_count=0, max_retries=3,
                          _overflow_retry: bool = False,
-                         _capi_fallback_retry: bool = False) -> Tuple[str, List[Dict]]:
+                         _capi_fallback_retry: bool = False,
+                         _capi_fallback_attempted: Optional[set[str]] = None) -> Tuple[str, List[Dict]]:
         """
         Call LLM with streaming and automatic retry on errors
         
@@ -953,7 +956,8 @@ class AgentStreamExecutor:
             retry_count: Current retry attempt (internal use)
             max_retries: Maximum number of retries for API errors
             _overflow_retry: Internal flag indicating this is a retry after context overflow
-            _capi_fallback_retry: Internal flag indicating this request was already replayed on Codex
+            _capi_fallback_retry: Internal flag indicating this request was already replayed on a fallback backend
+            _capi_fallback_attempted: CAPI backends already replayed away from in this request
         
         Returns:
             (response_text, tool_calls)
@@ -1222,6 +1226,7 @@ class AgentStreamExecutor:
                             max_retries=max_retries,
                             _overflow_retry=True,
                             _capi_fallback_retry=_capi_fallback_retry,
+                            _capi_fallback_attempted=_capi_fallback_attempted,
                         )
 
                 # Aggressive trim didn't help or this is a message format error
@@ -1248,31 +1253,57 @@ class AgentStreamExecutor:
                 '429', '500', '502', '503', '504', '512'
             ])
 
-            if (
-                    not _capi_fallback_retry
-                    and first_visible_text_at is None
-                    and retry_count >= max_retries
-                    and get_current_backend() in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY}
-                    and is_capi_runtime_fallback_error(error_str)):
+            current_backend = get_current_backend()
+            quota_exhausted = is_capi_quota_exhausted_error(error_str)
+            fallback_attempted = set(_capi_fallback_attempted or set())
+            should_runtime_fallback = (
+                    current_backend in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY}
+                    and current_backend not in fallback_attempted
+                    and is_capi_runtime_fallback_error(error_str)
+                    and (
+                        quota_exhausted
+                        or (first_visible_text_at is None and retry_count >= max_retries)
+                    )
+            )
+            if should_runtime_fallback:
                 previous_backend = get_current_backend()
-                set_current_backend(
-                    BACKEND_CODEX,
-                    manual=False,
-                    reason=f"capi_runtime_fallback:{previous_backend}",
-                )
-                logger.warning(
-                    "[LLMBackend] CAPI request failed after retries; switched to Codex and "
-                    "replaying the same Agent request (backend=%s, error=%s)",
+                fallback_attempted.add(previous_backend)
+                fallback_backend = select_capi_runtime_fallback_backend(
                     previous_backend,
-                    error_str[:180],
+                    error_str,
+                    quota_payload_factory=query_codex_quota_json,
                 )
-                return self._call_llm_stream(
-                    retry_on_empty=retry_on_empty,
-                    retry_count=0,
-                    max_retries=max_retries,
-                    _overflow_retry=_overflow_retry,
-                    _capi_fallback_retry=True,
-                )
+                if fallback_backend in fallback_attempted or fallback_backend == previous_backend:
+                    logger.warning(
+                        "[LLMBackend] CAPI runtime fallback skipped because no new backend is available "
+                        "(backend=%s, error=%s)",
+                        previous_backend,
+                        error_str[:180],
+                    )
+                else:
+                    set_current_backend(
+                        fallback_backend,
+                        manual=False,
+                        reason=f"capi_runtime_fallback:{previous_backend}->{fallback_backend}",
+                    )
+                    logger.warning(
+                        "[LLMBackend] CAPI request failed; switched to %s and replaying the same "
+                        "Agent request (backend=%s, quota_exhausted=%s, retry=%s/%s, error=%s)",
+                        fallback_backend,
+                        previous_backend,
+                        quota_exhausted,
+                        retry_count,
+                        max_retries,
+                        error_str[:180],
+                    )
+                    return self._call_llm_stream(
+                        retry_on_empty=retry_on_empty,
+                        retry_count=0,
+                        max_retries=max_retries,
+                        _overflow_retry=_overflow_retry,
+                        _capi_fallback_retry=True,
+                        _capi_fallback_attempted=fallback_attempted,
+                    )
             
             if is_retryable and retry_count < max_retries:
                 # Rate limit needs longer wait time
@@ -1290,6 +1321,7 @@ class AgentStreamExecutor:
                     max_retries=max_retries,
                     _overflow_retry=_overflow_retry,
                     _capi_fallback_retry=_capi_fallback_retry,
+                    _capi_fallback_attempted=_capi_fallback_attempted,
                 )
             else:
                 if retry_count >= max_retries:
@@ -1386,6 +1418,7 @@ class AgentStreamExecutor:
                 max_retries=max_retries,
                 _overflow_retry=_overflow_retry,
                 _capi_fallback_retry=_capi_fallback_retry,
+                _capi_fallback_attempted=_capi_fallback_attempted,
             )
 
         # Filter full_content one more time (in case tags were split across chunks)

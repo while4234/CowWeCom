@@ -16,7 +16,9 @@ from common.llm_backend_router import (
     get_effective_openai_api_config,
     get_current_backend,
     is_capi_runtime_fallback_error,
+    is_capi_quota_exhausted_error,
     load_state,
+    select_capi_runtime_fallback_backend,
     select_backend_after_monthly_quota_low,
     save_state,
 )
@@ -217,7 +219,62 @@ class TestCodexBackendRouter(unittest.TestCase):
         self.assertTrue(is_capi_runtime_fallback_error("{'raw': 'Internal Server Error'} (Status: 500)"))
         self.assertTrue(is_capi_runtime_fallback_error("provider_network_error: ConnectionResetError(10054)"))
         self.assertTrue(is_capi_runtime_fallback_error("Concurrency limit exceeded for account (Status: 429)"))
+        self.assertTrue(is_capi_runtime_fallback_error("Payment Required: monthly quota exhausted (Status: 402)"))
         self.assertFalse(is_capi_runtime_fallback_error("invalid_request_error (Status: 400)"))
+
+    def test_capi_quota_exhausted_classifier_covers_monthly_card_errors(self):
+        self.assertTrue(is_capi_quota_exhausted_error("insufficient_quota: monthly quota exhausted (Status: 402)"))
+        self.assertTrue(is_capi_quota_exhausted_error("余额不足，月卡额度用完"))
+        self.assertTrue(is_capi_quota_exhausted_error({"error": {"code": "quota_exceeded", "message": "billing hard limit"}}))
+        self.assertFalse(is_capi_quota_exhausted_error("invalid api key (Status: 401)"))
+
+    def test_monthly_runtime_quota_fallback_prefers_codex_when_under_fair_share(self):
+        conf()["llm_backend"]["providers"] = {
+            "capi": {"api_key": "QUOTA-KEY"},
+            "capi_monthly": {"api_key": "MONTHLY-KEY"},
+        }
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+
+        backend = select_capi_runtime_fallback_backend(
+            BACKEND_CAPI_MONTHLY,
+            "insufficient_quota: monthly quota exhausted (Status: 402)",
+            quota_payload=weekly_payload(used_percent=5),
+            now=now,
+        )
+
+        self.assertEqual(backend, BACKEND_CODEX)
+
+    def test_monthly_runtime_quota_fallback_uses_quota_card_when_codex_over_average(self):
+        conf()["llm_backend"]["providers"] = {
+            "capi": {"api_key": "QUOTA-KEY"},
+            "capi_monthly": {"api_key": "MONTHLY-KEY"},
+        }
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+
+        backend = select_capi_runtime_fallback_backend(
+            BACKEND_CAPI_MONTHLY,
+            "insufficient_quota: monthly quota exhausted (Status: 402)",
+            quota_payload=weekly_payload(used_percent=30),
+            now=now,
+        )
+
+        self.assertEqual(backend, BACKEND_CAPI)
+
+    def test_monthly_runtime_quota_fallback_uses_codex_when_quota_card_missing(self):
+        conf()["llm_backend"]["providers"] = {
+            "capi": {"api_key": ""},
+            "capi_monthly": {"api_key": "MONTHLY-KEY"},
+        }
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+
+        backend = select_capi_runtime_fallback_backend(
+            BACKEND_CAPI_MONTHLY,
+            "insufficient_quota: monthly quota exhausted (Status: 402)",
+            quota_payload=weekly_payload(used_percent=30),
+            now=now,
+        )
+
+        self.assertEqual(backend, BACKEND_CODEX)
 
     def test_monthly_low_quota_falls_back_to_codex_when_under_fair_share(self):
         now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)

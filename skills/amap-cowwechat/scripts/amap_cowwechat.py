@@ -8,15 +8,23 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
+
+
+def _candidate_project_roots() -> Iterable[Path]:
+    yield Path.cwd()
+    yield from Path(__file__).resolve().parents
+    for env_name in ("COWWECHAT_ROOT", "COWWECHAT_REPO_ROOT", "COWAGENT_ROOT"):
+        raw = os.environ.get(env_name)
+        if raw:
+            yield Path(raw)
+    # Legacy local defaults are last-resort compatibility fallbacks only.
+    yield Path(r"D:\CowWechat")
+    yield Path(r"D:\cowwechat")
 
 
 def _bootstrap_project_imports() -> None:
-    candidates = [Path.cwd(), *Path(__file__).resolve().parents]
-    for raw in (os.environ.get("COWWECHAT_ROOT"), r"D:\CowWechat", r"D:\cowwechat"):
-        if raw:
-            candidates.append(Path(raw))
-    for candidate in candidates:
+    for candidate in _candidate_project_roots():
         if (candidate / "agent" / "tools").exists():
             sys.path.insert(0, str(candidate))
             return
@@ -24,19 +32,27 @@ def _bootstrap_project_imports() -> None:
 
 _bootstrap_project_imports()
 
-from agent.tools.amap.client import AmapApiError, MissingAmapKeyError  # noqa: E402
-from agent.tools.amap.formatter import format_route  # noqa: E402
-from agent.tools.amap.models import public_dict  # noqa: E402
-from agent.tools.amap.service import (  # noqa: E402
-    AmapService,
-    AmapServiceError,
-    LONLAT_RE,
-    format_commute_result,
-    format_traffic_result,
-    format_travel_result,
-    format_weather_result,
-    parse_points_text,
-)
+try:
+    from agent.tools.amap.client import AmapApiError, MissingAmapKeyError  # noqa: E402
+    from agent.tools.amap.formatter import format_route  # noqa: E402
+    from agent.tools.amap.models import public_dict  # noqa: E402
+    from agent.tools.amap.service import (  # noqa: E402
+        AmapService,
+        AmapServiceError,
+        LONLAT_RE,
+        format_commute_result,
+        format_traffic_result,
+        format_travel_result,
+        format_weather_result,
+        parse_points_text,
+    )
+except ModuleNotFoundError as exc:
+    if str(getattr(exc, "name", "")).split(".", 1)[0] == "agent":
+        raise SystemExit(
+            "CowWechat project root not found for amap-cowwechat CLI. "
+            "Run from the repository root or set COWWECHAT_ROOT to that path."
+        ) from exc
+    raise
 
 
 def main() -> int:

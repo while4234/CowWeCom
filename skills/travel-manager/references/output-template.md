@@ -8,6 +8,8 @@ Use this section only when missing plan-shaping details would materially change 
 
 - Ask at most 3 concise questions.
 - Ask only for facts that can prevent a conflicting plan, such as origin/destination, dates or duration, traveler constraints, budget class, mobility/health needs, or nationality/passport when entry rules matter.
+- For vague opening prompts, ask before using hotel, flight, ticket, weather, visa, or route tools. Do not spend tool calls building a full plan that may be invalidated by basic missing facts.
+- For international trips with dates/destination but missing origin, budget, traveler constraints, or passport/nationality, ask the highest-impact missing items first unless the user explicitly requests a rough draft.
 - If the user says to proceed, asks for a rough draft, or enough information already exists, skip this section and state assumptions in "关键假设".
 - Do not place major plan-conflicting facts here and then also draft as if they were optional.
 

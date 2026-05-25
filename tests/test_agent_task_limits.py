@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.protocol.agent import Agent
+from agent.chat.service import ChatService
 from bridge.agent_bridge import AgentBridge
 from bridge.context import Context
 from bridge.reply import ReplyType
@@ -209,6 +210,59 @@ class TestAgentBridgeTaskLimits(unittest.TestCase):
 
         self.assertEqual(reply.type, ReplyType.TEXT)
         self.assertEqual(captured["max_steps"], 40)
+
+
+class TestChatServiceTaskLimits(unittest.TestCase):
+    def setUp(self):
+        self.old_conf = dict(conf())
+        conf().clear()
+        conf().update({
+            "agent_max_steps": 20,
+            "agent_development_max_steps": 40,
+            "agent_complex_planning_max_steps": 40,
+            "agent_max_context_turns": 20,
+            "conversation_persistence": False,
+        })
+
+    def tearDown(self):
+        conf().clear()
+        conf().update(self.old_conf)
+
+    def test_chat_service_uses_planning_budget_for_streaming_entrypoint(self):
+        captured = {}
+
+        class FakeExecutor:
+            def __init__(self, **kwargs):
+                captured["max_turns"] = kwargs["max_turns"]
+                self.messages = kwargs["messages"]
+                self.files_to_send = []
+
+            def run_stream(self, user_message):
+                self.messages.append({"role": "user", "content": user_message})
+                self.messages.append({"role": "assistant", "content": "ok"})
+                return "ok"
+
+        fake_agent = SimpleNamespace(
+            model=SimpleNamespace(),
+            tools=[],
+            messages=[],
+            messages_lock=threading.Lock(),
+            get_full_system_prompt=lambda: "system",
+            _execute_post_process_tools=lambda: None,
+        )
+        service = ChatService(SimpleNamespace(get_agent=lambda session_id=None: fake_agent))
+        prompt = "6月10日从广州去首尔，6月15日回来，两个人，预算1万5，帮我规划一下。"
+
+        with (
+            patch("agent.protocol.agent_stream.AgentStreamExecutor", FakeExecutor),
+            patch.object(ChatService, "_schedule_post_task_self_evolution"),
+            patch.object(ChatService, "_collect_tool_error_lesson_snapshot", return_value=None),
+            patch.object(ChatService, "_count_tool_error_lesson_changes", return_value=0),
+            patch("agent.chat.service.maybe_check_capi_monthly_after_task", return_value={}),
+        ):
+            service.run(prompt, session_id="chat-session", send_chunk_fn=lambda _chunk: None)
+
+        self.assertEqual(captured["max_turns"], 40)
 
 
 if __name__ == "__main__":

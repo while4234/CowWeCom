@@ -172,6 +172,11 @@ def has_capi_monthly_credentials() -> bool:
     return bool(resolve_provider_value(provider, "api_key", "api_key_env"))
 
 
+def has_capi_credentials(backend: Optional[str] = None) -> bool:
+    provider = get_capi_provider_config(backend or BACKEND_CAPI)
+    return bool(resolve_provider_value(provider, "api_key", "api_key_env"))
+
+
 def is_capi_backend(backend: Optional[str]) -> bool:
     if backend is None:
         return False
@@ -272,10 +277,44 @@ def _capi_stream_probe_succeeded(stream: Any, backend: str) -> bool:
     return False
 
 
-def is_capi_runtime_fallback_error(error: Any) -> bool:
-    """Return True for transient CAPI failures that should be retried on Codex."""
+def is_capi_quota_exhausted_error(error: Any) -> bool:
+    """Return True for hard quota/payment exhaustion from CAPI-style relays."""
     text = _stringify_error(error).lower()
     status_code = _extract_status_code(text)
+    quota_markers = (
+        "insufficient_quota",
+        "quota_exceeded",
+        "quota exceeded",
+        "quota exhausted",
+        "quota has been exhausted",
+        "credit exhausted",
+        "credits exhausted",
+        "no credit",
+        "no credits",
+        "balance not enough",
+        "insufficient balance",
+        "payment required",
+        "billing hard limit",
+        "monthly quota",
+        "monthly limit",
+        "额度不足",
+        "额度用完",
+        "额度耗尽",
+        "余额不足",
+        "月卡额度",
+        "套餐额度",
+    )
+    if any(marker in text for marker in quota_markers):
+        return True
+    return status_code == 402
+
+
+def is_capi_runtime_fallback_error(error: Any) -> bool:
+    """Return True for CAPI failures that should be replayed on a fallback backend."""
+    text = _stringify_error(error).lower()
+    status_code = _extract_status_code(text)
+    if is_capi_quota_exhausted_error(error):
+        return True
     if status_code in {0, 408, 429, 500, 502, 503, 504, 512}:
         return True
     if status_code is not None and 400 <= status_code < 500:
@@ -306,6 +345,51 @@ def is_capi_runtime_fallback_error(error: Any) -> bool:
         "server busy",
     )
     return any(marker in text for marker in transient_markers)
+
+
+def select_capi_runtime_fallback_backend(
+    previous_backend: str,
+    error: Any,
+    *,
+    quota_payload: Optional[Mapping[str, Any]] = None,
+    quota_payload_factory: Optional[Callable[[], Mapping[str, Any]]] = None,
+    now: Optional[datetime] = None,
+) -> str:
+    """Pick the next backend for an in-flight CAPI Agent replay."""
+    normalized = normalize_backend(previous_backend)
+    if normalized == BACKEND_CAPI_MONTHLY and is_capi_quota_exhausted_error(error):
+        payload = quota_payload
+        if payload is None and quota_payload_factory is not None:
+            try:
+                payload = quota_payload_factory()
+            except Exception as e:
+                logger.warning(
+                    "[LLMBackend] Codex quota query failed during runtime monthly fallback: %s",
+                    str(e)[:300],
+                )
+                payload = None
+
+        if payload is not None:
+            cfg = get_llm_backend_config()
+            auto_cfg = cfg.get("auto_switch", {}) if isinstance(cfg.get("auto_switch"), dict) else {}
+            quota_decision = decide_codex_auto_switch(
+                payload,
+                now=now,
+                fair_share_days=int(auto_cfg.get("fair_share_days", 7) or 7),
+                min_remaining_percent=float(auto_cfg.get("min_remaining_percent", 15) or 15),
+            )
+            logger.info(
+                "[LLMBackend] Runtime monthly fallback Codex quota decision: "
+                "should_switch=%s reason=%s",
+                quota_decision.should_switch,
+                quota_decision.reason,
+            )
+            if quota_decision.should_switch:
+                return BACKEND_CODEX
+
+        if has_capi_credentials(BACKEND_CAPI):
+            return BACKEND_CAPI
+    return BACKEND_CODEX
 
 
 def _stringify_error(error: Any) -> str:

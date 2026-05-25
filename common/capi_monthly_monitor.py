@@ -11,6 +11,7 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, Mapping, Optional
 
+from common.codex_quota_query import query_codex_quota_json
 from common.llm_backend_router import (
     BACKEND_CAPI,
     BACKEND_CAPI_MONTHLY,
@@ -128,26 +129,7 @@ def _query_monthly_snapshot() -> Dict[str, Any]:
 
 
 def _query_codex_quota_json() -> Dict[str, Any]:
-    script = os.path.join(get_root(), "skills", "codex-quota-query", "scripts", "codex_quota.py")
-    if not os.path.isfile(script):
-        raise RuntimeError("codex quota skill script not found")
-    proc = subprocess.run(
-        [sys.executable, script, "snapshot", "--format", "json"],
-        cwd=get_root(),
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        timeout=120,
-        check=False,
-    )
-    if proc.returncode != 0:
-        text = (proc.stderr or proc.stdout or "").strip()
-        raise RuntimeError(text[:500] or f"quota query failed with exit code {proc.returncode}")
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"quota query returned invalid JSON: {e}") from e
+    return query_codex_quota_json()
 
 
 def _redact_monthly_secret(text: str) -> str:
