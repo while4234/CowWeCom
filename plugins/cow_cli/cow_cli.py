@@ -534,8 +534,6 @@ class CowCliPlugin(Plugin):
         normalized = BACKEND_CAPI_MONTHLY if backend == BACKEND_CAPI_MONTHLY else BACKEND_CAPI
         provider = get_capi_provider_config(normalized)
         api_key = resolve_provider_value(provider, "api_key", "api_key_env")
-        if not api_key and normalized == BACKEND_CAPI:
-            api_key = str(conf().get("open_ai_api_key") or "")
         if not api_key:
             label = "CAPI monthly" if normalized == BACKEND_CAPI_MONTHLY else "CAPI quota-card"
             return f"{label} API key is not configured."

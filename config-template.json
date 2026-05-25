@@ -148,7 +148,7 @@
       "capi": {
         "label": "CAPI/OpenAI-compatible quota card",
         "api_key": "",
-        "api_key_env": "OPENAI_API_KEY",
+        "api_key_env": "CAPI_API_KEY",
         "api_base": "",
         "api_base_env": "OPENAI_API_BASE",
         "wire_api": "",

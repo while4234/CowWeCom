@@ -46,7 +46,7 @@ with machine setup notes and any required user-provided keys.
 
 | Skill | Purpose | External key/setup needed |
 |---|---|---|
-| `capi-usage-monitor` | Query and snapshot CAPI/Codex quota and usage. | `OPENAI_API_KEY` by default, or a local CAPI key override. |
+| `capi-usage-monitor` | Query and snapshot CAPI/Codex quota and usage. | `CAPI_API_KEY` for quota-card checks; `CAPI_MONTHLY_API_KEY` for monthly-card checks. |
 | `code-update` | Safely fast-forward CowWechat from GitHub while protecting local state. | No API key; Git credentials stay local. |
 | `cowagent-self-evolution` | Record and reuse local execution lessons such as Windows shell dialect failures without showing them in chat. | No external API key; needs Python. |
 | `daily-douyin-video-harvester` | Collect fresh TOP3 meme-worthy Douyin hot-board videos through a dedicated persistent browser profile, send sharp commentary plus video/cover/text to WeCom, and clean downloaded files after 24 hours. | Optional `DOUYIN_COOKIE`; WeCom Bot credentials from local config or env. |

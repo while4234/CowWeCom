@@ -23,6 +23,7 @@ DEFAULT_DAILY_QUOTA = 90.0
 DEFAULT_CHATLOG_SUMMARY_PAGE_SIZE = 100
 MAX_CHATLOG_SUMMARY_PAGES = 200
 USER_AGENT = "cow-capi-usage-monitor/1.0"
+CAPI_KEY_ENV_VARS = ("CAPI_API_KEY", "CAPI_ACTIVATION_CODE", "CAPI_CARD")
 
 
 def redact_secret(text: str, secret: str | None = None) -> str:
@@ -31,7 +32,7 @@ def redact_secret(text: str, secret: str | None = None) -> str:
     out = text
     if secret:
         out = out.replace(secret, f"{secret[:3]}***{secret[-3:]}" if len(secret) >= 8 else "***")
-    for key in [os.getenv("CAPI_API_KEY"), os.getenv("CAPI_ACTIVATION_CODE"), os.getenv("CAPI_CARD"), os.getenv("OPENAI_API_KEY")]:
+    for key in _configured_capi_keys():
         if key:
             out = out.replace(key, f"{key[:3]}***{key[-3:]}" if len(key) >= 8 else "***")
     return out
@@ -43,7 +44,7 @@ def safe_account(value: object, api_key: str | None = None) -> object:
     text = str(value)
     if not text:
         return text
-    secrets = [api_key, os.getenv("CAPI_API_KEY"), os.getenv("CAPI_ACTIVATION_CODE"), os.getenv("CAPI_CARD"), os.getenv("OPENAI_API_KEY")]
+    secrets = [api_key, *_configured_capi_keys()]
     for secret in secrets:
         if secret and text == secret:
             return f"{secret[:6]}***{secret[-4:]}" if len(secret) >= 12 else "***"
@@ -70,15 +71,19 @@ def data_dir(args: argparse.Namespace) -> Path:
     return path.resolve()
 
 
+def _configured_capi_keys() -> list[str]:
+    return [os.getenv(name, "") for name in CAPI_KEY_ENV_VARS if os.getenv(name)]
+
+
 def api_key_from_args(args: argparse.Namespace) -> str:
     key = args.api_key
     key_env = getattr(args, "api_key_env", None)
     if not key and key_env:
         key = os.getenv(key_env)
     if not key:
-        key = os.getenv("CAPI_API_KEY") or os.getenv("CAPI_ACTIVATION_CODE") or os.getenv("CAPI_CARD") or os.getenv("OPENAI_API_KEY")
+        key = next(iter(_configured_capi_keys()), "")
     if not key:
-        raise SystemExit("Error: missing CAPI API key/card. Pass --api-key, --api-key-env, or set CAPI_API_KEY/CAPI_ACTIVATION_CODE/OPENAI_API_KEY.")
+        raise SystemExit("Error: missing CAPI API key/card. Pass --api-key, --api-key-env, or set CAPI_API_KEY/CAPI_ACTIVATION_CODE/CAPI_CARD.")
     return key.strip()
 
 
@@ -495,7 +500,7 @@ def latest_snapshot_path(base: Path, kh: str | None = None) -> Path | None:
 def cmd_latest(args: argparse.Namespace) -> None:
     base = data_dir(args)
     kh = None
-    if args.api_key or getattr(args, "api_key_env", None) or os.getenv("CAPI_API_KEY") or os.getenv("CAPI_ACTIVATION_CODE") or os.getenv("CAPI_CARD"):
+    if args.api_key or getattr(args, "api_key_env", None) or _configured_capi_keys():
         kh = key_hash(api_key_from_args(args))
     path = latest_snapshot_path(base, kh)
     if not path:
@@ -508,8 +513,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     checks = []
     base = data_dir(args)
     checks.append({"name": "data_dir", "ok": base.exists(), "path": str(base)})
-    has_key = bool(args.api_key or getattr(args, "api_key_env", None) and os.getenv(args.api_key_env) or os.getenv("CAPI_API_KEY") or os.getenv("CAPI_ACTIVATION_CODE") or os.getenv("CAPI_CARD") or os.getenv("OPENAI_API_KEY"))
-    checks.append({"name": "api_key_configured", "ok": has_key, "hint": "Set CAPI_API_KEY/OPENAI_API_KEY or pass --api-key/--api-key-env"})
+    has_key = bool(args.api_key or getattr(args, "api_key_env", None) and os.getenv(args.api_key_env) or _configured_capi_keys())
+    checks.append({"name": "api_key_configured", "ok": has_key, "hint": "Set CAPI_API_KEY or pass --api-key/--api-key-env"})
     checks.append({"name": "api_base", "ok": True, "value": api_base(args)})
     if args.online:
         try:
@@ -532,7 +537,7 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
 
 def cmd_history(args: argparse.Namespace) -> None:
     kh = None
-    if args.api_key or os.getenv("CAPI_API_KEY") or os.getenv("CAPI_ACTIVATION_CODE") or os.getenv("CAPI_CARD"):
+    if args.api_key or _configured_capi_keys():
         kh = key_hash(api_key_from_args(args))
     items = load_snapshots(data_dir(args), kh)
     if args.limit:
@@ -542,7 +547,7 @@ def cmd_history(args: argparse.Namespace) -> None:
 
 def cmd_export_csv(args: argparse.Namespace) -> None:
     kh = None
-    if args.api_key or os.getenv("CAPI_API_KEY") or os.getenv("CAPI_ACTIVATION_CODE") or os.getenv("CAPI_CARD"):
+    if args.api_key or _configured_capi_keys():
         kh = key_hash(api_key_from_args(args))
     items = load_snapshots(data_dir(args), kh)
     output = Path(args.output)

@@ -37,9 +37,9 @@ DEFAULT_LLM_BACKEND_CONFIG: Dict[str, Any] = {
             "tools_enabled": True,
         },
         "capi": {
-            "label": "CAPI/OpenAI-compatible",
+            "label": "CAPI/OpenAI-compatible quota card",
             "api_key": "",
-            "api_key_env": "OPENAI_API_KEY",
+            "api_key_env": "CAPI_API_KEY",
             "api_base": "",
             "api_base_env": "OPENAI_API_BASE",
             "wire_api": "",
@@ -122,7 +122,7 @@ def get_effective_openai_api_config(backend: Optional[str] = None) -> Dict[str, 
 
     normalized_backend = normalize_backend(backend or get_current_backend())
     provider = get_capi_provider_config(normalized_backend)
-    api_key = resolve_provider_value(provider, "api_key", "api_key_env") or str(conf().get("open_ai_api_key") or "")
+    api_key = resolve_provider_value(provider, "api_key", "api_key_env")
     api_base = resolve_provider_value(provider, "api_base", "api_base_env") or str(conf().get("open_ai_api_base") or "")
     wire_api = str(
         provider.get("wire_api")

@@ -4,7 +4,7 @@
 Query and locally snapshot CAPI/Codex intermediary quota and usage.
 
 ## Requirements
-Python 3. For online quota checks, configure the CAPI activation key locally. In this workspace the default key source is `OPENAI_API_KEY`; alternatives are `CAPI_API_KEY`, `CAPI_ACTIVATION_CODE`, or `CAPI_CARD`.
+Python 3. For online quota checks, configure the CAPI activation key locally. In this workspace the default quota-card key source is `CAPI_API_KEY`; alternatives are `CAPI_ACTIVATION_CODE`, `CAPI_CARD`, or an explicit `--api-key-env`.
 
 ## Install From This Repository
 From the repository root on the target machine:

@@ -255,6 +255,34 @@ class TestCodexBackendRouter(unittest.TestCase):
         self.assertEqual(routed["api_key"], "MONTHLY-KEY")
         self.assertEqual(routed["api_base"], "https://monthly.example/v1")
 
+    def test_quota_backend_defaults_to_capi_api_key_env(self):
+        conf()["llm_backend"]["current_backend"] = BACKEND_CAPI
+        conf()["llm_backend"]["providers"] = {"capi": {"model": "gpt-5.5"}}
+
+        with patch.dict("os.environ", {"CAPI_API_KEY": "ENV-QUOTA-KEY"}, clear=True):
+            routed = get_effective_openai_api_config()
+
+        self.assertEqual(routed["backend"], BACKEND_CAPI)
+        self.assertEqual(routed["api_key"], "ENV-QUOTA-KEY")
+
+    def test_quota_backend_does_not_fallback_to_openai_api_key(self):
+        previous_key = conf().get("open_ai_api_key")
+        try:
+            conf()["open_ai_api_key"] = "OPENAI-KEY"
+            conf()["llm_backend"]["current_backend"] = BACKEND_CAPI
+            conf()["llm_backend"]["providers"] = {"capi": {"model": "gpt-5.5"}}
+
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "OPENAI-ENV-KEY"}, clear=True):
+                routed = get_effective_openai_api_config()
+        finally:
+            if previous_key is None:
+                conf().pop("open_ai_api_key", None)
+            else:
+                conf()["open_ai_api_key"] = previous_key
+
+        self.assertEqual(routed["backend"], BACKEND_CAPI)
+        self.assertEqual(routed["api_key"], "")
+
     def test_missing_quota_payload_records_reason_without_switching(self):
         now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
 

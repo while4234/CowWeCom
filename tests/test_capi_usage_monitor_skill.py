@@ -169,6 +169,22 @@ class TestCapiUsageMonitorSkill(unittest.TestCase):
         self.assertEqual(result["usage_summary"]["source"], "usages")
         self.assertEqual(result["usage_summary"]["total_cost"], 360.0)
 
+    def test_default_key_source_uses_capi_api_key(self):
+        args = capi_usage.build_parser().parse_args(["snapshot", "--period", "today"])
+
+        with patch.dict("os.environ", {"CAPI_API_KEY": "TEST-CAPI-ENV-KEY"}, clear=True):
+            self.assertEqual(capi_usage.api_key_from_args(args), "TEST-CAPI-ENV-KEY")
+
+    def test_default_key_source_does_not_use_openai_api_key(self):
+        args = capi_usage.build_parser().parse_args(["snapshot", "--period", "today"])
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "OPENAI-ENV-KEY"}, clear=True):
+            with self.assertRaises(SystemExit) as raised:
+                capi_usage.api_key_from_args(args)
+
+        self.assertIn("CAPI_API_KEY", str(raised.exception))
+        self.assertNotIn("OPENAI_API_KEY", str(raised.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
