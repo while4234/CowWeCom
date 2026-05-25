@@ -342,6 +342,9 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertEqual(plugin._parse_command("/skill list"), ("skill", "list"))
 
+        cmd, args = plugin._parse_command("帮我总结下今天更新的功能适合推送给我老婆使用的有哪些")
+        self.assertEqual((cmd, args), ("updates", "today"))
+
         cmd, args = plugin._parse_command("当前支持哪些功能呢")
         self.assertEqual(cmd, "skill")
         self.assertTrue(args.startswith("answer "))
@@ -371,6 +374,59 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertEqual(payload["mode"], "usage")
         self.assertEqual(payload["skill"], "capi-usage-monitor")
         self.assertIsNone(plugin._parse_command("帮我开发一个新功能"))
+
+    def test_today_project_update_summary_uses_git_log_not_skill_catalog(self):
+        plugin = _load_cow_cli_plugin()
+
+        class FakeProc:
+            returncode = 0
+            stderr = ""
+            stdout = "\n".join([
+                "abc123\t2026-05-25\tfix: reconnect stalled wecom bot subscribe",
+                "def456\t2026-05-25\tfeat: upgrade travel manager orchestration",
+                "aaa111\t2026-05-25\tfix: finish long tasks after progress notices",
+                "bbb222\t2026-05-25\tfix: bound stale image followups and monthly routing",
+            ])
+
+        with (
+            patch("plugins.cow_cli.cow_cli.subprocess.run", return_value=FakeProc()) as run,
+            patch.object(plugin, "_skill_catalog") as skill_catalog,
+        ):
+            with patch.object(plugin, "_read_readme_update_entries_for_today", return_value=[]):
+                result = plugin.execute("帮我总结下今天更新的功能适合推送给我老婆使用的有哪些", session_id="test")
+
+        run.assert_called_once()
+        skill_catalog.assert_not_called()
+        self.assertIn("Git/README 更新记录", result)
+        self.assertIn("企业微信回复更稳", result)
+        self.assertIn("旅行规划更适合直接用", result)
+        self.assertIn("长任务体验更清楚", result)
+        self.assertIn("图片识别追问更稳", result)
+
+    def test_today_project_update_summary_prefers_readme_update_log(self):
+        plugin = _load_cow_cli_plugin()
+
+        class FakeProc:
+            returncode = 0
+            stderr = ""
+            stdout = "abc123\t2026-05-25\tchore: internal maintenance"
+
+        readme_entries = [
+            "加固企业微信智能机器人长连接，避免企业微信消息长时间无回复",
+            "优化旅行规划技能，夜间和过夜行程默认提示酒店/住宿安排",
+        ]
+
+        with (
+            patch("plugins.cow_cli.cow_cli.subprocess.run", return_value=FakeProc()),
+            patch.object(plugin, "_read_readme_update_entries_for_today", return_value=readme_entries),
+            patch.object(plugin, "_skill_catalog") as skill_catalog,
+        ):
+            result = plugin.execute("帮我总结下今天更新的功能适合推送给我老婆使用的有哪些", session_id="test")
+
+        skill_catalog.assert_not_called()
+        self.assertIn("Git/README 更新记录", result)
+        self.assertIn("企业微信回复更稳", result)
+        self.assertIn("旅行规划更适合直接用", result)
 
     def test_skill_natural_language_answer_uses_cached_catalog_context_model_call(self):
         plugin = _load_cow_cli_plugin()

@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import threading
+from datetime import datetime, timedelta
 
 import plugins
 from plugins import Plugin, Event, EventContext, EventAction
@@ -37,7 +38,7 @@ KNOWN_COMMANDS = {
     "help", "version", "status", "logs",
     "start", "stop", "restart",
     "skill", "context", "config",
-    "knowledge", "memory", "backend",
+    "knowledge", "memory", "backend", "updates",
     "install-browser",
 }
 
@@ -66,6 +67,9 @@ _SKILL_STANDALONE_LIST_MARKERS = (
     "你能做什么", "你会什么", "你可以做什么", "能帮我做什么",
     "当前支持哪些", "现在支持哪些", "当前支持什么", "现在支持什么",
 )
+_PROJECT_UPDATE_TIME_MARKERS = ("今天", "今日", "当天", "本日", "today")
+_PROJECT_UPDATE_ACTION_MARKERS = ("更新", "新增", "改了", "变更", "提交", "commit", "github")
+_PROJECT_UPDATE_SUMMARY_MARKERS = ("总结", "汇总", "整理", "有哪些", "哪些", "适合", "推送", "推荐", "功能")
 
 
 @plugins.register(
@@ -140,6 +144,10 @@ class CowCliPlugin(Plugin):
         if backend_command is not None:
             return backend_command
 
+        update_command = self._parse_project_update_natural_command(content)
+        if update_command is not None:
+            return update_command
+
         skill_command = self._parse_skill_natural_command(content)
         if skill_command is not None:
             return skill_command
@@ -166,6 +174,20 @@ class CowCliPlugin(Plugin):
             args = parts[1] if len(parts) > 1 else ""
             return cmd, args
 
+        return None
+
+    @staticmethod
+    def _parse_project_update_natural_command(content: str):
+        text = str(content or "").strip()
+        if not text or text.startswith("/") or text.lower().startswith("cow "):
+            return None
+        normalized = text.lower()
+        compact = re.sub(r"[\s,，。.!！?？:：;；\"'`“”‘’（）()\[\]【】<>《》]+", "", normalized)
+        has_time = any(marker in compact or marker in normalized for marker in _PROJECT_UPDATE_TIME_MARKERS)
+        has_update = any(marker in compact or marker in normalized for marker in _PROJECT_UPDATE_ACTION_MARKERS)
+        has_summary = any(marker in compact or marker in normalized for marker in _PROJECT_UPDATE_SUMMARY_MARKERS)
+        if has_time and has_update and has_summary:
+            return "updates", "today"
         return None
 
     def _parse_skill_natural_command(self, content: str):
@@ -369,6 +391,123 @@ class CowCliPlugin(Plugin):
 
     def _cmd_version(self, args: str, e_context, **_) -> str:
         return f"CowAgent v{__version__}"
+
+    # ------------------------------------------------------------------
+    # project updates
+    # ------------------------------------------------------------------
+
+    def _cmd_updates(self, args: str, e_context, **_) -> str:
+        period = str(args or "").strip().lower() or "today"
+        if period not in {"today", "今日", "今天"}:
+            period = "today"
+        commits = self._git_commits_for_today()
+        update_entries = self._read_readme_update_entries_for_today()
+        if not commits and not update_entries:
+            return "我查了本项目今天的 Git 更新记录，没看到今天的新提交。"
+
+        recommended = self._summarize_updates_for_private_use(commits, update_entries)
+        update_count = max(len(commits), len(update_entries))
+        lines = [
+            "我查的是本项目今天的 Git/README 更新记录，不是泛化功能清单。",
+            f"今天共看到 {update_count} 条更新记录。适合推送给日常使用者的主要是：",
+            "",
+        ]
+        for index, item in enumerate(recommended[:6], 1):
+            lines.append(f"{index}. {item}")
+        internal_count = update_count - len(recommended)
+        if internal_count > 0:
+            lines.extend([
+                "",
+                f"另外有 {internal_count} 个偏内部的后端、测试、文档或发布安全更新，不建议作为功能点单独推送。",
+            ])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _git_commits_for_today():
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        now = datetime.now()
+        start = now.strftime("%Y-%m-%d 00:00")
+        end = (now + timedelta(days=1)).strftime("%Y-%m-%d 00:00")
+        try:
+            proc = subprocess.run(
+                [
+                    "git",
+                    "log",
+                    f"--since={start}",
+                    f"--until={end}",
+                    "--date=short",
+                    "--pretty=format:%h%x09%ad%x09%s",
+                ],
+                cwd=project_root,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=20,
+                check=False,
+            )
+        except Exception as exc:
+            logger.warning(f"[CowCli] git update summary failed: {exc}")
+            return []
+        if proc.returncode != 0:
+            logger.warning(f"[CowCli] git update summary failed: {(proc.stderr or '').strip()[:300]}")
+            return []
+        commits = []
+        for line in (proc.stdout or "").splitlines():
+            parts = line.split("\t", 2)
+            if len(parts) == 3:
+                commits.append({"hash": parts[0], "date": parts[1], "subject": parts[2]})
+        return commits
+
+    @staticmethod
+    def _read_readme_update_entries_for_today():
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        readme = os.path.join(project_root, "README.md")
+        today = datetime.now().strftime("%Y-%m-%d")
+        try:
+            with open(readme, "r", encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError as exc:
+            logger.warning(f"[CowCli] README update summary failed: {exc}")
+            return []
+
+        entries = []
+        in_changelog = False
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if line.startswith("## 更新日志"):
+                in_changelog = True
+                continue
+            if in_changelog and line.startswith("## "):
+                break
+            if not in_changelog or not line.startswith("|"):
+                continue
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if len(cells) >= 2 and cells[0] == today:
+                entries.append(cells[1])
+        return entries
+
+    @staticmethod
+    def _summarize_updates_for_private_use(commits, update_entries=None) -> list:
+        subjects = [str(commit.get("subject") or "") for commit in commits]
+        entries = [str(entry or "") for entry in (update_entries or [])]
+        joined = "\n".join(subjects + entries).lower()
+        items = []
+        if any(marker in joined for marker in ("wecom bot", "websocket", "subscribe", "企业微信", "智能机器人", "长连接", "无回复")):
+            items.append("企业微信回复更稳：机器人订阅卡住时会自动断开重连，减少消息长时间无回复。")
+        if any(marker in joined for marker in ("travel", "amap", "railway", "flyai", "hotel", "旅行", "行程", "酒店", "住宿", "票价", "高德", "12306")):
+            items.append("旅行规划更适合直接用：会先做规划前确认，再结合交通、天气、住宿和票价信息整理行程。")
+        if any(marker in joined for marker in ("long task", "progress", "finish long tasks", "长任务", "进度提醒", "完成回执")):
+            items.append("长任务体验更清楚：等待时有进度提醒，完成后会补完成回执，减少以为卡住的情况。")
+        if any(marker in joined for marker in ("image", "vision", "followup", "图片", "图像", "追问")):
+            items.append("图片识别追问更稳：旧图片上下文不会轻易污染新的问题。")
+        if any(marker in joined for marker in ("skill catalog", "skill inventory", "quick answer", "category", "skill", "功能快答", "功能查询", "分类")):
+            items.append("功能查询更清楚：问支持哪些功能、某类功能有哪些时，会按中文分类给说明。")
+        if any(marker in joined for marker in ("capi", "codex", "backend", "quota", "后端", "额度", "月卡")):
+            items.append("模型后端更抗失败：额度或网络异常时会更稳地切换/重试，减少直接报错。")
+        if not items:
+            items.append("今天有项目更新，但从提交主题看主要偏内部维护；建议先查看 README 更新日志再决定是否推送。")
+        return items
 
     # ------------------------------------------------------------------
     # status
