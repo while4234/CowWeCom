@@ -34,11 +34,13 @@ class TestImageRecognitionManager(unittest.TestCase):
             started = threading.Event()
             release = threading.Event()
             calls = []
+            prompts = []
 
             def fake_recognize(image_path, prompt, max_tokens=700):
                 started.set()
                 release.wait(2)
                 calls.append(image_path)
+                prompts.append(prompt)
                 return "A concise image summary."
 
             with patch.object(ImageRecognitionManager, "_recognize_image", side_effect=fake_recognize):
@@ -63,6 +65,9 @@ class TestImageRecognitionManager(unittest.TestCase):
 
             record = manager.latest_for_session("session-a")
             self.assertEqual(len(calls), 1)
+            self.assertEqual(len(prompts), 1)
+            self.assertIn("请用中文识别这张图片", prompts[0])
+            self.assertIn("不要使用英文", prompts[0])
             self.assertEqual(record.status, "done")
             self.assertTrue(Path(record.image_path).exists())
             self.assertNotEqual(Path(record.image_path), source)

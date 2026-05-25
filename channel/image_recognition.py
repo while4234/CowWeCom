@@ -22,10 +22,9 @@ DEFAULT_FOLLOWUP_WAIT_SECONDS = 6.0
 DEFAULT_MAX_WORKERS = 2
 DEFAULT_MAX_TOKENS = 700
 DEFAULT_PROMPT = (
-    "Identify this image for a later chat follow-up. Keep it natural and short. "
-    "Mention the main subject, visible action or scene, important text/OCR, and "
-    "uncertainty if needed. Do not use report headings or formal sections unless "
-    "the image itself is a document where key text matters."
+    "请用中文识别这张图片，结果用于后续私聊回复。保持自然、简短，不要使用英文，"
+    "不要写成报告格式。说明主要主体、可见动作或场景、重要文字/OCR，以及必要的不确定性。"
+    "除非图片本身是文档，否则不要使用标题或分段。"
 )
 
 _EXPLICIT_IMAGE_QUESTION_MARKERS = (
