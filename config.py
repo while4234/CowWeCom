@@ -165,6 +165,7 @@ available_setting = {
     "background_image_recognition_enabled": True,
     "image_recognition_result_ttl_seconds": 86400,
     "image_recognition_image_ttl_seconds": 604800,
+    "image_recognition_related_followup_window_seconds": 900,
     "image_recognition_followup_wait_seconds": 6,
     "image_recognition_workers": 2,
     "image_recognition_max_tokens": 700,

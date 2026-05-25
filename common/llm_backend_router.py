@@ -102,7 +102,11 @@ def get_capi_provider_config(backend: Optional[str] = None) -> Dict[str, Any]:
     base = deep_merge(DEFAULT_LLM_BACKEND_CONFIG["providers"]["capi"], providers.get("capi", {}))
     if normalize_backend(backend or get_current_backend()) == BACKEND_CAPI_MONTHLY:
         monthly = deep_merge(DEFAULT_LLM_BACKEND_CONFIG["providers"]["capi_monthly"], providers.get("capi_monthly", {}))
-        return deep_merge(base, monthly)
+        merged = deep_merge(base, monthly)
+        for inherited_key in ("api_base", "wire_api", "model"):
+            if not str(monthly.get(inherited_key) or "").strip():
+                merged[inherited_key] = base.get(inherited_key, "")
+        return merged
     return base
 
 

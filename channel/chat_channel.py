@@ -158,7 +158,7 @@ class ChatChannel(Channel):
             from channel.image_recognition import get_image_recognition_manager
 
             manager = get_image_recognition_manager()
-            if manager.classify_followup_intent(content) == "none":
+            if not manager.should_use_followup_context(session_id, content):
                 return content
             extra = manager.build_followup_context(session_id, wait_seconds=0)
         except Exception as e:

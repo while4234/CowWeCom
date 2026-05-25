@@ -18,6 +18,7 @@ from config import conf
 
 RESULT_TTL_SECONDS = 24 * 60 * 60
 IMAGE_TTL_SECONDS = 7 * 24 * 60 * 60
+RELATED_FOLLOWUP_WINDOW_SECONDS = 15 * 60
 DEFAULT_FOLLOWUP_WAIT_SECONDS = 6.0
 DEFAULT_MAX_WORKERS = 2
 DEFAULT_MAX_TOKENS = 700
@@ -155,6 +156,10 @@ class ImageRecognitionManager:
         self.state_path = self.root / "state.json"
         self.result_ttl_seconds = self._int_conf("image_recognition_result_ttl_seconds", RESULT_TTL_SECONDS)
         self.image_ttl_seconds = self._int_conf("image_recognition_image_ttl_seconds", IMAGE_TTL_SECONDS)
+        self.related_followup_window_seconds = self._int_conf(
+            "image_recognition_related_followup_window_seconds",
+            RELATED_FOLLOWUP_WINDOW_SECONDS,
+        )
         worker_count = max_workers or self._int_conf("image_recognition_workers", DEFAULT_MAX_WORKERS)
         self.executor = ThreadPoolExecutor(max_workers=max(1, int(worker_count)), thread_name_prefix="image-recognition")
         self._lock = threading.RLock()
@@ -310,6 +315,8 @@ class ImageRecognitionManager:
         record = self.latest_for_session(session_id)
         if not record:
             return False
+        if intent == "related" and not self.related_followup_is_current(record):
+            return False
 
         if intent in {"explicit", "related"}:
             self.suppress_auto_reply(record.record_id)
@@ -338,6 +345,33 @@ class ImageRecognitionManager:
 
     def classify_followup_intent(self, content: str) -> str:
         return self._classify_followup_intent(content)
+
+    def should_use_followup_context(self, session_id: str, content: str) -> bool:
+        intent = self._classify_followup_intent(content)
+        if intent == "none":
+            return False
+        record = self.latest_for_session(session_id)
+        if not record:
+            return False
+        if intent == "related":
+            return self.related_followup_is_current(record)
+        return True
+
+    def related_followup_is_current(self, record: Optional[ImageRecognitionRecord], now: Optional[float] = None) -> bool:
+        if not record:
+            return False
+        try:
+            window = float(self.related_followup_window_seconds)
+        except (TypeError, ValueError):
+            window = float(RELATED_FOLLOWUP_WINDOW_SECONDS)
+        if window <= 0:
+            return False
+        reference = max(
+            float(record.completed_at or 0),
+            float(record.updated_at or 0),
+            float(record.created_at or 0),
+        )
+        return reference > 0 and float(now or time.time()) - reference <= window
 
     def public_reply_for(
         self,

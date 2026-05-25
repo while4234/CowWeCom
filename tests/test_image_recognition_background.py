@@ -97,6 +97,46 @@ class TestImageRecognitionManager(unittest.TestCase):
                 "explicit",
             )
 
+    def test_related_followups_expire_before_full_image_cache(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            manager.related_followup_window_seconds = 60
+            old = time.time() - 120
+            record = ImageRecognitionRecord(
+                record_id="record-old",
+                session_id="session-old",
+                channel_type="wecom_bot",
+                image_hash="hash-old",
+                image_path=str(Path(workspace) / "old.png"),
+                is_group=False,
+                status="done",
+                result="Old image summary.",
+                created_at=old,
+                updated_at=old,
+                completed_at=old,
+            )
+            Path(record.image_path).write_bytes(PNG_BYTES)
+            with manager._lock:
+                manager._records[record.record_id] = record
+                manager._latest_by_session[record.session_id] = record.record_id
+
+            self.assertFalse(
+                manager.should_use_followup_context("session-old", "\u8fd9\u662f\u6211\u7684\u5348\u996d")
+            )
+            self.assertTrue(
+                manager.should_use_followup_context("session-old", "\u8fd9\u5f20\u56fe\u91cc\u662f\u4ec0\u4e48")
+            )
+
+            with manager._lock:
+                current = manager._records[record.record_id]
+                now = time.time()
+                current.updated_at = now
+                current.completed_at = now
+
+            self.assertTrue(
+                manager.should_use_followup_context("session-old", "\u8fd9\u662f\u6211\u7684\u5348\u996d")
+            )
+
     def test_result_and_image_copy_ttls_are_enforced(self):
         with tempfile.TemporaryDirectory() as workspace:
             source = Path(workspace) / "source.png"

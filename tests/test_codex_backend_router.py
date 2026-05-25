@@ -255,6 +255,31 @@ class TestCodexBackendRouter(unittest.TestCase):
         self.assertEqual(routed["api_key"], "MONTHLY-KEY")
         self.assertEqual(routed["api_base"], "https://monthly.example/v1")
 
+    def test_monthly_backend_inherits_blank_capi_provider_options(self):
+        conf()["llm_backend"]["current_backend"] = BACKEND_CAPI_MONTHLY
+        conf()["llm_backend"]["providers"] = {
+            "capi": {
+                "api_key": "QUOTA-KEY",
+                "api_base": "https://quota.example/v1",
+                "wire_api": "responses",
+                "model": "gpt-5.5",
+            },
+            "capi_monthly": {
+                "api_key": "MONTHLY-KEY",
+                "api_base": "",
+                "wire_api": "",
+                "model": "",
+            },
+        }
+        with patch.dict("os.environ", {}, clear=True):
+            routed = get_effective_openai_api_config()
+
+        self.assertEqual(routed["backend"], BACKEND_CAPI_MONTHLY)
+        self.assertEqual(routed["api_key"], "MONTHLY-KEY")
+        self.assertEqual(routed["api_base"], "https://quota.example/v1")
+        self.assertEqual(routed["wire_api"], "responses")
+        self.assertEqual(routed["model"], "gpt-5.5")
+
     def test_quota_backend_defaults_to_capi_api_key_env(self):
         conf()["llm_backend"]["current_backend"] = BACKEND_CAPI
         conf()["llm_backend"]["providers"] = {"capi": {"model": "gpt-5.5"}}
