@@ -76,6 +76,10 @@ class TestCowCliBackendNaturalLanguage(unittest.TestCase):
             parse_backend_natural_command("\u67e5\u8be2\u4e0b\u5f53\u524d\u540e\u7aeftoken\u4f7f\u7528\u91cf"),
             ("backend", "quota-current"),
         )
+        self.assertEqual(
+            parse_backend_natural_command("\u67e5\u8be2\u4e0b\u5f53\u524d\u540e\u7aef\u989d\u5ea6"),
+            ("backend", "quota-current"),
+        )
 
     def test_key_token_secret_questions_are_safe_routed(self):
         self.assertEqual(
@@ -178,6 +182,36 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertEqual(result, "codex quota ok")
         quota.assert_called_once_with()
+
+    def test_execute_current_backend_quota_uses_capi_quota_card_when_active(self):
+        from config import conf
+
+        conf()["llm_backend"]["current_backend"] = "capi"
+        plugin = _load_cow_cli_plugin()
+
+        with patch.object(plugin, "_backend_capi_quota", return_value="capi quota ok") as quota:
+            result = plugin.execute(
+                "\u67e5\u8be2\u4e0b\u5f53\u524d\u540e\u7aef\u989d\u5ea6",
+                session_id="test",
+            )
+
+        self.assertEqual(result, "capi quota ok")
+        quota.assert_called_once_with("capi")
+
+    def test_execute_current_backend_quota_uses_monthly_card_when_active(self):
+        from config import conf
+
+        conf()["llm_backend"]["current_backend"] = "capi_monthly"
+        plugin = _load_cow_cli_plugin()
+
+        with patch.object(plugin, "_backend_capi_quota", return_value="monthly quota ok") as quota:
+            result = plugin.execute(
+                "\u67e5\u8be2\u4e0b\u5f53\u524d\u540e\u7aef\u989d\u5ea6",
+                session_id="test",
+            )
+
+        self.assertEqual(result, "monthly quota ok")
+        quota.assert_called_once_with("capi_monthly")
 
     def test_event_interception_breaks_agent_flow(self):
         from bridge.context import Context, ContextType
