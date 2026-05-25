@@ -903,8 +903,15 @@ def _validate_rule_candidate(
     if len(support_ids) < min_support:
         return None, _rule_rejection(candidate, "insufficient_support", support_count=len(support_ids))
 
-    if effort == "medium" and _support_has_failure_evidence(support_ids, records):
-        return None, _rule_rejection(candidate, "medium_support_has_failure_evidence", support_count=len(support_ids))
+    if effort == "medium":
+        if _support_has_failure_evidence(support_ids, records):
+            return None, _rule_rejection(candidate, "medium_support_has_failure_evidence", support_count=len(support_ids))
+        if not _support_has_success_evidence(support_ids, records, min_support=min_support):
+            return None, _rule_rejection(
+                candidate,
+                "medium_support_missing_success_evidence",
+                support_count=len(support_ids),
+            )
 
     confidence = _coerce_confidence(candidate.get("confidence"))
     if confidence < 0.65:
@@ -964,6 +971,35 @@ def _support_has_failure_evidence(task_ids: List[str], records: List[Dict[str, A
         if bool(item.get("max_turns_exhausted")):
             return True
         if _safe_int(item.get("tool_attempt_error_count")) > 0:
+            return True
+    return False
+
+
+def _support_has_success_evidence(
+    task_ids: List[str],
+    records: List[Dict[str, Any]],
+    *,
+    min_support: int,
+) -> bool:
+    task_id_set = set(task_ids)
+    successful = set()
+    for item in records:
+        task_id = str(item.get("task_id") or "")
+        if task_id not in task_id_set or task_id in successful:
+            continue
+        if item.get("event_type") != "task_outcome":
+            continue
+        status = str(item.get("task_status") or "").strip().lower()
+        if status != "success":
+            continue
+        if bool(item.get("max_turns_exhausted")):
+            continue
+        if _safe_int(item.get("tool_attempt_error_count")) > 0:
+            continue
+        if _safe_int(item.get("turn_count")) > 1:
+            continue
+        successful.add(task_id)
+        if len(successful) >= min_support:
             return True
     return False
 

@@ -368,6 +368,23 @@ class TestAgentStreamToolAttemptMemory(unittest.TestCase):
         self.assertTrue(executor._request_self_evolution_context_hash)
         self.assertEqual(executor.system_prompt, "system")
 
+    def test_simple_medium_request_skips_self_evolution_context_for_cache_hits(self):
+        executor = AgentStreamExecutor(
+            agent=FakeAgent(),
+            model=RepeatedReadModel(),
+            system_prompt="system",
+            tools=[],
+            messages=[],
+        )
+
+        with patch("common.self_evolution.get_active_prompt_guidance", return_value=["Use supported actions."]) as guidance:
+            context = executor._build_request_context_text("你好")
+
+        guidance.assert_not_called()
+        self.assertNotIn("Use supported actions.", context)
+        self.assertEqual(executor._request_self_evolution_context_chars, 0)
+        self.assertEqual(executor._request_self_evolution_context_hash, "")
+
     def test_stable_self_evolution_context_precedes_volatile_runtime_context(self):
         agent = FakeAgent()
         agent.runtime_info = {

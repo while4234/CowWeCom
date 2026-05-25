@@ -48,6 +48,7 @@
   "cowagent_self_evolution_post_task_max_texts": 12,
   "cowagent_self_evolution_post_task_max_chars": 6000,
   "cowagent_self_evolution_post_task_queue_size": 10,
+  "cowagent_self_evolution_skip_medium_context": true,
   "prompt_cache_stable_runtime_info": true,
   "runtime_time_in_user_message": true,
   "knowledge_index_in_system_prompt": false,

@@ -389,6 +389,28 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertNotIn("lunchbox idea please", serialized_report)
         self.assertNotIn("quick lunchbox suggestion", serialized_report)
 
+    def test_optimizer_rejects_medium_rule_without_success_outcomes(self):
+        conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
+        conf()["reasoning_effort_policy_auto_apply_min_support"] = 2
+        model = FakePolicyModel(response=json.dumps({
+            "rules": [{
+                "effort": "medium",
+                "name": "bookchat",
+                "keywords": ["bookchat"],
+                "confidence": 0.9,
+            }]
+        }))
+
+        resolve_reasoning_effort_for_task("bookchat maybe", model)
+        resolve_reasoning_effort_for_task("quick bookchat thought", model)
+        report = reasoning_effort_policy.run_policy_optimizer_once(model_adapter=model, reason="manual")
+
+        self.assertEqual(report["status"], "success")
+        self.assertEqual(report["applied_rule_count"], 0)
+        self.assertEqual(report["rejected_rule_count"], 1)
+        self.assertEqual(report["rejected_rules"][0]["reason"], "medium_support_missing_success_evidence")
+        self.assertEqual(resolve_reasoning_effort_for_task("bookchat later", model).selected_effort, "xhigh")
+
     def test_optimizer_rejects_insufficient_support_without_persisting_raw_text(self):
         conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
         conf()["reasoning_effort_policy_auto_apply_min_support"] = 2

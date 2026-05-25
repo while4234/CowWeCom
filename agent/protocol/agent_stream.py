@@ -25,6 +25,7 @@ from common.llm_backend_router import (
 )
 from common.llm_usage_tracker import normalize_usage, stable_metadata_hash
 from common.reasoning_effort_policy import (
+    classify_local_task,
     record_policy_task_outcome,
     resolve_reasoning_effort_for_task,
 )
@@ -2238,7 +2239,11 @@ class AgentStreamExecutor:
         return max(40000, budget), max(1, keep_recent), max(2000, small_limit)
 
     def _build_request_context_text(self, user_message: str) -> str:
-        self_evolution_context = self._build_self_evolution_context_text()
+        self_evolution_context = (
+            self._build_self_evolution_context_text()
+            if self._should_include_self_evolution_context(user_message)
+            else ""
+        )
         runtime_context = self._build_runtime_context_text()
         knowledge_context = self._build_knowledge_context_text(user_message)
         self._request_runtime_context_chars = len(runtime_context)
@@ -2252,6 +2257,25 @@ class AgentStreamExecutor:
         )
         parts = [self_evolution_context, runtime_context, knowledge_context]
         return "\n\n".join(part for part in parts if part)
+
+    def _should_include_self_evolution_context(self, user_message: str) -> bool:
+        try:
+            from config import conf
+
+            if not bool(conf().get("cowagent_self_evolution_skip_medium_context", True)):
+                return True
+        except Exception:
+            pass
+
+        try:
+            effort, rule = classify_local_task(user_message)
+        except Exception as e:
+            logger.debug(f"[PromptCache] Failed to classify self-evolution context need: {e}")
+            return True
+
+        if effort == "medium" and rule:
+            return False
+        return True
 
     def _build_runtime_context_text(self) -> str:
         try:
