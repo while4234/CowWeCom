@@ -94,6 +94,14 @@ class TestCowCliBackendNaturalLanguage(unittest.TestCase):
             ("backend", "quota-current"),
         )
 
+    def test_codex_quota_analysis_request_stays_on_agent_path(self):
+        self.assertIsNone(
+            parse_backend_natural_command(
+                "分析一下Codex当前的平均用量超了多少，后续的使用策略如何分配更合适"
+            )
+        )
+        self.assertIsNone(parse_backend_natural_command("请分析 codex 额度是否超了以及后续策略"))
+
     def test_key_token_secret_questions_are_safe_routed(self):
         self.assertEqual(
             parse_backend_natural_command("当前 CAPI key 是什么？"),
@@ -599,7 +607,7 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
             captured["env"] = kwargs["env"]
             payload = {
                 "ok": True,
-                "source": "openclaw-codex-app-server",
+                "source": "codex-app-server",
                 "account": {"label": "p***@example.com", "plan_type": "plus", "type": "chatgpt"},
                 "summary": {"blocked": False},
                 "rate_limits": [],

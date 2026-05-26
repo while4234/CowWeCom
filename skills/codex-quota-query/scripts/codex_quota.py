@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -24,58 +23,32 @@ if str(PROJECT_ROOT) not in sys.path:
 from common.codex_quota_logic import decide_codex_auto_switch, decision_to_dict  # noqa: E402
 
 
-def _home_path(*parts: str) -> str:
-    return str(Path.home().joinpath(*parts))
-
-
-def _first_existing(paths):
-    for item in paths:
-        if Path(item).exists():
-            return str(item)
-    return str(paths[0])
-
-
 def _prepare_env() -> Dict[str, str]:
     env = dict(os.environ)
-    env.setdefault("OPENCLAW_ROOT", _home_path(".openclaw"))
-    env.setdefault(
-        "OPENCLAW_CONFIG",
-        _first_existing([
-            _home_path(".openclaw", "openclaw.json"),
-            _home_path(".openclaw-qq", "openclaw.json"),
-        ]),
-    )
-    env.setdefault(
-        "OPENCLAW_CODEX_AGENT_DIR",
-        _first_existing([
-            _home_path(".openclaw", "agents", "main", "agent"),
-            _home_path(".openclaw-qq", "agents", "qq_openclaw", "agent"),
-        ]),
-    )
-    env.setdefault(
-        "OPENCLAW_CODEX_DIST",
-        _first_existing([
-            _home_path(".openclaw", "extensions", "codex", "dist"),
-            _home_path(".openclaw-qq", "extensions", "codex", "dist"),
-        ]),
-    )
+    env.setdefault("PYTHONUTF8", "1")
     return env
 
 
-def _script_path() -> Path:
-    return Path(__file__).resolve().parent / "query_codex_openai_quota.mjs"
+def _check_script_path() -> Path:
+    return Path(__file__).resolve().parent / "check_codex_quota.py"
 
 
-def _run_node_query(output_format: str, timeout_seconds: int) -> str:
-    script = _script_path()
+def _run_quota_query(output_format: str, timeout_seconds: int) -> str:
+    script = _check_script_path()
     if not script.exists():
-        raise RuntimeError("Codex quota Node script was not found.")
-    node = shutil.which("node")
-    if not node:
-        raise RuntimeError("Node.js was not found; cannot query Codex quota through app-server.")
+        raise RuntimeError("Codex quota query script was not found.")
     timeout_ms = max(1000, int(timeout_seconds * 1000))
     proc = subprocess.run(
-        [node, str(script), "--format", output_format, "--timeout-ms", str(timeout_ms)],
+        [
+            sys.executable,
+            str(script),
+            "--project-dir",
+            str(PROJECT_ROOT),
+            "--format",
+            output_format,
+            "--timeout-ms",
+            str(timeout_ms),
+        ],
         cwd=str(PROJECT_ROOT),
         env=_prepare_env(),
         text=True,
@@ -93,7 +66,7 @@ def _run_node_query(output_format: str, timeout_seconds: int) -> str:
 
 def _snapshot(args) -> int:
     try:
-        text = _run_node_query(args.format, args.timeout_seconds)
+        text = _run_quota_query(args.format, args.timeout_seconds)
         if args.save and args.format == "json":
             _save_snapshot(json.loads(text))
         print(text or "{}" if args.format == "json" else text or "Codex quota query returned no content.")
@@ -111,7 +84,7 @@ def _snapshot(args) -> int:
 
 def _decision(args) -> int:
     try:
-        raw = _run_node_query("json", args.timeout_seconds)
+        raw = _run_quota_query("json", args.timeout_seconds)
         payload = json.loads(raw)
         decision = decide_codex_auto_switch(
             payload,

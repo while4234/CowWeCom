@@ -136,6 +136,24 @@ _QUOTA_REQUEST_MARKERS = (
     "current",
 )
 
+_QUOTA_ANALYSIS_MARKERS = (
+    "分析",
+    "策略",
+    "规划",
+    "分配",
+    "建议",
+    "是否超",
+    "超了",
+    "超过",
+    "超出",
+    "平均用量",
+    "后续",
+    "如何分配",
+    "怎么分配",
+    "合理",
+    "评估",
+)
+
 _QUOTA_CARD_MARKERS = (
     "额度卡",
     "总额度",
@@ -325,6 +343,8 @@ def _quota_backend_command(normalized: str, compact: str) -> Optional[str]:
         return None
 
     has_quota_request = any(marker in compact or marker in normalized for marker in _QUOTA_REQUEST_MARKERS)
+    if _looks_like_quota_analysis_request(normalized, compact):
+        return None
     if _looks_like_informational_request(normalized, compact) and not has_quota_request:
         return None
 
@@ -345,6 +365,10 @@ def _looks_like_current_backend_quota(normalized: str, compact: str) -> bool:
     has_backend_context = any(marker in compact or marker in normalized for marker in _BACKEND_COMPACT_MARKERS)
     has_current_context = any(marker in compact or marker in normalized for marker in _CURRENT_MARKERS)
     return bool(has_backend_context and has_current_context)
+
+
+def _looks_like_quota_analysis_request(normalized: str, compact: str) -> bool:
+    return any(marker in compact or marker in normalized for marker in _QUOTA_ANALYSIS_MARKERS)
 
 
 def _looks_like_sensitive_secret_request(normalized: str, compact: str) -> bool:
