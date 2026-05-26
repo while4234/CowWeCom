@@ -93,6 +93,7 @@ const I18N = {
         weixin_role_admin_hint: '可管理配置、技能、记忆和高风险命令',
         weixin_role_user_hint: '使用隔离工作区和受控权限',
         weixin_role_admin_locked: '已存在管理员，只能选择普通用户',
+        weixin_role_current: '本次接入身份',
         wecom_scan_btn: '扫码创建企微机器人', wecom_scan_desc: '使用企业微信扫码，一键创建智能机器人',
         wecom_scan_success: '创建成功，正在启动通道...',
         wecom_scan_fail: '创建失败',
@@ -218,6 +219,7 @@ const I18N = {
         weixin_role_admin_hint: 'Can manage config, skills, memory, and high-risk commands',
         weixin_role_user_hint: 'Uses an isolated workspace and controlled permissions',
         weixin_role_admin_locked: 'An admin already exists; only normal user is available',
+        weixin_role_current: 'Current connection role',
         wecom_scan_btn: 'Scan to Create WeCom Bot', wecom_scan_desc: 'Scan with WeCom to create a bot instantly',
         wecom_scan_success: 'Bot created, starting channel...',
         wecom_scan_fail: 'Bot creation failed',
@@ -3238,6 +3240,7 @@ let channelRoleOptions = {
     admin_actor_id: '',
     default_role: 'admin',
 };
+const CONNECTABLE_CHANNEL_NAMES = new Set(['weixin', 'wecom_bot']);
 
 function isWeixinChannelName(name) {
     return name === 'weixin' || String(name || '').startsWith('weixin_');
@@ -3249,6 +3252,11 @@ function makeWeixinInstanceId() {
 
 function normalizeChannelRole(role) {
     return role === 'admin' ? 'admin' : 'user';
+}
+
+function isConnectableChannel(ch) {
+    if (!ch) return false;
+    return CONNECTABLE_CHANNEL_NAMES.has(ch.name) || ch.name === '__new_weixin__';
 }
 
 function getSelectedWeixinRole() {
@@ -3289,6 +3297,27 @@ function buildWeixinRoleSelector() {
                 </label>
             </div>
             ${adminAvailable ? '' : `<p class="mt-2 text-xs text-amber-500">${t('weixin_role_admin_locked')}</p>`}
+        </div>`;
+}
+
+function buildWeixinRoleSummary(role) {
+    const normalizedRole = normalizeChannelRole(role);
+    const isAdmin = normalizedRole === 'admin';
+    const roleLabel = isAdmin ? t('weixin_role_admin') : t('weixin_role_user');
+    const roleClass = isAdmin
+        ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-300 border-amber-100 dark:border-amber-800/40'
+        : 'bg-slate-50 dark:bg-white/5 text-slate-600 dark:text-slate-300 border-slate-100 dark:border-white/10';
+    const lockHtml = !isAdmin && channelRoleOptions.admin_available === false
+        ? `<p class="mt-1 text-xs text-amber-500">${t('weixin_role_admin_locked')}</p>`
+        : '';
+
+    return `
+        <div class="w-full max-w-sm mb-4 text-center">
+            <div class="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">${t('weixin_role_current')}</div>
+            <span class="inline-flex items-center justify-center px-3 py-1 rounded-md border text-xs font-medium ${roleClass}">
+                ${roleLabel}
+            </span>
+            ${lockHtml}
         </div>`;
 }
 
@@ -3678,7 +3707,9 @@ function disconnectChannel(chName) {
 function openAddChannelPanel() {
     const panel = document.getElementById('channels-add-panel');
     const activeNames = new Set(channelsData.filter(c => c.active).map(c => c.name));
-    const available = channelsData.filter(c => !activeNames.has(c.name) && !String(c.name || '').startsWith('weixin_'));
+    const available = channelsData.filter(c =>
+        isConnectableChannel(c) && !activeNames.has(c.name) && !String(c.name || '').startsWith('weixin_')
+    );
     const baseWeixin = channelsData.find(c => c.name === 'weixin');
     if (baseWeixin && activeNames.has('weixin')) {
         available.unshift({
@@ -3984,6 +4015,7 @@ function renderWeixinQr(qrcodeUrl, status) {
 
     panel.innerHTML = `
         <div class="flex flex-col items-center">
+            ${buildWeixinRoleSummary(_weixinQrRole)}
             <p class="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1">${t('weixin_scan_title')}</p>
             <p class="text-xs text-slate-400 dark:text-slate-500 mb-4">${t('weixin_scan_desc')}</p>
             <div class="bg-white p-3 rounded-xl shadow-sm border border-slate-100 dark:border-slate-700 mb-3">

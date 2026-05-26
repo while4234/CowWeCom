@@ -18,6 +18,8 @@
 
 - `2026-05-26` pending commit `docs: consolidate readme update log`: Consolidated the root README update log so each calendar date has one merged summary row, added the same-day merge requirement to the CowWeCom project README rules in `AGENTS.md`, and refreshed the README development guidance to tell future Codex sessions to update an existing same-day entry instead of adding duplicates. Validation: safe upload preflight passed before and after staging, staged diff check passed, and README update-log date uniqueness check passed.
 
+- `2026-05-26` pending commit `fix: clarify web channel connect choices`: The Web console add-channel dropdown now only shows the tested Weixin and WeCom Bot paths, hiding unverified Feishu/DingTalk/QQ/WeCom App/official-account entries from normal user setup. The Weixin QR waiting view also keeps a read-only connection-role badge visible, so when an administrator already exists the page clearly says the current scan is a normal-user connection. Validation: `node --check channel\web\static\js\console.js` and focused channel/privacy pytest passed.
+
 ## Repository Purpose
 
 Personal CowWeCom deployment and development workspace for WeCom Bot integration, OpenAI-compatible model providers, image generation tooling, scheduler tools, and agent memory features.
