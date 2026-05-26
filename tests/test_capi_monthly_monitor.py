@@ -28,6 +28,8 @@ class TestCapiMonthlyMonitor(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.previous_backend_config = conf().get("llm_backend")
+        self.reset_bridge_cache = patch("common.llm_backend_router._reset_bridge_cache")
+        self.reset_bridge_cache.start()
         conf()["llm_backend"] = {
             "current_backend": BACKEND_CAPI_MONTHLY,
             "state_path": str(Path(self.tmp.name) / "state.json"),
@@ -48,6 +50,7 @@ class TestCapiMonthlyMonitor(unittest.TestCase):
             conf().pop("llm_backend", None)
         else:
             conf()["llm_backend"] = self.previous_backend_config
+        self.reset_bridge_cache.stop()
         self.tmp.cleanup()
 
     def test_noop_when_task_did_not_use_monthly_backend(self):
@@ -66,6 +69,7 @@ class TestCapiMonthlyMonitor(unittest.TestCase):
 
         self.assertEqual(load_state()["monthly_card"]["last_action"], "kept_monthly")
         self.assertEqual(state["monthly_card"]["remaining_percent"], 90)
+        self.assertEqual(load_state()["backend_quota"][BACKEND_CAPI_MONTHLY]["remaining"], 81)
         self.assertEqual(get_current_backend(), BACKEND_CAPI_MONTHLY)
 
     def test_low_monthly_quota_switches_to_codex_when_allowed(self):

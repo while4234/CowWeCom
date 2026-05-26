@@ -618,6 +618,8 @@ class SocialBridgeService:
                 temperature=0,
                 max_tokens=120,
                 stream=False,
+                quota_refresh_silent=True,
+                cache_shape_metadata={"request_kind": "social_bridge_target_resolution"},
                 system=(
                     "你只做接收人消歧，不编造新用户。只能从候选用户中选择。"
                     "可以利用 nickname、known_names、display_label、relationship 里的关系词，"
@@ -729,6 +731,8 @@ class SocialBridgeService:
                 temperature=0.55,
                 max_tokens=700,
                 stream=False,
+                quota_refresh_silent=True,
+                cache_shape_metadata={"request_kind": "social_bridge_rewrite"},
                 system=(
                     "你是一个温柔、聪明、懂分寸的朋友式沟通桥梁。只能使用发送方这次明确让你带的话，"
                     "关系记忆中双方共同参与或已允许进入关系上下文的信息，以及接收方自己的视角来调整措辞。"

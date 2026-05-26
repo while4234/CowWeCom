@@ -227,6 +227,7 @@ class AgentLLMModel(LLMModel):
                 if effort in ("none", "low", "medium", "high", "xhigh", "max"):
                     kwargs['reasoning_effort'] = effort
 
+                self._note_user_visible_model_call(request)
                 response = self.bot.call_with_tools(**kwargs)
                 return self._format_response(response)
             else:
@@ -309,6 +310,7 @@ class AgentLLMModel(LLMModel):
                 if effort in ("none", "low", "medium", "high", "xhigh", "max"):
                     kwargs['reasoning_effort'] = effort
 
+                self._note_user_visible_model_call(request)
                 stream = self.bot.call_with_tools(**kwargs)
                 
                 # Convert stream format to our expected format
@@ -331,6 +333,33 @@ class AgentLLMModel(LLMModel):
         """Format Claude stream chunk to our expected format"""
         # This would need to be implemented based on Claude's stream format
         return chunk
+
+    def _note_user_visible_model_call(self, request: LLMRequest) -> None:
+        if not self._is_user_visible_model_call(request):
+            return
+        try:
+            from common.llm_backend_quota_refresh import note_user_visible_model_call
+
+            metadata = getattr(request, "cache_shape_metadata", None)
+            request_kind = ""
+            if isinstance(metadata, dict):
+                request_kind = str(metadata.get("request_kind") or "")
+            note_user_visible_model_call(request_kind=request_kind)
+        except Exception as e:
+            logger.debug("[LLMBackend] Quota refresh call counter skipped: %s", e)
+
+    def _is_user_visible_model_call(self, request: LLMRequest) -> bool:
+        if bool(getattr(request, "quota_refresh_silent", False)):
+            return False
+        channel_type = str(getattr(self, "channel_type", "") or "")
+        if channel_type in {"knowledge_backend_llm_builder", "background", "system"}:
+            return False
+        session_id = str(getattr(self, "session_id", "") or "")
+        if session_id.startswith("scheduler_"):
+            return False
+        metadata = getattr(request, "cache_shape_metadata", None)
+        request_kind = str(metadata.get("request_kind") or "") if isinstance(metadata, dict) else ""
+        return not request_kind.startswith(("cow_cli_", "self_evolution", "memory_", "social_bridge_"))
 
 
 class AgentBridge:

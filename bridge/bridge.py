@@ -110,10 +110,14 @@ class Bridge(object):
     def fetch_reply_content(self, query, context: Context) -> Reply:
         from common.capi_monthly_monitor import maybe_check_capi_monthly_after_task
         from common.llm_backend_router import get_current_backend
+        from common.llm_backend_quota_refresh import note_user_visible_model_call
 
         task_backend = get_current_backend()
         try:
-            return self.get_bot("chat").reply(query, context)
+            if not (context and context.get("is_scheduled_task")):
+                note_user_visible_model_call(task_backend, request_kind="chat_reply")
+            reply = self.get_bot("chat").reply(query, context)
+            return reply
         finally:
             maybe_check_capi_monthly_after_task(task_backend)
 

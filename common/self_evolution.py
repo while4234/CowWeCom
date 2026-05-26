@@ -766,6 +766,8 @@ def _ask_model_for_process_lessons(
             "Return strict JSON only. Never include secrets, raw paths, user text, "
             "tool outputs, or final-answer content."
         ),
+        quota_refresh_silent=True,
+        cache_shape_metadata={"request_kind": "self_evolution_reflection"},
     )
     try:
         response = model_adapter.call(request)

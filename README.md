@@ -465,6 +465,7 @@ CowWeCom/
 
 | 日期 | 更新 |
 | --- | --- |
+| 2026-05-26 | 修复 LLM backend status 的当前后端额度展示：CAPI 额度卡、CAPI 月卡和 Codex 的手动额度查询都会回写统一的 `backend_quota` 状态缓存，`/backend status` 始终展示当前后端已记录的最新值；默认每 50 次非静默用户模型调用会在后台刷新当前后端额度 |
 | 2026-05-26 | 新增 `project-restart` Skill：管理员对 Agent 说“重启/重启项目/重启服务”时默认走该技能，先派生延迟 worker 再复用 `cli.cli restart` 关闭当前项目所有匹配 `app.py` 的进程并拉起新服务，避免运行中的 Agent 直接杀掉自己的工具子进程 |
 | 2026-05-26 | 修复 CAPI 月卡日重置后的后端状态展示：午夜自动切回 `capi_monthly` 时会同步重置月卡状态缓存，避免 `/backend status` 把今天的 `daily_monthly_card_reset` 和昨天的 `monthly_quota_low`/`remaining=0` 拼在一起；本次也用真实月卡查询确认服务端剩余额度已恢复 |
 | 2026-05-25 | 优化自我进化与模型思考深度策略：简单 medium 请求默认不再注入动态 self-evolution 规则，减少提示前缀变化以提升缓存命中；reasoning-effort 优化器只有在有成功、无工具错误且一轮完成的 outcome 证据时，才允许把不确定任务学习为 `medium` |

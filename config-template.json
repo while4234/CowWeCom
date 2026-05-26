@@ -183,6 +183,10 @@
       "prefer_capi_monthly_at_check_time": true,
       "monthly_post_task_check_enabled": true,
       "monthly_min_remaining_percent": 10
+    },
+    "quota_refresh": {
+      "enabled": true,
+      "model_call_interval": 50
     }
   },
   "knowledge_backend": {

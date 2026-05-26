@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, Mapping, Optional
 
 from common import const
 from common.codex_quota_logic import CodexQuotaDecision, decide_codex_auto_switch, decision_to_dict
+from common.codex_quota_logic import select_codex_quota_window
 from common.log import logger
 
 
@@ -70,6 +71,10 @@ DEFAULT_LLM_BACKEND_CONFIG: Dict[str, Any] = {
         "prefer_capi_monthly_at_check_time": True,
         "monthly_post_task_check_enabled": True,
         "monthly_min_remaining_percent": 10,
+    },
+    "quota_refresh": {
+        "enabled": True,
+        "model_call_interval": 50,
     },
 }
 
@@ -593,13 +598,16 @@ def clear_manual_override() -> Dict[str, Any]:
 
 def status_snapshot() -> Dict[str, Any]:
     state = load_state()
+    current_backend = get_current_backend()
     return {
-        "current_backend": get_current_backend(),
+        "current_backend": current_backend,
         "effective_model": get_effective_model(),
         "manual_override_active": bool(state.get("manual_override_active", False)),
         "auto_switch_latched": bool(state.get("auto_switch_latched", False)),
         "auto": state.get("auto", {}) if isinstance(state.get("auto"), dict) else {},
         "monthly_card": state.get("monthly_card", {}) if isinstance(state.get("monthly_card"), dict) else {},
+        "backend_quota": state.get("backend_quota", {}) if isinstance(state.get("backend_quota"), dict) else {},
+        "current_backend_quota": latest_recorded_quota_for_backend(current_backend, state=state),
     }
 
 
@@ -617,11 +625,57 @@ def describe_status() -> str:
         lines.append(f"- last_checked_date: {auto.get('last_checked_date', '')}")
         lines.append(f"- last_decision: {auto.get('last_decision', '')}")
         lines.append(f"- last_reason: {auto.get('last_reason', '')}")
+    quota = snapshot.get("current_backend_quota") or {}
+    if quota:
+        lines.extend(_format_backend_quota_status_lines(snapshot["current_backend"], quota))
     monthly = snapshot.get("monthly_card") or {}
-    if monthly:
+    if snapshot["current_backend"] == BACKEND_CAPI_MONTHLY and monthly and not quota:
         lines.append(f"- monthly_remaining: {monthly.get('remaining', '')}/{monthly.get('total', '')}")
         lines.append(f"- monthly_last_action: {monthly.get('last_action', '')}")
     return "\n".join(lines)
+
+
+def latest_recorded_quota_for_backend(
+    backend: str,
+    *,
+    state: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized = normalize_backend(backend)
+    data = dict(state) if isinstance(state, Mapping) else load_state()
+    quotas = data.get("backend_quota") if isinstance(data.get("backend_quota"), dict) else {}
+    quota = quotas.get(normalized)
+    if isinstance(quota, dict):
+        return dict(quota)
+    if normalized == BACKEND_CAPI_MONTHLY and isinstance(data.get("monthly_card"), dict):
+        legacy = dict(data["monthly_card"])
+        if legacy:
+            legacy.setdefault("backend", BACKEND_CAPI_MONTHLY)
+            legacy.setdefault("source", "monthly_card_legacy")
+            return legacy
+    return {}
+
+
+def _format_backend_quota_status_lines(backend: str, quota: Mapping[str, Any]) -> list[str]:
+    normalized = normalize_backend(str(quota.get("backend") or backend))
+    lines = [
+        f"- current_quota_backend: {normalized}",
+    ]
+    checked_at = str(quota.get("last_checked_at") or "").strip()
+    if checked_at:
+        lines.append(f"- current_quota_last_checked_at: {checked_at}")
+    if normalized == BACKEND_CODEX:
+        lines.append(f"- current_quota_remaining_percent: {quota.get('remaining_percent', '')}")
+        lines.append(f"- current_quota_used_percent: {quota.get('used_percent', '')}")
+        reset_at = str(quota.get("reset_at") or "").strip()
+        if reset_at:
+            lines.append(f"- current_quota_reset_at: {reset_at}")
+    else:
+        lines.append(f"- current_quota_remaining: {quota.get('remaining', '')}/{quota.get('total', '')}")
+        lines.append(f"- current_quota_remaining_percent: {quota.get('remaining_percent', '')}")
+    action = str(quota.get("last_action") or "").strip()
+    if action:
+        lines.append(f"- current_quota_last_action: {action}")
+    return lines
 
 
 def record_auto_check(
@@ -660,20 +714,24 @@ def record_auto_check(
     return state
 
 
-def record_monthly_quota_check(
+def record_capi_quota_check(
+    backend: str,
     snapshot: Mapping[str, Any],
     *,
     action: str,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     now = now or datetime.now()
+    normalized = normalize_backend(backend)
     quota = snapshot.get("quota") if isinstance(snapshot.get("quota"), dict) else {}
     total = _number_or_zero(quota.get("total"))
     remaining = _number_or_zero(quota.get("remaining"))
     remaining_percent = (remaining / total * 100.0) if total > 0 else 0.0
     state = load_state()
-    state["monthly_card"] = {
+    record = {
+        "backend": normalized,
         "last_checked_at": now.isoformat(timespec="seconds"),
+        "source": "capi_usage_monitor",
         "mode": quota.get("mode") or ("total" if quota.get("total_mode") else "daily"),
         "total": total,
         "used": _number_or_zero(quota.get("used")),
@@ -683,9 +741,115 @@ def record_monthly_quota_check(
         "expire_at": quota.get("expire_at"),
         "last_action": action,
     }
+    quotas = state.get("backend_quota") if isinstance(state.get("backend_quota"), dict) else {}
+    quotas[normalized] = record
+    state["backend_quota"] = quotas
+    if normalized == BACKEND_CAPI_MONTHLY:
+        state["monthly_card"] = {
+            key: record.get(key)
+            for key in (
+                "last_checked_at",
+                "mode",
+                "total",
+                "used",
+                "remaining",
+                "remaining_percent",
+                "progress",
+                "expire_at",
+                "last_action",
+            )
+        }
     state["updated_at"] = now.isoformat(timespec="seconds")
     save_state(state)
     return state
+
+
+def record_monthly_quota_check(
+    snapshot: Mapping[str, Any],
+    *,
+    action: str,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    return record_capi_quota_check(BACKEND_CAPI_MONTHLY, snapshot, action=action, now=now)
+
+
+def record_codex_quota_check(
+    snapshot: Mapping[str, Any],
+    *,
+    action: str,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    now = now or datetime.now()
+    window = select_codex_quota_window(snapshot)
+    state = load_state()
+    record: Dict[str, Any] = {
+        "backend": BACKEND_CODEX,
+        "last_checked_at": now.isoformat(timespec="seconds"),
+        "source": "codex_quota_query",
+        "mode": "percent",
+        "total_percent": 100.0,
+        "last_action": action,
+    }
+    summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), dict) else {}
+    if summary:
+        record["blocked"] = bool(summary.get("blocked", False))
+    if window is not None:
+        record.update({
+            "limit_id": window.limit_id,
+            "limit_name": window.limit_name,
+            "period_name": window.period_name,
+            "window_minutes": window.window_minutes,
+            "used_percent": round(float(window.used_percent), 2),
+            "remaining_percent": round(float(window.remaining_percent), 2),
+            "reset_at": window.resets_at.isoformat() if window.resets_at else "",
+            "reached_type": window.reached_type,
+        })
+    else:
+        record.update(_codex_quota_record_from_normalized_payload(snapshot))
+    quotas = state.get("backend_quota") if isinstance(state.get("backend_quota"), dict) else {}
+    quotas[BACKEND_CODEX] = record
+    state["backend_quota"] = quotas
+    state["updated_at"] = now.isoformat(timespec="seconds")
+    save_state(state)
+    return state
+
+
+def _codex_quota_record_from_normalized_payload(snapshot: Mapping[str, Any]) -> Dict[str, Any]:
+    limits = snapshot.get("rate_limits") if isinstance(snapshot.get("rate_limits"), list) else []
+    for limit in limits:
+        if not isinstance(limit, Mapping):
+            continue
+        windows = limit.get("windows") if isinstance(limit.get("windows"), list) else []
+        selected = _select_normalized_codex_window(windows)
+        if not selected:
+            continue
+        return {
+            "limit_id": limit.get("limit_id") or "codex",
+            "limit_name": limit.get("limit_name") or "Codex",
+            "period_name": selected.get("name") or "",
+            "window_minutes": _number_or_zero(selected.get("window_minutes")),
+            "used_percent": _number_or_zero(selected.get("used_percent")),
+            "remaining_percent": _number_or_zero(selected.get("remaining_percent")),
+            "reset_at": selected.get("reset_at") or "",
+            "reached_type": limit.get("reached_type") or "",
+            "blocked": str(limit.get("status") or "").lower() == "blocked",
+        }
+    return {
+        "used_percent": 0.0,
+        "remaining_percent": 0.0,
+        "reset_at": "",
+    }
+
+
+def _select_normalized_codex_window(windows: list[Any]) -> Dict[str, Any]:
+    candidates = [item for item in windows if isinstance(item, Mapping)]
+    if not candidates:
+        return {}
+    weekly = [
+        item for item in candidates
+        if _number_or_zero(item.get("window_minutes")) >= 10080
+    ]
+    return dict(max(weekly or candidates, key=lambda item: _number_or_zero(item.get("window_minutes"))))
 
 
 def record_monthly_daily_reset(*, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -706,6 +870,22 @@ def record_monthly_daily_reset(*, now: Optional[datetime] = None) -> Dict[str, A
         "expire_at": previous_monthly.get("expire_at"),
         "last_action": "daily_monthly_card_reset",
     }
+    quotas = previous.get("backend_quota") if isinstance(previous.get("backend_quota"), dict) else {}
+    quotas[BACKEND_CAPI_MONTHLY] = {
+        "backend": BACKEND_CAPI_MONTHLY,
+        "last_checked_at": previous_monthly.get("last_checked_at", ""),
+        "last_reset_at": now.isoformat(timespec="seconds"),
+        "source": "daily_monthly_card_reset",
+        "mode": "daily",
+        "total": total,
+        "used": 0.0,
+        "remaining": total,
+        "remaining_percent": 100.0 if total > 0 else 0.0,
+        "progress": 0.0,
+        "expire_at": previous_monthly.get("expire_at"),
+        "last_action": "daily_monthly_card_reset",
+    }
+    previous["backend_quota"] = quotas
     previous["updated_at"] = now.isoformat(timespec="seconds")
     save_state(previous)
     return previous

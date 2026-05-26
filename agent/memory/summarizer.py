@@ -398,6 +398,8 @@ class MemoryFlushManager:
                 max_tokens=dream_max_tokens,
                 stream=False,
                 system=DREAM_SYSTEM_PROMPT,
+                quota_refresh_silent=True,
+                cache_shape_metadata={"request_kind": "memory_dream"},
             )
             response = self.llm_model.call(request)
             raw = self._extract_response_text(response)
@@ -620,6 +622,8 @@ class MemoryFlushManager:
             max_tokens=500,
             stream=False,
             system=SUMMARIZE_SYSTEM_PROMPT,
+            quota_refresh_silent=True,
+            cache_shape_metadata={"request_kind": "memory_summary"},
         )
         
         response = self.llm_model.call(request)

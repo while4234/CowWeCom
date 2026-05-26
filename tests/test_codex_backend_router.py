@@ -18,6 +18,9 @@ from common.llm_backend_router import (
     is_capi_runtime_fallback_error,
     is_capi_quota_exhausted_error,
     load_state,
+    describe_status,
+    record_capi_quota_check,
+    record_codex_quota_check,
     select_capi_runtime_fallback_backend,
     select_backend_after_monthly_quota_low,
     save_state,
@@ -51,6 +54,8 @@ class TestCodexBackendRouter(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.state_path = str(Path(self.tmp.name) / "state.json")
+        self.reset_bridge_cache = patch("common.llm_backend_router._reset_bridge_cache")
+        self.reset_bridge_cache.start()
         conf()["llm_backend"] = {
             "current_backend": "capi",
             "state_path": self.state_path,
@@ -64,6 +69,7 @@ class TestCodexBackendRouter(unittest.TestCase):
         }
 
     def tearDown(self):
+        self.reset_bridge_cache.stop()
         self.tmp.cleanup()
         conf().pop("llm_backend", None)
 
@@ -200,6 +206,54 @@ class TestCodexBackendRouter(unittest.TestCase):
         self.assertEqual(monthly["last_action"], "daily_monthly_card_reset")
         self.assertEqual(monthly["remaining"], 90.0)
         self.assertEqual(monthly["total"], 90.0)
+        self.assertEqual(state["backend_quota"][BACKEND_CAPI_MONTHLY]["remaining"], 90.0)
+
+    def test_status_uses_latest_recorded_quota_for_current_backend(self):
+        save_state({"current_backend": BACKEND_CAPI})
+        record_capi_quota_check(
+            BACKEND_CAPI,
+            {"quota": {"mode": "total", "total": 500, "used": 120, "remaining": 380, "progress": 24}},
+            action="manual_quota_query",
+            now=datetime(2026, 5, 26, 8, 30),
+        )
+
+        text = describe_status()
+
+        self.assertIn("- current_backend: capi", text)
+        self.assertIn("- current_quota_backend: capi", text)
+        self.assertIn("- current_quota_remaining: 380.0/500.0", text)
+        self.assertIn("- current_quota_last_action: manual_quota_query", text)
+
+    def test_status_does_not_show_stale_monthly_quota_for_non_monthly_backend(self):
+        save_state({
+            "current_backend": BACKEND_CAPI,
+            "monthly_card": {
+                "total": 90,
+                "remaining": 12,
+                "last_action": "kept_monthly",
+            },
+        })
+
+        text = describe_status()
+
+        self.assertIn("- current_backend: capi", text)
+        self.assertNotIn("monthly_remaining", text)
+        self.assertNotIn("current_quota_remaining", text)
+
+    def test_status_uses_latest_recorded_codex_percent_quota(self):
+        save_state({"current_backend": BACKEND_CODEX})
+        record_codex_quota_check(
+            weekly_payload(used_percent=41.2),
+            action="manual_quota_query",
+            now=datetime(2026, 5, 26, 8, 30),
+        )
+
+        text = describe_status()
+
+        self.assertIn("- current_backend: codex", text)
+        self.assertIn("- current_quota_backend: codex", text)
+        self.assertIn("- current_quota_remaining_percent: 58.8", text)
+        self.assertIn("- current_quota_used_percent: 41.2", text)
 
     def test_midnight_uses_codex_when_monthly_capi_probe_fails(self):
         conf()["llm_backend"]["providers"]["capi_monthly"] = {"api_key": "TEST-MONTHLY-KEY"}

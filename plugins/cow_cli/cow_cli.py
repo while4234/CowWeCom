@@ -731,39 +731,15 @@ class CowCliPlugin(Plugin):
         ])
 
     def _backend_quota(self) -> str:
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        script = os.path.join(project_root, "skills", "codex-quota-query", "scripts", "check_codex_quota.py")
-        if not os.path.isfile(script):
-            return "Codex quota skill is not installed."
-        env = dict(os.environ)
-        env.setdefault("PYTHONUTF8", "1")
+        from common.codex_quota_query import format_codex_quota_snapshot_text, query_codex_quota_json
+        from common.llm_backend_router import record_codex_quota_check
+
         try:
-            proc = subprocess.run(
-                [
-                    sys.executable,
-                    script,
-                    "--project-dir",
-                    project_root,
-                    "--format",
-                    "text",
-                    "--timeout-ms",
-                    "120000",
-                ],
-                cwd=project_root,
-                env=env,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                capture_output=True,
-                timeout=120,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return "Codex quota query timed out."
-        text = (proc.stdout or proc.stderr or "").strip()
-        if proc.returncode != 0:
-            return "Codex quota query failed:\n{}".format(text[:1200])
-        return text or "Codex quota query returned no content."
+            snapshot = query_codex_quota_json(timeout_seconds=120)
+        except Exception as e:
+            return "Codex quota query failed:\n{}".format(str(e)[:1200])
+        record_codex_quota_check(snapshot, action="manual_quota_query")
+        return format_codex_quota_snapshot_text(snapshot) or "Codex quota query returned no content."
 
     def _backend_current_quota(self) -> str:
         from common.llm_backend_router import BACKEND_CAPI_MONTHLY, BACKEND_CODEX, get_current_backend
@@ -797,13 +773,14 @@ class CowCliPlugin(Plugin):
         return ""
 
     def _backend_capi_quota(self, backend: str) -> str:
+        from common.capi_quota_query import format_capi_quota_snapshot_text, query_capi_quota_snapshot
         from common.llm_backend_router import (
             BACKEND_CAPI,
             BACKEND_CAPI_MONTHLY,
             get_capi_provider_config,
+            record_capi_quota_check,
             resolve_provider_value,
         )
-        from config import conf
 
         normalized = BACKEND_CAPI_MONTHLY if backend == BACKEND_CAPI_MONTHLY else BACKEND_CAPI
         provider = get_capi_provider_config(normalized)
@@ -812,47 +789,14 @@ class CowCliPlugin(Plugin):
             label = "CAPI monthly" if normalized == BACKEND_CAPI_MONTHLY else "CAPI quota-card"
             return f"{label} API key is not configured."
 
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        script = os.path.join(project_root, "skills", "capi-usage-monitor", "scripts", "capi_usage.py")
-        if not os.path.isfile(script):
-            return "CAPI usage monitor skill is not installed."
-
-        env_name = "CAPI_MONTHLY_ROUTER_KEY" if normalized == BACKEND_CAPI_MONTHLY else "CAPI_QUOTA_ROUTER_KEY"
-        env = dict(os.environ)
-        env[env_name] = api_key
-        argv = [
-            sys.executable,
-            script,
-            "snapshot",
-            "--api-key-env",
-            env_name,
-            "--period",
-            "today",
-            "--format",
-            "text",
-        ]
-        if normalized == BACKEND_CAPI_MONTHLY:
-            argv.extend(["--default-daily-quota", str(provider.get("default_daily_quota") or 90)])
-
         label = "CAPI monthly quota" if normalized == BACKEND_CAPI_MONTHLY else "CAPI quota-card quota"
         try:
-            proc = subprocess.run(
-                argv,
-                cwd=project_root,
-                env=env,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                capture_output=True,
-                timeout=120,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return f"{label} query timed out."
-        text = self._redact_secret((proc.stdout or proc.stderr or "").strip(), api_key)
-        if proc.returncode != 0:
+            snapshot = query_capi_quota_snapshot(normalized, include_usage=True, timeout_seconds=120)
+        except Exception as e:
+            text = self._redact_secret(str(e), api_key)
             return f"{label} query failed:\n{text[:1200]}"
-        return text or f"{label} query returned no content."
+        record_capi_quota_check(normalized, snapshot, action="manual_quota_query")
+        return format_capi_quota_snapshot_text(snapshot) or f"{label} query returned no content."
 
     @staticmethod
     def _redact_secret(text: str, secret: str) -> str:

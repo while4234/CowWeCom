@@ -4,26 +4,20 @@
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
-import sys
 from datetime import datetime
 from typing import Any, Dict, Mapping, Optional
 
+from common.capi_quota_query import query_capi_quota_snapshot
 from common.codex_quota_query import query_codex_quota_json
 from common.llm_backend_router import (
     BACKEND_CAPI,
     BACKEND_CAPI_MONTHLY,
-    get_capi_provider_config,
     get_llm_backend_config,
     record_auto_check,
     record_monthly_quota_check,
-    resolve_provider_value,
     select_backend_after_monthly_quota_low,
 )
 from common.log import logger
-from config import get_root
 
 
 _CHECK_IN_PROGRESS = False
@@ -61,7 +55,7 @@ def maybe_check_capi_monthly_after_task(task_backend: Optional[str]) -> Dict[str
             )
         return select_backend_after_monthly_quota_low(codex_payload, now=datetime.now())
     except Exception as e:
-        logger.warning("[CapiMonthly] Post-task quota check failed: %s", _redact_monthly_secret(str(e)))
+        logger.warning("[CapiMonthly] Post-task quota check failed: %s", str(e))
         try:
             return record_monthly_quota_check({"quota": {}}, action="check_error")
         except Exception:
@@ -84,60 +78,11 @@ def _remaining_percent(snapshot: Mapping[str, Any]) -> float:
 
 
 def _query_monthly_snapshot() -> Dict[str, Any]:
-    provider = get_capi_provider_config(BACKEND_CAPI_MONTHLY)
-    api_key = resolve_provider_value(provider, "api_key", "api_key_env")
-    if not api_key:
-        raise RuntimeError("CAPI monthly API key is not configured")
-
-    script = os.path.join(get_root(), "skills", "capi-usage-monitor", "scripts", "capi_usage.py")
-    if not os.path.isfile(script):
-        raise RuntimeError("CAPI usage monitor script not found")
-
-    env = dict(os.environ)
-    env["CAPI_MONTHLY_ROUTER_KEY"] = api_key
-    default_daily_quota = str(provider.get("default_daily_quota") or 90)
-    proc = subprocess.run(
-        [
-            sys.executable,
-            script,
-            "snapshot",
-            "--api-key-env",
-            "CAPI_MONTHLY_ROUTER_KEY",
-            "--period",
-            "today",
-            "--no-usage",
-            "--default-daily-quota",
-            default_daily_quota,
-        ],
-        cwd=get_root(),
-        env=env,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        timeout=60,
-        check=False,
-    )
-    if proc.returncode != 0:
-        text = (proc.stderr or proc.stdout or "").strip()
-        raise RuntimeError(_redact_monthly_secret(text[:500]) or f"CAPI monthly query failed with exit code {proc.returncode}")
-    try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"CAPI monthly query returned invalid JSON: {e}") from e
-    return payload if isinstance(payload, dict) else {}
+    return query_capi_quota_snapshot(BACKEND_CAPI_MONTHLY, include_usage=False, timeout_seconds=60)
 
 
 def _query_codex_quota_json() -> Dict[str, Any]:
     return query_codex_quota_json()
-
-
-def _redact_monthly_secret(text: str) -> str:
-    provider = get_capi_provider_config(BACKEND_CAPI_MONTHLY)
-    secret = resolve_provider_value(provider, "api_key", "api_key_env")
-    if secret:
-        return text.replace(secret, f"{secret[:3]}***{secret[-3:]}" if len(secret) >= 8 else "***")
-    return text
 
 
 def _to_float(value: Any) -> float:

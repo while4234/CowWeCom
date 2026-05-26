@@ -597,17 +597,19 @@ class FakeBot:
 
 class TestAgentLLMModelReasoningEffort(unittest.TestCase):
     def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
         self.old_conf = dict(conf())
         conf().clear()
         conf().update({
             "model": "gpt-5.5",
             "enable_thinking": False,
-            "llm_backend": {"current_backend": BACKEND_CAPI},
+            "llm_backend": {"current_backend": BACKEND_CAPI, "state_path": os.path.join(self.tmp.name, "state.json")},
         })
 
     def tearDown(self):
         conf().clear()
         conf().update(self.old_conf)
+        self.tmp.cleanup()
 
     def test_call_forwards_request_model_effort_and_timeout(self):
         adapter = AgentLLMModel(None)
@@ -662,6 +664,49 @@ class TestAgentLLMModelReasoningEffort(unittest.TestCase):
 
         self.assertEqual(fake_bot.kwargs["model"], "gpt-5-mini")
         self.assertEqual(fake_bot.kwargs["reasoning_effort"], "medium")
+
+    def test_stream_model_call_counter_refreshes_every_configured_user_visible_call(self):
+        from common.llm_backend_router import load_state
+
+        conf()["llm_backend"]["quota_refresh"] = {"enabled": True, "model_call_interval": 2}
+        adapter = AgentLLMModel(None)
+        fake_bot = FakeBot()
+        adapter._bot = fake_bot
+        adapter._bot_model = adapter.model
+        adapter._bot_type = adapter._resolve_bot_type(adapter.model)
+        adapter.channel_type = "wecom_bot"
+        request = LLMRequest(messages=[{"role": "user", "content": "x"}], model="gpt-5-mini")
+
+        with patch("common.llm_backend_quota_refresh.schedule_backend_quota_refresh") as schedule:
+            adapter.call(request)
+            self.assertEqual(load_state()["quota_refresh"]["user_visible_model_call_count"], 1)
+            schedule.assert_not_called()
+
+            adapter.call(request)
+
+        self.assertEqual(load_state()["quota_refresh"]["user_visible_model_call_count"], 2)
+        schedule.assert_called_once()
+        self.assertEqual(schedule.call_args.args[0], BACKEND_CAPI)
+
+    def test_silent_model_call_does_not_count_for_quota_refresh(self):
+        from common.llm_backend_router import load_state
+
+        conf()["llm_backend"]["quota_refresh"] = {"enabled": True, "model_call_interval": 1}
+        adapter = AgentLLMModel(None)
+        fake_bot = FakeBot()
+        adapter._bot = fake_bot
+        adapter._bot_model = adapter.model
+        adapter._bot_type = adapter._resolve_bot_type(adapter.model)
+        request = LLMRequest(
+            messages=[{"role": "user", "content": "x"}],
+            quota_refresh_silent=True,
+        )
+
+        with patch("common.llm_backend_quota_refresh.schedule_backend_quota_refresh") as schedule:
+            adapter.call(request)
+
+        self.assertEqual(load_state().get("quota_refresh", {}), {})
+        schedule.assert_not_called()
 
 
 class FakeOpenAICompatibleBot(OpenAICompatibleBot):

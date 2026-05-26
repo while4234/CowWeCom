@@ -1,3 +1,4 @@
+import json
 import unittest
 import importlib.util
 import tempfile
@@ -270,15 +271,19 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         def fake_run(argv, **kwargs):
             captured["argv"] = argv
             captured["env"] = kwargs["env"]
-            return SimpleNamespace(returncode=0, stdout="monthly ok", stderr="")
+            return SimpleNamespace(
+                returncode=0,
+                stdout='{"quota":{"mode":"daily","total":90,"daily":90,"used":10,"remaining":80,"progress":11.1}}',
+                stderr="",
+            )
 
         with (
             patch.dict("os.environ", {}, clear=True),
-            patch("plugins.cow_cli.cow_cli.subprocess.run", side_effect=fake_run),
+            patch("common.capi_quota_query.subprocess.run", side_effect=fake_run),
         ):
             result = plugin.execute("查一下 CAPI 月卡剩余额度", session_id="test")
 
-        self.assertEqual(result, "monthly ok")
+        self.assertIn("today_remaining: 80", result)
         self.assertIn("--api-key-env", captured["argv"])
         self.assertEqual(captured["env"]["CAPI_MONTHLY_ROUTER_KEY"], "MONTHLY-KEY")
         self.assertNotIn("CAPI_QUOTA_ROUTER_KEY", captured["env"])
@@ -296,18 +301,44 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         def fake_run(argv, **kwargs):
             captured["argv"] = argv
             captured["env"] = kwargs["env"]
-            return SimpleNamespace(returncode=0, stdout="quota ok", stderr="")
+            return SimpleNamespace(
+                returncode=0,
+                stdout='{"quota":{"mode":"total","total":500,"used":20,"remaining":480,"progress":4}}',
+                stderr="",
+            )
 
         with (
             patch.dict("os.environ", {}, clear=True),
-            patch("plugins.cow_cli.cow_cli.subprocess.run", side_effect=fake_run),
+            patch("common.capi_quota_query.subprocess.run", side_effect=fake_run),
         ):
             result = plugin.execute("查询 CAPI 额度卡余额", session_id="test")
 
-        self.assertEqual(result, "quota ok")
+        self.assertIn("total_remaining: 480", result)
         self.assertIn("--api-key-env", captured["argv"])
         self.assertEqual(captured["env"]["CAPI_QUOTA_ROUTER_KEY"], "QUOTA-KEY")
         self.assertNotIn("CAPI_MONTHLY_ROUTER_KEY", captured["env"])
+
+    def test_execute_quota_query_updates_backend_status_cache(self):
+        from common.llm_backend_router import describe_status, load_state
+        from config import conf
+
+        conf()["llm_backend"]["current_backend"] = "capi"
+        conf()["llm_backend"]["providers"] = {"capi": {"api_key": "QUOTA-KEY"}}
+        plugin = _load_cow_cli_plugin()
+
+        def fake_run(_argv, **_kwargs):
+            return SimpleNamespace(
+                returncode=0,
+                stdout='{"quota":{"mode":"total","total":500,"used":20,"remaining":480,"progress":4}}',
+                stderr="",
+            )
+
+        with patch("common.capi_quota_query.subprocess.run", side_effect=fake_run):
+            result = plugin.execute("\u67e5\u8be2 CAPI \u989d\u5ea6\u5361\u4f59\u989d", session_id="test")
+
+        self.assertIn("total_remaining: 480", result)
+        self.assertEqual(load_state()["backend_quota"]["capi"]["remaining"], 480)
+        self.assertIn("- current_quota_remaining: 480.0/500.0", describe_status())
 
     def test_codex_quota_uses_project_wrapper(self):
         plugin = _load_cow_cli_plugin()
@@ -317,16 +348,22 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
             captured["argv"] = argv
             captured["cwd"] = kwargs["cwd"]
             captured["env"] = kwargs["env"]
-            return SimpleNamespace(returncode=0, stdout="codex ok", stderr="")
+            payload = {
+                "ok": True,
+                "source": "openclaw-codex-app-server",
+                "account": {"label": "p***@example.com", "plan_type": "plus", "type": "chatgpt"},
+                "summary": {"blocked": False},
+                "rate_limits": [],
+            }
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
 
-        with patch("plugins.cow_cli.cow_cli.subprocess.run", side_effect=fake_run):
+        with patch("common.codex_quota_query.subprocess.run", side_effect=fake_run):
             result = plugin.execute("\u67e5\u8be2\u4e0bcodex\u4f7f\u7528\u91cf", session_id="test")
 
-        self.assertEqual(result, "codex ok")
+        self.assertIn("GPT/Codex quota", result)
         self.assertIn("check_codex_quota.py", str(captured["argv"][1]))
         self.assertIn("--project-dir", captured["argv"])
         self.assertEqual(Path(captured["cwd"]), PROJECT_ROOT)
-        self.assertEqual(captured["env"]["PYTHONUTF8"], "1")
 
     def test_sensitive_key_question_does_not_return_backend_status(self):
         plugin = _load_cow_cli_plugin()
