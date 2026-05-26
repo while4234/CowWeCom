@@ -120,6 +120,7 @@ def test_query_existing_index_does_not_mutate_sqlite_file_or_create_sidecars(tmp
     try:
         assert reader.search("TVALID TREADY handshake", limit=1)
         assert reader.query("What creates the handshake?", limit=1)["citations"]
+        assert reader.deep_query("What creates the handshake?", limit=1)["evidence_blocks"]
         assert reader.list_documents()
     finally:
         reader.close()
@@ -202,6 +203,7 @@ def test_provider_api_contract_preserves_trace_and_traversal_semantics(monkeypat
     assert set(capabilities["supported_methods"]) >= {
         "search",
         "query",
+        "deep_query",
         "resolve_entity",
         "graph_neighbors",
         "verify_source",
@@ -228,6 +230,17 @@ def test_provider_api_contract_preserves_trace_and_traversal_semantics(monkeypat
     )
     assert query["citations"]
     assert query.get("visited_kb_ids") == ["kb_pcie"]
+
+    deep = _assert_trace(
+        dispatch_provider_request(
+            "POST",
+            "deep_query",
+            {"query": "How are TLP credits represented?", "trace_id": trace_id, "visited_kb_ids": ["kb_pcie"]},
+        ),
+        trace_id,
+    )
+    assert deep["evidence_blocks"]
+    assert deep.get("visited_kb_ids") == ["kb_pcie"]
 
     entities = _assert_trace(
         dispatch_provider_request(

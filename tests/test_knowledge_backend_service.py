@@ -178,6 +178,85 @@ def test_backend_generates_validated_llm_study_document(tmp_path, monkeypatch):
     assert any(document["doc_type"] == "llm_study" for document in service.list_documents())
 
 
+def test_deep_query_expands_adjacent_chunks_for_step_context(tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "ingest": {"allowed_extensions": [".md"]},
+                "retrieval": {"context_window_chunks": 1, "max_evidence_chars": 12000},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    service._backend.chunk_chars = 360
+    service._backend.overlap_chars = 0
+    service.ingest_upload_bytes(
+        "ucie-repairval.md",
+        (
+            b"# UCIe MBINIT.REPAIRVAL\n\n"
+            b"Step 1. The UCIe Module sends MBINIT.REPAIRVAL init req and waits for init resp. "
+            b"Step 2. The UCIe Module must send 128 iterations of VALTRAIN pattern on TVLD_L "
+            b"along with the forwarded clock. Step 3. Partner detects pattern on RVLD_L and "
+            b"RRDVLD_L. Step 4. After pattern transmission the module sends result req.\n\n"
+            b"Step 7. The UCIe Module sends 128 iterations of VALTRAIN repair pattern on "
+            b"TRDVLD_L along with the forwarded clock. This step checks the redundant Valid "
+            b"repair resource path, not the post-repair success check.\n\n"
+            b"Step 12. If a repair is applied, device must check the repair success by "
+            b"repeating Step 1 through Step 4. The logical TVLD_L path may be remapped through "
+            b"the repair mux to the TRDVLD_P/RRDVLD_P physical path after repair."
+        ),
+        title="UCIe RepairVAL Mini Spec",
+    )
+
+    result = service.deep_query(
+        "UCIe MBINIT.REPAIRVAL after repair repeat Step 1 through Step 4 TVLD_L TRDVLD_L repair mux",
+        limit=1,
+        context_window=2,
+        max_evidence_chars=12000,
+    )
+
+    evidence = "\n".join(block["text"] for block in result["evidence_blocks"])
+    assert result["status"] == "ok"
+    assert "Step 2" in evidence
+    assert "TVLD_L" in evidence
+    assert "Step 7" in evidence
+    assert "TRDVLD_L" in evidence
+    assert "Step 12" in evidence
+    assert "repeating Step 1 through Step 4" in evidence
+    assert "TRDVLD_P/RRDVLD_P physical path" in evidence
+    assert all(block["source_span_ids"] for block in result["evidence_blocks"])
+    assert result["citations"][0]["source_span_ids"]
+
+
+def test_deep_query_truncates_evidence_without_breaking_records(tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "ingest": {"allowed_extensions": [".md"]},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    service.ingest_upload_bytes(
+        "long-spec.md",
+        ("# Long Spec\n\n" + "Alpha pattern evidence. " * 300).encode("utf-8"),
+        title="Long Evidence Spec",
+    )
+
+    result = service.deep_query("Alpha pattern evidence", limit=1, context_window=1, max_evidence_chars=1000)
+
+    assert result["evidence_blocks"]
+    assert sum(len(block["text"]) for block in result["evidence_blocks"]) <= 1000
+    assert result["evidence_blocks"][-1]["truncated"] is True
+    assert result["coverage_terms"]
+
+
 def test_sqlite_backend_skips_files_over_size_limit(tmp_path):
     knowledge = tmp_path / "knowledge"
     knowledge.mkdir()

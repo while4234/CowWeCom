@@ -118,6 +118,17 @@ class KnowledgeBackendConfig:
                 "max_chunks": int(os.environ.get("KNOWLEDGE_BACKEND_LLM_MAX_CHUNKS") or 80),
                 "max_output_tokens": int(os.environ.get("KNOWLEDGE_BACKEND_LLM_MAX_OUTPUT_TOKENS") or 6000),
             },
+            "retrieval": {
+                "auto_inject": parse_knowledge_backend_enabled(
+                    os.environ.get("KNOWLEDGE_BACKEND_AUTO_INJECT", "true")
+                ),
+                "deep_query_enabled": parse_knowledge_backend_enabled(
+                    os.environ.get("KNOWLEDGE_BACKEND_DEEP_QUERY_ENABLED", "true")
+                ),
+                "context_window_chunks": int(os.environ.get("KNOWLEDGE_BACKEND_DEEP_CONTEXT_WINDOW_CHUNKS") or 1),
+                "deep_top_k": int(os.environ.get("KNOWLEDGE_BACKEND_DEEP_TOP_K") or 5),
+                "max_evidence_chars": int(os.environ.get("KNOWLEDGE_BACKEND_MAX_EVIDENCE_CHARS") or 12000),
+            },
             "vector_store": {
                 "provider": os.environ.get("KNOWLEDGE_BACKEND_VECTOR_PROVIDER") or "sqlite",
                 "url": os.environ.get("KNOWLEDGE_BACKEND_QDRANT_URL") or "",
@@ -227,6 +238,18 @@ class DisabledKnowledgeBackend:
     def query(self, query: str, limit: int = 5) -> Dict[str, Any]:
         return {"answer": self._status.reason, "citations": []}
 
+    def deep_query(self, query: str, **_: Any) -> Dict[str, Any]:
+        return {
+            "status": "disabled",
+            "message": self._status.reason,
+            "query": query,
+            "evidence_blocks": [],
+            "citations": [],
+            "coverage_terms": [],
+            "missing_terms": [],
+            "confidence": 0.0,
+        }
+
     def list_documents(self) -> List[Dict[str, Any]]:
         return []
 
@@ -312,6 +335,43 @@ class KnowledgeBackendService:
         return self._backend.query(
             query,
             limit=limit,
+            kb_ids=kb_ids,
+            visited_kb_ids=visited_kb_ids,
+            trace_id=trace_id,
+        )
+
+    def deep_query(
+        self,
+        query: str,
+        limit: int = 5,
+        *,
+        context_window: Optional[int] = None,
+        max_evidence_chars: Optional[int] = None,
+        kb_ids: Optional[Iterable[str]] = None,
+        visited_kb_ids: Optional[Iterable[str]] = None,
+        trace_id: str = "",
+    ) -> Dict[str, Any]:
+        if not self.config.enabled:
+            return {
+                "status": "disabled",
+                "message": "Knowledge backend is disabled.",
+                "query": query,
+                "evidence_blocks": [],
+                "citations": [],
+                "coverage_terms": [],
+                "missing_terms": [],
+                "confidence": 0.0,
+                "trace_id": trace_id,
+                "visited_kb_ids": list(visited_kb_ids or []),
+            }
+        retrieval = self.config.retrieval or {}
+        window = context_window if context_window is not None else retrieval.get("context_window_chunks", 1)
+        evidence_chars = max_evidence_chars if max_evidence_chars is not None else retrieval.get("max_evidence_chars", 12000)
+        return self._backend.deep_query(
+            query,
+            limit=limit,
+            context_window=int(window or 0),
+            max_evidence_chars=int(evidence_chars or 12000),
             kb_ids=kb_ids,
             visited_kb_ids=visited_kb_ids,
             trace_id=trace_id,
@@ -1168,7 +1228,7 @@ def dispatch_provider_request(method: str, path: str, payload: Dict[str, Any]) -
         return {
             "provider_id": "cowagent-local-kb",
             "version": "1.0",
-            "supported_methods": ["search", "query", "resolve_entity", "graph_neighbors", "verify_source"],
+            "supported_methods": ["search", "query", "deep_query", "resolve_entity", "graph_neighbors", "verify_source"],
             "auth_required": True,
             "status": status,
             "knowledge_bases": _to_jsonable(_call_or_default(service, "list_knowledge_bases", [])),
@@ -1194,6 +1254,22 @@ def dispatch_provider_request(method: str, path: str, payload: Dict[str, Any]) -
             service.query(
                 query,
                 limit=_payload_limit(payload),
+                kb_ids=payload.get("kb_ids"),
+                visited_kb_ids=visited_kb_ids,
+                trace_id=trace_id,
+            )
+        )
+        result["trace_id"] = trace_id
+        result["visited_kb_ids"] = visited_kb_ids
+        return result
+    if method == "POST" and path == "deep_query":
+        query = _payload_query(payload)
+        result = _to_jsonable(
+            service.deep_query(
+                query,
+                limit=_payload_limit(payload),
+                context_window=payload.get("context_window"),
+                max_evidence_chars=payload.get("max_evidence_chars"),
                 kb_ids=payload.get("kb_ids"),
                 visited_kb_ids=visited_kb_ids,
                 trace_id=trace_id,
@@ -1403,6 +1479,116 @@ def _relation_payload(relation: Any) -> Dict[str, Any]:
         }
     )
     return data
+
+
+def _deep_query_answer_policy() -> str:
+    return (
+        "Use evidence_blocks as source evidence only. Distinguish directly supported facts, "
+        "inferences from those facts, and insufficient evidence. For layered technical concepts, "
+        "separate protocol/logical behavior, physical mapping, implementation or monitor view, "
+        "and state/step boundaries."
+    )
+
+
+def _build_deep_evidence_blocks(
+    chunks: List[KnowledgeChunk],
+    documents: Mapping[str, KnowledgeDocument],
+    source_spans: Mapping[str, Any],
+    hit_chunk_ids: Iterable[str],
+    hit_scores: Mapping[str, float],
+    max_evidence_chars: int,
+) -> List[Dict[str, Any]]:
+    blocks: List[Dict[str, Any]] = []
+    used_chars = 0
+    hit_ids = set(hit_chunk_ids)
+    for chunk in chunks:
+        document = documents.get(chunk.document_id)
+        source_path = document.source_path if document else ""
+        title = document.title if document else chunk.document_id
+        span_payloads = []
+        for span_id in chunk.source_span_ids:
+            span = source_spans.get(span_id)
+            if span is not None:
+                span_payloads.append(
+                    {
+                        "id": span.id,
+                        "page_start": span.page_start,
+                        "page_end": span.page_end,
+                        "section": span.section_path,
+                    }
+                )
+        text = _compact_block_text(chunk.text)
+        remaining = max_evidence_chars - used_chars
+        if remaining <= 0:
+            break
+        truncated = False
+        if len(text) > remaining:
+            text = text[: max(0, remaining)].rstrip()
+            truncated = True
+        block = {
+            "chunk_id": chunk.id,
+            "document_id": chunk.document_id,
+            "hit": chunk.id in hit_ids,
+            "ordinal": chunk.ordinal,
+            "page_start": chunk.page_start,
+            "page_end": chunk.page_end,
+            "score": round(float(hit_scores.get(chunk.id, 0.0)), 3) if chunk.id in hit_ids else None,
+            "section": chunk.section_path,
+            "source": source_path,
+            "source_span_ids": list(chunk.source_span_ids),
+            "source_spans": span_payloads,
+            "title": title,
+            "truncated": truncated,
+            "text": text,
+        }
+        blocks.append(block)
+        used_chars += len(text)
+        if truncated:
+            break
+    return blocks
+
+
+def _deep_query_citations(hits: List[Any], documents: Mapping[str, KnowledgeDocument]) -> List[Dict[str, Any]]:
+    citations = []
+    for index, hit in enumerate(hits, start=1):
+        document = documents.get(hit.document_id)
+        citations.append(
+            {
+                "index": index,
+                "document_id": hit.document_id,
+                "chunk_id": hit.chunk_id,
+                "ordinal": hit.ordinal,
+                "title": document.title if document else hit.title,
+                "source_path": document.source_path if document else hit.source_path,
+                "page_start": hit.page_start,
+                "page_end": hit.page_end,
+                "score": round(float(hit.score), 3),
+                "source_span_ids": list(hit.source_span_ids),
+            }
+        )
+    return citations
+
+
+def _matched_terms(terms: Iterable[str], text: str) -> List[str]:
+    text_lower = (text or "").lower()
+    seen = []
+    for term in terms:
+        normalized = str(term or "").strip()
+        if normalized and normalized.lower() in text_lower and normalized not in seen:
+            seen.append(normalized)
+    return seen
+
+
+def _deep_query_confidence(hits: List[Any], coverage_terms: List[str], claim_terms: List[str]) -> float:
+    if not hits:
+        return 0.0
+    hit_score = max(float(getattr(hit, "score", 0.0) if not isinstance(hit, dict) else hit.get("score", 0.0)) for hit in hits)
+    coverage = len(coverage_terms) / max(1, len(claim_terms)) if claim_terms else 1.0
+    return round(max(0.0, min(1.0, (hit_score * 0.7) + (coverage * 0.3))), 3)
+
+
+def _compact_block_text(value: Any) -> str:
+    return re.sub(r"[ \t]+", " ", str(value or "").strip())
 
 
 def _display_canonical_name(entity: Any, requested_term: str) -> str:
@@ -1672,6 +1858,89 @@ class LocalKnowledgeBackend:
             trace_id=trace_id,
         ).to_dict()
 
+    def deep_query(
+        self,
+        question: str,
+        limit: int = 5,
+        context_window: int = 1,
+        max_evidence_chars: int = 12000,
+        kb_ids: Optional[Iterable[str]] = None,
+        visited_kb_ids: Optional[Iterable[str]] = None,
+        trace_id: str = "",
+    ) -> Dict[str, Any]:
+        """Return ordered source evidence expanded around the initial hits."""
+
+        if not self.enabled:
+            return self._disabled_response("deep_query")
+        expanded_query = self._expand_query_aliases(question)
+        storage = self._get_read_storage()
+        hits = storage.search(expanded_query, limit=max(1, int(limit or 5))) if storage is not None else []
+        kb_set = {str(kb_id) for kb_id in kb_ids} if kb_ids else set()
+        if kb_set:
+            hits = [hit for hit in hits if hit.kb_id in kb_set]
+        if not hits or storage is None:
+            return {
+                "status": "insufficient",
+                "query": question,
+                "answer_policy": _deep_query_answer_policy(),
+                "evidence_blocks": [],
+                "citations": [],
+                "coverage_terms": [],
+                "missing_terms": _claim_terms(question),
+                "confidence": 0.0,
+                "trace_id": trace_id,
+                "visited_kb_ids": list(visited_kb_ids or []),
+            }
+
+        selected_chunks: Dict[str, KnowledgeChunk] = {}
+        hit_chunk_ids = {hit.chunk_id for hit in hits}
+        hit_scores = {hit.chunk_id: hit.score for hit in hits}
+        for hit in hits:
+            for chunk in storage.get_chunks_near(hit.document_id, hit.ordinal, context_window):
+                if kb_set and chunk.kb_id not in kb_set:
+                    continue
+                selected_chunks[chunk.id] = chunk
+
+        ordered_chunks = sorted(selected_chunks.values(), key=lambda item: (item.document_id, item.ordinal))
+        source_spans = {
+            span.id: span
+            for span in storage.get_source_spans(
+                span_id for chunk in ordered_chunks for span_id in chunk.source_span_ids
+            )
+        }
+        documents = {}
+        for document_id in sorted({chunk.document_id for chunk in ordered_chunks}):
+            document = storage.get_document(document_id)
+            if document is not None:
+                documents[document_id] = document
+        evidence_blocks = _build_deep_evidence_blocks(
+            ordered_chunks,
+            documents,
+            source_spans,
+            hit_chunk_ids,
+            hit_scores,
+            max_evidence_chars=max(1, int(max_evidence_chars or 12000)),
+        )
+        evidence_text = " ".join(block.get("text", "") for block in evidence_blocks)
+        claim_terms = _claim_terms(question)
+        coverage_terms = _matched_terms(claim_terms, evidence_text)
+        missing_terms = [term for term in claim_terms if term not in set(coverage_terms)]
+        confidence = _deep_query_confidence(hits, coverage_terms, claim_terms)
+        status = "ok" if evidence_blocks and (not claim_terms or coverage_terms) else "insufficient"
+        citations = _deep_query_citations(hits, documents)
+        return {
+            "status": status,
+            "query": question,
+            "answer_policy": _deep_query_answer_policy(),
+            "evidence_blocks": evidence_blocks,
+            "citations": citations,
+            "coverage_terms": coverage_terms,
+            "missing_terms": missing_terms,
+            "confidence": confidence,
+            "trace_id": trace_id,
+            "visited_kb_ids": list(visited_kb_ids or []),
+        }
+
     def resolve_entities(
         self,
         terms: Iterable[str],
@@ -1846,6 +2115,18 @@ class LocalKnowledgeBackend:
                 return {"action": action, "code": 200, "message": "success", "payload": self.search(payload.get("query", ""), payload.get("limit", 5))}
             if action == "query":
                 return {"action": action, "code": 200, "message": "success", "payload": self.query(payload.get("query", "") or payload.get("question", ""), payload.get("limit", 5))}
+            if action == "deep_query":
+                return {
+                    "action": action,
+                    "code": 200,
+                    "message": "success",
+                    "payload": self.deep_query(
+                        payload.get("query", "") or payload.get("question", ""),
+                        limit=payload.get("limit", 5),
+                        context_window=payload.get("context_window", 1),
+                        max_evidence_chars=payload.get("max_evidence_chars", 12000),
+                    ),
+                }
             if action == "stats":
                 return {"action": action, "code": 200, "message": "success", "payload": self.stats()}
             return {"action": action, "code": 400, "message": f"unknown action: {action}", "payload": None}

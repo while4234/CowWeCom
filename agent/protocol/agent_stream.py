@@ -2445,10 +2445,77 @@ class AgentStreamExecutor:
         from agent.knowledge.backend import get_backend_service
 
         retrieval_conf = backend_conf.get("retrieval", {}) if isinstance(backend_conf, dict) else {}
-        limit = int(retrieval_conf.get("final_top_k") or 5)
+        deep_enabled = self._config_bool(retrieval_conf.get("deep_query_enabled", True))
+        use_deep_query = deep_enabled and self._should_use_deep_knowledge(user_message)
+        limit = int(retrieval_conf.get("deep_top_k") or retrieval_conf.get("final_top_k") or 5)
         service = get_backend_service()
+        if use_deep_query and hasattr(service, "deep_query"):
+            bundle = service.deep_query(
+                user_message,
+                limit=limit,
+                context_window=int(retrieval_conf.get("context_window_chunks") or 1),
+                max_evidence_chars=int(retrieval_conf.get("max_evidence_chars") or 12000),
+            )
+            return self._deep_knowledge_bundle_to_hits(bundle)
         results = service.search(user_message, limit=limit)
         return [self._knowledge_hit_to_dict(hit) for hit in results]
+
+    @staticmethod
+    def _should_use_deep_knowledge(user_message: str) -> bool:
+        text = str(user_message or "").lower()
+        strong_triggers = (
+            "协议", "规范", "标准", "spec", "specification", "protocol", "chapter", "section",
+            "状态机", "状态", "step", "步骤", "流程", "sequence", "时序", "timing",
+            "寄存器", "register", "表格", "table", "figure", "映射", "mapping", "repair",
+            "lane", "physical", "logical", "signal", "pattern", "training", "训练",
+            "原文", "source",
+        )
+        question_triggers = ("对比", "区别", "是否", "确认", "依据")
+        domain_triggers = ("知识库", "文档", "资料", "协议", "规范", "标准", "spec", "protocol", "原文", "source")
+        return any(trigger in text for trigger in strong_triggers) or (
+            any(trigger in text for trigger in question_triggers)
+            and any(trigger in text for trigger in domain_triggers)
+        )
+
+    @staticmethod
+    def _config_bool(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() not in {"", "0", "false", "off", "disabled", "no", "n"}
+        return bool(value)
+
+    def _deep_knowledge_bundle_to_hits(self, bundle: Dict[str, Any]) -> List[Dict[str, Any]]:
+        if not isinstance(bundle, dict):
+            return []
+        hits = []
+        common = {
+            "deep_query": True,
+            "status": bundle.get("status"),
+            "answer_policy": bundle.get("answer_policy"),
+            "coverage_terms": bundle.get("coverage_terms") or [],
+            "missing_terms": bundle.get("missing_terms") or [],
+            "confidence": bundle.get("confidence"),
+        }
+        for block in bundle.get("evidence_blocks") or []:
+            if not isinstance(block, dict):
+                continue
+            hit = {
+                **common,
+                "chunk_id": block.get("chunk_id"),
+                "document_id": block.get("document_id"),
+                "hit": block.get("hit"),
+                "ordinal": block.get("ordinal"),
+                "page_start": block.get("page_start"),
+                "page_end": block.get("page_end"),
+                "score": block.get("score"),
+                "section": block.get("section"),
+                "source_path": block.get("source"),
+                "source_span_ids": block.get("source_span_ids") or [],
+                "snippet": block.get("text") or "",
+                "title": block.get("title"),
+                "truncated": block.get("truncated"),
+            }
+            hits.append(hit)
+        return hits
 
     def _retrieve_markdown_knowledge(self, user_message: str) -> List[Dict[str, Any]]:
         memory_manager = getattr(self.agent, "memory_manager", None)
@@ -2529,6 +2596,23 @@ class AgentStreamExecutor:
             chunk_id = self._compact_knowledge_text(hit.get("chunk_id") or hit.get("chunk") or "")
             if chunk_id:
                 record["chunk"] = chunk_id
+            for key in (
+                "answer_policy",
+                "confidence",
+                "coverage_terms",
+                "deep_query",
+                "document_id",
+                "hit",
+                "missing_terms",
+                "ordinal",
+                "section",
+                "source_span_ids",
+                "status",
+                "truncated",
+            ):
+                value = hit.get(key)
+                if value not in (None, "", [], {}):
+                    record[key] = value
             line = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             projected = total_chars + 2 + len(line)
             if projected > max_chars:

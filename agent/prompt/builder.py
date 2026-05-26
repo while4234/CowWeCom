@@ -210,6 +210,8 @@ def _build_tooling_section(tools: List[Any], language: str) -> List[str]:
 
     lines = [
         "## 🔧 工具系统",
+        "For source-backed protocol/specification questions, prefer `knowledge_query(action=\"deep_query\")` so local scripts expand neighboring source chunks before you answer.",
+        "When using retrieved evidence, separate direct source support, inference, and insufficient evidence; distinguish logical/protocol behavior, physical mapping, implementation or monitor viewpoint, and state/step boundaries when relevant.",
         "",
         "可用工具（名称大小写敏感，严格按列表调用）:",
         "\n".join(tool_lines),

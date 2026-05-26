@@ -239,6 +239,10 @@
       "vector_top_k": 80,
       "rerank_top_k": 30,
       "final_top_k": 10,
+      "deep_query_enabled": true,
+      "context_window_chunks": 1,
+      "deep_top_k": 5,
+      "max_evidence_chars": 12000,
       "enable_federated": true,
       "max_federated_hops": 2,
       "source_verification": "auto"

@@ -251,6 +251,24 @@ class KnowledgeStorage:
         ).fetchall()
         return [_row_to_chunk(row) for row in rows]
 
+    def get_chunks_near(self, document_id: str, ordinal: int, window: int = 1) -> List[KnowledgeChunk]:
+        """Return chunks around an ordinal in document order."""
+
+        if not document_id or ordinal <= 0:
+            return []
+        radius = max(0, int(window or 0))
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM chunks
+            WHERE document_id = ?
+              AND ordinal BETWEEN ? AND ?
+            ORDER BY ordinal ASC
+            """,
+            (document_id, max(1, ordinal - radius), ordinal + radius),
+        ).fetchall()
+        return [_row_to_chunk(row) for row in rows]
+
     def ensure_knowledge_base(self, kb: KnowledgeBase) -> None:
         now = _now()
         self.conn.execute(
@@ -881,6 +899,7 @@ def _row_to_hit(row: sqlite3.Row, score: float) -> SearchHit:
     return SearchHit(
         document_id=row["document_id"],
         chunk_id=row["id"],
+        ordinal=int(row["ordinal"]),
         title=row["title"],
         source_path=row["source_path"],
         page_start=int(row["page_start"]),

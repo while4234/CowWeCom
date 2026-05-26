@@ -161,6 +161,7 @@ class SearchHit:
 
     document_id: str
     chunk_id: str
+    ordinal: int
     title: str
     source_path: str
     page_start: int

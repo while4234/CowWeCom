@@ -13,14 +13,17 @@ class KnowledgeQueryTool(BaseTool):
     name: str = "knowledge_query"
     description: str = (
         "Query the optional local structured knowledge backend. Use this for "
-        "source-backed local knowledge, citations, entity resolution and graph neighbors."
+        "source-backed local knowledge, deep evidence bundles, citations, entity resolution and graph neighbors. "
+        "For specifications, protocols, state machines, step-by-step flows, mappings, timing, registers, tables, "
+        "or comparison/confirmation questions, prefer action=deep_query before answering. If deep_query returns "
+        "insufficient evidence or missing key terms, say what is not proven instead of giving a certain conclusion."
     )
     params: dict = {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "description": "Action: query, search, resolve_entities, graph_neighbors, verify_source, status.",
+                "description": "Action: deep_query, query, search, resolve_entities, graph_neighbors, verify_source, status.",
             },
             "query": {
                 "type": "string",
@@ -42,6 +45,14 @@ class KnowledgeQueryTool(BaseTool):
             "limit": {
                 "type": "integer",
                 "description": "Maximum search/query results to return.",
+            },
+            "context_window": {
+                "type": "integer",
+                "description": "For deep_query, number of adjacent chunks to include before and after each hit.",
+            },
+            "max_evidence_chars": {
+                "type": "integer",
+                "description": "For deep_query, maximum source text characters returned in evidence blocks.",
             },
             "max_hops": {
                 "type": "integer",
@@ -70,6 +81,17 @@ class KnowledgeQueryTool(BaseTool):
             if action == "query":
                 return ToolResult.success(
                     _jsonable(service.query(str(params.get("query") or ""), limit=int(params.get("limit") or 5)))
+                )
+            if action == "deep_query":
+                return ToolResult.success(
+                    _jsonable(
+                        service.deep_query(
+                            str(params.get("query") or ""),
+                            limit=int(params.get("limit") or 5),
+                            context_window=_optional_int(params.get("context_window")),
+                            max_evidence_chars=_optional_int(params.get("max_evidence_chars")),
+                        )
+                    )
                 )
             if action == "resolve_entities":
                 terms = params.get("terms") or []
@@ -104,3 +126,9 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, list):
         return [_jsonable(item) for item in value]
     return value
+
+
+def _optional_int(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    return int(value)

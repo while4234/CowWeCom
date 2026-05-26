@@ -71,6 +71,43 @@ class TestAgentStreamKnowledgeContext(unittest.TestCase):
         self.assertEqual(second["page"], "9")
         self.assertIsNone(second["score"])
 
+    def test_format_retrieved_knowledge_preserves_deep_evidence_metadata(self):
+        executor = self._executor()
+        hits = [
+            {
+                "answer_policy": "separate direct support and inference",
+                "chunk_id": "chunk-1",
+                "confidence": 0.9,
+                "coverage_terms": ["TVLD_L"],
+                "deep_query": True,
+                "document_id": "doc-1",
+                "hit": True,
+                "missing_terms": ["TRDVLD_L"],
+                "ordinal": 4,
+                "page_start": 117,
+                "page_end": 118,
+                "score": 0.95,
+                "section": "MBINIT.REPAIRVAL",
+                "source_path": "ucie.pdf",
+                "source_span_ids": ["span-1"],
+                "snippet": "Step 12 repeats Step 1 through Step 4.",
+                "status": "ok",
+                "title": "UCIe",
+                "truncated": False,
+            }
+        ]
+
+        with patch("config.conf", return_value={"knowledge_auto_retrieval_max_chars": 4000}):
+            text = executor._format_retrieved_knowledge(hits)
+
+        record = json.loads(text.split("\n\n")[1])
+        self.assertTrue(record["deep_query"])
+        self.assertEqual(record["chunk"], "chunk-1")
+        self.assertEqual(record["document_id"], "doc-1")
+        self.assertEqual(record["section"], "MBINIT.REPAIRVAL")
+        self.assertEqual(record["source_span_ids"], ["span-1"])
+        self.assertEqual(record["status"], "ok")
+
     def test_format_retrieved_knowledge_respects_max_chars_without_mid_record_corruption(self):
         executor = self._executor()
         hits = [
@@ -101,6 +138,75 @@ class TestAgentStreamKnowledgeContext(unittest.TestCase):
 
         backend.assert_called_once()
         markdown.assert_not_called()
+
+    def test_retrieve_backend_knowledge_uses_deep_query_for_protocol_questions(self):
+        executor = self._executor()
+        service = type(
+            "Service",
+            (),
+            {
+                "deep_query": lambda self, *args, **kwargs: {
+                    "status": "ok",
+                    "answer_policy": "policy",
+                    "coverage_terms": ["protocol"],
+                    "missing_terms": [],
+                    "confidence": 1.0,
+                    "evidence_blocks": [
+                        {
+                            "chunk_id": "chunk-1",
+                            "document_id": "doc-1",
+                            "hit": True,
+                            "ordinal": 1,
+                            "page_start": 1,
+                            "page_end": 1,
+                            "score": 1.0,
+                            "section": "Section",
+                            "source": "spec.pdf",
+                            "source_span_ids": ["span-1"],
+                            "text": "protocol evidence",
+                            "title": "Spec",
+                            "truncated": False,
+                        }
+                    ],
+                },
+                "search": lambda self, *args, **kwargs: [],
+            },
+        )()
+
+        with patch("agent.knowledge.backend.get_backend_service", return_value=service):
+            hits = executor._retrieve_backend_knowledge(
+                "请确认协议 Step 1 through Step 4",
+                {"retrieval": {"deep_query_enabled": True, "deep_top_k": 3}},
+            )
+
+        self.assertEqual(hits[0]["snippet"], "protocol evidence")
+        self.assertTrue(hits[0]["deep_query"])
+        self.assertEqual(hits[0]["source_span_ids"], ["span-1"])
+
+    def test_retrieve_backend_knowledge_can_disable_deep_query(self):
+        executor = self._executor()
+        service = type(
+            "Service",
+            (),
+            {
+                "deep_query": lambda self, *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
+                "search": lambda self, *args, **kwargs: [{"title": "Search", "snippet": "fallback"}],
+            },
+        )()
+
+        with patch("agent.knowledge.backend.get_backend_service", return_value=service):
+            hits = executor._retrieve_backend_knowledge(
+                "请确认协议 Step 1",
+                {"retrieval": {"deep_query_enabled": False, "final_top_k": 2}},
+            )
+
+        self.assertEqual(hits[0]["snippet"], "fallback")
+
+    def test_deep_knowledge_trigger_requires_technical_context_for_generic_questions(self):
+        executor = self._executor()
+
+        self.assertFalse(executor._should_use_deep_knowledge("今天是否要带伞"))
+        self.assertTrue(executor._should_use_deep_knowledge("请确认 UCIe 协议 Step 12 的原文依据"))
 
     def test_build_knowledge_context_falls_back_to_markdown_when_backend_auto_inject_disabled(self):
         executor = self._executor()
