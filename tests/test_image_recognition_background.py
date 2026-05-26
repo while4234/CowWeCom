@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import tempfile
 import threading
 import time
@@ -219,6 +220,92 @@ class TestImageRecognitionManager(unittest.TestCase):
             self.assertIn("后台识图事实：A tray meal", prompt)
             self.assertIn("当前称呼：小刘", prompt)
             self.assertIn("今天中午随便吃点", prompt)
+
+    def test_private_bill_screenshot_auto_records_and_group_does_not(self):
+        with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as db_root:
+            conf()["agent_workspace"] = workspace
+            conf()["china_expense_ledger_private_auto"] = True
+            db_path = Path(db_root) / "ledger.db"
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            private_record = ImageRecognitionRecord(
+                record_id="record-bill-private",
+                session_id="session-private",
+                channel_type="wecom_bot",
+                image_hash="hash-private",
+                image_path=str(Path(workspace) / "bill.png"),
+                is_group=False,
+                status="done",
+                result="微信支付 支付成功 美团外卖 商品: 黄焖鸡 支付金额 ¥28.50 交易单号 123456789012",
+                completed_at=time.time(),
+            )
+            group_record = ImageRecognitionRecord(
+                record_id="record-bill-group",
+                session_id="session-group",
+                channel_type="wecom_bot",
+                image_hash="hash-group",
+                image_path=str(Path(workspace) / "group-bill.png"),
+                is_group=True,
+                status="done",
+                result=private_record.result,
+                completed_at=time.time(),
+            )
+            with manager._lock:
+                manager._records[private_record.record_id] = private_record
+                manager._records[group_record.record_id] = group_record
+
+            context = Context(
+                ContextType.IMAGE,
+                private_record.image_path,
+                kwargs={
+                    "session_id": "session-private",
+                    "conversation_id": "chat-private",
+                    "memory_user_id": "u1",
+                    "channel_type": "wecom_bot",
+                },
+            )
+            with patch.dict(os.environ, {"CHINA_EXPENSE_LEDGER_DB": str(db_path)}):
+                private_reply = manager.public_reply_for(private_record, context=context)
+                group_reply = manager.public_reply_for(group_record, context=context)
+
+            self.assertIn("已记账", private_reply)
+            self.assertIn("撤销", private_reply)
+            self.assertNotIn("已记账", group_reply)
+            conn = sqlite3.connect(str(db_path))
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+                self.assertEqual(count, 1)
+            finally:
+                conn.close()
+
+    def test_price_menu_image_does_not_auto_record_as_bill(self):
+        with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as db_root:
+            conf()["agent_workspace"] = workspace
+            db_path = Path(db_root) / "ledger.db"
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            record = ImageRecognitionRecord(
+                record_id="record-menu",
+                session_id="session-menu",
+                channel_type="wecom_bot",
+                image_hash="hash-menu",
+                image_path=str(Path(workspace) / "menu.png"),
+                is_group=False,
+                status="done",
+                result="美团商家菜单 黄焖鸡 28 元 可乐 5 元 加入购物车 满 30 减 5",
+                completed_at=time.time(),
+            )
+            with manager._lock:
+                manager._records[record.record_id] = record
+            context = Context(
+                ContextType.IMAGE,
+                record.image_path,
+                kwargs={"session_id": "session-menu", "memory_user_id": "u1"},
+            )
+            with patch.dict(os.environ, {"CHINA_EXPENSE_LEDGER_DB": str(db_path)}), \
+                    patch.object(ImageRecognitionManager, "_synthesize_casual_reply", return_value="菜单图。"):
+                reply = manager.public_reply_for(record, context=context)
+
+            self.assertEqual(reply, "菜单图。")
+            self.assertFalse(db_path.exists())
 
 
 class TestVisionReasoningEffort(unittest.TestCase):

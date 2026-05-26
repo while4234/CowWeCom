@@ -92,9 +92,36 @@ python "<base_dir>/scripts/ledger.py" record-json --json "{\"user_id\":\"local-u
 
 ## Screenshot Workflow
 
-For screenshots, first use CowWeCom vision or the active model's image-reading ability to extract visible text and fields. Then call `record-json` with `source_type=image`.
+For screenshots, first use CowWeCom vision or the active model's image-reading ability to extract visible text and fields. Then call `analyze-bill` or `record-json` with `source_type=image`.
 
 Do not pass the raw image path to this helper for OCR. This helper does not parse images.
+
+Private-chat automation:
+
+- In private chat, if the image is clearly a bill and has amount, app/platform, item/merchant, and category confidence, use `analyze-bill` and auto-record it. Reply: `已记账。如果不需要记账，请回复“不记账”或“撤销记账”，我会撤销这笔。`
+- In group chat, never auto-record. Group images may be recognized for context, but ledger writes require private chat.
+- If it looks like a bill but the app/platform, category, item, merchant, amount, or direction is unclear, ask only for the missing fields and do not invent them.
+- After the user answers a missing field, call `confirm-bill`. This stores screenshot UI rules plus item/merchant learning rules, so the same UI or same item can be recognized later without asking again.
+- If the user replies `不记账`, `撤销记账`, `取消记账`, or similar after an auto-recorded bill, call `undo-bill` for the same user/chat.
+- Do not treat menus, product lists, coupons, or shopping-cart pages with visible prices as bills unless there are bill markers such as 支付成功, 交易成功, 账单详情, 订单编号, 交易单号, or 付款方式.
+
+Analyze a vision result:
+
+```bash
+python "<base_dir>/scripts/ledger.py" analyze-bill --json "{\"user_id\":\"local-user\",\"chat_id\":\"private-chat\",\"record_id\":\"image-id\",\"raw_text\":\"微信支付 支付成功 美团外卖 商品: 黄焖鸡 支付金额 ¥28.50 交易单号 123456789012\"}"
+```
+
+Confirm a pending bill after the user answers:
+
+```bash
+python "<base_dir>/scripts/ledger.py" confirm-bill --json "{\"context_id\":\"<context_id>\",\"item_name\":\"二手键盘\",\"category\":\"数码家电\"}"
+```
+
+Undo the latest auto-recorded bill for the same private chat:
+
+```bash
+python "<base_dir>/scripts/ledger.py" undo-bill --user-id "local-user" --chat-id "private-chat"
+```
 
 If the screenshot says 微信支付 and shows 美团外卖 ¥28.50:
 
@@ -141,10 +168,13 @@ Query recent records:
 python "<base_dir>/scripts/ledger.py" query --user-id "local-user" --period month --limit 20
 ```
 
-Summarize:
+Summarize. The helper keeps per-user day/week/month summary caches for fast today, week, month, and last-month answers:
 
 ```bash
 python "<base_dir>/scripts/ledger.py" summary --user-id "local-user" --period month
+python "<base_dir>/scripts/ledger.py" summary --user-id "local-user" --period week
+python "<base_dir>/scripts/ledger.py" summary --user-id "local-user" --period today
+python "<base_dir>/scripts/ledger.py" summary --user-id "local-user" --period last_month
 ```
 
 Correct and learn:

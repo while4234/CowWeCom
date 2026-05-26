@@ -47,7 +47,7 @@ with machine setup notes and any required user-provided keys.
 | Skill | Purpose | External key/setup needed |
 |---|---|---|
 | `capi-usage-monitor` | Query and snapshot CAPI/Codex quota and usage. | `CAPI_API_KEY` for quota-card checks; `CAPI_MONTHLY_API_KEY` for monthly-card checks. |
-| `china-expense-ledger` | Local-only China mainland expense ledger for user-provided text, vision-extracted screenshots, and Alipay/WeChat CSV exports. | No external API key; stores SQLite data locally. |
+| `china-expense-ledger` | Local-only China mainland expense ledger for user-provided text, private-chat bill screenshot automation with clarification/undo learning, and Alipay/WeChat CSV exports. | No external API key; stores SQLite data locally. |
 | `code-update` | Safely fast-forward CowWechat from GitHub while protecting local state. | No API key; Git credentials stay local. |
 | `cowagent-self-evolution` | Record and reuse local execution lessons such as Windows shell dialect failures without showing them in chat. | No external API key; needs Python. |
 | `cowagent-workflow-auditor` | Privacy-safe audit of CowAgent/CowWechat logs, tool-call traces, workspace/tmp artifacts, and skills/plugins to identify repeated workflows worth turning into reusable skills. | No external API key; needs Python. |
