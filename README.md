@@ -393,6 +393,7 @@ public_protocol_knowledge/
 | 文档处理 | `docx`、`pptx`、`xlsx`、`pdf` |
 | 检索与生活工具 | `reliable-search`、`quick-weather`、`fast-market-price` |
 | 用量与额度 | `token-usage-tracker`、`codex-quota-query`、`capi-usage-monitor` |
+| 工作进度与周报 | `work-progress-reporter`，私聊记录个人工作进度、临时任务和收获，并在周五生成中文周报；不同用户数据互相隔离 |
 | 旅行与本地助手 | `travel-manager`、`amap-cowwechat`、`takeout-lite-recommender`、`shopping-lite-compare` |
 
 Agent 可用的内置工具包括文件读写、编辑、目录查看、终端执行、定时任务、发送消息、网页搜索、网页抓取、浏览器、视觉识别、知识库查询、图像生成任务、社交桥和 MCP。
@@ -465,6 +466,7 @@ CowWeCom/
 
 | 日期 | 更新 |
 | --- | --- |
+| 2026-05-26 | 新增 `work-progress-reporter` Skill：所有用户都可在私聊中独立管理本周/下周工作计划、每日进度、临时任务、收获和周末加班安排；真实状态写入各自 `memory_user_id` 私有目录，群聊触发只做隐私引导，周五可生成中文 Markdown 周报 |
 | 2026-05-26 | 修复 LLM backend status 的当前后端额度展示：CAPI 额度卡、CAPI 月卡和 Codex 的手动额度查询都会回写统一的 `backend_quota` 状态缓存，`/backend status` 始终展示当前后端已记录的最新值；默认每 50 次非静默用户模型调用会在后台刷新当前后端额度 |
 | 2026-05-26 | 新增 `project-restart` Skill：管理员对 Agent 说“重启/重启项目/重启服务”时默认走该技能，先派生延迟 worker 再复用 `cli.cli restart` 关闭当前项目所有匹配 `app.py` 的进程并拉起新服务，避免运行中的 Agent 直接杀掉自己的工具子进程 |
 | 2026-05-26 | 修复 CAPI 月卡日重置后的后端状态展示：午夜自动切回 `capi_monthly` 时会同步重置月卡状态缓存，避免 `/backend status` 把今天的 `daily_monthly_card_reset` 和昨天的 `monthly_quota_low`/`remaining=0` 拼在一起；本次也用真实月卡查询确认服务端剩余额度已恢复 |

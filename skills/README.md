@@ -72,6 +72,7 @@ with machine setup notes and any required user-provided keys.
 | `stock-analysis` | Analyze stocks and cryptocurrencies, portfolios, watchlists, dividends, and trend signals. | No external API key; requires `uv`. |
 | `token-usage-tracker` | Track local per-user token usage. | No API key. |
 | `travel-manager` | Plan multi-destination trips, family travel logistics, costs, and itineraries. | No external API key. |
+| `work-progress-reporter` | 中文个人工作进度和周报助手；每位用户私聊独立记录计划、日报、临时任务、收获和周报。 | No external API key. |
 | `wechat-article-search` | Search WeChat public-account articles and return titles, summaries, dates, sources, and links. | No external API key. |
 | `xlsx` | Create, read, edit, clean, format, chart, and analyze spreadsheet files. | No external API key. |
 
