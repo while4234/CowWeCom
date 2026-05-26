@@ -250,13 +250,176 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         from plugins import Event, EventAction, EventContext
 
         plugin = _load_cow_cli_plugin()
-        context = Context(ContextType.TEXT, "请切回 Codex backend")
+        context = Context(ContextType.TEXT, "请切回 Codex backend", kwargs={"actor_role": "admin"})
         e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
 
         plugin.on_handle_context(e_context)
 
         self.assertEqual(e_context.action, EventAction.BREAK_PASS)
         self.assertIn("codex", e_context["reply"].content)
+
+    def test_high_risk_cli_command_requires_admin(self):
+        from bridge.context import Context, ContextType
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        context = Context(ContextType.TEXT, "/backend capi", kwargs={"actor_role": "user"})
+        e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
+
+        plugin.on_handle_context(e_context)
+
+        self.assertEqual(e_context.action, EventAction.BREAK_PASS)
+        self.assertIn("需要管理员权限", e_context["reply"].content)
+
+    def test_high_risk_natural_command_requires_admin(self):
+        from bridge.context import Context, ContextType
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        context = Context(ContextType.TEXT, "请切回 Codex backend", kwargs={"actor_role": "user"})
+        e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
+
+        plugin.on_handle_context(e_context)
+
+        self.assertEqual(e_context.action, EventAction.BREAK_PASS)
+        self.assertIn("需要管理员权限", e_context["reply"].content)
+
+    def test_public_cli_command_remains_available_to_normal_user(self):
+        from bridge.context import Context, ContextType
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        context = Context(ContextType.TEXT, "/backend status", kwargs={"actor_role": "user"})
+        e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
+
+        with patch("common.llm_backend_router.describe_status", return_value="backend status ok"):
+            plugin.on_handle_context(e_context)
+
+        self.assertEqual(e_context.action, EventAction.BREAK_PASS)
+        self.assertEqual(e_context["reply"].content, "backend status ok")
+
+    def test_public_backend_quota_subcommands_remain_available_to_normal_user(self):
+        plugin = _load_cow_cli_plugin()
+
+        self.assertEqual(plugin._command_access_level("backend", "quota capi"), "public")
+        self.assertEqual(plugin._command_access_level("backend", "capi quota"), "public")
+        self.assertEqual(plugin._command_access_level("backend", "capi-monthly quota"), "public")
+        self.assertEqual(plugin._command_access_level("backend", "capi"), "admin")
+
+    def test_help_filters_commands_by_user_role(self):
+        from bridge.context import Context, ContextType
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        user_context = Context(ContextType.TEXT, "/help", kwargs={"actor_role": "user"})
+        user_event = EventContext(Event.ON_HANDLE_CONTEXT, {"context": user_context})
+        admin_context = Context(ContextType.TEXT, "/help", kwargs={"actor_role": "admin"})
+        admin_event = EventContext(Event.ON_HANDLE_CONTEXT, {"context": admin_context})
+
+        plugin.on_handle_context(user_event)
+        plugin.on_handle_context(admin_event)
+
+        user_help = user_event["reply"].content
+        admin_help = admin_event["reply"].content
+        self.assertIn("/status", user_help)
+        self.assertIn("查询本月账单", user_help)
+        self.assertIn("管理员命令已隐藏", user_help)
+        self.assertNotIn("/backend capi：切到 CAPI 额度卡", user_help)
+        self.assertNotIn("/skill install <名称>：安装技能", user_help)
+        self.assertNotIn("/config <key> <val>：修改配置", user_help)
+        self.assertIn("/backend capi：切到 CAPI 额度卡", admin_help)
+        self.assertIn("/skill install <名称>：安装技能", admin_help)
+        self.assertIn("/config <key> <val>：修改配置", admin_help)
+
+    def test_new_cli_commands_default_to_admin_only(self):
+        plugin = _load_cow_cli_plugin()
+
+        self.assertEqual(plugin._command_access_level("future-command"), "admin")
+
+    def test_group_sender_can_be_admin_for_cli_commands(self):
+        from config import conf
+        from bridge.context import Context, ContextType
+        from plugins import Event, EventAction, EventContext
+
+        previous_admin_users = conf().get("agent_admin_users")
+        conf()["agent_admin_users"] = ["wecom_bot:sender-a"]
+        try:
+            plugin = _load_cow_cli_plugin()
+            context = Context(
+                ContextType.TEXT,
+                "/backend capi",
+                kwargs={
+                    "actor_role": "user",
+                    "actor_id": "wecom_bot:group:chat-a",
+                    "channel_type": "wecom_bot",
+                    "group_sender_id": "sender-a",
+                },
+            )
+            e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
+
+            plugin.on_handle_context(e_context)
+        finally:
+            if previous_admin_users is None:
+                conf().pop("agent_admin_users", None)
+            else:
+                conf()["agent_admin_users"] = previous_admin_users
+
+        self.assertEqual(e_context.action, EventAction.BREAK_PASS)
+        self.assertIn("switched to capi", e_context["reply"].content)
+
+    def test_ledger_natural_query_uses_context_memory_user_id(self):
+        from bridge.context import Context, ContextType
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        context = Context(
+            ContextType.TEXT,
+            "查询本日账单",
+            kwargs={
+                "memory_user_id": "weixin-user-memory",
+                "channel_type": "weixin",
+                "session_id": "weixin-session",
+            },
+        )
+        e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
+        summary = {
+            "count": 1,
+            "totals": {
+                "expense_cents": 9988,
+                "income_cents": 0,
+                "refund_cents": 0,
+                "transfer_cents": 0,
+            },
+            "by_category": {"AI工具": 9988},
+        }
+        fake_ledger = SimpleNamespace(
+            db_path_from_env=lambda: Path("ledger.db"),
+            open_db=lambda path: SimpleNamespace(close=lambda: None),
+            init_db=lambda conn: None,
+            summarize_transactions=lambda conn, user_id, period: summary,
+        )
+
+        with patch.object(plugin, "_load_china_expense_ledger", return_value=fake_ledger) as load_ledger:
+            plugin.on_handle_context(e_context)
+
+        self.assertEqual(e_context.action, EventAction.BREAK_PASS)
+        self.assertIn("本地账单", e_context["reply"].content)
+        self.assertIn("¥99.88", e_context["reply"].content)
+        self.assertIn("AI工具", e_context["reply"].content)
+        load_ledger.assert_called_once()
+
+    def test_ledger_natural_query_requires_context_memory_user_id(self):
+        from bridge.context import Context, ContextType
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        context = Context(ContextType.TEXT, "查询本月消费", kwargs={"channel_type": "wecom_bot"})
+        e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
+
+        plugin.on_handle_context(e_context)
+
+        self.assertEqual(e_context.action, EventAction.BREAK_PASS)
+        self.assertIn("没有识别到当前用户的记账身份", e_context["reply"].content)
 
     def test_execute_monthly_quota_uses_monthly_provider_key(self):
         from config import conf

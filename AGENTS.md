@@ -38,6 +38,13 @@ checkout path.
 - When `git fetch`, `git pull`, or `git rebase` shows that `origin/main` has new code commits and those commits did not update the root `README.md`, Codex must automatically update `README.md` to cover those remote code changes before finishing the task, committing, or pushing.
 - Keep the root README Chinese, CowWeCom-focused, and aligned with actually developed/tested Weixin and WeCom scope. Do not reintroduce upstream promotional/contact material or unverified channel setup instructions.
 
+## CowCli Permission Policy
+
+- Chat-visible CowCli commands must be explicitly classified by risk. Low-risk read-only/self-scoped commands may be public; high-risk commands that mutate global runtime state, install/uninstall/enable/disable skills, change backend/config/knowledge/memory state, expose logs, install dependencies, run restart/process actions, or touch sensitive local state must require admin.
+- New CowCli commands must default to admin-only until deliberately reviewed and added to the access table.
+- `/help` must be role-aware: ordinary users should only see commands they can run, while administrators can see the full command surface.
+- Personal ledger commands should use the current chat context's `memory_user_id`; never fall back to placeholder IDs such as `local-user`. In group contexts, admin checks must consider the actual sender id when available, not only the group actor id.
+
 ## Required CowWeCom Publish Flow
 
 1. Run the safe upload preflight before staging:

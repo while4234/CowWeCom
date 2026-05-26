@@ -16,6 +16,7 @@ Does NOT match:
 """
 
 import base64
+import importlib.util
 import json
 import os
 import re
@@ -38,7 +39,7 @@ KNOWN_COMMANDS = {
     "help", "version", "status", "logs",
     "start", "stop", "restart",
     "skill", "context", "config",
-    "knowledge", "memory", "backend", "updates",
+    "knowledge", "memory", "backend", "updates", "ledger",
     "install-browser",
 }
 
@@ -47,6 +48,30 @@ CLI_ONLY_COMMANDS = {"start", "stop", "restart"}
 
 # Commands that can only run from chat (need access to in-process memory)
 CHAT_ONLY_COMMANDS = set()  # context is allowed in both, but behaves differently
+
+ACCESS_PUBLIC = "public"
+ACCESS_ADMIN = "admin"
+
+# Every chat CLI command must have an access policy. Missing policies default
+# to admin-only so newly added commands are not accidentally exposed.
+COMMAND_ACCESS = {
+    "help": ACCESS_PUBLIC,
+    "version": ACCESS_PUBLIC,
+    "status": ACCESS_PUBLIC,
+    "logs": ACCESS_ADMIN,
+    "start": ACCESS_ADMIN,
+    "stop": ACCESS_ADMIN,
+    "restart": ACCESS_ADMIN,
+    "skill": ACCESS_PUBLIC,
+    "context": ACCESS_PUBLIC,
+    "config": ACCESS_ADMIN,
+    "knowledge": ACCESS_PUBLIC,
+    "memory": ACCESS_PUBLIC,
+    "backend": ACCESS_PUBLIC,
+    "updates": ACCESS_ADMIN,
+    "ledger": ACCESS_PUBLIC,
+    "install-browser": ACCESS_ADMIN,
+}
 
 QUOTA_ALIASES = {
     "查询codex额度",
@@ -70,6 +95,15 @@ _SKILL_STANDALONE_LIST_MARKERS = (
 _PROJECT_UPDATE_TIME_MARKERS = ("今天", "今日", "当天", "本日", "today")
 _PROJECT_UPDATE_ACTION_MARKERS = ("更新", "新增", "改了", "变更", "提交", "commit", "github")
 _PROJECT_UPDATE_SUMMARY_MARKERS = ("总结", "汇总", "整理", "有哪些", "哪些", "适合", "推送", "推荐", "功能")
+_LEDGER_QUERY_MARKERS = ("账单", "记账", "消费", "支出", "花了", "花费", "收入", "退款", "转账")
+_LEDGER_QUERY_INTENT_MARKERS = ("查", "查询", "统计", "汇总", "多少", "明细", "记录", "列表", "看一下", "看下")
+_LEDGER_PERIOD_LABELS = {
+    "today": "今天",
+    "week": "本周",
+    "month": "本月",
+    "last_month": "上月",
+    "all": "全部",
+}
 
 
 @plugins.register(
@@ -103,11 +137,21 @@ class CowCliPlugin(Plugin):
             suggestion = self._suggest_command(cmd)
             if suggestion is None:
                 return
+            if suggestion and not self._is_admin_context(e_context) and self._command_access_level(suggestion) == ACCESS_ADMIN:
+                e_context["reply"] = Reply(ReplyType.TEXT, self._permission_denied_text(suggestion))
+                e_context.action = EventAction.BREAK_PASS
+                return
             hint = f"未知命令: /{cmd}"
             if suggestion:
                 hint += f"\n你是不是想输入 /{suggestion} ?"
             hint += "\n发送 /help 查看全部命令。"
             e_context["reply"] = Reply(ReplyType.TEXT, hint)
+            e_context.action = EventAction.BREAK_PASS
+            return
+
+        if not self._can_use_command(cmd, args, e_context):
+            logger.info(f"[CowCli] denied non-admin command: {cmd} {args}")
+            e_context["reply"] = Reply(ReplyType.TEXT, self._permission_denied_text(cmd))
             e_context.action = EventAction.BREAK_PASS
             return
 
@@ -147,6 +191,10 @@ class CowCliPlugin(Plugin):
         update_command = self._parse_project_update_natural_command(content)
         if update_command is not None:
             return update_command
+
+        ledger_command = self._parse_ledger_natural_command(content)
+        if ledger_command is not None:
+            return ledger_command
 
         skill_command = self._parse_skill_natural_command(content)
         if skill_command is not None:
@@ -188,6 +236,73 @@ class CowCliPlugin(Plugin):
         if has_time and has_update and has_summary:
             return "updates", self._encode_project_update_args(text, "today")
         return None
+
+    def _parse_ledger_natural_command(self, content: str):
+        text = str(content or "").strip()
+        if not text or text.startswith("/") or text.lower().startswith("cow "):
+            return None
+        normalized = text.lower()
+        compact = re.sub(r"[\s,，。.!！?？:：;；\"'`“”‘’（）()\[\]【】<>《》]+", "", normalized)
+        if not any(marker in compact or marker in normalized for marker in _LEDGER_QUERY_MARKERS):
+            return None
+        if not any(marker in compact or marker in normalized for marker in _LEDGER_QUERY_INTENT_MARKERS):
+            return None
+
+        period = self._ledger_period_from_text(normalized, compact)
+        if not period:
+            return None
+        mode = "query" if any(marker in compact for marker in ("明细", "记录", "列表")) else "summary"
+        return "ledger", self._encode_ledger_args(period, mode)
+
+    @staticmethod
+    def _ledger_period_from_text(normalized: str, compact: str) -> str:
+        if any(marker in compact for marker in ("上个月", "上月", "上个自然月")):
+            return "last_month"
+        if any(marker in compact for marker in ("这个月", "本月", "当月", "月账单", "月消费")):
+            return "month"
+        if any(marker in compact for marker in ("这周", "本周", "本星期", "这个星期", "周账单", "周消费")):
+            return "week"
+        if any(marker in compact for marker in ("今天", "今日", "当天", "本日", "日账单", "日消费")):
+            return "today"
+        if "today" in normalized:
+            return "today"
+        if "thisweek" in compact:
+            return "week"
+        if "thismonth" in compact:
+            return "month"
+        if "lastmonth" in compact:
+            return "last_month"
+        return ""
+
+    @staticmethod
+    def _encode_ledger_args(period: str, mode: str = "summary") -> str:
+        payload = {
+            "period": str(period or "today").strip() or "today",
+            "mode": "query" if mode == "query" else "summary",
+        }
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
+        return f"local {encoded}"
+
+    @staticmethod
+    def _decode_ledger_args(args: str) -> dict:
+        raw = str(args or "").strip()
+        if not raw.startswith("local "):
+            return {"period": raw or "today", "mode": "summary"}
+        encoded = raw.split(None, 1)[1].strip()
+        try:
+            decoded = base64.urlsafe_b64decode(encoded.encode("ascii"))
+            data = json.loads(decoded.decode("utf-8"))
+        except Exception:
+            return {"period": "today", "mode": "summary"}
+        if not isinstance(data, dict):
+            return {"period": "today", "mode": "summary"}
+        period = str(data.get("period") or "today").strip() or "today"
+        if period not in {"today", "week", "month", "last_month", "all"}:
+            period = "today"
+        mode = "query" if str(data.get("mode") or "").strip() == "query" else "summary"
+        return {"period": period, "mode": mode}
 
     @staticmethod
     def _encode_project_update_args(question: str, period: str = "today") -> str:
@@ -384,38 +499,275 @@ class CowCliPlugin(Plugin):
         return f"未知命令: {cmd}"
 
     # ------------------------------------------------------------------
+    # command access
+    # ------------------------------------------------------------------
+
+    def _can_use_command(self, cmd: str, args: str, e_context: EventContext) -> bool:
+        if self._is_admin_context(e_context):
+            return True
+        return self._command_access_level(cmd, args) == ACCESS_PUBLIC
+
+    def _command_access_level(self, cmd: str, args: str = "") -> str:
+        if cmd == "skill":
+            return self._skill_access_level(args)
+        if cmd == "context":
+            return ACCESS_ADMIN if self._first_arg(args) == "clear" else ACCESS_PUBLIC
+        if cmd == "memory":
+            sub = self._first_arg(args)
+            return ACCESS_PUBLIC if sub in {"", "status", "info"} else ACCESS_ADMIN
+        if cmd == "knowledge":
+            sub = self._first_arg(args)
+            return ACCESS_PUBLIC if sub in {"", "stats", "status", "list", "tree"} else ACCESS_ADMIN
+        if cmd == "backend":
+            return self._backend_access_level(args)
+        return COMMAND_ACCESS.get(cmd, ACCESS_ADMIN)
+
+    @staticmethod
+    def _skill_access_level(args: str) -> str:
+        parts = str(args or "").strip().split()
+        sub = parts[0].lower() if parts else ""
+        if sub in {"", "list", "search", "info", "usage", "use", "answer"}:
+            return ACCESS_PUBLIC
+        return ACCESS_ADMIN
+
+    def _backend_access_level(self, args: str) -> str:
+        parts = str(args or "").strip().split()
+        if not parts or parts[0].lower() in {"status", "show", "credential-safety", "key-safety", "secret-safety"}:
+            return ACCESS_PUBLIC
+        sub = parts[0].lower()
+        if sub in {
+            "quota", "gpt-quota", "codex-quota",
+            "quota-current", "current-quota", "active-quota",
+            "quota-capi", "capi-quota", "quota-card", "quota-card-quota",
+            "quota-capi-monthly", "capi-monthly-quota", "monthly-quota",
+        }:
+            return ACCESS_PUBLIC
+        if self._backend_quota_target(parts):
+            return ACCESS_PUBLIC
+        return ACCESS_ADMIN
+
+    @staticmethod
+    def _first_arg(args: str) -> str:
+        parts = str(args or "").strip().split()
+        return parts[0].lower() if parts else ""
+
+    def _is_admin_context(self, e_context: EventContext) -> bool:
+        if e_context is None:
+            return True
+        try:
+            context = e_context["context"]
+        except Exception:
+            return False
+
+        role = str(context.get("actor_role", "") or "").strip().lower()
+        if role == "admin":
+            return True
+
+        actor_id = str(context.get("actor_id", "") or "").strip()
+        raw_user_id = str(context.get("raw_user_id", "") or context.get("from_user_id", "") or "").strip()
+        actual_user_id = str(context.get("actual_user_id", "") or context.get("group_sender_id", "") or "").strip()
+        sender_staff_id = str(context.get("sender_staff_id", "") or "").strip()
+        receiver = str(context.get("receiver", "") or "").strip()
+        channel_type = str(context.get("channel_type", "") or context.get("channel", "") or "").strip()
+        candidates = {actor_id, raw_user_id, actual_user_id, sender_staff_id, receiver}
+        if channel_type:
+            for user_id in (raw_user_id, actual_user_id, sender_staff_id, receiver):
+                if user_id:
+                    candidates.add(f"{channel_type}:{user_id}")
+        try:
+            msg = context.get("msg")
+        except Exception:
+            msg = None
+        if msg is not None:
+            for attr in ("actual_user_id", "from_user_id", "sender_staff_id"):
+                value = str(getattr(msg, attr, "") or "").strip()
+                if not value:
+                    continue
+                candidates.add(value)
+                if channel_type:
+                    candidates.add(f"{channel_type}:{value}")
+
+        try:
+            from config import conf, global_config
+
+            admin_users = conf().get("agent_admin_users", []) or []
+            if isinstance(admin_users, str):
+                configured = {item.strip() for item in admin_users.split(",") if item.strip()}
+            else:
+                configured = {str(item).strip() for item in admin_users if str(item).strip()}
+            configured.update(str(item).strip() for item in (global_config.get("admin_users", []) or []) if str(item).strip())
+        except Exception:
+            configured = set()
+
+        return any(candidate in configured for candidate in candidates if candidate)
+
+    @staticmethod
+    def _permission_denied_text(cmd: str) -> str:
+        return "\n".join([
+            f"命令 /{cmd} 需要管理员权限。",
+            "普通用户可以使用 /help 查看自己可用的命令，也可以直接查询自己的本地账本。",
+        ])
+
+    # ------------------------------------------------------------------
+    # local expense ledger
+    # ------------------------------------------------------------------
+
+    def _cmd_ledger(self, args: str, e_context: EventContext, session_id: str = "", **_) -> str:
+        request = self._decode_ledger_args(args)
+        user_id = self._get_memory_user_id(e_context)
+        if not user_id:
+            return "没有识别到当前用户的记账身份，不能安全查询账本。请在微信或企业微信会话里重试。"
+
+        ledger = self._load_china_expense_ledger()
+        db_path = ledger.db_path_from_env()
+        conn = ledger.open_db(db_path)
+        try:
+            ledger.init_db(conn)
+            period = request["period"]
+            if request["mode"] == "query":
+                rows = ledger.query_transactions(conn, user_id, period, 20)
+                return self._format_ledger_query(rows, period)
+            summary = ledger.summarize_transactions(conn, user_id, period)
+            return self._format_ledger_summary(summary, period)
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _load_china_expense_ledger():
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        candidates = [
+            os.path.join(project_root, "skills", "china-expense-ledger", "scripts", "ledger.py"),
+            os.path.join(os.path.expanduser("~/cow"), "skills", "china-expense-ledger", "scripts", "ledger.py"),
+        ]
+        for candidate in candidates:
+            if not os.path.isfile(candidate):
+                continue
+            spec = importlib.util.spec_from_file_location("china_expense_ledger_cow_cli", candidate)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                return module
+        raise FileNotFoundError("china-expense-ledger script not found")
+
+    @staticmethod
+    def _format_ledger_money(cents: int) -> str:
+        try:
+            return f"¥{int(cents) / 100:.2f}"
+        except (TypeError, ValueError):
+            return "¥0.00"
+
+    def _format_ledger_summary(self, summary: dict, period: str) -> str:
+        label = _LEDGER_PERIOD_LABELS.get(period, period)
+        totals = summary.get("totals") or {}
+        lines = [
+            f"📒 {label}本地账单",
+            "",
+            f"支出：{self._format_ledger_money(totals.get('expense_cents', 0))}",
+            f"收入：{self._format_ledger_money(totals.get('income_cents', 0))}",
+            f"退款：{self._format_ledger_money(totals.get('refund_cents', 0))}",
+            f"转账：{self._format_ledger_money(totals.get('transfer_cents', 0))}",
+            f"记录：{int(summary.get('count') or 0)} 笔",
+        ]
+        by_category = summary.get("by_category") or {}
+        if by_category:
+            lines.extend(["", "分类"])
+            for category, cents in sorted(by_category.items(), key=lambda item: int(item[1] or 0), reverse=True)[:8]:
+                lines.append(f"{category}：{self._format_ledger_money(cents)}")
+        return "\n".join(lines)
+
+    def _format_ledger_query(self, rows: list, period: str) -> str:
+        label = _LEDGER_PERIOD_LABELS.get(period, period)
+        if not rows:
+            return f"{label}本地账本暂无记录。"
+        lines = [f"{label}本地账单明细（最近 {len(rows)} 笔）：", ""]
+        for row in rows:
+            item = row.get("item_name") or row.get("merchant") or row.get("order_platform") or "未命名"
+            category = row.get("category") or "未分类"
+            amount = self._format_ledger_money(row.get("amount_cents") or 0)
+            occurred_at = str(row.get("occurred_at") or "")[:16].replace("T", " ")
+            lines.append(f"- {occurred_at} {category} {amount} {item}".strip())
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
     # help / version
     # ------------------------------------------------------------------
 
     def _cmd_help(self, args: str, e_context, **_) -> str:
-        lines = [
-            "📋 CowAgent 命令列表",
-            "",
-            "  /help          显示此帮助",
-            "  /version       查看版本",
-            "  /status        查看运行状态",
-            "  /backend       查看/切换 LLM backend（所有用户可用，影响全局私聊和群聊）",
-            "  /logs [N]      查看最近N条日志 (默认20)",
-            "  /context       查看当前对话上下文信息",
-            "  /context clear 清除当前对话上下文",
-            "  /skill list    查看已安装的技能",
-            "  /skill list --remote  浏览技能广场",
-            "  /skill search <关键词>  搜索技能",
-            "  /skill install <名称>  安装技能",
-            "  /skill info <名称>  查看技能详情",
-            "  /config              查看当前配置",
-            "  /config <key>        查看某项配置",
-            "  /config <key> <val>  修改配置",
-            "  /memory status        查看记忆索引状态",
-            "  /memory rebuild-index 清空并重建向量索引 (切换 embedding 模型后必须执行)",
-            "  /memory dream [N]     手动触发记忆蒸馏 (整理近N天, 默认3, 最多30)",
-            "  /knowledge           查看知识库统计",
-            "  /knowledge list      查看知识库文件树",
-            "  /knowledge on|off    开启/关闭知识库",
-            "",
-            "💡 也可以用 cow <command> 代替 /<command>",
-        ]
+        is_admin = self._is_admin_context(e_context)
+        lines = ["📋 CowAgent 命令列表", ""]
+        lines.extend(self._help_sections(is_admin))
+        lines.append("")
+        lines.append("提示：也可以用 cow <command> 代替 /<command>。")
+        if not is_admin:
+            lines.append("管理员命令已隐藏。")
         return "\n".join(lines)
+
+    def _help_sections(self, is_admin: bool) -> list:
+        sections = [
+            ("常用", [
+                ("help", "", "/help：查看可用命令"),
+                ("status", "", "/status：查看运行状态"),
+                ("version", "", "/version：查看版本"),
+                ("logs", "20", "/logs 20：查看最近日志"),
+            ]),
+            ("账本", [
+                ("ledger", self._encode_ledger_args("today"), "查询本日账单：今天本地记账汇总"),
+                ("ledger", self._encode_ledger_args("week"), "查询本周消费：本周本地记账汇总"),
+                ("ledger", self._encode_ledger_args("month"), "查询本月账单：本月本地记账汇总"),
+                ("ledger", self._encode_ledger_args("last_month"), "查询上月账单：上月本地记账汇总"),
+            ]),
+            ("后端", [
+                ("backend", "", "/backend：查看当前模型后端"),
+                ("backend", "quota-current", "/backend quota-current：查询当前后端额度"),
+                ("backend", "quota", "/backend quota：查询 Codex 额度"),
+                ("backend", "quota capi", "/backend quota capi：查询 CAPI 额度卡"),
+                ("backend", "codex", "/backend codex：切到 Codex"),
+                ("backend", "capi", "/backend capi：切到 CAPI 额度卡"),
+                ("backend", "capi-monthly", "/backend capi-monthly：切到 CAPI 月卡"),
+                ("backend", "auto reset", "/backend auto reset：重置后端自动切换"),
+            ]),
+            ("上下文", [
+                ("context", "", "/context：查看当前对话上下文"),
+                ("context", "clear", "/context clear：清除当前对话上下文"),
+            ]),
+            ("技能", [
+                ("skill", "list", "/skill list：查看已安装技能"),
+                ("skill", "info example", "/skill info <名称>：查看技能详情"),
+                ("skill", "search example", "/skill search <关键词>：搜索技能"),
+                ("skill", "install example", "/skill install <名称>：安装技能"),
+                ("skill", "uninstall example", "/skill uninstall <名称>：卸载技能"),
+                ("skill", "enable example", "/skill enable <名称>：启用技能"),
+                ("skill", "disable example", "/skill disable <名称>：禁用技能"),
+            ]),
+            ("记忆与知识库", [
+                ("memory", "status", "/memory status：查看记忆索引状态"),
+                ("memory", "dream 3", "/memory dream 3：手动整理近 3 天记忆"),
+                ("memory", "rebuild-index", "/memory rebuild-index：重建记忆索引"),
+                ("knowledge", "", "/knowledge：查看知识库统计"),
+                ("knowledge", "list", "/knowledge list：查看知识库文件树"),
+                ("knowledge", "on", "/knowledge on|off：开启或关闭知识库"),
+            ]),
+            ("配置", [
+                ("config", "", "/config：查看当前配置"),
+                ("config", "model", "/config <key>：查看某项配置"),
+                ("config", "model gpt-5", "/config <key> <val>：修改配置"),
+            ]),
+        ]
+
+        lines = []
+        for title, entries in sections:
+            visible = [
+                label
+                for command, command_args, label in entries
+                if is_admin or self._command_access_level(command, command_args) == ACCESS_PUBLIC
+            ]
+            if not visible:
+                continue
+            if lines:
+                lines.append("")
+            lines.append(title)
+            lines.extend(visible)
+        return lines
 
     def _cmd_version(self, args: str, e_context, **_) -> str:
         return f"CowAgent v{__version__}"
@@ -2268,6 +2620,15 @@ class CowCliPlugin(Plugin):
         context = e_context["context"]
         return context.kwargs.get("session_id") or context.get("session_id", "")
 
+    def _get_memory_user_id(self, e_context) -> str:
+        if e_context is None:
+            return ""
+        try:
+            context = e_context["context"]
+        except Exception:
+            return ""
+        return str(context.get("memory_user_id", "") or "").strip()
+
     def _get_agent(self, session_id: str):
         try:
             from bridge.bridge import Bridge
@@ -2281,7 +2642,6 @@ class CowCliPlugin(Plugin):
     def get_help_text(self, **kwargs):
         return (
             "在对话中使用 /help 或 cow help 查看可用命令。\n"
-            "模型后端命令所有用户可用，影响全局私聊和群聊：\n"
-            "/backend 查看状态；/backend capi 切到 CAPI 额度卡；"
-            "/backend capi-monthly 切到 CAPI 月卡；/backend codex 切到 Codex。"
+            "普通用户可查看状态、账本、Skill/知识库说明和后端额度；"
+            "后端切换、配置、日志、安装和启停类命令需要管理员权限。"
         )
