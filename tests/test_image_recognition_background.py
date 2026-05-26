@@ -69,6 +69,7 @@ class TestImageRecognitionManager(unittest.TestCase):
             self.assertEqual(len(prompts), 1)
             self.assertIn("请用中文识别这张图片", prompts[0])
             self.assertIn("不要使用英文", prompts[0])
+            self.assertIn("日期必须尽量解析成 YYYY-MM-DD 或 ISO 8601", prompts[0])
             self.assertEqual(record.status, "done")
             self.assertTrue(Path(record.image_path).exists())
             self.assertNotEqual(Path(record.image_path), source)
@@ -268,12 +269,172 @@ class TestImageRecognitionManager(unittest.TestCase):
                 group_reply = manager.public_reply_for(group_record, context=context)
 
             self.assertIn("已记账", private_reply)
+            self.assertIn("已默认记为今天", private_reply)
             self.assertIn("撤销", private_reply)
             self.assertNotIn("已记账", group_reply)
             conn = sqlite3.connect(str(db_path))
             try:
                 count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
                 self.assertEqual(count, 1)
+            finally:
+                conn.close()
+
+    def test_backend_token_query_does_not_confirm_pending_bill(self):
+        with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as db_root:
+            conf()["agent_workspace"] = workspace
+            db_path = Path(db_root) / "ledger.db"
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            record = ImageRecognitionRecord(
+                record_id="record-xianyu-pending",
+                session_id="session-ledger",
+                channel_type="weixin",
+                image_hash="hash-xianyu-pending",
+                image_path=str(Path(workspace) / "xianyu.png"),
+                is_group=False,
+                status="done",
+                result="卖家已发货 待确认收货 成交价 ¥99.88 订单编号 3303779739048007681",
+                completed_at=time.time(),
+            )
+            with manager._lock:
+                manager._records[record.record_id] = record
+
+            context = Context(
+                ContextType.TEXT,
+                "查询当前后端消耗的token",
+                kwargs={
+                    "session_id": "session-ledger",
+                    "conversation_id": "chat-ledger",
+                    "memory_user_id": "u1",
+                    "channel_type": "weixin",
+                },
+            )
+            sent = []
+            channel = SimpleNamespace(_send_plain_text=lambda _context, text: sent.append(text))
+
+            with patch.dict(os.environ, {"CHINA_EXPENSE_LEDGER_DB": str(db_path)}):
+                first_reply = manager.public_reply_for(record, context=context)
+                handled = manager.handle_text(channel, context, "查询当前后端消耗的token")
+
+            self.assertIn("这张像账单", first_reply)
+            self.assertFalse(handled)
+            self.assertEqual(sent, [])
+            conn = sqlite3.connect(str(db_path))
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+                self.assertEqual(count, 0)
+            finally:
+                conn.close()
+
+    def test_stale_ledger_followup_does_not_confirm_or_undo(self):
+        with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as db_root:
+            conf()["agent_workspace"] = workspace
+            db_path = Path(db_root) / "ledger.db"
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            manager.ledger_followup_window_seconds = 1
+            record = ImageRecognitionRecord(
+                record_id="record-stale-bill",
+                session_id="session-stale",
+                channel_type="weixin",
+                image_hash="hash-stale",
+                image_path=str(Path(workspace) / "stale.png"),
+                is_group=False,
+                status="done",
+                result="卖家已发货 待确认收货 成交价 ¥99.88 订单编号 3303779739048007681",
+                completed_at=time.time(),
+            )
+            with manager._lock:
+                manager._records[record.record_id] = record
+            context = Context(
+                ContextType.TEXT,
+                "这是一个咸鱼账单，我买的是中转API的token",
+                kwargs={
+                    "session_id": "session-stale",
+                    "conversation_id": "chat-stale",
+                    "memory_user_id": "u1",
+                    "channel_type": "weixin",
+                },
+            )
+            sent = []
+            channel = SimpleNamespace(_send_plain_text=lambda _context, text: sent.append(text))
+
+            with patch.dict(os.environ, {"CHINA_EXPENSE_LEDGER_DB": str(db_path)}):
+                first_reply = manager.public_reply_for(record, context=context)
+                time.sleep(1.1)
+                confirm_handled = manager.handle_text(channel, context, "这是一个咸鱼账单，我买的是中转API的token")
+                undo_handled = manager.handle_text(channel, context, "撤销记账")
+
+            self.assertIn("这张像账单", first_reply)
+            self.assertFalse(confirm_handled)
+            self.assertFalse(undo_handled)
+            self.assertEqual(sent, [])
+            conn = sqlite3.connect(str(db_path))
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+                self.assertEqual(count, 0)
+            finally:
+                conn.close()
+
+    def test_possible_duplicate_reject_keeps_existing_bill(self):
+        with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as db_root:
+            conf()["agent_workspace"] = workspace
+            db_path = Path(db_root) / "ledger.db"
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            record = ImageRecognitionRecord(
+                record_id="record-dup-bill",
+                session_id="session-dup",
+                channel_type="weixin",
+                image_hash="hash-dup",
+                image_path=str(Path(workspace) / "dup.png"),
+                is_group=False,
+                status="done",
+                result="支付宝 支付成功 成都软件园 C8 餐厅 支付金额 ¥31.00",
+                completed_at=time.time(),
+            )
+            context = Context(
+                ContextType.TEXT,
+                "不记账",
+                kwargs={
+                    "session_id": "session-dup",
+                    "conversation_id": "chat-dup",
+                    "memory_user_id": "u1",
+                    "channel_type": "weixin",
+                },
+            )
+            sent = []
+            channel = SimpleNamespace(_send_plain_text=lambda _context, text: sent.append(text))
+
+            with patch.dict(os.environ, {"CHINA_EXPENSE_LEDGER_DB": str(db_path)}):
+                ledger = manager._load_ledger_module()
+                conn = ledger.open_db(db_path)
+                try:
+                    ledger.init_db(conn)
+                    ledger.record_payload(
+                        conn,
+                        {
+                            "user_id": "u1",
+                            "chat_id": "chat-dup",
+                            "source_type": "manual",
+                            "occurred_at": "2026-05-26T12:35:27+08:00",
+                            "amount": "31.00",
+                            "direction": "expense",
+                            "category": "餐饮",
+                            "merchant": "成都软件园 C8 餐厅",
+                            "payment_app": "支付宝",
+                        },
+                    )
+                finally:
+                    conn.close()
+
+                reply = manager.public_reply_for(record, context=context)
+                handled = manager.handle_text(channel, context, "不记账")
+
+            self.assertIn("我先不新增", reply)
+            self.assertTrue(handled)
+            self.assertIn("不新增", sent[-1])
+            conn = sqlite3.connect(str(db_path))
+            try:
+                status = conn.execute("SELECT status FROM transactions").fetchone()[0]
+                self.assertEqual(status, "auto_confirmed")
             finally:
                 conn.close()
 

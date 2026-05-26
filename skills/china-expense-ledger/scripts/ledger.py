@@ -29,6 +29,7 @@ VALID_STATUSES = {"pending", "confirmed", "auto_confirmed", "rejected", "duplica
 SUMMARY_STATUSES = {"confirmed", "auto_confirmed"}
 SUMMARY_PERIOD_TYPES = {"day", "week", "month"}
 BILL_CONTEXT_STATUSES = {"needs_clarification", "auto_recorded", "confirmed", "rejected"}
+DATE_DETAIL_FIELDS = ("occurred_at_text", "occurred_at_resolution", "occurred_at_assumed")
 
 DEFAULT_CATEGORIES = [
     "餐饮",
@@ -308,6 +309,15 @@ def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+class InvalidOccurredAtError(ValueError):
+    """Raised when Agent-provided occurred_at is not a standard date value."""
+
+    def __init__(self, value: object):
+        super().__init__("occurred_at must be ISO 8601 or YYYY-MM-DD; parse natural dates with the model before calling ledger.py")
+        self.value = value
+        self.error = "invalid_occurred_at"
+
+
 def db_path_from_env() -> Path:
     raw = os.getenv("CHINA_EXPENSE_LEDGER_DB")
     if raw:
@@ -332,6 +342,18 @@ def fail_json(error: str, **extra: Any) -> None:
     payload = {"ok": False, "error": error}
     payload.update(extra)
     json_print(payload)
+
+
+def result_for_exception(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, InvalidOccurredAtError):
+        return {
+            "ok": False,
+            "error": exc.error,
+            "field": "occurred_at",
+            "value": normalize_text(exc.value),
+            "message": str(exc),
+        }
+    return {"ok": False, "error": type(exc).__name__, "message": str(exc)}
 
 
 def table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -571,6 +593,25 @@ def normalize_optional_text(value: object) -> str | None:
     return text or None
 
 
+def normalize_occurred_at(value: object, default_timestamp: str | None = None) -> tuple[str, bool]:
+    text = normalize_text(value)
+    if not text:
+        return default_timestamp or now_iso(), True
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError as exc:
+            raise InvalidOccurredAtError(value) from exc
+        return parsed.astimezone().isoformat(timespec="seconds"), False
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise InvalidOccurredAtError(value) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed.isoformat(timespec="seconds"), False
+
+
 def amount_to_cents(value: object) -> int | None:
     if value is None or value == "":
         return None
@@ -773,6 +814,49 @@ def normalize_item_details(value: object) -> str | None:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
+def item_details_with_date_metadata(payload: dict[str, Any], occurred_at: str, assumed: bool) -> str | None:
+    base_value = payload.get("item_details_json") or payload.get("item_details")
+    details: dict[str, Any] = {}
+    if isinstance(base_value, dict):
+        details.update(base_value)
+    elif isinstance(base_value, str) and base_value.strip():
+        try:
+            parsed = json.loads(base_value)
+            if isinstance(parsed, dict):
+                details.update(parsed)
+            else:
+                details["value"] = parsed
+        except json.JSONDecodeError:
+            details["text"] = base_value.strip()
+    elif base_value not in (None, ""):
+        details["value"] = base_value
+
+    date_meta = {
+        "occurred_at": occurred_at,
+        "occurred_at_assumed": bool(assumed or payload.get("occurred_at_assumed")),
+    }
+    for field in ("occurred_at_text", "occurred_at_resolution"):
+        value = normalize_optional_text(payload.get(field))
+        if value:
+            date_meta[field] = value
+    if date_meta["occurred_at_assumed"] or len(date_meta) > 2:
+        details["date_resolution"] = date_meta
+    return normalize_item_details(details) if details else None
+
+
+def date_notice_for_payload(payload: dict[str, Any], occurred_at: str, assumed: bool) -> str:
+    date_text = occurred_at[:10]
+    original = normalize_optional_text(payload.get("occurred_at_text"))
+    resolution = normalize_optional_text(payload.get("occurred_at_resolution"))
+    if assumed or payload.get("occurred_at_assumed"):
+        return f"已默认记为今天 {date_text}，如需修改日期请告诉我。"
+    if original:
+        if resolution:
+            return f"“{original}”已按 {date_text} 记录（{resolution}），如需修改日期请告诉我。"
+        return f"“{original}”已按 {date_text} 记录，如需修改日期请告诉我。"
+    return ""
+
+
 def source_hash_for(payload: dict[str, Any]) -> str:
     explicit = normalize_text(payload.get("source_hash"))
     if explicit:
@@ -944,6 +1028,50 @@ def extract_field_from_text(raw_text: str, labels: Iterable[str]) -> str | None:
     return None
 
 
+def extract_order_no_from_text(raw_text: str) -> str | None:
+    text = normalize_text(raw_text)
+    match = re.search(r"(?:订单编号|订单号|商户单号|交易单号)\s*[:：]?\s*([A-Za-z0-9][A-Za-z0-9_-]{5,})", text)
+    if not match:
+        return None
+    return match.group(1).strip()[:80]
+
+
+def extract_unlabeled_merchant_from_bill_text(raw_text: str) -> str | None:
+    text = normalize_text(raw_text)
+    if not text:
+        return None
+    cleaned = text
+    cleaned = re.sub(r"[¥￥]\s*\d+(?:\.\d{1,2})?", " ", cleaned)
+    cleaned = re.sub(r"\b\d+(?:\.\d{1,2})?\s*元\b", " ", cleaned)
+    cleaned = re.sub(r"(?:订单编号|订单号|商户单号|交易单号)\s*[:：]?\s*[A-Za-z0-9_-]{6,}", " ", cleaned)
+    cleaned = re.sub(r"(?:支付金额|付款金额|实付金额|成交价|实付款|金额)\s*[:：]?\s*", " ", cleaned)
+    cleaned = re.sub(r"(?:付款方式|交易方式|支付方式)\s*[:：]?\s*[^，,。；;\n\r]+", " ", cleaned)
+    for app_name, keywords in PAYMENT_KEYWORDS:
+        cleaned = cleaned.replace(app_name, " ")
+        for keyword in keywords:
+            cleaned = cleaned.replace(keyword, " ")
+    for platform_name, keywords in PLATFORM_KEYWORDS:
+        cleaned = cleaned.replace(platform_name, " ")
+        for keyword in keywords:
+            cleaned = cleaned.replace(keyword, " ")
+    cleaned = re.sub(r"(支付成功|付款成功|交易成功|账单详情|当前状态|已支付|获得[^，,。；;\n\r]*|首页|完成)", " ", cleaned)
+    candidates = [
+        part.strip()
+        for part in re.split(r"[，,。；;\n\r]+|\s{2,}", cleaned)
+        if part.strip()
+    ]
+    for candidate in candidates:
+        candidate = re.sub(r"\s+", " ", candidate).strip(" -:：")
+        if not candidate or len(candidate) < 2:
+            continue
+        if any(token in candidate for token in ("余额宝", "银行卡", "红包", "优惠", "评价", "参与")):
+            continue
+        if re.fullmatch(r"[A-Za-z0-9_-]+", candidate) or re.fullmatch(r"\d+(?:\.\d+)?", candidate):
+            continue
+        return candidate[:80]
+    return None
+
+
 def infer_payload_from_bill_text(payload: dict[str, Any]) -> dict[str, Any]:
     inferred = dict(payload)
     raw_text = normalize_text(inferred.get("raw_text") or inferred.get("text") or inferred.get("ocr_text"))
@@ -966,14 +1094,19 @@ def infer_payload_from_bill_text(payload: dict[str, Any]) -> dict[str, Any]:
             inferred["order_platform"] = order_platform
     if not normalize_text(inferred.get("merchant")):
         merchant = extract_field_from_text(raw_text, ("商户", "商家", "交易对方", "收款方", "店铺", "卖家"))
+        if not merchant:
+            merchant = extract_unlabeled_merchant_from_bill_text(raw_text)
         if merchant:
             inferred["merchant"] = merchant
     if not normalize_text(inferred.get("item_name")):
         item_name = extract_field_from_text(raw_text, ("商品", "商品名称", "商品说明", "订单商品", "物品", "标题"))
         if item_name:
             inferred["item_name"] = item_name
+    for date_field in DATE_DETAIL_FIELDS:
+        if date_field in payload and payload.get(date_field) not in (None, ""):
+            inferred[date_field] = payload.get(date_field)
     if not normalize_text(inferred.get("order_no_masked")) and not normalize_text(inferred.get("order_no")):
-        order_no = extract_field_from_text(raw_text, ("订单编号", "订单号", "商户单号", "交易单号"))
+        order_no = extract_order_no_from_text(raw_text) or extract_field_from_text(raw_text, ("订单编号", "订单号", "商户单号", "交易单号"))
         if order_no:
             inferred["order_no"] = order_no
     inferred.setdefault("confidence", 0.82)
@@ -986,6 +1119,15 @@ def fields_from_answer_text(answer_text: str) -> dict[str, Any]:
     if not text:
         return {}
     fields: dict[str, Any] = {"answer_text": text}
+    decision_markers = ("仍要记账", "还是记账", "新增一笔", "新增记账", "不是同一笔", "不是同一个订单", "单独记一笔")
+    if any(marker in text for marker in decision_markers):
+        fields["force_new_transaction"] = True
+        fields["duplicate_decision"] = "add_new"
+        remainder = text
+        for marker in decision_markers:
+            remainder = remainder.replace(marker, "")
+        if not re.sub(r"[，,。；;：:\s]+", "", remainder):
+            return fields
     amount = extract_amount_cents_from_text(text)
     if amount is not None:
         fields["amount_cents"] = amount
@@ -1280,11 +1422,12 @@ def build_transaction(conn: sqlite3.Connection, payload: dict[str, Any]) -> tupl
     if amount_cents is None:
         raise ValueError("amount_cents or amount is required")
 
+    occurred_at, occurred_at_assumed = normalize_occurred_at(payload.get("occurred_at"), timestamp)
     transaction = {
         "id": normalize_text(payload.get("id")) or uuid.uuid4().hex,
         "user_id": normalize_optional_text(payload.get("user_id")),
         "chat_id": normalize_optional_text(payload.get("chat_id")),
-        "occurred_at": normalize_optional_text(payload.get("occurred_at")) or timestamp,
+        "occurred_at": occurred_at,
         "direction": direction,
         "amount_cents": amount_cents,
         "currency": normalize_text(payload.get("currency")) or DEFAULT_CURRENCY,
@@ -1292,7 +1435,7 @@ def build_transaction(conn: sqlite3.Connection, payload: dict[str, Any]) -> tupl
         "subcategory": normalize_optional_text(payload.get("subcategory")),
         "merchant": normalize_optional_text(payload.get("merchant")),
         "item_name": normalize_optional_text(payload.get("item_name")),
-        "item_details_json": normalize_item_details(payload.get("item_details_json") or payload.get("item_details")),
+        "item_details_json": item_details_with_date_metadata(payload, occurred_at, occurred_at_assumed),
         "source_app": normalize_optional_text(payload.get("source_app")),
         "payment_app": infer_payment_app(payload),
         "order_platform": infer_order_platform(payload),
@@ -1317,18 +1460,27 @@ def build_transaction(conn: sqlite3.Connection, payload: dict[str, Any]) -> tupl
 
 
 def insert_transaction(conn: sqlite3.Connection, transaction: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
-    existing = conn.execute(
-        """
-        SELECT * FROM transactions
-        WHERE user_id IS ? AND source_hash = ?
-        LIMIT 1
-        """,
-        (transaction.get("user_id"), transaction["source_hash"]),
-    ).fetchone()
-    if existing is not None:
-        duplicate = dict(existing)
-        duplicate["status"] = "duplicate"
-        return False, duplicate
+    return insert_transaction_with_options(conn, transaction, force_insert=False)
+
+
+def insert_transaction_with_options(
+    conn: sqlite3.Connection,
+    transaction: dict[str, Any],
+    force_insert: bool = False,
+) -> tuple[bool, dict[str, Any]]:
+    if not force_insert:
+        existing = conn.execute(
+            """
+            SELECT * FROM transactions
+            WHERE user_id IS ? AND source_hash = ?
+            LIMIT 1
+            """,
+            (transaction.get("user_id"), transaction["source_hash"]),
+        ).fetchone()
+        if existing is not None:
+            duplicate = dict(existing)
+            duplicate["status"] = "duplicate"
+            return False, duplicate
 
     conn.execute(
         f"""
@@ -1346,6 +1498,93 @@ def row_to_dict(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | No
     if isinstance(row, dict):
         return dict(row)
     return dict(row)
+
+
+def matching_text(a: object, b: object) -> bool:
+    left = normalize_text(a)
+    right = normalize_text(b)
+    return bool(left and right and left == right)
+
+
+def duplicate_match_reasons(transaction: dict[str, Any], existing: sqlite3.Row | dict[str, Any]) -> list[str]:
+    reasons = []
+    if matching_text(transaction.get("order_no_masked"), existing["order_no_masked"]):
+        reasons.append("order_no")
+    if matching_text(transaction.get("merchant"), existing["merchant"]):
+        reasons.append("merchant")
+    if matching_text(transaction.get("item_name"), existing["item_name"]):
+        reasons.append("item_name")
+    if any(
+        matching_text(transaction.get(field), existing[field])
+        for field in ("source_app", "payment_app", "order_platform")
+    ):
+        reasons.append("app_or_platform")
+    return reasons
+
+
+def has_conflicting_duplicate_details(transaction: dict[str, Any], existing: sqlite3.Row | dict[str, Any]) -> bool:
+    for field in ("order_no_masked", "merchant", "item_name"):
+        left = normalize_text(transaction.get(field))
+        right = normalize_text(existing[field])
+        if left and right and left != right:
+            return True
+    return False
+
+
+def find_possible_duplicate_transaction(
+    conn: sqlite3.Connection,
+    transaction: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]] | None:
+    user_id = normalize_optional_text(transaction.get("user_id"))
+    occurred_at = parse_date(str(transaction.get("occurred_at") or ""))
+    category = normalize_optional_text(transaction.get("category"))
+    amount_cents = amount_cents_value(transaction.get("amount_cents"))
+    if not user_id or occurred_at is None or not category or amount_cents is None:
+        return None
+    day_start = occurred_at.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    rows = conn.execute(
+        """
+        SELECT * FROM transactions
+        WHERE user_id = ?
+          AND amount_cents = ?
+          AND occurred_at >= ?
+          AND occurred_at < ?
+          AND category = ?
+          AND direction = ?
+          AND status IN (?, ?)
+        ORDER BY occurred_at DESC, created_at DESC
+        LIMIT 20
+        """,
+        (
+            user_id,
+            amount_cents,
+            iso_bound(day_start),
+            iso_bound(day_end),
+            category,
+            transaction.get("direction") or "expense",
+            "confirmed",
+            "auto_confirmed",
+        ),
+    ).fetchall()
+    for row in rows:
+        if row["id"] == transaction.get("id"):
+            continue
+        if has_conflicting_duplicate_details(transaction, row):
+            continue
+        reasons = duplicate_match_reasons(transaction, row)
+        if reasons:
+            return dict(row), reasons
+    return None
+
+
+def describe_transaction_brief(transaction: dict[str, Any] | sqlite3.Row) -> str:
+    date_text = str(transaction["occurred_at"] or "")[:10]
+    amount = int(transaction["amount_cents"] or 0)
+    category = transaction["category"] or "未分类"
+    merchant = normalize_optional_text(transaction["merchant"]) or normalize_optional_text(transaction["item_name"])
+    merchant_text = f" {merchant}" if merchant else ""
+    return f"{date_text} ¥{amount / 100:.2f} {category}{merchant_text}"
 
 
 def period_bounds_datetimes(
@@ -1521,8 +1760,47 @@ def refresh_summary_caches_for_transaction(
 
 
 def record_payload(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
-    transaction, clarification = build_transaction(conn, payload)
-    inserted, row = insert_transaction(conn, transaction)
+    try:
+        transaction, clarification = build_transaction(conn, payload)
+    except InvalidOccurredAtError as exc:
+        return result_for_exception(exc)
+    possible_duplicate = None if payload.get("force_new_transaction") else find_possible_duplicate_transaction(conn, transaction)
+    if possible_duplicate:
+        existing, reasons = possible_duplicate
+        clarification_text = (
+            f"这笔账单和已有记录很像：{describe_transaction_brief(existing)}。"
+            "我先不新增，请确认是“仍要记账/新增一笔”，还是要撤销或修改已有账单。"
+        )
+        context = create_bill_context(
+            conn,
+            {
+                **payload,
+                "possible_duplicate": True,
+                "duplicate_candidate_transaction_id": existing["id"],
+                "duplicate_reasons": reasons,
+            },
+            "needs_clarification",
+            [clarification_text],
+            transaction_id=existing["id"],
+        )
+        conn.commit()
+        return {
+            "ok": True,
+            "action": "record-json",
+            "status": "needs_clarification",
+            "possible_duplicate": True,
+            "inserted": False,
+            "duplicate": False,
+            "context_id": context["id"],
+            "transaction": existing,
+            "proposed_transaction": transaction,
+            "needs_clarification": [clarification_text],
+        }
+    inserted, row = insert_transaction_with_options(
+        conn,
+        transaction,
+        force_insert=bool(payload.get("force_new_transaction")),
+    )
     if inserted:
         refresh_summary_caches_for_transaction(conn, row)
     conn.commit()
@@ -1532,6 +1810,7 @@ def record_payload(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[st
         "inserted": inserted,
         "duplicate": not inserted,
         "transaction": row,
+        "date_notice": date_notice_for_payload(payload, row["occurred_at"], not normalize_text(payload.get("occurred_at"))),
     }
     if clarification:
         result["needs_clarification"] = clarification
@@ -1549,6 +1828,8 @@ def analyze_bill_payload(conn: sqlite3.Connection, payload: dict[str, Any]) -> d
     apply_merchant_rules(conn, inferred)
     try:
         transaction, record_clarification = build_transaction(conn, {**inferred, "status": "auto_confirmed"})
+    except InvalidOccurredAtError as exc:
+        return {"action": "analyze-bill", "is_bill": True, **result_for_exception(exc)}
     except ValueError:
         fields = bill_missing_fields(inferred)
         clarification = clarification_text_for_fields(fields or ["amount"])
@@ -1579,6 +1860,38 @@ def analyze_bill_payload(conn: sqlite3.Connection, payload: dict[str, Any]) -> d
             "ui_signature": inferred.get("ui_signature"),
         }
 
+    possible_duplicate = None if inferred.get("force_new_transaction") else find_possible_duplicate_transaction(conn, transaction)
+    if possible_duplicate:
+        existing, reasons = possible_duplicate
+        duplicate_payload = {
+            **inferred,
+            "possible_duplicate": True,
+            "duplicate_candidate_transaction_id": existing["id"],
+            "duplicate_reasons": reasons,
+        }
+        clarification = [
+            f"这张账单和已有记录很像：{describe_transaction_brief(existing)}。我先不新增，请回复“仍要记账/新增一笔”、“撤销这笔”，或重新发送/引用账单截图再修改。"
+        ]
+        context = create_bill_context(
+            conn,
+            duplicate_payload,
+            "needs_clarification",
+            clarification,
+            transaction_id=existing["id"],
+        )
+        conn.commit()
+        return {
+            "ok": True,
+            "action": "analyze-bill",
+            "is_bill": True,
+            "status": "needs_clarification",
+            "possible_duplicate": True,
+            "context_id": context["id"],
+            "needs_clarification": clarification,
+            "transaction": existing,
+            "proposed_transaction": transaction,
+        }
+
     inserted, row = insert_transaction(conn, transaction)
     context = create_bill_context(
         conn,
@@ -1602,8 +1915,24 @@ def analyze_bill_payload(conn: sqlite3.Connection, payload: dict[str, Any]) -> d
         "context_id": context["id"],
         "transaction": row,
         "learned": learned,
-        "message": "已记账。如果不需要记账，请回复“不记账”或“撤销记账”，我会撤销这笔。",
+        "message": ledger_recorded_message(row, date_notice_for_payload(inferred, row["occurred_at"], not normalize_text(inferred.get("occurred_at")))),
     }
+
+
+def ledger_recorded_message(
+    transaction: dict[str, Any] | sqlite3.Row,
+    date_notice: str = "",
+    suffix: str = "如果不需要记账，请回复“不记账”或“撤销记账”，我会撤销这笔。",
+) -> str:
+    date_text = str(transaction["occurred_at"] or "")[:10]
+    amount = int(transaction["amount_cents"] or 0)
+    category = transaction["category"] or "未分类"
+    suffix_parts = []
+    if date_notice:
+        suffix_parts.append(date_notice)
+    if suffix:
+        suffix_parts.append(suffix)
+    return f"已记账：{date_text} ¥{amount / 100:.2f} {category}。" + "".join(suffix_parts)
 
 
 def latest_bill_context(
@@ -1611,6 +1940,7 @@ def latest_bill_context(
     user_id: str | None,
     chat_id: str | None,
     statuses: Iterable[str],
+    max_age_seconds: int | None = None,
 ) -> sqlite3.Row | None:
     status_list = [status for status in statuses if status in BILL_CONTEXT_STATUSES]
     if not status_list:
@@ -1625,7 +1955,21 @@ def latest_bill_context(
         params.append(chat_id)
     sql = "SELECT * FROM bill_contexts WHERE " + " AND ".join(where)
     sql += " ORDER BY created_at DESC LIMIT 1"
-    return conn.execute(sql, params).fetchone()
+    context = conn.execute(sql, params).fetchone()
+    if context and max_age_seconds is not None and bill_context_is_stale(context, max_age_seconds):
+        return None
+    return context
+
+
+def bill_context_is_stale(context: sqlite3.Row, max_age_seconds: int) -> bool:
+    created_at = parse_date(str(context["created_at"] or ""))
+    if not created_at:
+        return True
+    now = datetime.now().astimezone()
+    if created_at.tzinfo is None:
+        created_at = created_at.astimezone()
+    age_seconds = (now - created_at).total_seconds()
+    return age_seconds > max(0, int(max_age_seconds))
 
 
 def confirm_bill_context(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1646,7 +1990,21 @@ def confirm_bill_context(conn: sqlite3.Connection, payload: dict[str, Any]) -> d
     merged = {**stored_payload, **{key: value for key, value in payload.items() if value not in (None, "")}}
     merged.setdefault("source_type", "image")
     merged.setdefault("status", "auto_confirmed")
-    transaction, clarification = build_transaction(conn, {**merged, "status": "auto_confirmed"})
+    if stored_payload.get("possible_duplicate") and not merged.get("force_new_transaction"):
+        clarification = json.loads(context["clarification_json"] or "[]")
+        return {
+            "ok": True,
+            "action": "confirm-bill",
+            "status": "needs_clarification",
+            "possible_duplicate": True,
+            "context_id": context["id"],
+            "transaction_id": context["transaction_id"],
+            "needs_clarification": clarification,
+        }
+    try:
+        transaction, clarification = build_transaction(conn, {**merged, "status": "auto_confirmed"})
+    except InvalidOccurredAtError as exc:
+        return {"action": "confirm-bill", "context_id": context["id"], **result_for_exception(exc)}
     missing = bill_missing_fields(merged, transaction)
     if missing or clarification:
         clarification = clarification_text_for_fields(missing) + [
@@ -1670,7 +2028,11 @@ def confirm_bill_context(conn: sqlite3.Connection, payload: dict[str, Any]) -> d
             "needs_clarification": clarification,
         }
 
-    inserted, row = insert_transaction(conn, transaction)
+    inserted, row = insert_transaction_with_options(
+        conn,
+        transaction,
+        force_insert=bool(merged.get("force_new_transaction")),
+    )
     learned = {}
     if inserted:
         learned = learn_bill_rules(conn, merged, row)
@@ -1701,7 +2063,11 @@ def confirm_bill_context(conn: sqlite3.Connection, payload: dict[str, Any]) -> d
         "context_id": context["id"],
         "transaction": row,
         "learned": learned,
-        "message": "已记账，并记住这类截图和商品规则。",
+        "message": ledger_recorded_message(
+            row,
+            date_notice_for_payload(merged, row["occurred_at"], not normalize_text(merged.get("occurred_at"))),
+            "已记住这类截图和商品规则。",
+        ),
     }
 
 
@@ -1742,6 +2108,27 @@ def undo_bill_transaction(conn: sqlite3.Connection, user_id: str | None, chat_id
         "transaction_id": transaction["id"],
         "status": "rejected",
         "message": "已撤销这笔记账。",
+    }
+
+
+def reject_bill_context(conn: sqlite3.Connection, context_id: str) -> dict[str, Any]:
+    context_id = normalize_text(context_id)
+    if not context_id:
+        return {"ok": False, "error": "bill_context_not_found"}
+    timestamp = now_iso()
+    cursor = conn.execute(
+        "UPDATE bill_contexts SET status = ?, updated_at = ? WHERE id = ?",
+        ("rejected", timestamp, context_id),
+    )
+    conn.commit()
+    if cursor.rowcount <= 0:
+        return {"ok": False, "error": "bill_context_not_found"}
+    return {
+        "ok": True,
+        "action": "reject-bill-context",
+        "context_id": context_id,
+        "status": "rejected",
+        "message": "好的，这次不新增记录，已有账单保留。",
     }
 
 
@@ -1913,7 +2300,10 @@ def import_file(conn: sqlite3.Connection, path: Path, source: str, user_id: str 
     duplicates = 0
     transaction_ids = []
     for parsed in parsed_rows:
-        transaction, _ = build_transaction(conn, parsed.payload)
+        try:
+            transaction, _ = build_transaction(conn, parsed.payload)
+        except InvalidOccurredAtError:
+            continue
         was_inserted, row = insert_transaction(conn, transaction)
         if was_inserted:
             inserted += 1
@@ -2195,6 +2585,11 @@ def correct_transaction(conn: sqlite3.Connection, args: argparse.Namespace) -> d
     new_value: Any = args.new_value
     if field == "amount_cents":
         new_value = amount_cents_value(new_value)
+    if field == "occurred_at":
+        try:
+            new_value, _ = normalize_occurred_at(new_value)
+        except InvalidOccurredAtError as exc:
+            return result_for_exception(exc)
     timestamp = now_iso()
     conn.execute(
         f"UPDATE transactions SET {field} = ?, updated_at = ? WHERE id = ?",

@@ -72,6 +72,10 @@ Default categories:
 ## Natural Language Workflow
 
 1. Extract structured fields from the user's sentence.
+   - If the user mentions a date in natural language, use the active model to resolve it before calling the helper.
+   - Pass only a standard `occurred_at` value (`YYYY-MM-DD` or ISO 8601) to the helper.
+   - Keep the original phrase in `occurred_at_text` and the model's explanation in `occurred_at_resolution` when useful.
+   - If the user gives no date, omit `occurred_at`; the helper will default to today. Do not ask a date-only clarification.
 2. Infer `direction`:
    - refunds are `refund`, not normal income;
    - clear consumption is `expense`;
@@ -98,13 +102,25 @@ For screenshots, first use CowWeCom vision or the active model's image-reading a
 
 Do not pass the raw image path to this helper for OCR. This helper does not parse images.
 
+Date handling:
+
+- Use the current CowWeCom vision/multimodal model to understand bill dates directly from the screenshot layout and visible fields.
+- Do not rely on a local OCR string or `ledger.py` to infer dates from screenshots.
+- Before calling the helper, convert visible or user-described dates such as 今天, 昨天, 前天, 上周三, 今年母亲节, 五一那天 to standard `occurred_at`.
+- Never pass natural-language dates such as `今年母亲节` as `occurred_at`; if useful, store that phrase as `occurred_at_text` and add `occurred_at_resolution`.
+- If the screenshot date is not clear, omit `occurred_at`, set `occurred_at_assumed=true`, and tell the user the bill was defaulted to today and can be corrected later.
+
 Private-chat automation:
 
-- In private chat, if the image is clearly a bill and has amount, app/platform, item/merchant, and category confidence, use `analyze-bill` and auto-record it. Reply: `已记账。如果不需要记账，请回复“不记账”或“撤销记账”，我会撤销这笔。`
+- In private chat, if the image is clearly a bill and has amount, app/platform, item/merchant, and category confidence, use `analyze-bill` and auto-record it. Include the booked date in the reply, for example: `已记账：2026-05-10 ¥99.88 AI工具。如果不需要记账，请回复“不记账”或“撤销记账”，我会撤销这笔。`
+- If no clear date was provided, add: `已默认记为今天 <YYYY-MM-DD>，如需修改日期请告诉我。`
+- If a fuzzy date was resolved by the model, add the interpretation, for example: `“上周”已按 2026-05-18 记录，如需修改日期请告诉我。`
 - In group chat, never auto-record. Group images may be recognized for context, but ledger writes require private chat.
 - If it looks like a bill but the app/platform, category, item, merchant, amount, or direction is unclear, ask only for the missing fields and do not invent them.
+- Text follow-ups such as category/item clarification, duplicate decisions, date changes, and undo requests must be tied to a recent same-user/same-chat bill context. If the user is asking an unrelated task such as backend token/quota/status, do not treat it as ledger clarification.
 - After the user answers a missing field, call `confirm-bill`. Partial answers are kept across multiple clarifications, and final confirmation stores screenshot UI rules plus item/merchant learning rules, so the same UI or same item can be recognized later without asking again.
 - If the user replies `不记账`, `撤销记账`, `取消记账`, or similar after an auto-recorded bill, call `undo-bill` for the same user/chat.
+- If a new bill may be the same order as an existing record, do not insert, undo, or modify first. Treat it as possible duplicate when amount, date/day, direction, category, and merchant/item/order/app evidence overlap. Ask whether to `仍要记账/新增一笔`, `撤销这笔`, or keep the existing record.
 - Do not treat menus, product lists, coupons, or shopping-cart pages with visible prices as bills unless there are bill markers such as 支付成功, 交易成功, 账单详情, 订单编号, 交易单号, or 付款方式.
 
 Analyze a vision result:
@@ -202,4 +218,5 @@ python "<base_dir>/scripts/ledger.py" doctor
 - If command output has `ok: false`, explain the error and ask for the missing user action.
 - If output includes `needs_clarification`, ask exactly for the missing information before confirming the ledger entry.
 - If `duplicate: true`, tell the user this looks already recorded and do not create a second record.
+- If `possible_duplicate: true`, ask the user before doing anything. Only call `confirm-bill` with an explicit `force_new_transaction` decision when the user says it is a separate bill.
 - Keep all ledger data local. Do not paste large exports back into chat unless the user asks for a summary.

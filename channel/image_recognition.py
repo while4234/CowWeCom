@@ -20,6 +20,7 @@ from config import conf
 RESULT_TTL_SECONDS = 24 * 60 * 60
 IMAGE_TTL_SECONDS = 7 * 24 * 60 * 60
 RELATED_FOLLOWUP_WINDOW_SECONDS = 15 * 60
+LEDGER_FOLLOWUP_WINDOW_SECONDS = 5 * 60
 DEFAULT_FOLLOWUP_WAIT_SECONDS = 6.0
 DEFAULT_MAX_WORKERS = 2
 DEFAULT_MAX_TOKENS = 700
@@ -28,6 +29,8 @@ DEFAULT_PROMPT = (
     "请用中文识别这张图片，结果用于后续私聊回复。保持自然、简短，不要使用英文，"
     "不要写成报告格式。说明主要主体、可见动作或场景、重要文字/OCR，以及必要的不确定性。"
     "除非图片本身是文档，否则不要使用标题或分段。"
+    "如果图片像消费账单、支付账单或订单详情，请直接用你的视觉理解提取日期、金额、平台、商户、商品和付款方式；"
+    "日期必须尽量解析成 YYYY-MM-DD 或 ISO 8601，不要只写“昨天”“上周”“母亲节”这类自然语言。"
 )
 
 _EXPLICIT_IMAGE_QUESTION_MARKERS = (
@@ -161,6 +164,10 @@ class ImageRecognitionManager:
         self.related_followup_window_seconds = self._int_conf(
             "image_recognition_related_followup_window_seconds",
             RELATED_FOLLOWUP_WINDOW_SECONDS,
+        )
+        self.ledger_followup_window_seconds = self._int_conf(
+            "china_expense_ledger_followup_window_seconds",
+            LEDGER_FOLLOWUP_WINDOW_SECONDS,
         )
         worker_count = max_workers or self._int_conf("image_recognition_workers", DEFAULT_MAX_WORKERS)
         self.executor = ThreadPoolExecutor(max_workers=max(1, int(worker_count)), thread_name_prefix="image-recognition")
@@ -314,8 +321,11 @@ class ImageRecognitionManager:
         user_text = raw_content.split("[Recent image context]", 1)[0].strip()
         if self._handle_ledger_undo_text(channel, context, user_text):
             return True
+        looks_like_ledger_confirmation = self._looks_like_ledger_confirmation_text(user_text)
         if self._handle_ledger_confirmation_text(channel, context, user_text):
             return True
+        if looks_like_ledger_confirmation:
+            return False
         intent = self._classify_followup_intent(user_text)
         session_id = str(context.get("session_id") or "").strip()
         record = self.latest_for_session(session_id)
@@ -355,51 +365,44 @@ class ImageRecognitionManager:
         compact = "".join(user_text.split())
         if len(compact) > 80:
             return False
-        intent_words = (
-            "买的是",
-            "买了",
-            "商品",
-            "分类",
-            "归类",
-            "记到",
-            "商户",
-            "商家",
-            "店铺",
-            "支付宝",
-            "微信支付",
-            "闲鱼",
-            "咸鱼",
-            "淘宝",
-            "京东",
-            "美团",
-            "token",
-            "Token",
-            "API",
-            "api",
-            "额度",
-        )
-        if not any(word in compact for word in intent_words):
+        if not self._looks_like_ledger_confirmation_text(user_text):
             return False
         try:
             ledger = self._load_ledger_module()
             if not ledger:
                 return False
+            user_id = (
+                self._context_get(context, "memory_user_id")
+                or self._context_get(context, "from_user_id")
+                or self._context_get(context, "session_id")
+            )
+            chat_id = (
+                self._context_get(context, "chat_id")
+                or self._context_get(context, "conversation_id")
+                or self._context_get(context, "session_id")
+            )
             answer_fields = ledger.fields_from_answer_text(user_text)
             if not answer_fields:
                 return False
             conn = ledger.open_db(ledger.db_path_from_env())
             try:
                 ledger.init_db(conn)
+                pending_context = ledger.latest_bill_context(
+                    conn,
+                    user_id,
+                    chat_id,
+                    ["needs_clarification"],
+                    max_age_seconds=self.ledger_followup_window_seconds,
+                )
+                if not pending_context:
+                    return False
                 result = ledger.confirm_bill_context(
                     conn,
                     {
                         **answer_fields,
-                        "user_id": self._context_get(context, "memory_user_id")
-                        or self._context_get(context, "from_user_id")
-                        or self._context_get(context, "session_id"),
-                        "chat_id": self._context_get(context, "chat_id")
-                        or self._context_get(context, "conversation_id")
-                        or self._context_get(context, "session_id"),
+                        "context_id": pending_context["id"],
+                        "user_id": user_id,
+                        "chat_id": chat_id,
                     },
                 )
             finally:
@@ -418,11 +421,96 @@ class ImageRecognitionManager:
         channel._send_plain_text(context, result.get("message") or "已记账，并记住这类规则。")
         return True
 
+    @classmethod
+    def _looks_like_ledger_confirmation_text(cls, user_text: str) -> bool:
+        compact = "".join(str(user_text or "").split())
+        if not compact:
+            return False
+        if cls._looks_like_non_ledger_task_text(compact):
+            return False
+        strong_markers = (
+            "仍要记账",
+            "还是记账",
+            "新增一笔",
+            "新增记账",
+            "不是同一笔",
+            "不是同一个订单",
+            "单独记一笔",
+            "买的是",
+            "买了",
+            "买的",
+            "商品",
+            "分类",
+            "类别",
+            "归类",
+            "记到",
+            "商户",
+            "商家",
+            "店铺",
+            "卖家",
+            "收款方",
+            "平台",
+            "付款",
+            "支付",
+        )
+        context_markers = ("账单", "订单", "这笔", "这张", "截图", "刚才", "上面", "那个", "这个消费")
+        known_answers = (
+            "支付宝",
+            "微信支付",
+            "闲鱼",
+            "咸鱼",
+            "淘宝",
+            "京东",
+            "美团",
+            "美团外卖",
+            "餐饮",
+            "外卖",
+            "购物",
+            "交通",
+            "AI工具",
+            "其他",
+        )
+        if any(marker in compact for marker in strong_markers):
+            return True
+        if any(marker in compact for marker in context_markers) and any(answer in compact for answer in known_answers):
+            return True
+        if len(compact) <= 24 and any(answer == compact or answer in compact for answer in known_answers):
+            return True
+        if len(compact) <= 32 and any(marker in compact.lower() for marker in ("api", "token")):
+            return True
+        return False
+
+    @staticmethod
+    def _looks_like_non_ledger_task_text(compact: str) -> bool:
+        lowered = compact.lower()
+        if any(marker in lowered for marker in ("backend", "github", "gitlab", "mcp", "ssh")):
+            return True
+        system_context = ("后端", "模型", "llm", "LLM", "配置", "密钥", "秘钥", "key")
+        query_context = ("查", "查询", "查看", "统计", "汇总", "多少", "当前", "现在", "状态", "使用量", "用量", "消耗", "额度")
+        token_context = ("token", "api", "API", "额度", "用量", "消耗")
+        if any(marker in compact for marker in system_context) and any(marker in compact for marker in query_context):
+            return True
+        if any(marker in compact for marker in query_context) and any(marker in compact for marker in token_context):
+            return True
+        return False
+
     def _handle_ledger_undo_text(self, channel, context, user_text: str) -> bool:
         if not user_text or self._context_is_group(context):
             return False
         compact = "".join(user_text.lower().split())
-        undo_markers = ("不记账", "撤销记账", "取消记账", "这笔不要记", "不用记账", "不要记账")
+        explicit_delete_markers = ("撤销记账", "撤销这笔", "撤销该笔", "删除这笔", "删掉这笔")
+        undo_markers = (
+            "不记账",
+            "撤销记账",
+            "取消记账",
+            "这笔不要记",
+            "不用记账",
+            "不要记账",
+            "撤销这笔",
+            "撤销该笔",
+            "删除这笔",
+            "删掉这笔",
+        )
         if not any(marker in compact for marker in undo_markers):
             return False
         try:
@@ -432,12 +520,37 @@ class ImageRecognitionManager:
             conn = ledger.open_db(ledger.db_path_from_env())
             try:
                 ledger.init_db(conn)
-                result = ledger.undo_bill_transaction(
+                user_id = self._context_get(context, "memory_user_id") or self._context_get(context, "from_user_id") or self._context_get(context, "session_id")
+                chat_id = self._context_get(context, "chat_id") or self._context_get(context, "conversation_id") or self._context_get(context, "session_id")
+                recent_context = ledger.latest_bill_context(
                     conn,
-                    self._context_get(context, "memory_user_id") or self._context_get(context, "from_user_id") or self._context_get(context, "session_id"),
-                    self._context_get(context, "chat_id") or self._context_get(context, "conversation_id") or self._context_get(context, "session_id"),
-                    None,
+                    user_id,
+                    chat_id,
+                    ["needs_clarification"],
+                    max_age_seconds=self.ledger_followup_window_seconds,
                 )
+                if recent_context:
+                    try:
+                        stored_payload = json.loads(recent_context["payload_json"] or "{}")
+                    except Exception:
+                        stored_payload = {}
+                    if not stored_payload.get("possible_duplicate") or not recent_context["transaction_id"]:
+                        return False
+                    if any(marker in compact for marker in explicit_delete_markers):
+                        result = ledger.undo_bill_transaction(conn, user_id, chat_id, recent_context["transaction_id"])
+                    else:
+                        result = ledger.reject_bill_context(conn, recent_context["id"])
+                else:
+                    recent_context = ledger.latest_bill_context(
+                        conn,
+                        user_id,
+                        chat_id,
+                        ["auto_recorded", "confirmed"],
+                        max_age_seconds=self.ledger_followup_window_seconds,
+                    )
+                    if not recent_context:
+                        return False
+                    result = ledger.undo_bill_transaction(conn, user_id, chat_id, recent_context["transaction_id"])
             finally:
                 conn.close()
         except Exception as exc:
@@ -562,18 +675,25 @@ class ImageRecognitionManager:
             questions = result.get("needs_clarification") or []
             text = "；".join(str(item).strip("。") for item in questions if str(item).strip())
             if text:
+                if result.get("possible_duplicate"):
+                    return text
                 return f"这张像账单，但还有点不确定：{text}"
             return "这张像账单，但有些字段看不清，补充一下我再记。"
         if result.get("status") in {"auto_recorded", "duplicate"}:
+            message = str(result.get("message") or "").strip()
+            if message and not result.get("duplicate"):
+                return message
             transaction = result.get("transaction") or {}
             amount = transaction.get("amount_cents")
             category = transaction.get("category") or "未分类"
+            date_text = str(transaction.get("occurred_at") or "")[:10]
             amount_text = ""
             try:
-                amount_text = f"{int(amount) / 100:.2f} 元"
+                amount_text = f"¥{int(amount) / 100:.2f}"
             except (TypeError, ValueError):
                 pass
-            detail = f"：{category} {amount_text}".rstrip() if amount_text else f"：{category}"
+            parts = [part for part in (date_text, amount_text, category) if part]
+            detail = "：" + " ".join(parts) if parts else f"：{category}"
             suffix = "如果不需要记账，请回复“不记账”或“撤销记账”，我会撤销这笔。"
             if result.get("duplicate"):
                 return f"这张账单看起来已经记过了{detail}。{suffix}"

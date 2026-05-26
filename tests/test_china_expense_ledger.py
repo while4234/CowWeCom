@@ -1,8 +1,10 @@
 import importlib.util
+import json
 import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -119,6 +121,83 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
 
                 self.assertEqual(yuan_result["transaction"]["amount_cents"], 49900)
                 self.assertEqual(cents_result["transaction"]["amount_cents"], 1990)
+            finally:
+                conn.close()
+
+    def test_record_accepts_model_normalized_occurred_at(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                result = ledger.record_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "source_type": "text",
+                        "raw_text": "昨天买了咖啡 18",
+                        "occurred_at": "2026-05-23",
+                        "occurred_at_text": "昨天",
+                        "occurred_at_resolution": "模型按用户发送时间解析为 2026-05-23",
+                        "amount": "18",
+                        "direction": "expense",
+                        "category": "餐饮",
+                    },
+                )
+
+                transaction = result["transaction"]
+                self.assertTrue(result["inserted"])
+                self.assertTrue(transaction["occurred_at"].startswith("2026-05-23"))
+                details = json.loads(transaction["item_details_json"])
+                self.assertEqual(details["date_resolution"]["occurred_at_text"], "昨天")
+                self.assertEqual(details["date_resolution"]["occurred_at_assumed"], False)
+            finally:
+                conn.close()
+
+    def test_record_defaults_missing_occurred_at_to_today_with_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                result = ledger.record_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "source_type": "image",
+                        "raw_text": "微信支付 支付成功 商品: 咖啡 支付金额 ¥18.00",
+                        "amount": "18",
+                        "direction": "expense",
+                        "category": "餐饮",
+                        "occurred_at_assumed": True,
+                    },
+                )
+
+                transaction = result["transaction"]
+                today = ledger.now_iso()[:10]
+                self.assertTrue(transaction["occurred_at"].startswith(today))
+                details = json.loads(transaction["item_details_json"])
+                self.assertTrue(details["date_resolution"]["occurred_at_assumed"])
+            finally:
+                conn.close()
+
+    def test_record_rejects_natural_language_occurred_at(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                result = ledger.record_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "source_type": "text",
+                        "raw_text": "今年母亲节买花 88",
+                        "occurred_at": "今年母亲节",
+                        "amount": "88",
+                        "direction": "expense",
+                        "category": "其他",
+                    },
+                )
+
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error"], "invalid_occurred_at")
+                count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+                self.assertEqual(count, 0)
             finally:
                 conn.close()
 
@@ -339,6 +418,7 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
                         "user_id": "u1",
                         "chat_id": "chat-a",
                         "record_id": "image-a",
+                        "occurred_at": "2026-05-23",
                         "raw_text": "微信支付 支付成功 美团外卖 商品: 黄焖鸡 支付金额 ¥28.50 交易单号 123456789012",
                     },
                 )
@@ -350,9 +430,71 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
                 self.assertEqual(result["transaction"]["payment_app"], "微信支付")
                 self.assertEqual(result["transaction"]["order_platform"], "美团外卖")
                 self.assertEqual(result["transaction"]["category"], "外卖")
-                summary = ledger.summarize_transactions(conn, "u1", "today")
-                self.assertTrue(summary["cached"])
-                self.assertEqual(summary["totals"]["expense_cents"], 2850)
+                self.assertTrue(result["transaction"]["occurred_at"].startswith("2026-05-23"))
+                may_summary = ledger.summarize_transactions(
+                    conn,
+                    "u1",
+                    "all",
+                    start="2026-05-01",
+                    end="2026-06-01",
+                )
+                self.assertEqual(may_summary["totals"]["expense_cents"], 2850)
+            finally:
+                conn.close()
+
+    def test_correct_occurred_at_refreshes_old_and_new_summary_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                result = ledger.record_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "source_type": "text",
+                        "raw_text": "咖啡 18",
+                        "occurred_at": "2026-05-20",
+                        "amount": "18",
+                        "direction": "expense",
+                        "category": "餐饮",
+                    },
+                )
+                before = ledger.summarize_transactions(
+                    conn,
+                    "u1",
+                    "all",
+                    start="2026-05-20",
+                    end="2026-05-21",
+                )
+                self.assertEqual(before["totals"]["expense_cents"], 1800)
+
+                args = type(
+                    "Args",
+                    (),
+                    {
+                        "transaction_id": result["transaction"]["id"],
+                        "field": "occurred_at",
+                        "new_value": "2026-05-21",
+                    },
+                )()
+                correction = ledger.correct_transaction(conn, args)
+
+                self.assertTrue(correction["ok"])
+                old_day = ledger.summarize_transactions(
+                    conn,
+                    "u1",
+                    "all",
+                    start="2026-05-20",
+                    end="2026-05-21",
+                )
+                new_day = ledger.summarize_transactions(
+                    conn,
+                    "u1",
+                    "all",
+                    start="2026-05-21",
+                    end="2026-05-22",
+                )
+                self.assertEqual(old_day["totals"]["expense_cents"], 0)
+                self.assertEqual(new_day["totals"]["expense_cents"], 1800)
             finally:
                 conn.close()
 
@@ -418,6 +560,141 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
                 self.assertEqual(second["status"], "auto_recorded")
                 self.assertEqual(second["transaction"]["item_name"], "二手键盘")
                 self.assertEqual(second["transaction"]["category"], "数码家电")
+            finally:
+                conn.close()
+
+    def test_possible_duplicate_same_day_amount_category_and_merchant_asks_before_insert(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                first = ledger.record_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "source_type": "image",
+                        "raw_text": "支付宝 支付成功 成都软件园 C8 餐厅 支付金额 ¥31.00",
+                        "occurred_at": "2026-05-26T12:35:27+08:00",
+                        "amount": "31.00",
+                        "direction": "expense",
+                        "category": "餐饮",
+                        "merchant": "成都软件园 C8 餐厅",
+                        "payment_app": "支付宝",
+                    },
+                )
+                self.assertTrue(first["inserted"])
+
+                duplicate = ledger.analyze_bill_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "record_id": "image-dup",
+                        "raw_text": "支付宝 支付成功 成都软件园 C8 餐厅 付款方式 余额宝 支付金额 ¥31.00",
+                        "occurred_at": "2026-05-26T12:35:27+08:00",
+                    },
+                )
+
+                self.assertEqual(duplicate["status"], "needs_clarification")
+                self.assertTrue(duplicate["possible_duplicate"])
+                self.assertIn("我先不新增", duplicate["needs_clarification"][0])
+                count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+                self.assertEqual(count, 1)
+
+                forced = ledger.confirm_bill_context(
+                    conn,
+                    {
+                        "context_id": duplicate["context_id"],
+                        "force_new_transaction": True,
+                    },
+                )
+
+                self.assertTrue(forced["ok"])
+                self.assertEqual(forced["status"], "confirmed")
+                count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+                self.assertEqual(count, 2)
+            finally:
+                conn.close()
+
+    def test_record_json_possible_duplicate_asks_before_insert(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                first = ledger.record_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "source_type": "manual",
+                        "occurred_at": "2026-05-26T12:35:27+08:00",
+                        "amount": "31.00",
+                        "direction": "expense",
+                        "category": "餐饮",
+                        "merchant": "成都软件园 C8 餐厅",
+                        "payment_app": "支付宝",
+                    },
+                )
+                self.assertTrue(first["inserted"])
+
+                second = ledger.record_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "source_type": "image",
+                        "occurred_at": "2026-05-26T12:36:00+08:00",
+                        "amount": "31.00",
+                        "direction": "expense",
+                        "category": "餐饮",
+                        "merchant": "成都软件园 C8 餐厅",
+                        "payment_app": "支付宝",
+                    },
+                )
+
+                self.assertEqual(second["status"], "needs_clarification")
+                self.assertTrue(second["possible_duplicate"])
+                count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+                self.assertEqual(count, 1)
+            finally:
+                conn.close()
+
+    def test_possible_duplicate_with_same_app_but_missing_merchant_asks_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                first = ledger.record_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "source_type": "image",
+                        "occurred_at": "2026-05-26T12:35:27+08:00",
+                        "amount": "31.00",
+                        "direction": "expense",
+                        "category": "餐饮",
+                        "payment_app": "支付宝",
+                    },
+                )
+                self.assertTrue(first["inserted"])
+
+                second = ledger.record_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "source_type": "image",
+                        "occurred_at": "2026-05-26T12:40:00+08:00",
+                        "amount": "31.00",
+                        "direction": "expense",
+                        "category": "餐饮",
+                        "payment_app": "支付宝",
+                    },
+                )
+
+                self.assertEqual(second["status"], "needs_clarification")
+                self.assertTrue(second["possible_duplicate"])
+                count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+                self.assertEqual(count, 1)
             finally:
                 conn.close()
 
@@ -495,6 +772,35 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
                 self.assertEqual(confirmed["transaction"]["order_platform"], "闲鱼")
                 self.assertEqual(confirmed["transaction"]["item_name"], "神秘服务")
                 self.assertEqual(confirmed["transaction"]["category"], "其他")
+            finally:
+                conn.close()
+
+    def test_latest_bill_context_honors_followup_ttl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                first = ledger.analyze_bill_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "record_id": "image-old",
+                        "raw_text": "卖家已发货 待确认收货 成交价 ¥66.00 订单编号 987654321000",
+                    },
+                )
+                self.assertEqual(first["status"], "needs_clarification")
+                old_time = (datetime.now().astimezone() - timedelta(minutes=10)).isoformat(timespec="seconds")
+                conn.execute(
+                    "UPDATE bill_contexts SET created_at = ?, updated_at = ? WHERE id = ?",
+                    (old_time, old_time, first["context_id"]),
+                )
+                conn.commit()
+
+                stale = ledger.latest_bill_context(conn, "u1", "chat-a", ["needs_clarification"], max_age_seconds=300)
+                unbounded = ledger.latest_bill_context(conn, "u1", "chat-a", ["needs_clarification"])
+
+                self.assertIsNone(stale)
+                self.assertIsNotNone(unbounded)
             finally:
                 conn.close()
 
