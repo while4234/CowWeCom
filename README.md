@@ -467,6 +467,7 @@ CowWeCom/
 
 | 日期 | 更新 |
 | --- | --- |
+| 2026-05-26 | 新增 `cowagent-workflow-auditor` Skill：用于脱敏审计 CowAgent/CowWechat 运行日志、工具调用链路、`tmp`/`workspace` 临时产物、已安装 Skills/Plugins，识别可沉淀为 Skill 的重复工作流；同时扩展 `github` Skill，内置仓库列表和近期更新查询，减少反复创建 GitHub 临时包装脚本 |
 | 2026-05-26 | 新增 `china-expense-ledger` 本地记账 Skill：支持自然语言记账、截图经 Agent 视觉提取后的结构化入库、支付宝/微信 CSV 导入、SQLite 本地学习纠错和分类汇总；明确禁止爬虫、逆向、绕过登录、自动抓取 App 账单或默认启用官方支付/电商接口 |
 | 2026-05-26 | 统一本地验证环境到 `.venv`：补齐当前 `.venv` 的 `PyYAML` 和 `pytest`，并在可选依赖中声明 `pytest`，后续 skill 校验和 focused pytest 默认使用 `.venv` |
 | 2026-05-26 | 新增 `work-progress-reporter` Skill：所有用户都可在私聊中独立管理本周/下周工作计划、每日进度、临时任务、收获和周末加班安排；真实状态写入各自 `memory_user_id` 私有目录，群聊触发只做隐私引导，周五可生成中文 Markdown 周报 |

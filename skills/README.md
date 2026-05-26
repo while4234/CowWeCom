@@ -50,6 +50,7 @@ with machine setup notes and any required user-provided keys.
 | `china-expense-ledger` | Local-only China mainland expense ledger for user-provided text, vision-extracted screenshots, and Alipay/WeChat CSV exports. | No external API key; stores SQLite data locally. |
 | `code-update` | Safely fast-forward CowWechat from GitHub while protecting local state. | No API key; Git credentials stay local. |
 | `cowagent-self-evolution` | Record and reuse local execution lessons such as Windows shell dialect failures without showing them in chat. | No external API key; needs Python. |
+| `cowagent-workflow-auditor` | Privacy-safe audit of CowAgent/CowWechat logs, tool-call traces, workspace/tmp artifacts, and skills/plugins to identify repeated workflows worth turning into reusable skills. | No external API key; needs Python. |
 | `daily-douyin-video-harvester` | Collect fresh TOP3 meme-worthy Douyin hot-board videos through a dedicated persistent browser profile, send sharp commentary plus video/cover/text to WeCom, and clean downloaded files after 24 hours. | Optional `DOUYIN_COOKIE`; WeCom Bot credentials from local config or env. |
 | `daily-meme-harvester` | Collect TOP3 hot-topic images from Weibo and TOP3 from Xiaohongshu, dedupe same topics/content without backfill, download images, and optionally send them to WeCom. | Optional `WEIBO_COOKIE` and `XHS_COOKIE`; WeCom Bot credentials from local config or env for sending. |
 | `docx` | Create, read, edit, and format Word `.docx` documents. | No external API key. |

@@ -69,6 +69,25 @@ The endpoint may be either `/path` or a full `https://api.github.com/path` URL. 
 python skills\github\scripts\github_api.py --endpoint /user
 ```
 
+### List Visible Repositories
+
+Use the built-in convenience action instead of writing a temporary wrapper script:
+
+```powershell
+python skills\github\scripts\github_api.py --list-repos
+```
+
+### Recent Repository Updates
+
+Use this for questions like "今天 GitHub 有哪些更新" or "我最近推了什么代码":
+
+```powershell
+python skills\github\scripts\github_api.py --recent-updates --days 1
+python skills\github\scripts\github_api.py --recent-updates --days 7 --owner while4234
+```
+
+The output is JSON with repository names, recent commit samples, timestamps, and links. Summarize only repository names and commit messages needed for the user's answer; do not print tokens or credential details.
+
 ### Create Repository
 
 ```powershell

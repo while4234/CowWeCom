@@ -1,5 +1,7 @@
 ﻿# Git Notes
 
+- `2026-05-26` pending commit `feat: add workflow auditor skill`: Added `cowagent-workflow-auditor` to scan logs, tool traces, and repeated tmp/workspace artifacts without exposing raw private messages; extended `github` with `--list-repos` and `--recent-updates` so common GitHub reporting no longer requires temporary wrapper scripts. Validation: auditor script ran against project/runtime logs; GitHub helper `--check-auth`, `--help`, and `--list-repos` passed; skill quick validation and Python compile checks passed.
+
 ## Repository Purpose
 
 Personal CowWeCom deployment and development workspace for WeCom Bot integration, OpenAI-compatible model providers, image generation tooling, scheduler tools, and agent memory features.

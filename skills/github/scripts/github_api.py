@@ -9,6 +9,8 @@ import os
 import subprocess
 import sys
 import shutil
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 
 API_ROOT = "https://api.github.com"
@@ -134,11 +136,98 @@ def pretty_print(payload: bytes, stream=sys.stdout) -> None:
     stream.write("\n")
 
 
+def api_json(endpoint: str, method: str = "GET", data_json: str | None = None):
+    _status, payload = request(method, endpoint, data_json)
+    if not payload:
+        return None
+    return json.loads(payload.decode("utf-8", errors="replace"))
+
+
+def list_repos() -> dict:
+    viewer = api_json("/user") or {}
+    repos = api_json("/user/repos?per_page=100&sort=updated&direction=desc&type=all") or []
+    simplified = []
+    for repo in repos:
+        simplified.append(
+            {
+                "full_name": repo.get("full_name", ""),
+                "name": repo.get("name", ""),
+                "owner": (repo.get("owner") or {}).get("login", ""),
+                "private": bool(repo.get("private")),
+                "fork": bool(repo.get("fork")),
+                "default_branch": repo.get("default_branch", ""),
+                "updated_at": repo.get("updated_at", ""),
+                "pushed_at": repo.get("pushed_at", ""),
+                "html_url": repo.get("html_url", ""),
+            }
+        )
+    return {
+        "login": viewer.get("login", ""),
+        "total_visible_repos": len(simplified),
+        "repos": simplified,
+    }
+
+
+def recent_repo_updates(days: int = 1, owner: str | None = None) -> dict:
+    viewer = api_json("/user") or {}
+    login = owner or viewer.get("login", "")
+    if not login:
+        raise SystemExit("Could not resolve GitHub login for update query.")
+
+    since_dt = datetime.now(timezone.utc) - timedelta(days=max(1, days))
+    since = since_dt.isoformat().replace("+00:00", "Z")
+    repos = api_json("/user/repos?per_page=100&sort=updated&direction=desc&type=all") or []
+    updates = []
+
+    for repo in repos:
+        full_name = repo.get("full_name", "")
+        if owner and not full_name.startswith(owner + "/"):
+            continue
+        if repo.get("pushed_at") and repo["pushed_at"] < since:
+            continue
+        endpoint = f"/repos/{quote(full_name, safe='/')}/commits?since={quote(since)}&per_page=20"
+        try:
+            commits = api_json(endpoint) or []
+        except SystemExit:
+            commits = []
+        if not commits:
+            continue
+        updates.append(
+            {
+                "full_name": full_name,
+                "default_branch": repo.get("default_branch", ""),
+                "pushed_at": repo.get("pushed_at", ""),
+                "commit_count_sample": len(commits),
+                "commits": [
+                    {
+                        "sha": item.get("sha", "")[:12],
+                        "message": ((item.get("commit") or {}).get("message") or "").splitlines()[0][:160],
+                        "author_date": (((item.get("commit") or {}).get("author") or {}).get("date") or ""),
+                        "html_url": item.get("html_url", ""),
+                    }
+                    for item in commits[:10]
+                ],
+            }
+        )
+
+    return {
+        "login": viewer.get("login", ""),
+        "window_utc": {"since": since, "days": max(1, days)},
+        "visible_repo_count": len(repos),
+        "updated_repo_count": len(updates),
+        "updates": updates,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Call the GitHub REST API.")
     parser.add_argument("--method", default="GET", help="HTTP method, default: GET")
     parser.add_argument("--endpoint", help="API endpoint such as /user")
     parser.add_argument("--data-json", help="JSON request body for POST/PATCH/PUT")
+    parser.add_argument("--list-repos", action="store_true", help="List visible repositories without writing a temp script.")
+    parser.add_argument("--recent-updates", action="store_true", help="Summarize recent commits across visible repositories.")
+    parser.add_argument("--days", type=int, default=1, help="Lookback days for --recent-updates.")
+    parser.add_argument("--owner", help="Optional owner filter for --recent-updates.")
     parser.add_argument(
         "--check-auth",
         action="store_true",
@@ -150,8 +239,16 @@ def main() -> int:
         print("token_found=" + str(bool(resolve_token())).lower())
         return 0
 
+    if args.list_repos:
+        print(json.dumps(list_repos(), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.recent_updates:
+        print(json.dumps(recent_repo_updates(days=args.days, owner=args.owner), ensure_ascii=False, indent=2))
+        return 0
+
     if not args.endpoint:
-        parser.error("--endpoint is required unless --check-auth is used")
+        parser.error("--endpoint is required unless a convenience action is used")
 
     _status, payload = request(args.method, args.endpoint, args.data_json)
     pretty_print(payload)
