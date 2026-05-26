@@ -206,11 +206,115 @@ class CowCliPlugin(Plugin):
             return ""
         if cls._looks_like_recommendation_question(compact):
             return ""
-        if not any(marker in compact for marker in ("告诉", "转述", "发给", "发送给", "推送给", "同步给", "通知", "跟她说", "让她知道")):
-            return ""
-        if any(marker in compact for marker in ("老婆", "妻子", "太太", "媳妇", "夫人")):
-            return "老婆"
+        directed_markers = (
+            "转述给",
+            "转发给",
+            "发送给",
+            "推送给",
+            "同步给",
+            "分享给",
+            "发给",
+            "转给",
+            "讲给",
+            "说给",
+        )
+        for marker in directed_markers:
+            target = cls._text_after_marker(compact, marker)
+            if cls._looks_like_other_person_target(target):
+                return "recipient"
+
+        for marker in ("告诉", "通知"):
+            target = cls._text_after_marker(compact, marker)
+            if cls._looks_like_other_person_target(target):
+                return "recipient"
+
+        if cls._has_social_verb(compact):
+            for target in cls._targets_after_give(compact):
+                if cls._looks_like_other_person_target(target):
+                    return "recipient"
+
+        if cls._has_target_between(compact, "跟", "说"):
+            return "recipient"
+        if cls._has_target_between(compact, "让", "知道"):
+            return "recipient"
         return ""
+
+    @staticmethod
+    def _text_after_marker(compact: str, marker: str) -> str:
+        index = compact.find(marker)
+        if index < 0:
+            return ""
+        return compact[index + len(marker) :]
+
+    @classmethod
+    def _targets_after_give(cls, compact: str):
+        start = 0
+        while True:
+            index = compact.find("给", start)
+            if index < 0:
+                return
+            yield compact[index + 1 :]
+            start = index + 1
+
+    @staticmethod
+    def _has_social_verb(compact: str) -> bool:
+        return any(
+            marker in compact
+            for marker in ("告诉", "转述", "转发", "发送", "发给", "推送", "同步", "通知", "分享")
+        )
+
+    @classmethod
+    def _has_target_between(cls, compact: str, prefix: str, suffix: str) -> bool:
+        start = compact.find(prefix)
+        if start < 0:
+            return False
+        end = compact.find(suffix, start + len(prefix))
+        if end < 0:
+            return False
+        return cls._looks_like_other_person_target(compact[start + len(prefix) : end])
+
+    @staticmethod
+    def _looks_like_other_person_target(target: str) -> bool:
+        target = str(target or "").lstrip("把将请帮麻烦一下")
+        if not target:
+            return False
+        if target.startswith(("我自己", "我本人", "我这边", "自己", "本人")):
+            return False
+        my_relations = (
+            "我妈",
+            "我妈妈",
+            "我爸",
+            "我爸爸",
+            "我老婆",
+            "我妻子",
+            "我太太",
+            "我媳妇",
+            "我老公",
+            "我丈夫",
+            "我对象",
+            "我女朋友",
+            "我男朋友",
+            "我孩子",
+            "我儿子",
+            "我女儿",
+            "我同事",
+            "我朋友",
+            "我客户",
+            "我老板",
+            "我领导",
+            "我家人",
+        )
+        if target.startswith("我"):
+            return target.startswith(my_relations)
+        if target.startswith(("你", "您", "咱", "我们", "咱们")):
+            return False
+        if target.startswith(("这个", "这项", "这件", "该", "自助", "功能", "怎么", "如何", "哪些", "什么")):
+            return False
+        if target.startswith(("他", "她", "ta", "对方", "大家", "群里", "群", "家人", "朋友", "同事", "客户", "老板", "领导")):
+            return True
+        if target.startswith(("妈妈", "妈", "爸爸", "爸", "老婆", "妻子", "太太", "媳妇", "老公", "丈夫", "对象", "孩子", "儿子", "女儿")):
+            return True
+        return bool(re.match(r"[\u4e00-\u9fffA-Za-z0-9_]{1,20}", target))
 
     @staticmethod
     def _compact_for_social_intent(text: str) -> str:

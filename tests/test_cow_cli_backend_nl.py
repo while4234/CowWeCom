@@ -430,6 +430,21 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertIsNone(plugin._parse_command(question))
 
+    def test_direct_social_skill_request_bypasses_for_general_recipient(self):
+        plugin = _load_cow_cli_plugin()
+
+        self.assertIsNone(plugin._parse_command("把自助记账这个功能发给小王，告诉他怎么用"))
+        self.assertIsNone(plugin._parse_command("帮我转述自助记账这个功能给我妈，通俗一点"))
+        self.assertIsNone(plugin._parse_command("通知群里自助记账这个功能已经可以用了"))
+
+    def test_tell_me_skill_request_still_uses_fast_answer(self):
+        plugin = _load_cow_cli_plugin()
+
+        parsed = plugin._parse_command("告诉我自助记账这个功能怎么用")
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed[0], "skill")
+
     def test_recommendation_question_can_still_use_updates_fast_answer(self):
         plugin = _load_cow_cli_plugin()
         question = "\u4eca\u5929\u66f4\u65b0\u4e86\u54ea\u4e9b\u529f\u80fd\u9002\u5408\u63a8\u9001\u7ed9\u6211\u8001\u5a46\u7684"
