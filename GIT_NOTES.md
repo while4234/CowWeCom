@@ -8,6 +8,8 @@
 
 - `2026-05-26` pending commit `fix: complete ledger bill clarifications`: After merging `origin/main` at `4c85bf6`, fixed `china-expense-ledger` private bill clarification so user answers like “这是一个咸鱼账单，我买的是中转API的token” resolve platform, item, and category in one follow-up instead of asking again. Added curated `AI工具` classification for stable API-token/额度卡 purchases, let named but unknown items fall back to `其他`, persisted partial clarification payloads across multiple answers, and extended Weixin follow-up intent words for 咸鱼/API/token/额度. Validation: `py_compile`, focused ledger/image-recognition pytest, repository/runtime skill quick validation, and safe preflight passed.
 
+- `2026-05-26` pending commit `docs: consolidate readme update log`: Consolidated the root README update log so each calendar date has one merged summary row, added the same-day merge requirement to the CowWeCom project README rules in `AGENTS.md`, and refreshed the README development guidance to tell future Codex sessions to update an existing same-day entry instead of adding duplicates. Validation: safe upload preflight passed before and after staging, staged diff check passed, and README update-log date uniqueness check passed.
+
 ## Repository Purpose
 
 Personal CowWeCom deployment and development workspace for WeCom Bot integration, OpenAI-compatible model providers, image generation tooling, scheduler tools, and agent memory features.

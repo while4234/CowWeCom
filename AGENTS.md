@@ -35,6 +35,7 @@ checkout path.
 ## README Must Track Code
 
 - Any task that changes project code, runtime behavior, channels, configuration, tests, skills, safety policy, deployment flow, or user-visible capabilities must update the root `README.md` in the same commit set. At minimum, add or refresh the current Chinese update-log entry; when behavior/config/support scope changes, update the relevant README sections too.
+- The root `README.md` update log must keep one consolidated row per calendar date. If an entry for the current date already exists, merge the new change into that row and summarize the day's updates instead of adding another row for the same date.
 - When `git fetch`, `git pull`, or `git rebase` shows that `origin/main` has new code commits and those commits did not update the root `README.md`, Codex must automatically update `README.md` to cover those remote code changes before finishing the task, committing, or pushing.
 - Keep the root README Chinese, CowWeCom-focused, and aligned with actually developed/tested Weixin and WeCom scope. Do not reintroduce upstream promotional/contact material or unverified channel setup instructions.
 
