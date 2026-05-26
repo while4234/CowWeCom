@@ -849,6 +849,7 @@ def _build_config():
         "agent_max_context_tokens": local_conf.get("agent_max_context_tokens"),
         "agent_max_steps": local_conf.get("agent_max_steps"),
         "agent_development_max_steps": local_conf.get("agent_development_max_steps"),
+        "agent_knowledge_max_steps": local_conf.get("agent_knowledge_max_steps"),
         "channelType": local_conf.get("channel_type"),
     }
 

@@ -12,6 +12,7 @@ from bridge.reply import ReplyType
 from common.agent_task_limits import (
     is_complex_planning_task,
     is_development_task,
+    is_knowledge_task,
     resolve_agent_max_steps,
     resolve_agent_task_budget,
 )
@@ -53,6 +54,7 @@ class TestAgentTaskLimits(unittest.TestCase):
         settings = {
             "agent_max_steps": 20,
             "agent_development_max_steps": 40,
+            "agent_knowledge_max_steps": 40,
             "agent_complex_planning_max_steps": 40,
         }
 
@@ -63,6 +65,7 @@ class TestAgentTaskLimits(unittest.TestCase):
         settings = {
             "agent_max_steps": 20,
             "agent_development_max_steps": 40,
+            "agent_knowledge_max_steps": 40,
             "agent_complex_planning_max_steps": 40,
         }
         prompt = (
@@ -80,6 +83,7 @@ class TestAgentTaskLimits(unittest.TestCase):
         settings = {
             "agent_max_steps": 20,
             "agent_development_max_steps": 40,
+            "agent_knowledge_max_steps": 40,
             "agent_complex_planning_max_steps": 40,
         }
         prompt = "6月10日从广州去首尔，6月15日回来，两个人，预算1万5，帮我规划一下。"
@@ -94,6 +98,7 @@ class TestAgentTaskLimits(unittest.TestCase):
         settings = {
             "agent_max_steps": 20,
             "agent_development_max_steps": 40,
+            "agent_knowledge_max_steps": 40,
             "agent_complex_planning_max_steps": 40,
         }
         prompt = "我想6月下旬从深圳去釜山玩几天，别太赶，帮我规划一下。"
@@ -108,6 +113,7 @@ class TestAgentTaskLimits(unittest.TestCase):
         settings = {
             "agent_max_steps": 20,
             "agent_development_max_steps": 40,
+            "agent_knowledge_max_steps": 40,
             "agent_complex_planning_max_steps": 40,
         }
         prompt = "6月18日从深圳去釜山，6月23日回来，2个成年人，中国护照，预算1.6万人民币，想住交通方便的地方，帮我继续做完整方案。"
@@ -178,6 +184,39 @@ class TestAgentTaskLimits(unittest.TestCase):
         self.assertTrue(is_development_task("commit and push the repo changes"))
         self.assertFalse(is_development_task("帮我总结今天的天气"))
 
+    def test_knowledge_tasks_use_knowledge_step_budget(self):
+        settings = {
+            "agent_max_steps": 20,
+            "agent_development_max_steps": 40,
+            "agent_knowledge_max_steps": 40,
+            "agent_complex_planning_max_steps": 40,
+        }
+
+        prompts = [
+            "UCIe 1.1 PHYRETRAIN retrain encoding 是怎么仲裁的？",
+            "请查询个人知识库里关于 MBINIT.PARAM configuration req/resp 的原文依据",
+            "根据上传文档确认 PCIe6.0 LTSSM 状态机时序",
+        ]
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                budget = resolve_agent_task_budget(prompt, settings)
+                self.assertTrue(is_knowledge_task(prompt))
+                self.assertEqual(budget.kind, "knowledge")
+                self.assertEqual(budget.max_steps, 40)
+
+    def test_ordinary_lookup_tasks_stay_on_base_budget(self):
+        settings = {
+            "agent_max_steps": 20,
+            "agent_development_max_steps": 40,
+            "agent_knowledge_max_steps": 40,
+            "agent_complex_planning_max_steps": 40,
+        }
+
+        for prompt in ("帮我查一下成都天气", "查询当前后端状态", "今天账单汇总一下"):
+            with self.subTest(prompt=prompt):
+                self.assertFalse(is_knowledge_task(prompt))
+                self.assertEqual(resolve_agent_task_budget(prompt, settings).max_steps, 20)
+
 
 class TestAgentRunStreamMaxSteps(unittest.TestCase):
     def test_run_stream_accepts_per_run_max_steps_override(self):
@@ -214,6 +253,7 @@ class TestAgentBridgeTaskLimits(unittest.TestCase):
         conf().update({
             "agent_max_steps": 20,
             "agent_development_max_steps": 40,
+            "agent_knowledge_max_steps": 40,
             "agent_complex_planning_max_steps": 40,
             "agent_max_context_turns": 20,
         })
@@ -296,6 +336,18 @@ class TestAgentBridgeTaskLimits(unittest.TestCase):
         self.assertEqual(reply.type, ReplyType.TEXT)
         self.assertEqual(captured["max_steps"], 40)
 
+    def test_agent_bridge_uses_knowledge_budget_for_knowledge_tasks(self):
+        bridge, profile, captured = self._make_bridge_and_agent()
+
+        with (
+            patch("bridge.agent_bridge.resolve_agent_user_profile", return_value=profile),
+            patch("bridge.agent_bridge.apply_profile_to_context"),
+        ):
+            reply = bridge.agent_reply("UCIe PHYRETRAIN encoding 表格依据是什么？", self._make_context())
+
+        self.assertEqual(reply.type, ReplyType.TEXT)
+        self.assertEqual(captured["max_steps"], 40)
+
     def test_agent_bridge_travel_gate_returns_before_agent_loop(self):
         bridge, profile, captured = self._make_bridge_and_agent()
 
@@ -320,6 +372,7 @@ class TestChatServiceTaskLimits(unittest.TestCase):
         conf().update({
             "agent_max_steps": 20,
             "agent_development_max_steps": 40,
+            "agent_knowledge_max_steps": 40,
             "agent_complex_planning_max_steps": 40,
             "agent_max_context_turns": 20,
             "conversation_persistence": False,
@@ -362,6 +415,45 @@ class TestChatServiceTaskLimits(unittest.TestCase):
             patch("agent.chat.service.maybe_check_capi_monthly_after_task", return_value={}),
         ):
             service.run(prompt, session_id="chat-session", send_chunk_fn=lambda _chunk: None)
+
+        self.assertEqual(captured["max_turns"], 40)
+
+    def test_chat_service_uses_knowledge_budget_for_streaming_entrypoint(self):
+        captured = {}
+
+        class FakeExecutor:
+            def __init__(self, **kwargs):
+                captured["max_turns"] = kwargs["max_turns"]
+                self.messages = kwargs["messages"]
+                self.files_to_send = []
+
+            def run_stream(self, user_message):
+                self.messages.append({"role": "user", "content": user_message})
+                self.messages.append({"role": "assistant", "content": "ok"})
+                return "ok"
+
+        fake_agent = SimpleNamespace(
+            model=SimpleNamespace(),
+            tools=[],
+            messages=[],
+            messages_lock=threading.Lock(),
+            get_full_system_prompt=lambda: "system",
+            _execute_post_process_tools=lambda: None,
+        )
+        service = ChatService(SimpleNamespace(get_agent=lambda session_id=None: fake_agent))
+
+        with (
+            patch("agent.protocol.agent_stream.AgentStreamExecutor", FakeExecutor),
+            patch.object(ChatService, "_schedule_post_task_self_evolution"),
+            patch.object(ChatService, "_collect_tool_error_lesson_snapshot", return_value=None),
+            patch.object(ChatService, "_count_tool_error_lesson_changes", return_value=0),
+            patch("agent.chat.service.maybe_check_capi_monthly_after_task", return_value={}),
+        ):
+            service.run(
+                "查询个人知识库里 UCIe MBINIT.PARAM 的原文依据",
+                session_id="chat-session",
+                send_chunk_fn=lambda _chunk: None,
+            )
 
         self.assertEqual(captured["max_turns"], 40)
 

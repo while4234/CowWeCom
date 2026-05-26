@@ -402,6 +402,7 @@ available_setting = {
     "agent_max_context_turns": 20,  # Agent模式下最大上下文记忆轮次
     "agent_max_steps": 20,  # Agent模式下单次运行最大决策步数
     "agent_development_max_steps": 40,  # 代码开发/调试/测试任务的单次运行最大决策步数
+    "agent_knowledge_max_steps": 40,  # 知识库/协议/规范问答任务的单次运行最大决策步数
     "agent_complex_planning_max_steps": 40,  # 复杂旅行/多工具规划任务的单次运行最大决策步数
     "long_task_completion_notice_enabled": True,  # 长任务成功完成后是否发送短完成提示
     "long_task_completion_notice_min_turns": 10,  # 发送长任务成功提示的最小决策轮数

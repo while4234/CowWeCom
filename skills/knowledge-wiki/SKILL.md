@@ -1,6 +1,6 @@
 ---
 name: knowledge-wiki
-description: Manage the personal knowledge wiki. Use when the user shares articles, documents, or asks to organize knowledge; when a conversation produces insights worth preserving as structured knowledge; or when the user asks about the knowledge base.
+description: Manage the personal knowledge wiki. Use when the user shares articles, documents, or asks to organize knowledge; when public-source research produces verified reusable knowledge; or when the user asks about the knowledge base. Do not auto-save AI-derived protocol/specification conclusions unless the user explicitly confirms saving.
 metadata:
   cowagent:
     always: true
@@ -25,9 +25,10 @@ Maintain a persistent, structured knowledge base in the `knowledge/` directory.
 
 ### 2. Synthesize — Conversation produces valuable structured knowledge
 
-1. Create a knowledge page under the appropriate category
-2. Update related pages with cross-references
-3. Update `knowledge/index.md` and `knowledge/log.md`
+1. Only synthesize automatically when the content is grounded in user-shared sources, web-researched public facts, or an explicit user save request
+2. Create a knowledge page under the appropriate category
+3. Update related pages with cross-references
+4. Update `knowledge/index.md` and `knowledge/log.md`
 
 ### 3. Query — User asks about accumulated knowledge
 
@@ -91,6 +92,9 @@ Append-only, newest at bottom:
 - **Update, don't duplicate**: if a page exists, update it
 - **Cross-reference**: every page should link to related pages; keep the knowledge graph connected
 - **Index is mandatory**: always update `knowledge/index.md` after any change
+- **Protocol/spec boundary**: do not auto-save AI-derived protocol, specification, state-machine, table, encoding, cross-section, register, timing, or mapping conclusions. Save them only after the user explicitly confirms with wording such as "保存到个人知识库", and include the source evidence used.
+- **Insufficient evidence**: never save content marked insufficient, tentative, or speculative; continue source verification first.
+- **Public-source reuse**: web-researched public facts and user-shared articles/documents may still be saved automatically with source citations so future answers can reuse them without repeating web search.
 - **Privacy boundary**: do not store ordinary chat users, private names, family or intimate relationships, disputes, social-bridge reachability, Bridge IDs, channel names, or cross-user relayed messages in `knowledge/`. Store those in user memory or relation memory unless the user explicitly asks for a knowledge document.
 - **Be concise**: capture essence, not copy entire sources
 - **Full paths in replies**: when referencing knowledge files in conversation replies, use the full path from workspace root (e.g. `[Title](knowledge/<category>/<slug>.md)`), not relative paths. Relative paths are only for cross-references inside knowledge pages themselves.

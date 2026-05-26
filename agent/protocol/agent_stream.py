@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional, Callable, Tuple
 from agent.protocol.models import LLMRequest, LLMModel
 from agent.protocol.message_utils import sanitize_claude_messages, compress_turn_to_text_only
 from agent.tools.base_tool import BaseTool, ToolResult
+from common.agent_task_limits import is_knowledge_task
 from common.agent_task_runtime import TaskCancelled
 from common.codex_quota_query import query_codex_quota_json
 from common.latency import elapsed, format_seconds, hash_id, monotonic
@@ -25,6 +26,9 @@ from common.llm_backend_router import (
 )
 from common.llm_usage_tracker import normalize_usage, stable_metadata_hash
 from common.reasoning_effort_policy import (
+    CHAT_SCOPE_GROUP,
+    CHAT_SCOPE_PRIVATE,
+    ReasoningEffortDecision,
     classify_local_task,
     record_policy_task_outcome,
     resolve_reasoning_effort_for_task,
@@ -119,6 +123,12 @@ class AgentStreamExecutor:
         self._readonly_tool_result_cache = {}
         self._reasoning_effort_decision = None
         self._project_optimizer_task_event_id = ""
+        self._current_user_message = ""
+        self._current_task_kind = "default"
+        self._used_knowledge_tool = False
+        self._used_web_research_tool = False
+        self._deep_evidence_insufficient = False
+        self._knowledge_context_deep_status = ""
         self._reset_request_tool_counters()
         
         # Track files to send (populated by read tool)
@@ -255,6 +265,22 @@ class AgentStreamExecutor:
             )
         except Exception as e:
             logger.debug(f"[ProjectOptimizer] Task-end evidence skipped: {e}")
+
+    def _knowledge_reasoning_effort_decision(self) -> ReasoningEffortDecision:
+        """Create a locked high-quality decision for local knowledge answers."""
+        import uuid
+
+        chat_scope = CHAT_SCOPE_GROUP if bool(getattr(self.model, "is_group", False)) else CHAT_SCOPE_PRIVATE
+        return ReasoningEffortDecision(
+            task_id=uuid.uuid4().hex[:12],
+            selected_effort="xhigh",
+            decision_source="knowledge_budget",
+            reason="knowledge_task_xhigh_locked",
+            active_backend=get_current_backend(),
+            main_model=str(getattr(self.model, "model", "") or ""),
+            chat_scope=chat_scope,
+            local_rule="knowledge_task",
+        )
 
     def _record_project_optimizer_tool_event(
             self,
@@ -577,6 +603,105 @@ class AgentStreamExecutor:
         if failure_class:
             self._last_tool_failure_class = failure_class
 
+    def _note_tool_call_context(self, tool_name: str, arguments: Dict[str, Any]) -> None:
+        if tool_name == "knowledge_query":
+            self._used_knowledge_tool = True
+            if str((arguments or {}).get("action") or "").strip().lower() == "deep_query":
+                self._used_knowledge_tool = True
+        elif tool_name in {"web_search", "web_fetch", "browser"}:
+            self._used_web_research_tool = True
+
+    def _note_tool_result_context(self, tool_name: str, result: Dict[str, Any]) -> None:
+        if tool_name == "knowledge_query":
+            payload = result.get("result") if isinstance(result, dict) else None
+            if isinstance(payload, dict):
+                self._update_deep_evidence_status(payload)
+        elif tool_name in {"web_search", "web_fetch", "browser"}:
+            self._used_web_research_tool = True
+
+    def _update_deep_evidence_status(self, payload: Dict[str, Any]) -> None:
+        status = str(payload.get("status") or "").strip().lower()
+        if status:
+            self._knowledge_context_deep_status = status
+        if status == "insufficient":
+            self._deep_evidence_insufficient = True
+
+    def _set_knowledge_write_context(self, tool_name: str, arguments: Dict[str, Any]):
+        if tool_name not in {"edit", "write"}:
+            return None
+        try:
+            from agent.tools.knowledge_guard import KnowledgeWriteContext, set_knowledge_write_context
+
+            return set_knowledge_write_context(
+                KnowledgeWriteContext(
+                    user_message=self._current_user_message,
+                    task_kind=self._current_task_kind,
+                    used_web_research=self._used_web_research_tool,
+                    used_knowledge_query=self._used_knowledge_tool,
+                    evidence_status=(
+                        "insufficient"
+                        if self._deep_evidence_insufficient
+                        else self._knowledge_context_deep_status
+                    ),
+                    tool_name=tool_name,
+                    tool_arguments=dict(arguments or {}),
+                )
+            )
+        except Exception as e:
+            logger.debug(f"[KnowledgeGuard] Failed to set write context: {e}")
+            return None
+
+    @staticmethod
+    def _reset_knowledge_write_context(token: Any) -> None:
+        if token is None:
+            return
+        try:
+            from agent.tools.knowledge_guard import reset_knowledge_write_context
+
+            reset_knowledge_write_context(token)
+        except Exception as e:
+            logger.debug(f"[KnowledgeGuard] Failed to reset write context: {e}")
+
+    def _append_knowledge_answer_notice(self, response: str) -> str:
+        text = str(response or "").strip()
+        if not text:
+            return response
+        if "保存到个人知识库" in text or "个人知识库" in text[-160:]:
+            return text
+        if self._deep_evidence_insufficient:
+            return (
+                text
+                + "\n\n当前证据还不充分，不建议保存到个人知识库；可以先让我继续查原文或补充资料。"
+            )
+        if self._current_task_kind == "knowledge" or self._used_knowledge_tool or self._request_used_knowledge_context():
+            if self._looks_like_protocol_question(self._current_user_message):
+                return (
+                    text
+                    + "\n\n以上是基于当前知识库证据的 AI 总结，仍建议以协议原文为准。"
+                    "如果你确认这个结论可靠，可以回复“保存到个人知识库”，我再帮你整理沉淀。"
+                )
+        if self._used_web_research_tool:
+            return (
+                text
+                + "\n\n我已基于公开资料整理要点；这类公开知识可以沉淀到个人知识库，方便下次复用。"
+            )
+        return text
+
+    def _request_used_knowledge_context(self) -> bool:
+        return int(getattr(self, "_request_knowledge_context_chars", 0) or 0) > 0
+
+    @staticmethod
+    def _looks_like_protocol_question(value: Any) -> bool:
+        text = str(value or "").lower()
+        triggers = (
+            "ucie", "pcie", "cxl", "amba", "axi", "mbinit", "mbtrain", "phyretrain",
+            "protocol", "spec", "specification", "standard", "encoding", "register",
+            "state machine", "table", "field", "step", "timing", "mapping",
+            "协议", "规范", "标准", "状态机", "表格", "字段", "编码", "寄存器",
+            "步骤", "时序", "映射", "原文",
+        )
+        return any(trigger in text for trigger in triggers)
+
     def _persisted_tool_skip_decision(self, tool_name: str, arguments: Dict[str, Any]):
         try:
             return self.tool_attempt_memory.should_skip_with_rules(
@@ -602,6 +727,12 @@ class AgentStreamExecutor:
         self._raise_if_cancelled()
         self._reset_request_tool_counters()
         self._readonly_tool_result_cache = {}
+        self._current_user_message = str(user_message or "")
+        self._current_task_kind = "knowledge" if is_knowledge_task(user_message) else "default"
+        self._used_knowledge_tool = False
+        self._used_web_research_tool = False
+        self._deep_evidence_insufficient = False
+        self._knowledge_context_deep_status = ""
         try:
             self._tool_attempt_memory_snapshot = self.tool_attempt_memory.load_rules_snapshot()
         except Exception as e:
@@ -611,6 +742,8 @@ class AgentStreamExecutor:
         thinking_enabled = self._is_thinking_enabled()
         self._request_runtime_context = self._build_request_context_text(user_message)
         self._reasoning_effort_decision = resolve_reasoning_effort_for_task(user_message, self.model)
+        if self._reasoning_effort_decision is None and self._current_task_kind == "knowledge":
+            self._reasoning_effort_decision = self._knowledge_reasoning_effort_decision()
         self._project_optimizer_task_event_id = self._record_project_optimizer_task_start(user_message)
         thinking_label = " | 💭 thinking" if thinking_enabled else ""
         effort_label = ""
@@ -990,6 +1123,7 @@ class AgentStreamExecutor:
 
         finally:
             final_response = final_response.strip() if final_response else final_response
+            final_response = self._append_knowledge_answer_notice(final_response)
             self._record_reasoning_effort_outcome(
                 outcome_status,
                 turn,
@@ -1628,6 +1762,7 @@ class AgentStreamExecutor:
             )
             return result
 
+        self._note_tool_call_context(tool_name, arguments)
         reused_result = self._reuse_readonly_tool_result(tool_name, tool_id, arguments)
         if reused_result:
             return reused_result
@@ -1681,7 +1816,11 @@ class AgentStreamExecutor:
 
             # Execute tool
             start_time = time.time()
-            result: ToolResult = tool.execute_tool(arguments)
+            guard_token = self._set_knowledge_write_context(tool_name, arguments)
+            try:
+                result: ToolResult = tool.execute_tool(arguments)
+            finally:
+                self._reset_knowledge_write_context(guard_token)
             execution_time = time.time() - start_time
             self._raise_if_cancelled()
 
@@ -1698,6 +1837,7 @@ class AgentStreamExecutor:
             skipped = result.status == "skipped" or bool(result_dict.get("tool_attempt_skipped"))
             if success:
                 self._tool_attempt_success_count += 1
+                self._note_tool_result_context(tool_name, result_dict)
             elif skipped:
                 self._tool_skip_count += 1
                 self._last_tool_failure_class = str(result_dict.get("tool_failure_class") or "policy_skip")
@@ -2456,6 +2596,9 @@ class AgentStreamExecutor:
                 context_window=int(retrieval_conf.get("context_window_chunks") or 1),
                 max_evidence_chars=int(retrieval_conf.get("max_evidence_chars") or 12000),
             )
+            if isinstance(bundle, dict):
+                self._used_knowledge_tool = True
+                self._update_deep_evidence_status(bundle)
             return self._deep_knowledge_bundle_to_hits(bundle)
         results = service.search(user_message, limit=limit)
         return [self._knowledge_hit_to_dict(hit) for hit in results]
@@ -2515,6 +2658,15 @@ class AgentStreamExecutor:
                 "truncated": block.get("truncated"),
             }
             hits.append(hit)
+        table_block_ids = [
+            str(block.get("id") or block.get("chunk_id") or "")
+            for block in bundle.get("table_blocks") or []
+            if isinstance(block, dict)
+        ]
+        if table_block_ids:
+            table_block_ids = [item for item in table_block_ids if item]
+            for hit in hits:
+                hit["table_block_ids"] = table_block_ids
         return hits
 
     def _retrieve_markdown_knowledge(self, user_message: str) -> List[Dict[str, Any]]:
@@ -2608,6 +2760,7 @@ class AgentStreamExecutor:
                 "section",
                 "source_span_ids",
                 "status",
+                "table_block_ids",
                 "truncated",
             ):
                 value = hit.get(key)

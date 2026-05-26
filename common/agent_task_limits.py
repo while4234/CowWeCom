@@ -8,6 +8,7 @@ from typing import Any, Mapping, Optional
 DEFAULT_AGENT_MAX_STEPS = 20
 DEFAULT_DEVELOPMENT_MAX_STEPS = 40
 DEFAULT_COMPLEX_PLANNING_MAX_STEPS = 40
+DEFAULT_KNOWLEDGE_MAX_STEPS = 40
 
 
 _DEVELOPMENT_TASK_PATTERNS = tuple(
@@ -39,6 +40,26 @@ _COMPLEX_PLANNING_TOPIC_PATTERNS = tuple(
         r"(预算|费用|价格|票价)",
         r"(风险|备选|低强度|老人|儿童|孕妇|轮椅|慢性病)",
         r"\b(travel|trip|itinerary|flight|train|hotel|visa|entry|weather|budget|risk)\b",
+    )
+)
+
+_KNOWLEDGE_TASK_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(knowledge|knowledge[-_\s]*base|knowledge_query|deep_query|read\s+knowledge|source[-_\s]*backed)\b",
+        r"\b(spec|specification|protocol|standard|pdf|document|source|evidence|citation|chapter|section|clause)\b",
+        r"\b(table|field|encoding|register|state\s*machine|timing|sequence|mapping|step|figure|diagram)\b",
+        r"\b(ucie|pcie|pcie6|pcie\s*6|cxl|amba|axi|axi4|tlp|dllp|mbinit|mbtrain|phyretrain)\b",
+        (
+            "\u77e5\u8bc6\u5e93|\u4e2a\u4eba\u77e5\u8bc6\u5e93|\u516c\u5171\u77e5\u8bc6\u5e93|"
+            "\u539f\u6587|\u6e90\u6587|\u4e0a\u4f20\u6587\u6863|\u4e0a\u4f20\u6587\u4ef6|"
+            "\u6587\u6863|\u8d44\u6599|\u8bc1\u636e|\u4f9d\u636e|\u5f15\u7528"
+        ),
+        (
+            "\u534f\u8bae|\u89c4\u8303|\u6807\u51c6|\u72b6\u6001\u673a|\u6b65\u9aa4|"
+            "\u65f6\u5e8f|\u5bc4\u5b58\u5668|\u6620\u5c04|\u8868\u683c|\u5b57\u6bb5|"
+            "\u7ae0\u8282|\u6761\u6b3e|\u7f16\u7801|\u5bf9\u6bd4|\u786e\u8ba4"
+        ),
     )
 )
 
@@ -150,6 +171,16 @@ _NATURAL_TRAVEL_MOVEMENT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _NATURAL_COMMUTE_KEYWORDS = ("通勤", "上班", "下班", "公司", "回家")
+_STATUS_QUERY_PATTERN = re.compile(
+    r"((查询|看一下|看看|当前).{0,16}(状态|后端状态)|"
+    r"\b(backend|service|agent)\s+status\b)",
+    re.IGNORECASE,
+)
+_STATUS_QUERY_DEV_ACTION_PATTERN = re.compile(
+    r"(\b(fix|debug|implement|develop|code|bug|refactor|test)\b|"
+    r"修复|调试|开发|代码|报错|异常)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -171,6 +202,21 @@ def is_development_task(content: Any) -> bool:
     if not text:
         return False
     return any(pattern.search(text) for pattern in _DEVELOPMENT_TASK_PATTERNS)
+
+
+def is_knowledge_task(content: Any) -> bool:
+    """Return True when a request needs local/source-backed knowledge lookup."""
+    text = str(content or "").strip()
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in _KNOWLEDGE_TASK_PATTERNS)
+
+
+def is_plain_status_query(content: Any) -> bool:
+    text = str(content or "").strip()
+    if not text:
+        return False
+    return bool(_STATUS_QUERY_PATTERN.search(text)) and not bool(_STATUS_QUERY_DEV_ACTION_PATTERN.search(text))
 
 
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
@@ -264,12 +310,22 @@ def resolve_agent_task_budget(
     if override is not None:
         return AgentTaskBudget(_positive_int(override, base_steps), "override")
 
+    if is_plain_status_query(content):
+        return AgentTaskBudget(base_steps, "default")
+
     if is_development_task(content):
         development_steps = _positive_int(
             settings.get("agent_development_max_steps", DEFAULT_DEVELOPMENT_MAX_STEPS),
             DEFAULT_DEVELOPMENT_MAX_STEPS,
         )
         return AgentTaskBudget(max(base_steps, development_steps), "development")
+
+    if is_knowledge_task(content):
+        knowledge_steps = _positive_int(
+            settings.get("agent_knowledge_max_steps", DEFAULT_KNOWLEDGE_MAX_STEPS),
+            DEFAULT_KNOWLEDGE_MAX_STEPS,
+        )
+        return AgentTaskBudget(max(base_steps, knowledge_steps), "knowledge")
 
     if is_complex_planning_task(content):
         fallback_steps = _positive_int(

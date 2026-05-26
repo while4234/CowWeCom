@@ -1,7 +1,9 @@
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.protocol.models import LLMRequest
 from agent.protocol.agent_stream import AgentStreamExecutor
 
 
@@ -207,6 +209,46 @@ class TestAgentStreamKnowledgeContext(unittest.TestCase):
 
         self.assertFalse(executor._should_use_deep_knowledge("今天是否要带伞"))
         self.assertTrue(executor._should_use_deep_knowledge("请确认 UCIe 协议 Step 12 的原文依据"))
+
+    def test_knowledge_reasoning_effort_is_xhigh_locked(self):
+        captured = {}
+
+        class FakeModel:
+            model = "fake-model"
+            is_group = False
+
+            def call_stream(self, request: LLMRequest):
+                captured["reasoning_effort"] = getattr(request, "reasoning_effort", None)
+                captured["reasoning_effort_locked"] = getattr(request, "reasoning_effort_locked", None)
+                yield {"choices": [{"delta": {"content": "answer"}}]}
+
+        executor = AgentStreamExecutor(
+            agent=SimpleNamespace(
+                runtime_info={},
+                _get_model_context_window=lambda: 200000,
+                _estimate_message_tokens=lambda _message: 1,
+            ),
+            model=FakeModel(),
+            system_prompt="system",
+            tools=[],
+            max_turns=1,
+            messages=[],
+            max_context_turns=20,
+        )
+
+        with patch("config.conf", return_value={
+            "knowledge_backend": {"enabled": False},
+            "knowledge_auto_retrieval": False,
+            "enable_thinking": False,
+            "cowagent_self_evolution_skip_medium_context": True,
+            "reasoning_effort_policy_enabled": False,
+            "reasoning_effort_policy_audit_enabled": False,
+        }):
+            response = executor.run_stream("UCIe PHYRETRAIN encoding 表格依据是什么？")
+
+        self.assertIn("answer", response)
+        self.assertEqual(captured["reasoning_effort"], "xhigh")
+        self.assertTrue(captured["reasoning_effort_locked"])
 
     def test_build_knowledge_context_falls_back_to_markdown_when_backend_auto_inject_disabled(self):
         executor = self._executor()

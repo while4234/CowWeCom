@@ -227,8 +227,49 @@ def test_deep_query_expands_adjacent_chunks_for_step_context(tmp_path):
     assert "Step 12" in evidence
     assert "repeating Step 1 through Step 4" in evidence
     assert "TRDVLD_P/RRDVLD_P physical path" in evidence
+    assert "Step 12" in result["coverage_terms"]
     assert all(block["source_span_ids"] for block in result["evidence_blocks"])
     assert result["citations"][0]["source_span_ids"]
+
+
+def test_deep_query_returns_table_blocks_for_protocol_tables(tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "ingest": {"allowed_extensions": [".md"]},
+                "retrieval": {"context_window_chunks": 1, "max_evidence_chars": 12000},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    service.ingest_upload_bytes(
+        "phyretrain-table.md",
+        (
+            b"# PHYRETRAIN\n\n"
+            b"PHYRETRAIN sends a retrain start req and retrain start resp before using the resolved encoding. "
+            b"Table 4-11 defines Retrain Encoding. MsgInfo[2:0] carries Retrain Encoding "
+            b"and MsgInfo[15:3] is Reserved. 001b maps to TXSELFCAL, 010b maps to "
+            b"SPEEDIDLE, and 100b maps to REPAIR."
+        ),
+        title="UCIe PHYRETRAIN Table Mini Spec",
+    )
+
+    result = service.deep_query(
+        "PHYRETRAIN retrain encoding Table 4-11 MsgInfo[2:0]",
+        limit=1,
+        context_window=1,
+        max_evidence_chars=12000,
+    )
+
+    assert result["status"] == "ok"
+    assert result["table_blocks"]
+    table_text = "\n".join(block["text"] for block in result["table_blocks"])
+    assert "Table 4-11" in table_text
+    assert "MsgInfo[2:0]" in table_text
+    assert "001b" in table_text
 
 
 def test_deep_query_truncates_evidence_without_breaking_records(tmp_path):

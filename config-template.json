@@ -128,6 +128,7 @@
   "agent_max_context_turns": 20,
   "agent_max_steps": 20,
   "agent_development_max_steps": 40,
+  "agent_knowledge_max_steps": 40,
   "agent_complex_planning_max_steps": 40,
   "long_task_completion_notice_enabled": true,
   "long_task_completion_notice_min_turns": 10,

@@ -5,6 +5,12 @@ from unittest.mock import patch
 
 from agent.prompt.builder import _build_knowledge_section
 from agent.tools.edit.edit import Edit
+from agent.tools.knowledge_guard import (
+    KnowledgeWriteContext,
+    reset_knowledge_write_context,
+    set_knowledge_write_context,
+    validate_knowledge_write,
+)
 from agent.tools.write.write import Write
 
 
@@ -54,7 +60,7 @@ class TestKnowledgeGuard(unittest.TestCase):
             )
 
             self.assertEqual(result.status, "error")
-            self.assertIn("shared knowledge wiki", result.result)
+            self.assertIn("personal knowledge wiki", result.result)
             self.assertEqual(path.read_text(encoding="utf-8"), "# Knowledge Index\n")
 
     def test_edit_append_creates_missing_memory_file(self):
@@ -99,7 +105,7 @@ class TestKnowledgeGuard(unittest.TestCase):
         self.assertEqual(result.status, "error")
         self.assertIn("File not found", result.result)
 
-    def test_knowledge_prompt_declares_private_bridge_boundary(self):
+    def test_knowledge_prompt_declares_auto_write_boundary(self):
         with tempfile.TemporaryDirectory() as tmp:
             knowledge_dir = Path(tmp) / "knowledge"
             knowledge_dir.mkdir()
@@ -108,10 +114,89 @@ class TestKnowledgeGuard(unittest.TestCase):
             with patch("agent.prompt.builder.conf", return_value={"knowledge_index_in_system_prompt": False}):
                 prompt = "\n".join(_build_knowledge_section(tmp, "zh"))
 
-        self.assertIn("重要公开实体", prompt)
+        self.assertIn("协议/规范", prompt)
+        self.assertIn("联网搜索", prompt)
         self.assertIn("普通微信用户", prompt)
-        self.assertIn("Bridge ID", prompt)
-        self.assertIn("关系记忆", prompt)
+        self.assertIn("保存到个人知识库", prompt)
+
+    def test_blocks_protocol_analysis_without_explicit_save(self):
+        token = set_knowledge_write_context(
+            KnowledgeWriteContext(
+                user_message="解释 UCIe PHYRETRAIN encoding",
+                task_kind="knowledge",
+                used_knowledge_query=True,
+                evidence_status="ok",
+            )
+        )
+        try:
+            ok, error = validate_knowledge_write(
+                "knowledge/analysis/ucie-phyretrain.md",
+                "UCIe PHYRETRAIN encoding 结论基于 deep evidence。",
+            )
+        finally:
+            reset_knowledge_write_context(token)
+
+        self.assertFalse(ok)
+        self.assertIn("protocol/specification", error)
+
+    def test_allows_explicit_protocol_save_when_evidence_is_sufficient(self):
+        token = set_knowledge_write_context(
+            KnowledgeWriteContext(
+                user_message="把刚才结论保存到个人知识库",
+                task_kind="knowledge",
+                used_knowledge_query=True,
+                evidence_status="ok",
+            )
+        )
+        try:
+            ok, error = validate_knowledge_write(
+                "knowledge/analysis/ucie-phyretrain.md",
+                "Source: current answer and UCIe source evidence. UCIe PHYRETRAIN encoding summary.",
+            )
+        finally:
+            reset_knowledge_write_context(token)
+
+        self.assertTrue(ok)
+        self.assertEqual(error, "")
+
+    def test_blocks_insufficient_evidence_even_with_save_intent(self):
+        token = set_knowledge_write_context(
+            KnowledgeWriteContext(
+                user_message="保存到个人知识库",
+                task_kind="knowledge",
+                used_knowledge_query=True,
+                evidence_status="insufficient",
+            )
+        )
+        try:
+            ok, error = validate_knowledge_write(
+                "knowledge/analysis/ucie-uncertain.md",
+                "当前证据还不充分，可能需要继续查原文。",
+            )
+        finally:
+            reset_knowledge_write_context(token)
+
+        self.assertFalse(ok)
+        self.assertIn("insufficient", error)
+
+    def test_allows_public_web_research_ingest(self):
+        token = set_knowledge_write_context(
+            KnowledgeWriteContext(
+                user_message="搜索某公开技术概念并整理",
+                task_kind="default",
+                used_web_research=True,
+            )
+        )
+        try:
+            ok, error = validate_knowledge_write(
+                "knowledge/sources/public-concept.md",
+                "> Source: https://example.com/article\n\n公开资料整理。",
+            )
+        finally:
+            reset_knowledge_write_context(token)
+
+        self.assertTrue(ok)
+        self.assertEqual(error, "")
 
 
 if __name__ == "__main__":
