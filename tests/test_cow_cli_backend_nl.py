@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 import importlib.util
 import tempfile
@@ -415,6 +416,60 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertIn("¥99.88", e_context["reply"].content)
         self.assertIn("AI工具", e_context["reply"].content)
         load_ledger.assert_called_once()
+
+    def test_ledger_today_phrase_queries_real_ledger_for_current_user(self):
+        from bridge.context import Context, ContextType
+        from plugins import Event, EventAction, EventContext
+
+        ledger_path = PROJECT_ROOT / "skills" / "china-expense-ledger" / "scripts" / "ledger.py"
+        spec = importlib.util.spec_from_file_location("china_expense_ledger_test", ledger_path)
+        ledger = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ledger)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "ledger.db"
+            with patch.dict(os.environ, {"CHINA_EXPENSE_LEDGER_DB": str(db_path)}):
+                conn = ledger.open_db(db_path)
+                try:
+                    ledger.init_db(conn)
+                    result = ledger.analyze_bill_payload(
+                        conn,
+                        {
+                            "user_id": "wecom-user-memory",
+                            "chat_id": "private-chat",
+                            "record_id": "image-record-1",
+                            "source_type": "image",
+                            "source_hash": "hash-1",
+                            "raw_text": "微信支付 支付成功 餐饮 支付金额 ¥16.00 交易单号 123456789012",
+                            "amount_cents": 1600,
+                            "direction": "expense",
+                            "category": "餐饮",
+                            "merchant": "餐厅",
+                        },
+                    )
+                    self.assertTrue(result["ok"])
+                    self.assertEqual(result["status"], "auto_recorded")
+                finally:
+                    conn.close()
+
+                plugin = _load_cow_cli_plugin()
+                context = Context(
+                    ContextType.TEXT,
+                    "今日账单",
+                    kwargs={
+                        "memory_user_id": "wecom-user-memory",
+                        "channel_type": "wecom_bot",
+                        "session_id": "private-chat",
+                    },
+                )
+                e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
+
+                plugin.on_handle_context(e_context)
+
+        self.assertEqual(e_context.action, EventAction.BREAK_PASS)
+        self.assertIn("本地账单", e_context["reply"].content)
+        self.assertIn("¥16.00", e_context["reply"].content)
+        self.assertIn("餐饮", e_context["reply"].content)
 
     def test_ledger_natural_query_requires_context_memory_user_id(self):
         from bridge.context import Context, ContextType

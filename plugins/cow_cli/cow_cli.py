@@ -411,14 +411,24 @@ class CowCliPlugin(Plugin):
         compact = re.sub(r"[\s,，。.!！?？:：;；\"'`“”‘’（）()\[\]【】<>《》]+", "", normalized)
         if not any(marker in compact or marker in normalized for marker in _LEDGER_QUERY_MARKERS):
             return None
-        if not any(marker in compact or marker in normalized for marker in _LEDGER_QUERY_INTENT_MARKERS):
-            return None
-
         period = self._ledger_period_from_text(normalized, compact)
         if not period:
             return None
+        has_query_intent = any(marker in compact or marker in normalized for marker in _LEDGER_QUERY_INTENT_MARKERS)
+        if not has_query_intent and not self._looks_like_ledger_period_summary(normalized, compact):
+            return None
         mode = "query" if any(marker in compact for marker in ("明细", "记录", "列表")) else "summary"
         return "ledger", self._encode_ledger_args(period, mode)
+
+    @staticmethod
+    def _looks_like_ledger_period_summary(normalized: str, compact: str) -> bool:
+        if re.search(r"\d", compact):
+            return False
+        summary_terms = ("账单", "消费", "支出", "收入", "退款", "转账")
+        if not any(term in compact or term in normalized for term in summary_terms):
+            return False
+        record_action_terms = ("记账", "记一笔", "记录一下", "花了", "花费")
+        return not any(term in compact or term in normalized for term in record_action_terms)
 
     @staticmethod
     def _ledger_period_from_text(normalized: str, compact: str) -> str:

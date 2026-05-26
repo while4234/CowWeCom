@@ -180,6 +180,12 @@ XLS/XLSX are adapter placeholders in this MVP. The helper returns `unsupported_f
 
 ## Query And Correction
 
+Live chat identity rule:
+
+- In Weixin/WeCom runtime, query and summarize with the current chat context `memory_user_id`.
+- Never use the example `local-user` for a real chat query, correction, undo, import, or export unless the user explicitly says they are working with that demo user id.
+- If the current `memory_user_id` is unavailable, ask the user to retry from a supported chat context instead of querying another user id.
+
 Query recent records:
 
 ```bash
