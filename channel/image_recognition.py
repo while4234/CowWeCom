@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -22,6 +23,7 @@ RELATED_FOLLOWUP_WINDOW_SECONDS = 15 * 60
 DEFAULT_FOLLOWUP_WAIT_SECONDS = 6.0
 DEFAULT_MAX_WORKERS = 2
 DEFAULT_MAX_TOKENS = 700
+_LEDGER_MODULE = None
 DEFAULT_PROMPT = (
     "请用中文识别这张图片，结果用于后续私聊回复。保持自然、简短，不要使用英文，"
     "不要写成报告格式。说明主要主体、可见动作或场景、重要文字/OCR，以及必要的不确定性。"
@@ -310,6 +312,10 @@ class ImageRecognitionManager:
 
         raw_content = str(content or "")
         user_text = raw_content.split("[Recent image context]", 1)[0].strip()
+        if self._handle_ledger_undo_text(channel, context, user_text):
+            return True
+        if self._handle_ledger_confirmation_text(channel, context, user_text):
+            return True
         intent = self._classify_followup_intent(user_text)
         session_id = str(context.get("session_id") or "").strip()
         record = self.latest_for_session(session_id)
@@ -342,6 +348,100 @@ class ImageRecognitionManager:
             return False
 
         return False
+
+    def _handle_ledger_confirmation_text(self, channel, context, user_text: str) -> bool:
+        if not user_text or self._context_is_group(context):
+            return False
+        compact = "".join(user_text.split())
+        if len(compact) > 80:
+            return False
+        intent_words = (
+            "买的是",
+            "买了",
+            "商品",
+            "分类",
+            "归类",
+            "记到",
+            "商户",
+            "商家",
+            "店铺",
+            "支付宝",
+            "微信支付",
+            "闲鱼",
+            "淘宝",
+            "京东",
+            "美团",
+        )
+        if not any(word in compact for word in intent_words):
+            return False
+        try:
+            ledger = self._load_ledger_module()
+            if not ledger:
+                return False
+            answer_fields = ledger.fields_from_answer_text(user_text)
+            if not answer_fields:
+                return False
+            conn = ledger.open_db(ledger.db_path_from_env())
+            try:
+                ledger.init_db(conn)
+                result = ledger.confirm_bill_context(
+                    conn,
+                    {
+                        **answer_fields,
+                        "user_id": self._context_get(context, "memory_user_id")
+                        or self._context_get(context, "from_user_id")
+                        or self._context_get(context, "session_id"),
+                        "chat_id": self._context_get(context, "chat_id")
+                        or self._context_get(context, "conversation_id")
+                        or self._context_get(context, "session_id"),
+                    },
+                )
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.debug("[ImageRecognition] ledger bill confirmation skipped: %s", exc)
+            return False
+        if not result.get("ok"):
+            return False
+        if result.get("status") == "needs_clarification":
+            reply = self._format_ledger_result({"ok": True, "is_bill": True, **result})
+            if reply:
+                channel._send_plain_text(context, reply)
+                return True
+            return False
+        channel._send_plain_text(context, result.get("message") or "已记账，并记住这类规则。")
+        return True
+
+    def _handle_ledger_undo_text(self, channel, context, user_text: str) -> bool:
+        if not user_text or self._context_is_group(context):
+            return False
+        compact = "".join(user_text.lower().split())
+        undo_markers = ("不记账", "撤销记账", "取消记账", "这笔不要记", "不用记账", "不要记账")
+        if not any(marker in compact for marker in undo_markers):
+            return False
+        try:
+            ledger = self._load_ledger_module()
+            if not ledger:
+                return False
+            conn = ledger.open_db(ledger.db_path_from_env())
+            try:
+                ledger.init_db(conn)
+                result = ledger.undo_bill_transaction(
+                    conn,
+                    self._context_get(context, "memory_user_id") or self._context_get(context, "from_user_id") or self._context_get(context, "session_id"),
+                    self._context_get(context, "chat_id") or self._context_get(context, "conversation_id") or self._context_get(context, "session_id"),
+                    None,
+                )
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.debug("[ImageRecognition] ledger undo skipped: %s", exc)
+            return False
+        if result.get("ok"):
+            channel._send_plain_text(context, result.get("message") or "已撤销这笔记账。")
+        else:
+            channel._send_plain_text(context, "我没找到刚才那笔可撤销的自动记账。")
+        return True
 
     def classify_followup_intent(self, content: str) -> str:
         return self._classify_followup_intent(content)
@@ -393,6 +493,9 @@ class ImageRecognitionManager:
             return ""
         latest = self.get_record(record.record_id) or record
         if latest.status == "done" and latest.result:
+            ledger_reply = self._ledger_bill_reply(latest, context)
+            if ledger_reply:
+                return ledger_reply
             if intent in {"default", "related"}:
                 synthesized = self._synthesize_casual_reply(latest, intent, user_text, context)
                 if synthesized:
@@ -409,6 +512,96 @@ class ImageRecognitionManager:
         if latest.status == "error":
             return "这张图我刚才没识别清楚，你可以再问我一次，我会换个方式处理。"
         return ""
+
+    def _ledger_bill_reply(self, record: ImageRecognitionRecord, context: Any = None) -> str:
+        if record.is_group:
+            return ""
+        if not bool(conf().get("china_expense_ledger_private_auto", True)):
+            return ""
+        try:
+            ledger = self._load_ledger_module()
+            if not ledger:
+                return ""
+            if not ledger.is_bill_like_text(record.result):
+                return ""
+            db_path = getattr(ledger, "db_path_from_env")()
+            conn = ledger.open_db(db_path)
+            try:
+                ledger.init_db(conn)
+                payload = {
+                    "user_id": self._ledger_user_id(record, context),
+                    "chat_id": self._context_get(context, "chat_id")
+                    or self._context_get(context, "conversation_id")
+                    or self._context_get(context, "session_id")
+                    or record.session_id,
+                    "record_id": record.record_id,
+                    "source_type": "image",
+                    "source_app": "",
+                    "raw_text": record.result,
+                    "source_hash": record.image_hash,
+                }
+                result = ledger.analyze_bill_payload(conn, payload)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.debug("[ImageRecognition] ledger bill analysis skipped: %s", exc)
+            return ""
+        return self._format_ledger_result(result)
+
+    @staticmethod
+    def _format_ledger_result(result: Dict[str, Any]) -> str:
+        if not isinstance(result, dict) or not result.get("ok") or not result.get("is_bill"):
+            return ""
+        if result.get("status") == "needs_clarification":
+            questions = result.get("needs_clarification") or []
+            text = "；".join(str(item).strip("。") for item in questions if str(item).strip())
+            if text:
+                return f"这张像账单，但还有点不确定：{text}"
+            return "这张像账单，但有些字段看不清，补充一下我再记。"
+        if result.get("status") in {"auto_recorded", "duplicate"}:
+            transaction = result.get("transaction") or {}
+            amount = transaction.get("amount_cents")
+            category = transaction.get("category") or "未分类"
+            amount_text = ""
+            try:
+                amount_text = f"{int(amount) / 100:.2f} 元"
+            except (TypeError, ValueError):
+                pass
+            detail = f"：{category} {amount_text}".rstrip() if amount_text else f"：{category}"
+            suffix = "如果不需要记账，请回复“不记账”或“撤销记账”，我会撤销这笔。"
+            if result.get("duplicate"):
+                return f"这张账单看起来已经记过了{detail}。{suffix}"
+            return f"已记账{detail}。{suffix}"
+        return ""
+
+    @classmethod
+    def _load_ledger_module(cls):
+        global _LEDGER_MODULE
+        if _LEDGER_MODULE is not None:
+            return _LEDGER_MODULE
+        candidates = [
+            Path(__file__).resolve().parents[1] / "skills" / "china-expense-ledger" / "scripts" / "ledger.py",
+            Path(expand_path("~/cow")) / "skills" / "china-expense-ledger" / "scripts" / "ledger.py",
+        ]
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            spec = importlib.util.spec_from_file_location("china_expense_ledger_runtime", candidate)
+            if not spec or not spec.loader:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _LEDGER_MODULE = module
+            return module
+        return None
+
+    def _ledger_user_id(self, record: ImageRecognitionRecord, context: Any = None) -> str:
+        return (
+            self._context_get(context, "memory_user_id")
+            or self._context_get(context, "from_user_id")
+            or self._context_get(context, "session_id")
+            or record.session_id
+        )
 
     def _synthesize_casual_reply(
         self,
@@ -529,6 +722,18 @@ class ImageRecognitionManager:
         except Exception:
             value = default
         return str(value or default).strip()
+
+    @staticmethod
+    def _context_is_group(context: Any) -> bool:
+        if context is None:
+            return False
+        try:
+            value = context.get("isgroup", False)
+        except Exception:
+            return False
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
 
     @staticmethod
     def _read_file_tail(path: Path, limit: int) -> str:

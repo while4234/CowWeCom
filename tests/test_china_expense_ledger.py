@@ -39,6 +39,9 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
                     "app_signatures",
                     "corrections",
                     "import_batches",
+                    "bill_contexts",
+                    "screenshot_rules",
+                    "summary_cache",
                 ):
                     self.assertTrue(ledger.table_exists(conn, table), table)
 
@@ -323,6 +326,124 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
                 self.assertEqual(summary["totals"]["refund_cents"], 800)
                 self.assertEqual(summary["by_category"]["外卖"], 2850)
                 self.assertEqual(summary["by_category"]["退款"], 800)
+            finally:
+                conn.close()
+
+    def test_analyze_bill_auto_records_clear_private_bill_and_updates_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                result = ledger.analyze_bill_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "record_id": "image-a",
+                        "raw_text": "微信支付 支付成功 美团外卖 商品: 黄焖鸡 支付金额 ¥28.50 交易单号 123456789012",
+                    },
+                )
+
+                self.assertTrue(result["ok"])
+                self.assertTrue(result["is_bill"])
+                self.assertEqual(result["status"], "auto_recorded")
+                self.assertEqual(result["transaction"]["amount_cents"], 2850)
+                self.assertEqual(result["transaction"]["payment_app"], "微信支付")
+                self.assertEqual(result["transaction"]["order_platform"], "美团外卖")
+                self.assertEqual(result["transaction"]["category"], "外卖")
+                summary = ledger.summarize_transactions(conn, "u1", "today")
+                self.assertTrue(summary["cached"])
+                self.assertEqual(summary["totals"]["expense_cents"], 2850)
+            finally:
+                conn.close()
+
+    def test_menu_with_prices_is_not_treated_as_bill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                result = ledger.analyze_bill_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "raw_text": "美团商家菜单 黄焖鸡 28 元 可乐 5 元 加入购物车 满 30 减 5",
+                    },
+                )
+
+                self.assertTrue(result["ok"])
+                self.assertFalse(result["is_bill"])
+                count = conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+                self.assertEqual(count, 0)
+            finally:
+                conn.close()
+
+    def test_unclear_bill_asks_once_then_learns_screenshot_and_item_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                first = ledger.analyze_bill_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "record_id": "image-b",
+                        "raw_text": "支付宝 交易成功 闲鱼 支付金额 ¥88.00 订单编号 987654321000",
+                    },
+                )
+                self.assertEqual(first["status"], "needs_clarification")
+                self.assertIn("needs_clarification", first)
+
+                confirmed = ledger.confirm_bill_context(
+                    conn,
+                    {
+                        "context_id": first["context_id"],
+                        "item_name": "二手键盘",
+                        "category": "数码家电",
+                    },
+                )
+                self.assertTrue(confirmed["ok"])
+                self.assertEqual(confirmed["status"], "confirmed")
+                self.assertEqual(confirmed["transaction"]["item_name"], "二手键盘")
+                self.assertEqual(confirmed["transaction"]["category"], "数码家电")
+                self.assertGreater(conn.execute("SELECT COUNT(*) FROM screenshot_rules").fetchone()[0], 0)
+                self.assertGreater(conn.execute("SELECT COUNT(*) FROM item_rules").fetchone()[0], 0)
+
+                second = ledger.analyze_bill_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "record_id": "image-c",
+                        "raw_text": "支付宝 交易成功 闲鱼 支付金额 ¥88.00 订单编号 987654321999",
+                    },
+                )
+                self.assertEqual(second["status"], "auto_recorded")
+                self.assertEqual(second["transaction"]["item_name"], "二手键盘")
+                self.assertEqual(second["transaction"]["category"], "数码家电")
+            finally:
+                conn.close()
+
+    def test_undo_bill_rejects_latest_auto_recorded_transaction_and_refreshes_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                recorded = ledger.analyze_bill_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "raw_text": "微信支付 支付成功 美团外卖 商品: 黄焖鸡 支付金额 ¥28.50 交易单号 123456789012",
+                    },
+                )
+                self.assertEqual(ledger.summarize_transactions(conn, "u1", "today")["totals"]["expense_cents"], 2850)
+
+                undone = ledger.undo_bill_transaction(conn, "u1", "chat-a", None)
+
+                self.assertTrue(undone["ok"])
+                row = conn.execute(
+                    "SELECT status FROM transactions WHERE id = ?",
+                    (recorded["transaction"]["id"],),
+                ).fetchone()
+                self.assertEqual(row["status"], "rejected")
+                self.assertEqual(ledger.summarize_transactions(conn, "u1", "today")["totals"]["expense_cents"], 0)
             finally:
                 conn.close()
 

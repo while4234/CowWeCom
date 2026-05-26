@@ -66,6 +66,7 @@
   "image_recognition_workers": 2,
   "image_recognition_max_tokens": 700,
   "image_recognition_prompt": "Identify this image for a later chat follow-up. Keep it natural and short. Mention the main subject, visible action or scene, important text/OCR, and uncertainty if needed. Do not use report headings or formal sections unless the image itself is a document where key text matters.",
+  "china_expense_ledger_private_auto": true,
   "text_to_image": "dall-e-2",
   "image_create_size": "256x256",
   "image_create_format": "png",

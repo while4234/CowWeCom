@@ -26,6 +26,9 @@ DEFAULT_CURRENCY = "CNY"
 VALID_DIRECTIONS = {"expense", "income", "refund", "transfer", "unknown"}
 VALID_SOURCE_TYPES = {"text", "image", "csv", "xlsx", "manual"}
 VALID_STATUSES = {"pending", "confirmed", "auto_confirmed", "rejected", "duplicate"}
+SUMMARY_STATUSES = {"confirmed", "auto_confirmed"}
+SUMMARY_PERIOD_TYPES = {"day", "week", "month"}
+BILL_CONTEXT_STATUSES = {"needs_clarification", "auto_recorded", "confirmed", "rejected"}
 
 DEFAULT_CATEGORIES = [
     "餐饮",
@@ -127,6 +130,7 @@ CATEGORY_RULES = [
 ]
 
 PLATFORM_KEYWORDS = [
+    ("闲鱼", ["闲鱼", "咸鱼", "xianyu"]),
     ("美团外卖", ["美团外卖", "外卖"]),
     ("美团", ["美团"]),
     ("饿了么", ["饿了么"]),
@@ -186,6 +190,89 @@ LEARNABLE_FIELDS = {
     "order_platform",
     "payment_app",
 }
+
+BILL_KEYWORDS = [
+    "支付成功",
+    "付款成功",
+    "交易成功",
+    "账单",
+    "订单",
+    "实付款",
+    "实付",
+    "收款方",
+    "付款方式",
+    "商户单号",
+    "交易单号",
+    "订单编号",
+    "¥",
+    "￥",
+]
+
+STRONG_BILL_KEYWORDS = [
+    "支付成功",
+    "付款成功",
+    "交易成功",
+    "账单详情",
+    "当前状态",
+    "商户单号",
+    "交易单号",
+    "订单编号",
+    "付款方式",
+    "收款方",
+]
+
+BILL_DETAIL_KEYWORDS = [
+    "订单详情",
+    "实付款",
+    "实付金额",
+    "实际支付",
+    "支付金额",
+    "订单金额",
+    "已支付",
+    "交易时间",
+]
+
+NON_BILL_PRICE_CONTEXTS = [
+    "菜单",
+    "价目表",
+    "价格表",
+    "商品列表",
+    "优惠券",
+    "满减",
+    "配送范围",
+    "加入购物车",
+]
+
+BROAD_SHOPPING_PLATFORMS = {"闲鱼", "淘宝", "天猫", "京东", "拼多多", "抖音商城"}
+
+SIGNATURE_KEYWORDS = [
+    "支付宝",
+    "微信支付",
+    "闲鱼",
+    "咸鱼",
+    "淘宝",
+    "天猫",
+    "京东",
+    "拼多多",
+    "抖音",
+    "美团",
+    "美团外卖",
+    "饿了么",
+    "盒马",
+    "山姆",
+    "订单",
+    "订单详情",
+    "订单编号",
+    "账单详情",
+    "交易成功",
+    "支付成功",
+    "付款成功",
+    "实付款",
+    "实付",
+    "付款方式",
+    "交易单号",
+    "商户单号",
+]
 
 
 class ImportRow:
@@ -335,6 +422,61 @@ def init_db(conn: sqlite3.Connection) -> None:
             created_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS bill_contexts (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            chat_id TEXT,
+            record_id TEXT,
+            source_hash TEXT,
+            ui_signature TEXT,
+            raw_text TEXT,
+            payload_json TEXT,
+            transaction_id TEXT,
+            status TEXT,
+            clarification_json TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS screenshot_rules (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            ui_signature TEXT,
+            app_hint TEXT,
+            source_app TEXT,
+            payment_app TEXT,
+            order_platform TEXT,
+            category TEXT,
+            subcategory TEXT,
+            item_name TEXT,
+            merchant TEXT,
+            confidence REAL,
+            hit_count INTEGER,
+            last_seen TEXT,
+            note TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS summary_cache (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            period_type TEXT,
+            period_start TEXT,
+            period_end TEXT,
+            currency TEXT,
+            expense_cents INTEGER,
+            income_cents INTEGER,
+            refund_cents INTEGER,
+            transfer_cents INTEGER,
+            unknown_cents INTEGER,
+            transaction_count INTEGER,
+            by_category_json TEXT,
+            by_direction_json TEXT,
+            updated_at TEXT,
+            UNIQUE(user_id, period_type, period_start, currency)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_transactions_user_time
             ON transactions(user_id, occurred_at);
         CREATE INDEX IF NOT EXISTS idx_transactions_source_hash
@@ -347,6 +489,14 @@ def init_db(conn: sqlite3.Connection) -> None:
             ON item_rules(user_id, item_pattern);
         CREATE INDEX IF NOT EXISTS idx_merchant_rules_user_pattern
             ON merchant_rules(user_id, merchant_pattern);
+        CREATE INDEX IF NOT EXISTS idx_bill_contexts_user_chat_status
+            ON bill_contexts(user_id, chat_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_bill_contexts_record
+            ON bill_contexts(record_id);
+        CREATE INDEX IF NOT EXISTS idx_screenshot_rules_user_signature
+            ON screenshot_rules(user_id, ui_signature);
+        CREATE INDEX IF NOT EXISTS idx_summary_cache_user_period
+            ON summary_cache(user_id, period_type, period_start);
         """
     )
     seed_default_app_signatures(conn)
@@ -418,6 +568,26 @@ def amount_to_cents(value: object) -> int | None:
     return int(cents)
 
 
+def extract_amount_cents_from_text(raw_text: str) -> int | None:
+    text = normalize_text(raw_text)
+    if not text:
+        return None
+    preferred_patterns = (
+        r"(?:实付款|实付金额|实际支付|支付金额|订单金额|付款金额|金额)\s*[:：]?\s*[¥￥]?\s*(-?\d+(?:\.\d+)?)",
+        r"[¥￥]\s*(-?\d+(?:\.\d+)?)",
+        r"(-?\d+(?:\.\d+)?)\s*(?:元|CNY|人民币)",
+    )
+    for pattern in preferred_patterns:
+        matches = re.findall(pattern, text, flags=re.IGNORECASE)
+        if matches:
+            return amount_to_cents(matches[-1])
+    numbers = re.findall(r"-?\d+(?:\.\d+)?", text)
+    money_like = [number for number in numbers if "." in number or len(number) <= 5]
+    if money_like:
+        return amount_to_cents(money_like[-1])
+    return None
+
+
 def amount_cents_value(value: object) -> int | None:
     if value is None or value == "":
         return None
@@ -429,11 +599,28 @@ def amount_cents_value(value: object) -> int | None:
     return amount_to_cents(value)
 
 
+def payload_amount_cents(payload: dict[str, Any]) -> int | None:
+    amount_cents = amount_cents_value(payload.get("amount_cents"))
+    if amount_cents is not None:
+        return amount_cents
+    amount = amount_to_cents(payload.get("amount"))
+    if amount is not None:
+        return amount
+    return extract_amount_cents_from_text(normalize_text(payload.get("raw_text")))
+
+
 def mask_order_no(value: object) -> str | None:
     text = normalize_text(value)
     if not text:
         return None
     compact = re.sub(r"\s+", "", text)
+    if re.search(r"\d{9,}", compact):
+        compact = re.sub(
+            r"\d{9,}",
+            lambda match: f"{match.group(0)[:4]}***{match.group(0)[-4:]}",
+            compact,
+            count=1,
+        )
     if len(compact) <= 8:
         return compact
     return f"{compact[:4]}***{compact[-4:]}"
@@ -581,6 +768,60 @@ def source_hash_for(payload: dict[str, Any]) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
+def lower_text(value: object) -> str:
+    return normalize_text(value).lower()
+
+
+def contains_any(haystack: str, needles: Iterable[str]) -> bool:
+    lowered = haystack.lower()
+    return any(needle.lower() in lowered for needle in needles)
+
+
+def ui_signature_for_text(raw_text: str) -> str:
+    compact = " ".join(normalize_text(raw_text).split())
+    matched = [keyword for keyword in SIGNATURE_KEYWORDS if keyword.lower() in compact.lower()]
+    if matched:
+        material = "|".join(matched)
+        digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+        return f"kw:{digest}:{'|'.join(matched[:10])}"
+    digest = hashlib.sha256(compact[:300].encode("utf-8")).hexdigest()[:20]
+    return f"text:{digest}"
+
+
+def apply_screenshot_rules(conn: sqlite3.Connection, payload: dict[str, Any]) -> None:
+    ui_signature = normalize_text(payload.get("ui_signature"))
+    user_id = normalize_optional_text(payload.get("user_id"))
+    if not ui_signature:
+        return
+    row = conn.execute(
+        """
+        SELECT * FROM screenshot_rules
+        WHERE ui_signature = ? AND (user_id IS ? OR user_id IS NULL)
+        ORDER BY confidence DESC, hit_count DESC
+        LIMIT 1
+        """,
+        (ui_signature, user_id),
+    ).fetchone()
+    if not row:
+        return
+    for field in (
+        "source_app",
+        "payment_app",
+        "order_platform",
+        "category",
+        "subcategory",
+        "item_name",
+        "merchant",
+    ):
+        if not normalize_text(payload.get(field)) and row[field]:
+            payload[field] = row[field]
+    timestamp = now_iso()
+    conn.execute(
+        "UPDATE screenshot_rules SET hit_count = hit_count + 1, last_seen = ?, updated_at = ? WHERE id = ?",
+        (timestamp, timestamp, row["id"]),
+    )
+
+
 def apply_item_rules(conn: sqlite3.Connection, payload: dict[str, Any]) -> None:
     user_id = normalize_optional_text(payload.get("user_id"))
     haystack = " ".join(
@@ -645,8 +886,338 @@ def apply_merchant_rules(conn: sqlite3.Connection, payload: dict[str, Any]) -> N
         return
 
 
+def is_bill_like_text(raw_text: str) -> bool:
+    text = normalize_text(raw_text)
+    if not text:
+        return False
+    has_amount = extract_amount_cents_from_text(text) is not None
+    if not has_amount:
+        return False
+    has_strong_marker = contains_any(text, STRONG_BILL_KEYWORDS)
+    has_detail_marker = contains_any(text, BILL_DETAIL_KEYWORDS)
+    has_platform_marker = infer_order_platform({"raw_text": text}) is not None
+    has_payment_marker = infer_payment_app({"raw_text": text}) is not None
+    looks_like_menu = contains_any(text, NON_BILL_PRICE_CONTEXTS) and not has_strong_marker and not has_detail_marker
+    if looks_like_menu:
+        return False
+    return has_strong_marker or (has_detail_marker and (has_platform_marker or has_payment_marker))
+
+
+def extract_field_from_text(raw_text: str, labels: Iterable[str]) -> str | None:
+    text = normalize_text(raw_text)
+    for label in labels:
+        pattern = rf"{re.escape(label)}\s*[:：]\s*([^\n\r，,。；;]+)"
+        match = re.search(pattern, text)
+        if match:
+            value = match.group(1).strip()
+            value = re.split(r"\s{2,}", value)[0].strip()
+            if value:
+                return value[:80]
+    return None
+
+
+def infer_payload_from_bill_text(payload: dict[str, Any]) -> dict[str, Any]:
+    inferred = dict(payload)
+    raw_text = normalize_text(inferred.get("raw_text") or inferred.get("text") or inferred.get("ocr_text"))
+    inferred["raw_text"] = raw_text
+    inferred.setdefault("source_type", "image")
+    inferred.setdefault("direction", "refund" if "退款" in raw_text else "expense")
+    if not normalize_text(inferred.get("amount_cents")) and not normalize_text(inferred.get("amount")):
+        amount = extract_amount_cents_from_text(raw_text)
+        if amount is not None:
+            inferred["amount_cents"] = amount
+    if not normalize_text(inferred.get("source_app")):
+        inferred["source_app"] = infer_payment_app({"raw_text": raw_text}) or infer_order_platform({"raw_text": raw_text})
+    if not normalize_text(inferred.get("payment_app")):
+        payment_app = infer_payment_app({"raw_text": raw_text})
+        if payment_app:
+            inferred["payment_app"] = payment_app
+    if not normalize_text(inferred.get("order_platform")):
+        order_platform = infer_order_platform({"raw_text": raw_text})
+        if order_platform:
+            inferred["order_platform"] = order_platform
+    if not normalize_text(inferred.get("merchant")):
+        merchant = extract_field_from_text(raw_text, ("商户", "商家", "交易对方", "收款方", "店铺", "卖家"))
+        if merchant:
+            inferred["merchant"] = merchant
+    if not normalize_text(inferred.get("item_name")):
+        item_name = extract_field_from_text(raw_text, ("商品", "商品名称", "商品说明", "订单商品", "物品", "标题"))
+        if item_name:
+            inferred["item_name"] = item_name
+    if not normalize_text(inferred.get("order_no_masked")) and not normalize_text(inferred.get("order_no")):
+        order_no = extract_field_from_text(raw_text, ("订单编号", "订单号", "商户单号", "交易单号"))
+        if order_no:
+            inferred["order_no"] = order_no
+    inferred.setdefault("confidence", 0.82)
+    inferred["ui_signature"] = normalize_text(inferred.get("ui_signature")) or ui_signature_for_text(raw_text)
+    return inferred
+
+
+def fields_from_answer_text(answer_text: str) -> dict[str, Any]:
+    text = normalize_text(answer_text)
+    if not text:
+        return {}
+    fields: dict[str, Any] = {"answer_text": text}
+    amount = extract_amount_cents_from_text(text)
+    if amount is not None:
+        fields["amount_cents"] = amount
+    category = next((name for name in DEFAULT_CATEGORIES if name in text), None)
+    if category:
+        fields["category"] = category
+    platform = infer_order_platform({"raw_text": text})
+    if platform:
+        fields["order_platform"] = platform
+    payment_app = infer_payment_app({"raw_text": text})
+    if payment_app:
+        fields["payment_app"] = payment_app
+    merchant = extract_field_from_text(text, ("商户", "商家", "店铺", "卖家", "收款方"))
+    if merchant:
+        fields["merchant"] = merchant
+    item_name = extract_field_from_text(text, ("商品", "商品名称", "物品", "买的是", "买了", "买的"))
+    if not item_name:
+        cleaned = text
+        for category_name in DEFAULT_CATEGORIES:
+            cleaned = cleaned.replace(category_name, "")
+        for platform_name, keywords in PLATFORM_KEYWORDS:
+            cleaned = cleaned.replace(platform_name, "")
+            for keyword in keywords:
+                cleaned = cleaned.replace(keyword, "")
+        for app_name, keywords in PAYMENT_KEYWORDS:
+            cleaned = cleaned.replace(app_name, "")
+            for keyword in keywords:
+                cleaned = cleaned.replace(keyword, "")
+        cleaned = re.sub(r"(分类|类别|是|这个|这笔|消费|记到|归到|归类为|买的是|买了|买的|商品|商户|商家|店铺|卖家|收款方)", " ", cleaned)
+        cleaned = re.sub(r"[，,。；;：:\s]+", " ", cleaned).strip()
+        if cleaned and len(cleaned) <= 40 and not re.fullmatch(r"\d+(?:\.\d+)?", cleaned):
+            item_name = cleaned
+    if item_name:
+        fields["item_name"] = item_name[:80]
+    return fields
+
+
+def bill_missing_fields(payload: dict[str, Any], transaction: dict[str, Any] | None = None) -> list[str]:
+    data = {**payload, **(transaction or {})}
+    missing = []
+    if payload_amount_cents(data) is None:
+        missing.append("amount")
+    payment_app = normalize_text(data.get("payment_app"))
+    order_platform = normalize_text(data.get("order_platform"))
+    if not payment_app and not order_platform:
+        missing.append("app_or_platform")
+    category = normalize_text(data.get("category"))
+    if not category or category == "其他":
+        missing.append("category")
+    item_name = normalize_text(data.get("item_name"))
+    merchant = normalize_text(data.get("merchant"))
+    if order_platform in BROAD_SHOPPING_PLATFORMS and not item_name:
+        missing.append("item_name")
+    if data.get("direction") in {"unknown", "transfer"}:
+        missing.append("direction")
+    return sorted(set(missing))
+
+
+def clarification_text_for_fields(fields: Iterable[str]) -> list[str]:
+    messages = {
+        "amount": "金额看不清，请补充实际支付金额。",
+        "app_or_platform": "这个截图像账单，但没看清是哪个 App 或平台，请补充一下。",
+        "category": "这笔消费分类不确定，请告诉我是餐饮、购物、交通还是其他分类。",
+        "item_name": "买的东西看不清，请补充商品或服务名称。",
+        "direction": "这笔是消费、退款、收入还是个人转账？请确认一下。",
+    }
+    return [messages[field] for field in fields if field in messages]
+
+
+def create_bill_context(
+    conn: sqlite3.Connection,
+    payload: dict[str, Any],
+    status: str,
+    clarification: Iterable[str] | None = None,
+    transaction_id: str | None = None,
+) -> dict[str, Any]:
+    timestamp = now_iso()
+    context = {
+        "id": uuid.uuid4().hex,
+        "user_id": normalize_optional_text(payload.get("user_id")),
+        "chat_id": normalize_optional_text(payload.get("chat_id")),
+        "record_id": normalize_optional_text(payload.get("record_id")),
+        "source_hash": source_hash_for(payload),
+        "ui_signature": normalize_optional_text(payload.get("ui_signature")),
+        "raw_text": normalize_optional_text(payload.get("raw_text")),
+        "payload_json": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        "transaction_id": transaction_id,
+        "status": status if status in BILL_CONTEXT_STATUSES else "needs_clarification",
+        "clarification_json": json.dumps(list(clarification or []), ensure_ascii=False),
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+    columns = list(context.keys())
+    conn.execute(
+        f"INSERT INTO bill_contexts ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+        [context[column] for column in columns],
+    )
+    return context
+
+
+def learn_screenshot_rule(conn: sqlite3.Connection, payload: dict[str, Any], transaction: dict[str, Any]) -> str | None:
+    ui_signature = normalize_text(payload.get("ui_signature") or transaction.get("ui_signature"))
+    user_id = normalize_optional_text(transaction.get("user_id") or payload.get("user_id"))
+    if not ui_signature or not user_id:
+        return None
+    timestamp = now_iso()
+    existing = conn.execute(
+        """
+        SELECT * FROM screenshot_rules
+        WHERE user_id IS ? AND ui_signature = ?
+        LIMIT 1
+        """,
+        (user_id, ui_signature),
+    ).fetchone()
+    values = {
+        "user_id": user_id,
+        "ui_signature": ui_signature,
+        "app_hint": normalize_optional_text(transaction.get("order_platform") or transaction.get("source_app")),
+        "source_app": normalize_optional_text(transaction.get("source_app")),
+        "payment_app": normalize_optional_text(transaction.get("payment_app")),
+        "order_platform": normalize_optional_text(transaction.get("order_platform")),
+        "category": normalize_optional_text(transaction.get("category")),
+        "subcategory": normalize_optional_text(transaction.get("subcategory")),
+        "item_name": normalize_optional_text(transaction.get("item_name")),
+        "merchant": normalize_optional_text(transaction.get("merchant")),
+        "confidence": 0.9,
+        "last_seen": timestamp,
+        "updated_at": timestamp,
+    }
+    if existing:
+        updates = dict(values)
+        updates["hit_count"] = int(existing["hit_count"] or 0) + 1
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        conn.execute(
+            f"UPDATE screenshot_rules SET {assignments} WHERE id = ?",
+            [*updates.values(), existing["id"]],
+        )
+        return existing["id"]
+    rule_id = uuid.uuid4().hex
+    insert_values = {
+        "id": rule_id,
+        **values,
+        "hit_count": 1,
+        "note": "learned from bill screenshot confirmation",
+        "created_at": timestamp,
+    }
+    columns = list(insert_values.keys())
+    conn.execute(
+        f"INSERT INTO screenshot_rules ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+        [insert_values[column] for column in columns],
+    )
+    return rule_id
+
+
+def learn_item_rule_from_transaction(conn: sqlite3.Connection, transaction: dict[str, Any]) -> str | None:
+    item_name = normalize_text(transaction.get("item_name"))
+    user_id = normalize_optional_text(transaction.get("user_id"))
+    if not item_name:
+        return None
+    timestamp = now_iso()
+    existing = conn.execute(
+        """
+        SELECT * FROM item_rules
+        WHERE user_id IS ? AND item_pattern = ?
+        LIMIT 1
+        """,
+        (user_id, item_name),
+    ).fetchone()
+    values = {
+        "normalized_item": item_name,
+        "category": normalize_optional_text(transaction.get("category")),
+        "subcategory": normalize_optional_text(transaction.get("subcategory")),
+        "app_hint": normalize_optional_text(transaction.get("order_platform") or transaction.get("source_app")),
+        "last_seen": timestamp,
+        "updated_at": timestamp,
+    }
+    if existing:
+        updates = dict(values)
+        updates["hit_count"] = int(existing["hit_count"] or 0) + 1
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        conn.execute(f"UPDATE item_rules SET {assignments} WHERE id = ?", [*updates.values(), existing["id"]])
+        return existing["id"]
+    rule_id = uuid.uuid4().hex
+    row = {
+        "id": rule_id,
+        "user_id": user_id,
+        "item_pattern": item_name,
+        **values,
+        "confidence": 0.9,
+        "hit_count": 1,
+        "note": "learned from bill confirmation",
+        "created_at": timestamp,
+    }
+    columns = list(row.keys())
+    conn.execute(
+        f"INSERT INTO item_rules ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+        [row[column] for column in columns],
+    )
+    return rule_id
+
+
+def learn_merchant_rule_from_transaction(conn: sqlite3.Connection, transaction: dict[str, Any]) -> str | None:
+    merchant = normalize_text(transaction.get("merchant"))
+    user_id = normalize_optional_text(transaction.get("user_id"))
+    if not merchant:
+        return None
+    timestamp = now_iso()
+    existing = conn.execute(
+        """
+        SELECT * FROM merchant_rules
+        WHERE user_id IS ? AND merchant_pattern = ?
+        LIMIT 1
+        """,
+        (user_id, merchant),
+    ).fetchone()
+    values = {
+        "normalized_merchant": merchant,
+        "order_platform": normalize_optional_text(transaction.get("order_platform")),
+        "payment_app": normalize_optional_text(transaction.get("payment_app")),
+        "category": normalize_optional_text(transaction.get("category")),
+        "subcategory": normalize_optional_text(transaction.get("subcategory")),
+        "last_seen": timestamp,
+        "updated_at": timestamp,
+    }
+    if existing:
+        updates = dict(values)
+        updates["hit_count"] = int(existing["hit_count"] or 0) + 1
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        conn.execute(f"UPDATE merchant_rules SET {assignments} WHERE id = ?", [*updates.values(), existing["id"]])
+        return existing["id"]
+    rule_id = uuid.uuid4().hex
+    row = {
+        "id": rule_id,
+        "user_id": user_id,
+        "merchant_pattern": merchant,
+        **values,
+        "confidence": 0.9,
+        "hit_count": 1,
+        "note": "learned from bill confirmation",
+        "created_at": timestamp,
+    }
+    columns = list(row.keys())
+    conn.execute(
+        f"INSERT INTO merchant_rules ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+        [row[column] for column in columns],
+    )
+    return rule_id
+
+
+def learn_bill_rules(conn: sqlite3.Connection, payload: dict[str, Any], transaction: dict[str, Any]) -> dict[str, str | None]:
+    return {
+        "screenshot_rule_id": learn_screenshot_rule(conn, payload, transaction),
+        "item_rule_id": learn_item_rule_from_transaction(conn, transaction),
+        "merchant_rule_id": learn_merchant_rule_from_transaction(conn, transaction),
+    }
+
+
 def build_transaction(conn: sqlite3.Connection, payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     payload = dict(payload)
+    apply_screenshot_rules(conn, payload)
     apply_item_rules(conn, payload)
     apply_merchant_rules(conn, payload)
 
@@ -658,9 +1229,7 @@ def build_transaction(conn: sqlite3.Connection, payload: dict[str, Any]) -> tupl
     status = status_for_payload(payload, direction)
     category = infer_category(payload, direction)
 
-    amount_cents = amount_cents_value(payload.get("amount_cents"))
-    if amount_cents is None:
-        amount_cents = amount_to_cents(payload.get("amount"))
+    amount_cents = payload_amount_cents(payload)
     if amount_cents is None:
         raise ValueError("amount_cents or amount is required")
 
@@ -724,9 +1293,191 @@ def insert_transaction(conn: sqlite3.Connection, transaction: dict[str, Any]) ->
     return True, transaction
 
 
+def row_to_dict(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return dict(row)
+    return dict(row)
+
+
+def period_bounds_datetimes(
+    period: str,
+    start: str | None = None,
+    end: str | None = None,
+    reference: datetime | None = None,
+) -> tuple[datetime | None, datetime | None]:
+    now = reference or datetime.now().astimezone()
+    start_dt = parse_date(start)
+    end_dt = parse_date(end)
+    if period == "today":
+        start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_dt = start_dt + timedelta(days=1)
+    elif period == "week":
+        start_dt = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_dt = start_dt + timedelta(days=7)
+    elif period == "month":
+        start_dt = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_dt = month_after(start_dt)
+    elif period == "last_month":
+        this_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start_dt = month_before(this_month)
+        end_dt = this_month
+    elif period == "all":
+        pass
+    return start_dt, end_dt
+
+
+def month_before(value: datetime) -> datetime:
+    year = value.year
+    month = value.month - 1
+    if month < 1:
+        year -= 1
+        month = 12
+    return value.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def month_after(value: datetime) -> datetime:
+    year = value.year
+    month = value.month + 1
+    if month > 12:
+        year += 1
+        month = 1
+    return value.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def iso_bound(value: datetime | None) -> str | None:
+    return value.isoformat(timespec="seconds") if value else None
+
+
+def summary_periods_for_transaction(transaction: dict[str, Any] | sqlite3.Row) -> list[tuple[str, datetime, datetime]]:
+    occurred = parse_date(str(transaction["occurred_at"] or ""))
+    if not occurred:
+        return []
+    day_start = occurred.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = (occurred - timedelta(days=occurred.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = occurred.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return [
+        ("day", day_start, day_start + timedelta(days=1)),
+        ("week", week_start, week_start + timedelta(days=7)),
+        ("month", month_start, month_after(month_start)),
+    ]
+
+
+def empty_summary_totals() -> dict[str, int]:
+    return {
+        "expense_cents": 0,
+        "income_cents": 0,
+        "refund_cents": 0,
+        "transfer_cents": 0,
+        "unknown_cents": 0,
+    }
+
+
+def accumulate_summary_rows(rows: Iterable[dict[str, Any] | sqlite3.Row]) -> tuple[dict[str, int], dict[str, int], dict[str, int], int]:
+    totals = empty_summary_totals()
+    by_category: dict[str, int] = {}
+    by_direction: dict[str, int] = {}
+    count = 0
+    for row in rows:
+        count += 1
+        amount = int(row["amount_cents"] or 0)
+        direction = row["direction"] or "unknown"
+        key = f"{direction}_cents"
+        totals[key if key in totals else "unknown_cents"] += amount
+        by_direction[direction] = by_direction.get(direction, 0) + amount
+        category = row["category"] or "其他"
+        by_category[category] = by_category.get(category, 0) + amount
+    return totals, by_category, by_direction, count
+
+
+def refresh_summary_cache(
+    conn: sqlite3.Connection,
+    user_id: str | None,
+    period_type: str,
+    period_start: datetime,
+    period_end: datetime,
+    currency: str = DEFAULT_CURRENCY,
+) -> dict[str, Any]:
+    if period_type not in SUMMARY_PERIOD_TYPES or not user_id:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT * FROM transactions
+        WHERE user_id = ?
+          AND currency = ?
+          AND occurred_at >= ?
+          AND occurred_at < ?
+          AND status IN (?, ?)
+        """,
+        (
+            user_id,
+            currency,
+            iso_bound(period_start),
+            iso_bound(period_end),
+            "confirmed",
+            "auto_confirmed",
+        ),
+    ).fetchall()
+    totals, by_category, by_direction, count = accumulate_summary_rows(rows)
+    timestamp = now_iso()
+    values = {
+        "id": uuid.uuid4().hex,
+        "user_id": user_id,
+        "period_type": period_type,
+        "period_start": iso_bound(period_start),
+        "period_end": iso_bound(period_end),
+        "currency": currency,
+        **totals,
+        "transaction_count": count,
+        "by_category_json": json.dumps(by_category, ensure_ascii=False, sort_keys=True),
+        "by_direction_json": json.dumps(by_direction, ensure_ascii=False, sort_keys=True),
+        "updated_at": timestamp,
+    }
+    conn.execute(
+        """
+        INSERT INTO summary_cache (
+            id, user_id, period_type, period_start, period_end, currency,
+            expense_cents, income_cents, refund_cents, transfer_cents, unknown_cents,
+            transaction_count, by_category_json, by_direction_json, updated_at
+        ) VALUES (
+            :id, :user_id, :period_type, :period_start, :period_end, :currency,
+            :expense_cents, :income_cents, :refund_cents, :transfer_cents, :unknown_cents,
+            :transaction_count, :by_category_json, :by_direction_json, :updated_at
+        )
+        ON CONFLICT(user_id, period_type, period_start, currency) DO UPDATE SET
+            period_end = excluded.period_end,
+            expense_cents = excluded.expense_cents,
+            income_cents = excluded.income_cents,
+            refund_cents = excluded.refund_cents,
+            transfer_cents = excluded.transfer_cents,
+            unknown_cents = excluded.unknown_cents,
+            transaction_count = excluded.transaction_count,
+            by_category_json = excluded.by_category_json,
+            by_direction_json = excluded.by_direction_json,
+            updated_at = excluded.updated_at
+        """,
+        values,
+    )
+    return values
+
+
+def refresh_summary_caches_for_transaction(
+    conn: sqlite3.Connection,
+    transaction: dict[str, Any] | sqlite3.Row | None,
+) -> None:
+    if not transaction or not transaction["user_id"]:
+        return
+    currency = transaction["currency"] or DEFAULT_CURRENCY
+    for period_type, period_start, period_end in summary_periods_for_transaction(transaction):
+        refresh_summary_cache(conn, transaction["user_id"], period_type, period_start, period_end, currency)
+
+
 def record_payload(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
     transaction, clarification = build_transaction(conn, payload)
     inserted, row = insert_transaction(conn, transaction)
+    if inserted:
+        refresh_summary_caches_for_transaction(conn, row)
     conn.commit()
     result = {
         "ok": True,
@@ -738,6 +1489,208 @@ def record_payload(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[st
     if clarification:
         result["needs_clarification"] = clarification
     return result
+
+
+def analyze_bill_payload(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
+    inferred = infer_payload_from_bill_text(payload)
+    raw_text = normalize_text(inferred.get("raw_text"))
+    if not is_bill_like_text(raw_text):
+        return {"ok": True, "action": "analyze-bill", "is_bill": False}
+
+    apply_screenshot_rules(conn, inferred)
+    apply_item_rules(conn, inferred)
+    apply_merchant_rules(conn, inferred)
+    try:
+        transaction, record_clarification = build_transaction(conn, {**inferred, "status": "auto_confirmed"})
+    except ValueError:
+        fields = bill_missing_fields(inferred)
+        clarification = clarification_text_for_fields(fields or ["amount"])
+        context = create_bill_context(conn, inferred, "needs_clarification", clarification)
+        conn.commit()
+        return {
+            "ok": True,
+            "action": "analyze-bill",
+            "is_bill": True,
+            "status": "needs_clarification",
+            "context_id": context["id"],
+            "needs_clarification": clarification,
+        }
+
+    missing = bill_missing_fields(inferred, transaction)
+    if missing or record_clarification:
+        clarification = clarification_text_for_fields(missing)
+        clarification.extend(item for item in record_clarification if item not in clarification)
+        context = create_bill_context(conn, inferred, "needs_clarification", clarification)
+        conn.commit()
+        return {
+            "ok": True,
+            "action": "analyze-bill",
+            "is_bill": True,
+            "status": "needs_clarification",
+            "context_id": context["id"],
+            "needs_clarification": clarification,
+            "ui_signature": inferred.get("ui_signature"),
+        }
+
+    inserted, row = insert_transaction(conn, transaction)
+    context = create_bill_context(
+        conn,
+        inferred,
+        "auto_recorded" if inserted else "confirmed",
+        [],
+        transaction_id=row["id"],
+    )
+    learned = {}
+    if inserted:
+        learned = learn_bill_rules(conn, inferred, row)
+        refresh_summary_caches_for_transaction(conn, row)
+    conn.commit()
+    return {
+        "ok": True,
+        "action": "analyze-bill",
+        "is_bill": True,
+        "status": "auto_recorded" if inserted else "duplicate",
+        "inserted": inserted,
+        "duplicate": not inserted,
+        "context_id": context["id"],
+        "transaction": row,
+        "learned": learned,
+        "message": "已记账。如果不需要记账，请回复“不记账”或“撤销记账”，我会撤销这笔。",
+    }
+
+
+def latest_bill_context(
+    conn: sqlite3.Connection,
+    user_id: str | None,
+    chat_id: str | None,
+    statuses: Iterable[str],
+) -> sqlite3.Row | None:
+    status_list = [status for status in statuses if status in BILL_CONTEXT_STATUSES]
+    if not status_list:
+        return None
+    where = [f"status IN ({', '.join('?' for _ in status_list)})"]
+    params: list[Any] = [*status_list]
+    if user_id:
+        where.append("user_id = ?")
+        params.append(user_id)
+    if chat_id:
+        where.append("chat_id = ?")
+        params.append(chat_id)
+    sql = "SELECT * FROM bill_contexts WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC LIMIT 1"
+    return conn.execute(sql, params).fetchone()
+
+
+def confirm_bill_context(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
+    context_id = normalize_text(payload.get("context_id"))
+    if context_id:
+        context = conn.execute("SELECT * FROM bill_contexts WHERE id = ?", (context_id,)).fetchone()
+    else:
+        context = latest_bill_context(
+            conn,
+            normalize_optional_text(payload.get("user_id")),
+            normalize_optional_text(payload.get("chat_id")),
+            ["needs_clarification"],
+        )
+    if not context:
+        return {"ok": False, "error": "bill_context_not_found"}
+
+    stored_payload = json.loads(context["payload_json"] or "{}")
+    merged = {**stored_payload, **{key: value for key, value in payload.items() if value not in (None, "")}}
+    merged.setdefault("source_type", "image")
+    merged.setdefault("status", "auto_confirmed")
+    transaction, clarification = build_transaction(conn, {**merged, "status": "auto_confirmed"})
+    missing = bill_missing_fields(merged, transaction)
+    if missing or clarification:
+        clarification = clarification_text_for_fields(missing) + [
+            item for item in clarification if item not in clarification_text_for_fields(missing)
+        ]
+        conn.execute(
+            "UPDATE bill_contexts SET clarification_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(clarification, ensure_ascii=False), now_iso(), context["id"]),
+        )
+        conn.commit()
+        return {
+            "ok": True,
+            "action": "confirm-bill",
+            "status": "needs_clarification",
+            "context_id": context["id"],
+            "needs_clarification": clarification,
+        }
+
+    inserted, row = insert_transaction(conn, transaction)
+    learned = {}
+    if inserted:
+        learned = learn_bill_rules(conn, merged, row)
+        refresh_summary_caches_for_transaction(conn, row)
+    timestamp = now_iso()
+    conn.execute(
+        """
+        UPDATE bill_contexts
+        SET payload_json = ?, transaction_id = ?, status = ?, clarification_json = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            json.dumps(merged, ensure_ascii=False, sort_keys=True),
+            row["id"],
+            "confirmed",
+            "[]",
+            timestamp,
+            context["id"],
+        ),
+    )
+    conn.commit()
+    return {
+        "ok": True,
+        "action": "confirm-bill",
+        "status": "confirmed" if inserted else "duplicate",
+        "inserted": inserted,
+        "duplicate": not inserted,
+        "context_id": context["id"],
+        "transaction": row,
+        "learned": learned,
+        "message": "已记账，并记住这类截图和商品规则。",
+    }
+
+
+def undo_bill_transaction(conn: sqlite3.Connection, user_id: str | None, chat_id: str | None, transaction_id: str | None) -> dict[str, Any]:
+    if transaction_id:
+        transaction = conn.execute("SELECT * FROM transactions WHERE id = ?", (transaction_id,)).fetchone()
+        context = None
+    else:
+        context = latest_bill_context(conn, user_id, chat_id, ["auto_recorded", "confirmed"])
+        if not context or not context["transaction_id"]:
+            return {"ok": False, "error": "auto_recorded_bill_not_found"}
+        transaction = conn.execute("SELECT * FROM transactions WHERE id = ?", (context["transaction_id"],)).fetchone()
+    if not transaction:
+        return {"ok": False, "error": "transaction_not_found"}
+
+    timestamp = now_iso()
+    conn.execute(
+        "UPDATE transactions SET status = ?, updated_at = ? WHERE id = ?",
+        ("rejected", timestamp, transaction["id"]),
+    )
+    if transaction_id:
+        conn.execute(
+            "UPDATE bill_contexts SET status = ?, updated_at = ? WHERE transaction_id = ?",
+            ("rejected", timestamp, transaction_id),
+        )
+    elif context:
+        conn.execute(
+            "UPDATE bill_contexts SET status = ?, updated_at = ? WHERE id = ?",
+            ("rejected", timestamp, context["id"]),
+        )
+    refreshed = dict(transaction)
+    refreshed["status"] = "rejected"
+    refresh_summary_caches_for_transaction(conn, refreshed)
+    conn.commit()
+    return {
+        "ok": True,
+        "action": "undo-bill",
+        "transaction_id": transaction["id"],
+        "status": "rejected",
+        "message": "已撤销这笔记账。",
+    }
 
 
 def read_json_arg(args: argparse.Namespace) -> dict[str, Any]:
@@ -913,6 +1866,7 @@ def import_file(conn: sqlite3.Connection, path: Path, source: str, user_id: str 
         if was_inserted:
             inserted += 1
             transaction_ids.append(row["id"])
+            refresh_summary_caches_for_transaction(conn, row)
         else:
             duplicates += 1
 
@@ -967,21 +1921,8 @@ def parse_date(value: str | None) -> datetime | None:
 
 
 def period_bounds(period: str, start: str | None = None, end: str | None = None) -> tuple[str | None, str | None]:
-    now = datetime.now().astimezone()
-    start_dt = parse_date(start)
-    end_dt = parse_date(end)
-    if period == "today":
-        start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_dt = start_dt + timedelta(days=1)
-    elif period == "month":
-        start_dt = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_dt = None
-    elif period == "all":
-        pass
-    return (
-        start_dt.isoformat(timespec="seconds") if start_dt else None,
-        end_dt.isoformat(timespec="seconds") if end_dt else None,
-    )
+    start_dt, end_dt = period_bounds_datetimes(period, start, end)
+    return iso_bound(start_dt), iso_bound(end_dt)
 
 
 def query_transactions(
@@ -1004,6 +1945,8 @@ def query_transactions(
     if end_bound:
         where.append("occurred_at < ?")
         params.append(end_bound)
+    where.append("status != ?")
+    params.append("rejected")
     sql = "SELECT * FROM transactions"
     if where:
         sql += " WHERE " + " AND ".join(where)
@@ -1019,32 +1962,61 @@ def summarize_transactions(
     start: str | None = None,
     end: str | None = None,
 ) -> dict[str, Any]:
-    rows = query_transactions(conn, user_id, period, 100000, start, end)
-    totals = {
-        "expense_cents": 0,
-        "income_cents": 0,
-        "refund_cents": 0,
-        "transfer_cents": 0,
-        "unknown_cents": 0,
-    }
-    by_category: dict[str, int] = {}
-    by_direction: dict[str, int] = {}
-    for row in rows:
-        amount = int(row["amount_cents"] or 0)
-        direction = row["direction"] or "unknown"
-        key = f"{direction}_cents"
-        totals[key if key in totals else "unknown_cents"] += amount
-        by_direction[direction] = by_direction.get(direction, 0) + amount
-        category = row["category"] or "其他"
-        by_category[category] = by_category.get(category, 0) + amount
+    if user_id and period in {"today", "week", "month", "last_month"} and not start and not end:
+        period_type = "day" if period == "today" else "month" if period == "last_month" else period
+        start_dt, end_dt = period_bounds_datetimes(period)
+        if start_dt and end_dt:
+            start_iso = iso_bound(start_dt)
+            cached = conn.execute(
+                """
+                SELECT * FROM summary_cache
+                WHERE user_id = ? AND period_type = ? AND period_start = ? AND currency = ?
+                LIMIT 1
+                """,
+                (user_id, period_type, start_iso, DEFAULT_CURRENCY),
+            ).fetchone()
+            cache_hit = cached is not None
+            if cached is None:
+                cached_values = refresh_summary_cache(conn, user_id, period_type, start_dt, end_dt)
+                conn.commit()
+            else:
+                cached_values = dict(cached)
+            totals = {
+                "expense_cents": int(cached_values.get("expense_cents") or 0),
+                "income_cents": int(cached_values.get("income_cents") or 0),
+                "refund_cents": int(cached_values.get("refund_cents") or 0),
+                "transfer_cents": int(cached_values.get("transfer_cents") or 0),
+                "unknown_cents": int(cached_values.get("unknown_cents") or 0),
+            }
+            return {
+                "ok": True,
+                "action": "summary",
+                "period": period,
+                "period_start": start_iso,
+                "period_end": iso_bound(end_dt),
+                "count": int(cached_values.get("transaction_count") or 0),
+                "totals": totals,
+                "by_direction": json.loads(cached_values.get("by_direction_json") or "{}"),
+                "by_category": json.loads(cached_values.get("by_category_json") or "{}"),
+                "cached": True,
+                "cache_hit": cache_hit,
+            }
+
+    rows = [
+        row
+        for row in query_transactions(conn, user_id, period, 100000, start, end)
+        if row.get("status") in SUMMARY_STATUSES
+    ]
+    totals, by_category, by_direction, count = accumulate_summary_rows(rows)
     return {
         "ok": True,
         "action": "summary",
         "period": period,
-        "count": len(rows),
+        "count": count,
         "totals": totals,
         "by_direction": by_direction,
         "by_category": by_category,
+        "cached": False,
     }
 
 
@@ -1177,6 +2149,12 @@ def correct_transaction(conn: sqlite3.Connection, args: argparse.Namespace) -> d
         (new_value, timestamp, args.transaction_id),
     )
     learned_type, learned_id = update_learning_rule(conn, transaction, field, str(new_value))
+    refresh_summary_caches_for_transaction(conn, transaction)
+    updated_transaction = conn.execute(
+        "SELECT * FROM transactions WHERE id = ?",
+        (args.transaction_id,),
+    ).fetchone()
+    refresh_summary_caches_for_transaction(conn, updated_transaction)
     correction_id = uuid.uuid4().hex
     conn.execute(
         """
@@ -1230,6 +2208,9 @@ def doctor(conn: sqlite3.Connection, db_path: Path) -> dict[str, Any]:
         "app_signatures",
         "corrections",
         "import_batches",
+        "bill_contexts",
+        "screenshot_rules",
+        "summary_cache",
     ]
     return {
         "ok": True,
@@ -1263,6 +2244,22 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--file", help="Path to a JSON payload file. Reads stdin when omitted.")
     record.set_defaults(func=cmd_record_json)
 
+    analyze = sub.add_parser("analyze-bill", help="Analyze vision-extracted bill text and auto-record clear private bills.")
+    analyze.add_argument("--json", dest="json_text", help="JSON object payload.")
+    analyze.add_argument("--file", help="Path to a JSON payload file. Reads stdin when omitted.")
+    analyze.set_defaults(func=cmd_analyze_bill)
+
+    confirm_bill = sub.add_parser("confirm-bill", help="Confirm a pending screenshot bill and learn its rules.")
+    confirm_bill.add_argument("--json", dest="json_text", help="JSON object payload.")
+    confirm_bill.add_argument("--file", help="Path to a JSON payload file. Reads stdin when omitted.")
+    confirm_bill.set_defaults(func=cmd_confirm_bill)
+
+    undo_bill = sub.add_parser("undo-bill", help="Reject the latest auto-recorded bill transaction.")
+    undo_bill.add_argument("--user-id")
+    undo_bill.add_argument("--chat-id")
+    undo_bill.add_argument("--transaction-id")
+    undo_bill.set_defaults(func=cmd_undo_bill)
+
     import_parser = sub.add_parser("import-file", help="Import a user-provided CSV bill export.")
     import_parser.add_argument("--path", required=True, help="Path to CSV/XLS/XLSX export.")
     import_parser.add_argument("--source", choices=["alipay", "wechat", "auto"], default="auto")
@@ -1271,7 +2268,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     query = sub.add_parser("query", help="Query local transactions.")
     query.add_argument("--user-id")
-    query.add_argument("--period", choices=["today", "month", "all"], default="all")
+    query.add_argument("--period", choices=["today", "week", "month", "last_month", "all"], default="all")
     query.add_argument("--start")
     query.add_argument("--end")
     query.add_argument("--limit", type=int, default=20)
@@ -1279,7 +2276,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     summary = sub.add_parser("summary", help="Summarize local transactions.")
     summary.add_argument("--user-id")
-    summary.add_argument("--period", choices=["today", "month", "all"], default="month")
+    summary.add_argument("--period", choices=["today", "week", "month", "last_month", "all"], default="month")
     summary.add_argument("--start")
     summary.add_argument("--end")
     summary.set_defaults(func=cmd_summary)
@@ -1292,7 +2289,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     export = sub.add_parser("export-json", help="Export transactions as JSON.")
     export.add_argument("--user-id")
-    export.add_argument("--period", choices=["today", "month", "all"], default="all")
+    export.add_argument("--period", choices=["today", "week", "month", "last_month", "all"], default="all")
     export.add_argument("--start")
     export.add_argument("--end")
     export.add_argument("--limit", type=int, default=100000)
@@ -1325,6 +2322,35 @@ def cmd_record_json(args: argparse.Namespace) -> None:
         init_db(conn)
         payload = read_json_arg(args)
         json_print(record_payload(conn, payload))
+    finally:
+        conn.close()
+
+
+def cmd_analyze_bill(args: argparse.Namespace) -> None:
+    conn, _ = connection_for_args(args)
+    try:
+        init_db(conn)
+        payload = read_json_arg(args)
+        json_print(analyze_bill_payload(conn, payload))
+    finally:
+        conn.close()
+
+
+def cmd_confirm_bill(args: argparse.Namespace) -> None:
+    conn, _ = connection_for_args(args)
+    try:
+        init_db(conn)
+        payload = read_json_arg(args)
+        json_print(confirm_bill_context(conn, payload))
+    finally:
+        conn.close()
+
+
+def cmd_undo_bill(args: argparse.Namespace) -> None:
+    conn, _ = connection_for_args(args)
+    try:
+        init_db(conn)
+        json_print(undo_bill_transaction(conn, args.user_id, args.chat_id, args.transaction_id))
     finally:
         conn.close()
 

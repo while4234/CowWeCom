@@ -392,7 +392,7 @@ public_protocol_knowledge/
 | 项目运维 | `project-restart`，管理员说“重启/重启项目/重启服务”时默认触发，安全重启当前 CowWechat 服务 |
 | 文档处理 | `docx`、`pptx`、`xlsx`、`pdf` |
 | 检索与生活工具 | `reliable-search`、`quick-weather`、`fast-market-price` |
-| 本地生活记账 | `china-expense-ledger`，本地记录用户主动提供的文字、截图视觉提取结果和支付宝/微信 CSV 账单，不自动抓取 App 账单 |
+| 本地生活记账 | `china-expense-ledger`，本地记录用户主动提供的文字、截图视觉提取结果和支付宝/微信 CSV 账单；私聊清晰账单截图可自动记账并支持撤销，模糊账单会追问并学习，不自动抓取 App 账单 |
 | 用量与额度 | `token-usage-tracker`、`codex-quota-query`、`capi-usage-monitor` |
 | 工作进度与周报 | `work-progress-reporter`，私聊记录个人工作进度、临时任务和收获，并在周五生成中文周报；不同用户数据互相隔离 |
 | 旅行与本地助手 | `travel-manager`、`amap-cowwechat`、`takeout-lite-recommender`、`shopping-lite-compare` |
@@ -468,6 +468,7 @@ CowWeCom/
 | 日期 | 更新 |
 | --- | --- |
 | 2026-05-26 | 新增 `cowagent-workflow-auditor` Skill：用于脱敏审计 CowAgent/CowWechat 运行日志、工具调用链路、`tmp`/`workspace` 临时产物、已安装 Skills/Plugins，识别可沉淀为 Skill 的重复工作流；同时扩展 `github` Skill，内置仓库列表和近期更新查询，减少反复创建 GitHub 临时包装脚本 |
+| 2026-05-26 | 增强 `china-expense-ledger` 私聊账单截图流程：清晰账单默认自动记账并提示可撤销，模糊账单只追问缺失的 App/平台、分类、商品或方向；用户回答后会按用户学习相同截图 UI、商品和商户规则；群聊仍不自动记账，菜单/价目表等非账单图片不会误入账；新增日/周/月/上月 per-user 汇总缓存，便于快速回答今天、本周、本月和上月消费 |
 | 2026-05-26 | 新增 `china-expense-ledger` 本地记账 Skill：支持自然语言记账、截图经 Agent 视觉提取后的结构化入库、支付宝/微信 CSV 导入、SQLite 本地学习纠错和分类汇总；明确禁止爬虫、逆向、绕过登录、自动抓取 App 账单或默认启用官方支付/电商接口 |
 | 2026-05-26 | 统一本地验证环境到 `.venv`：补齐当前 `.venv` 的 `PyYAML` 和 `pytest`，并在可选依赖中声明 `pytest`，后续 skill 校验和 focused pytest 默认使用 `.venv` |
 | 2026-05-26 | 新增 `work-progress-reporter` Skill：所有用户都可在私聊中独立管理本周/下周工作计划、每日进度、临时任务、收获和周末加班安排；真实状态写入各自 `memory_user_id` 私有目录，群聊触发只做隐私引导，周五可生成中文 Markdown 周报 |
