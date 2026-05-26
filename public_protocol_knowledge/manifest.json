@@ -1,8 +1,45 @@
 {
   "schema_version": 1,
-  "generated_at": 1779702729,
+  "generated_at": 1779801192,
   "sqlite_path": "indexes/kb.sqlite",
   "documents": [
+    {
+      "id": "69fe4e2dea7bfbea0bd4067a",
+      "title": "AMBA AXI v2.0 - Codex Protocol Development Guide",
+      "source_path": "derived/54ff88973374374fb1bef5e7/amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md",
+      "mime_type": "text/markdown",
+      "size": 27006,
+      "content_hash": "25a6b98b200dc7f906fa02418874011c642d93e589c3962a447ac322f1a41ab4",
+      "status": "ready",
+      "kb_id": "amba_axi_v2_0",
+      "doc_type": "codex_analysis",
+      "version_id": "568a4292b42272e9386a2d7d",
+      "document_library_path": "knowledge/protocols/amba_axi_v2_0/amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md",
+      "metadata": {
+        "derived_from_document_id": "54ff88973374374fb1bef5e7",
+        "derived_from_title": "AMBA AXI Protocol Specification v2.0",
+        "document_library_path": "knowledge/protocols/amba_axi_v2_0/amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md",
+        "analysis_source": "codex",
+        "model_backend_used": false
+      }
+    },
+    {
+      "id": "54ff88973374374fb1bef5e7",
+      "title": "AMBA AXI Protocol Specification v2.0",
+      "source_path": "originals/3e59b3ad69aaa3e1_IHI0022C_amba_axi_v2_0_protocol_spec.pdf",
+      "mime_type": "application/pdf",
+      "size": 871287,
+      "content_hash": "3e59b3ad69aaa3e1a177b2b7c6902a70d1be34175a53f8a6011ed72b06fe46df",
+      "status": "ready",
+      "kb_id": "amba_axi_v2_0",
+      "doc_type": "document",
+      "version_id": "1a42c42a72161f90175eeb99",
+      "document_library_path": "knowledge/protocols/amba_axi_v2_0/amba-axi-protocol-specification-v2.0-54ff8897.md",
+      "metadata": {
+        "suffix": ".pdf",
+        "page_count": 132
+      }
+    },
     {
       "id": "192d2065ab81f4697eb6335d",
       "title": "UCIe 1.1 - Codex Protocol Development Guide",
@@ -117,6 +154,13 @@
     }
   ],
   "knowledge_bases": [
+    {
+      "id": "amba_axi_v2_0",
+      "name": "amba_axi_v2_0",
+      "description": "",
+      "domains": [],
+      "status": "active"
+    },
     {
       "id": "axi4_stream",
       "name": "axi4_stream",

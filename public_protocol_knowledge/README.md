@@ -5,9 +5,10 @@ for protocol/specification documents uploaded by an administrator through the
 Web backend, plus the indexed protocol chunks and model-generated study
 documents derived from those uploads.
 
-The current public protocol library contains the AXI4-Stream protocol knowledge
-base. Other personal knowledge bases, conversation summaries, and knowledge-wiki
-outputs do not belong here and must not be committed.
+The current public protocol library contains AMBA AXI v2.0, AXI4-Stream, and
+UCIe 1.1 protocol knowledge bases. Other personal knowledge bases,
+conversation summaries, and knowledge-wiki outputs do not belong here and must
+not be committed.
 
 ## What Lives Here
 

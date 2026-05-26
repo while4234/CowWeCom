@@ -1,0 +1,618 @@
+{
+  "status": "success",
+  "kb_id": "amba_axi_v2_0",
+  "documents": [
+    {
+      "status": "succeeded",
+      "job": {
+        "id": "39e058060eed49ee8470852c962e6481",
+        "document_id": "54ff88973374374fb1bef5e7",
+        "source_path": "public_protocol_knowledge/originals/3e59b3ad69aaa3e1_IHI0022C_amba_axi_v2_0_protocol_spec.pdf",
+        "status": "succeeded",
+        "message": "ingested 185 chunks",
+        "error": "",
+        "created_at": 1779801187,
+        "updated_at": 1779801191
+      },
+      "document": {
+        "id": "54ff88973374374fb1bef5e7",
+        "title": "AMBA AXI Protocol Specification v2.0",
+        "kb_id": "amba_axi_v2_0",
+        "version_id": "1a42c42a72161f90175eeb99",
+        "chunks": 185,
+        "source_spans": 185,
+        "entities": 205,
+        "relations": 32,
+        "missing_prerequisites": [
+          {
+            "term": "ARM",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ARM definition",
+            "source_span_id": "e52e8c64db1289da796fb929"
+          },
+          {
+            "term": "IHI",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "IHI definition",
+            "source_span_id": "e52e8c64db1289da796fb929"
+          },
+          {
+            "term": "ID030610",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ID030610 definition",
+            "source_span_id": "e52e8c64db1289da796fb929"
+          },
+          {
+            "term": "HIGH",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "HIGH definition",
+            "source_span_id": "e52e8c64db1289da796fb929"
+          },
+          {
+            "term": "LOW",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "LOW definition",
+            "source_span_id": "e52e8c64db1289da796fb929"
+          },
+          {
+            "term": "AMBA",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AMBA definition",
+            "source_span_id": "e52e8c64db1289da796fb929"
+          },
+          {
+            "term": "AXI4",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AXI4 definition",
+            "source_span_id": "e52e8c64db1289da796fb929"
+          },
+          {
+            "term": "DDI",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "DDI definition",
+            "source_span_id": "e52e8c64db1289da796fb929"
+          },
+          {
+            "term": "AXI",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AXI definition",
+            "source_span_id": "c66fcb770213bf6d7c84a4ca"
+          },
+          {
+            "term": "ID",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ID definition",
+            "source_span_id": "c66fcb770213bf6d7c84a4ca"
+          },
+          {
+            "term": "CSYSREQ",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "CSYSREQ definition",
+            "source_span_id": "2769c43c34713371d3d2b57c"
+          },
+          {
+            "term": "CSYSACK",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "CSYSACK definition",
+            "source_span_id": "2769c43c34713371d3d2b57c"
+          },
+          {
+            "term": "CACTIVE",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "CACTIVE definition",
+            "source_span_id": "2769c43c34713371d3d2b57c"
+          },
+          {
+            "term": "ARBURST",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ARBURST definition",
+            "source_span_id": "cd9e01f9d262864716775e95"
+          },
+          {
+            "term": "AWBURST",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AWBURST definition",
+            "source_span_id": "cd9e01f9d262864716775e95"
+          },
+          {
+            "term": "FIFO",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "FIFO definition",
+            "source_span_id": "cd9e01f9d262864716775e95"
+          },
+          {
+            "term": "FIXED",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "FIXED definition",
+            "source_span_id": "cd9e01f9d262864716775e95"
+          },
+          {
+            "term": "INCR",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "INCR definition",
+            "source_span_id": "cd9e01f9d262864716775e95"
+          },
+          {
+            "term": "WRAP",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "WRAP definition",
+            "source_span_id": "cd9e01f9d262864716775e95"
+          },
+          {
+            "term": "DECERR",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "DECERR definition",
+            "source_span_id": "d10665528fd6ea240d53bbc9"
+          },
+          {
+            "term": "AW",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AW definition",
+            "source_span_id": "7396a89533f9162be94304be"
+          },
+          {
+            "term": "AWID",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AWID definition",
+            "source_span_id": "7396a89533f9162be94304be"
+          },
+          {
+            "term": "CSYSRE",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "CSYSRE definition",
+            "source_span_id": "a3a0e2493d1705d69a3a2359"
+          },
+          {
+            "term": "AWLEN",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AWLEN definition",
+            "source_span_id": "0036f6d9ac23a1c1c0f1abdc"
+          },
+          {
+            "term": "ARLEN",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ARLEN definition",
+            "source_span_id": "0036f6d9ac23a1c1c0f1abdc"
+          },
+          {
+            "term": "AXI3",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AXI3 definition",
+            "source_span_id": "0036f6d9ac23a1c1c0f1abdc"
+          },
+          {
+            "term": "AWQOS",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AWQOS definition",
+            "source_span_id": "6637b1f5632ba5333f9959da"
+          },
+          {
+            "term": "ARQOS",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ARQOS definition",
+            "source_span_id": "6637b1f5632ba5333f9959da"
+          },
+          {
+            "term": "AWREADY",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AWREADY definition",
+            "source_span_id": "309b2db6575e30f1aa8c1ad3"
+          },
+          {
+            "term": "WREADY",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "WREADY definition",
+            "source_span_id": "309b2db6575e30f1aa8c1ad3"
+          },
+          {
+            "term": "AWVALID",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AWVALID definition",
+            "source_span_id": "309b2db6575e30f1aa8c1ad3"
+          },
+          {
+            "term": "WV",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "WV definition",
+            "source_span_id": "309b2db6575e30f1aa8c1ad3"
+          },
+          {
+            "term": "ALID",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ALID definition",
+            "source_span_id": "309b2db6575e30f1aa8c1ad3"
+          },
+          {
+            "term": "REA",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "REA definition",
+            "source_span_id": "309b2db6575e30f1aa8c1ad3"
+          },
+          {
+            "term": "DY",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "DY definition",
+            "source_span_id": "309b2db6575e30f1aa8c1ad3"
+          },
+          {
+            "term": "VALID",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "VALID definition",
+            "source_span_id": "309b2db6575e30f1aa8c1ad3"
+          },
+          {
+            "term": "BV",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "BV definition",
+            "source_span_id": "309b2db6575e30f1aa8c1ad3"
+          },
+          {
+            "term": "WLAST",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "WLAST definition",
+            "source_span_id": "309b2db6575e30f1aa8c1ad3"
+          },
+          {
+            "term": "AWCACHE",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AWCACHE definition",
+            "source_span_id": "b71d0f6db09c3571e34bbf13"
+          },
+          {
+            "term": "ARCACHE",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ARCACHE definition",
+            "source_span_id": "b71d0f6db09c3571e34bbf13"
+          },
+          {
+            "term": "WID",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "WID definition",
+            "source_span_id": "1bcef00cb64732291f916c31"
+          },
+          {
+            "term": "AWLOCK",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "AWLOCK definition",
+            "source_span_id": "a72189e529b2772e17c490a5"
+          },
+          {
+            "term": "ARLOCK",
+            "reason": "Current document mentions the term but does not define it fully.",
+            "recommended_kb_query": "ARLOCK definition",
+            "source_span_id": "a72189e529b2772e17c490a5"
+          }
+        ]
+      },
+      "input_path": "D:\\工作内容归档\\SP2100\\学习文档\\axi\\IHI0022C_amba_axi_v2_0_protocol_spec.pdf",
+      "ingested_path": "D:\\工作内容归档\\SP2100\\学习文档\\axi\\IHI0022C_amba_axi_v2_0_protocol_spec.pdf"
+    }
+  ],
+  "failures": [],
+  "pdf_quality": [
+    {
+      "path": "D:\\工作内容归档\\SP2100\\学习文档\\axi\\IHI0022C_amba_axi_v2_0_protocol_spec.pdf",
+      "status": "ok",
+      "extractor": "pymupdf",
+      "page_count": 132,
+      "total_chars": 202102,
+      "average_chars_per_page": 1531.08,
+      "empty_page_ratio": 0.0,
+      "low_fidelity": false,
+      "warnings": []
+    }
+  ],
+  "text_exports": [
+    {
+      "status": "success",
+      "documents_exported": 1,
+      "document_library_root": "C:\\Users\\Hi\\cow",
+      "files": [
+        "knowledge/protocols/amba_axi_v2_0/amba-axi-protocol-specification-v2.0-54ff8897.md",
+        "knowledge/protocols/amba_axi_v2_0/index.md",
+        "knowledge/protocols/index.md"
+      ],
+      "documents": [
+        {
+          "document_id": "54ff88973374374fb1bef5e7",
+          "title": "AMBA AXI Protocol Specification v2.0",
+          "kb_id": "amba_axi_v2_0",
+          "path": "knowledge/protocols/amba_axi_v2_0/amba-axi-protocol-specification-v2.0-54ff8897.md",
+          "chunks": 185
+        }
+      ]
+    }
+  ],
+  "analysis_documents": [
+    {
+      "status": "success",
+      "source_document_id": "54ff88973374374fb1bef5e7",
+      "source_title": "AMBA AXI Protocol Specification v2.0",
+      "analysis_document_path": "knowledge/protocols/amba_axi_v2_0/amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md",
+      "indexed_document": {
+        "id": "69fe4e2dea7bfbea0bd4067a",
+        "title": "AMBA AXI v2.0 - Codex Protocol Development Guide",
+        "kb_id": "amba_axi_v2_0",
+        "doc_type": "codex_analysis",
+        "chunks": 17,
+        "source_spans": 17,
+        "entities": 78,
+        "relations": 974
+      }
+    }
+  ],
+  "validation": {
+    "status": "pass",
+    "checks": [
+      {
+        "name": "backend_enabled",
+        "ok": true,
+        "detail": {
+          "enabled": true
+        }
+      },
+      {
+        "name": "sqlite_file_exists",
+        "ok": true,
+        "detail": "public_protocol_knowledge\\indexes\\kb.sqlite"
+      },
+      {
+        "name": "manifest_exists",
+        "ok": true,
+        "detail": "public_protocol_knowledge\\manifest.json"
+      },
+      {
+        "name": "sqlite_integrity",
+        "ok": true,
+        "detail": "ok"
+      },
+      {
+        "name": "document_count",
+        "ok": true,
+        "detail": {
+          "documents": 2,
+          "chunks": 202,
+          "source_spans": 202
+        }
+      },
+      {
+        "name": "chunk_count",
+        "ok": true,
+        "detail": {
+          "documents": 2,
+          "chunks": 202,
+          "source_spans": 202
+        }
+      },
+      {
+        "name": "source_span_coverage",
+        "ok": true,
+        "detail": {
+          "documents": 2,
+          "chunks": 202,
+          "source_spans": 202
+        }
+      },
+      {
+        "name": "ready_documents",
+        "ok": true,
+        "detail": 2
+      },
+      {
+        "name": "source_copy_exists:69fe4e2dea7bfbea0bd4067a",
+        "ok": true,
+        "detail": "D:\\CowAgent\\public_protocol_knowledge\\derived\\54ff88973374374fb1bef5e7\\amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md"
+      },
+      {
+        "name": "source_hash_matches:69fe4e2dea7bfbea0bd4067a",
+        "ok": true,
+        "detail": "AMBA AXI v2.0 - Codex Protocol Development Guide"
+      },
+      {
+        "name": "source_copy_exists:54ff88973374374fb1bef5e7",
+        "ok": true,
+        "detail": "D:\\CowAgent\\public_protocol_knowledge\\originals\\3e59b3ad69aaa3e1_IHI0022C_amba_axi_v2_0_protocol_spec.pdf"
+      },
+      {
+        "name": "source_hash_matches:54ff88973374374fb1bef5e7",
+        "ok": true,
+        "detail": "AMBA AXI Protocol Specification v2.0"
+      },
+      {
+        "name": "query_hit:AXI VALID READY handshake",
+        "ok": true,
+        "detail": {
+          "query": "AXI VALID READY handshake",
+          "hits": 3,
+          "top_title": "AMBA AXI Protocol Specification v2.0",
+          "top_page": 8
+        }
+      },
+      {
+        "name": "query_hit:AXI4-Lite write strobes",
+        "ok": true,
+        "detail": {
+          "query": "AXI4-Lite write strobes",
+          "hits": 3,
+          "top_title": "AMBA AXI Protocol Specification v2.0",
+          "top_page": 126
+        }
+      },
+      {
+        "name": "query_hit:AXI ordering same ID",
+        "ok": true,
+        "detail": {
+          "query": "AXI ordering same ID",
+          "hits": 3,
+          "top_title": "AMBA AXI Protocol Specification v2.0",
+          "top_page": 108
+        }
+      },
+      {
+        "name": "term_resolved:AXI",
+        "ok": true,
+        "detail": {
+          "term": "AXI",
+          "resolved": true,
+          "entity_id": "f18d835a7915065501a14f4c",
+          "canonical_name": "AXI",
+          "kb_id": "amba_axi_v2_0",
+          "aliases": [
+            "AXI"
+          ],
+          "confidence": 0.72,
+          "visited_kb_ids": [
+            "amba_axi_v2_0"
+          ]
+        }
+      },
+      {
+        "name": "term_resolved:VALID",
+        "ok": true,
+        "detail": {
+          "term": "VALID",
+          "resolved": true,
+          "entity_id": "9e4b38de6df96621db4c5973",
+          "canonical_name": "VALID",
+          "kb_id": null,
+          "aliases": [
+            "VALID"
+          ],
+          "confidence": 0.72,
+          "visited_kb_ids": [
+            "amba_axi_v2_0"
+          ]
+        }
+      },
+      {
+        "name": "term_resolved:AWCACHE",
+        "ok": true,
+        "detail": {
+          "term": "AWCACHE",
+          "resolved": true,
+          "entity_id": "36c6868d50b20b85a6b43992",
+          "canonical_name": "AWCACHE",
+          "kb_id": "amba_axi_v2_0",
+          "aliases": [
+            "AWCACHE"
+          ],
+          "confidence": 0.72,
+          "visited_kb_ids": [
+            "amba_axi_v2_0"
+          ]
+        }
+      },
+      {
+        "name": "term_resolved:ARVALID",
+        "ok": true,
+        "detail": {
+          "term": "ARVALID",
+          "resolved": true,
+          "entity_id": "522cb43d574f5e5467e67146",
+          "canonical_name": "ARVALID",
+          "kb_id": null,
+          "aliases": [
+            "ARVALID"
+          ],
+          "confidence": 0.72,
+          "visited_kb_ids": [
+            "amba_axi_v2_0"
+          ]
+        }
+      },
+      {
+        "name": "manifest_sources_relative",
+        "ok": true,
+        "detail": [
+          "derived/54ff88973374374fb1bef5e7/amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md",
+          "originals/3e59b3ad69aaa3e1_IHI0022C_amba_axi_v2_0_protocol_spec.pdf",
+          "derived/9c80c7e49f1cf343c0309aad/ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md",
+          "originals/8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+          "derived/ec894ddf5ce99711fd677dfe/amba-4-axi4-stream-protocol-specification-v1.0-ec894ddf-llm-study.md",
+          "originals/5eab83e14d300699_IHI0051A_amba4_axi4_stream_v1_0_protocol_spec.pdf"
+        ]
+      }
+    ],
+    "summary": {
+      "counts": {
+        "documents": 2,
+        "chunks": 202,
+        "source_spans": 202
+      },
+      "documents": [
+        {
+          "id": "69fe4e2dea7bfbea0bd4067a",
+          "title": "AMBA AXI v2.0 - Codex Protocol Development Guide",
+          "doc_type": "codex_analysis",
+          "source_path": "public_protocol_knowledge/derived/54ff88973374374fb1bef5e7/amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md"
+        },
+        {
+          "id": "54ff88973374374fb1bef5e7",
+          "title": "AMBA AXI Protocol Specification v2.0",
+          "doc_type": "document",
+          "source_path": "public_protocol_knowledge/originals/3e59b3ad69aaa3e1_IHI0022C_amba_axi_v2_0_protocol_spec.pdf"
+        }
+      ],
+      "resolved_terms": [
+        {
+          "term": "AXI",
+          "resolved": true,
+          "entity_id": "f18d835a7915065501a14f4c",
+          "canonical_name": "AXI",
+          "kb_id": "amba_axi_v2_0",
+          "aliases": [
+            "AXI"
+          ],
+          "confidence": 0.72,
+          "visited_kb_ids": [
+            "amba_axi_v2_0"
+          ]
+        },
+        {
+          "term": "VALID",
+          "resolved": true,
+          "entity_id": "9e4b38de6df96621db4c5973",
+          "canonical_name": "VALID",
+          "kb_id": null,
+          "aliases": [
+            "VALID"
+          ],
+          "confidence": 0.72,
+          "visited_kb_ids": [
+            "amba_axi_v2_0"
+          ]
+        },
+        {
+          "term": "AWCACHE",
+          "resolved": true,
+          "entity_id": "36c6868d50b20b85a6b43992",
+          "canonical_name": "AWCACHE",
+          "kb_id": "amba_axi_v2_0",
+          "aliases": [
+            "AWCACHE"
+          ],
+          "confidence": 0.72,
+          "visited_kb_ids": [
+            "amba_axi_v2_0"
+          ]
+        },
+        {
+          "term": "ARVALID",
+          "resolved": true,
+          "entity_id": "522cb43d574f5e5467e67146",
+          "canonical_name": "ARVALID",
+          "kb_id": null,
+          "aliases": [
+            "ARVALID"
+          ],
+          "confidence": 0.72,
+          "visited_kb_ids": [
+            "amba_axi_v2_0"
+          ]
+        }
+      ]
+    }
+  },
+  "manifest_path": "public_protocol_knowledge\\manifest.json",
+  "generated_at": 1779801192
+}

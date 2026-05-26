@@ -1,0 +1,272 @@
+{
+  "status": "pass",
+  "checks": [
+    {
+      "name": "backend_enabled",
+      "ok": true,
+      "detail": {
+        "enabled": true
+      }
+    },
+    {
+      "name": "sqlite_file_exists",
+      "ok": true,
+      "detail": "public_protocol_knowledge\\indexes\\kb.sqlite"
+    },
+    {
+      "name": "manifest_exists",
+      "ok": true,
+      "detail": "public_protocol_knowledge\\manifest.json"
+    },
+    {
+      "name": "sqlite_integrity",
+      "ok": true,
+      "detail": "ok"
+    },
+    {
+      "name": "document_count",
+      "ok": true,
+      "detail": {
+        "documents": 2,
+        "chunks": 202,
+        "source_spans": 202
+      }
+    },
+    {
+      "name": "chunk_count",
+      "ok": true,
+      "detail": {
+        "documents": 2,
+        "chunks": 202,
+        "source_spans": 202
+      }
+    },
+    {
+      "name": "source_span_coverage",
+      "ok": true,
+      "detail": {
+        "documents": 2,
+        "chunks": 202,
+        "source_spans": 202
+      }
+    },
+    {
+      "name": "ready_documents",
+      "ok": true,
+      "detail": 2
+    },
+    {
+      "name": "source_copy_exists:69fe4e2dea7bfbea0bd4067a",
+      "ok": true,
+      "detail": "D:\\CowAgent\\public_protocol_knowledge\\derived\\54ff88973374374fb1bef5e7\\amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md"
+    },
+    {
+      "name": "source_hash_matches:69fe4e2dea7bfbea0bd4067a",
+      "ok": true,
+      "detail": "AMBA AXI v2.0 - Codex Protocol Development Guide"
+    },
+    {
+      "name": "source_copy_exists:54ff88973374374fb1bef5e7",
+      "ok": true,
+      "detail": "D:\\CowAgent\\public_protocol_knowledge\\originals\\3e59b3ad69aaa3e1_IHI0022C_amba_axi_v2_0_protocol_spec.pdf"
+    },
+    {
+      "name": "source_hash_matches:54ff88973374374fb1bef5e7",
+      "ok": true,
+      "detail": "AMBA AXI Protocol Specification v2.0"
+    },
+    {
+      "name": "query_hit:AXI VALID READY handshake",
+      "ok": true,
+      "detail": {
+        "query": "AXI VALID READY handshake",
+        "hits": 3,
+        "top_title": "AMBA AXI Protocol Specification v2.0",
+        "top_page": 8
+      }
+    },
+    {
+      "name": "query_hit:AXI4-Lite write strobes",
+      "ok": true,
+      "detail": {
+        "query": "AXI4-Lite write strobes",
+        "hits": 3,
+        "top_title": "AMBA AXI Protocol Specification v2.0",
+        "top_page": 126
+      }
+    },
+    {
+      "name": "query_hit:AXI ordering same ID",
+      "ok": true,
+      "detail": {
+        "query": "AXI ordering same ID",
+        "hits": 3,
+        "top_title": "AMBA AXI Protocol Specification v2.0",
+        "top_page": 108
+      }
+    },
+    {
+      "name": "term_resolved:AXI",
+      "ok": true,
+      "detail": {
+        "term": "AXI",
+        "resolved": true,
+        "entity_id": "f18d835a7915065501a14f4c",
+        "canonical_name": "AXI",
+        "kb_id": "amba_axi_v2_0",
+        "aliases": [
+          "AXI"
+        ],
+        "confidence": 0.72,
+        "visited_kb_ids": [
+          "amba_axi_v2_0"
+        ]
+      }
+    },
+    {
+      "name": "term_resolved:VALID",
+      "ok": true,
+      "detail": {
+        "term": "VALID",
+        "resolved": true,
+        "entity_id": "9e4b38de6df96621db4c5973",
+        "canonical_name": "VALID",
+        "kb_id": null,
+        "aliases": [
+          "VALID"
+        ],
+        "confidence": 0.72,
+        "visited_kb_ids": [
+          "amba_axi_v2_0"
+        ]
+      }
+    },
+    {
+      "name": "term_resolved:AWCACHE",
+      "ok": true,
+      "detail": {
+        "term": "AWCACHE",
+        "resolved": true,
+        "entity_id": "36c6868d50b20b85a6b43992",
+        "canonical_name": "AWCACHE",
+        "kb_id": "amba_axi_v2_0",
+        "aliases": [
+          "AWCACHE"
+        ],
+        "confidence": 0.72,
+        "visited_kb_ids": [
+          "amba_axi_v2_0"
+        ]
+      }
+    },
+    {
+      "name": "term_resolved:ARVALID",
+      "ok": true,
+      "detail": {
+        "term": "ARVALID",
+        "resolved": true,
+        "entity_id": "522cb43d574f5e5467e67146",
+        "canonical_name": "ARVALID",
+        "kb_id": null,
+        "aliases": [
+          "ARVALID"
+        ],
+        "confidence": 0.72,
+        "visited_kb_ids": [
+          "amba_axi_v2_0"
+        ]
+      }
+    },
+    {
+      "name": "manifest_sources_relative",
+      "ok": true,
+      "detail": [
+        "derived/54ff88973374374fb1bef5e7/amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md",
+        "originals/3e59b3ad69aaa3e1_IHI0022C_amba_axi_v2_0_protocol_spec.pdf",
+        "derived/9c80c7e49f1cf343c0309aad/ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md",
+        "originals/8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+        "derived/ec894ddf5ce99711fd677dfe/amba-4-axi4-stream-protocol-specification-v1.0-ec894ddf-llm-study.md",
+        "originals/5eab83e14d300699_IHI0051A_amba4_axi4_stream_v1_0_protocol_spec.pdf"
+      ]
+    }
+  ],
+  "summary": {
+    "counts": {
+      "documents": 2,
+      "chunks": 202,
+      "source_spans": 202
+    },
+    "documents": [
+      {
+        "id": "69fe4e2dea7bfbea0bd4067a",
+        "title": "AMBA AXI v2.0 - Codex Protocol Development Guide",
+        "doc_type": "codex_analysis",
+        "source_path": "public_protocol_knowledge/derived/54ff88973374374fb1bef5e7/amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md"
+      },
+      {
+        "id": "54ff88973374374fb1bef5e7",
+        "title": "AMBA AXI Protocol Specification v2.0",
+        "doc_type": "document",
+        "source_path": "public_protocol_knowledge/originals/3e59b3ad69aaa3e1_IHI0022C_amba_axi_v2_0_protocol_spec.pdf"
+      }
+    ],
+    "resolved_terms": [
+      {
+        "term": "AXI",
+        "resolved": true,
+        "entity_id": "f18d835a7915065501a14f4c",
+        "canonical_name": "AXI",
+        "kb_id": "amba_axi_v2_0",
+        "aliases": [
+          "AXI"
+        ],
+        "confidence": 0.72,
+        "visited_kb_ids": [
+          "amba_axi_v2_0"
+        ]
+      },
+      {
+        "term": "VALID",
+        "resolved": true,
+        "entity_id": "9e4b38de6df96621db4c5973",
+        "canonical_name": "VALID",
+        "kb_id": null,
+        "aliases": [
+          "VALID"
+        ],
+        "confidence": 0.72,
+        "visited_kb_ids": [
+          "amba_axi_v2_0"
+        ]
+      },
+      {
+        "term": "AWCACHE",
+        "resolved": true,
+        "entity_id": "36c6868d50b20b85a6b43992",
+        "canonical_name": "AWCACHE",
+        "kb_id": "amba_axi_v2_0",
+        "aliases": [
+          "AWCACHE"
+        ],
+        "confidence": 0.72,
+        "visited_kb_ids": [
+          "amba_axi_v2_0"
+        ]
+      },
+      {
+        "term": "ARVALID",
+        "resolved": true,
+        "entity_id": "522cb43d574f5e5467e67146",
+        "canonical_name": "ARVALID",
+        "kb_id": null,
+        "aliases": [
+          "ARVALID"
+        ],
+        "confidence": 0.72,
+        "visited_kb_ids": [
+          "amba_axi_v2_0"
+        ]
+      }
+    ]
+  }
+}
