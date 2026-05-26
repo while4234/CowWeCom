@@ -480,7 +480,7 @@ CowWeCom/
 
 | 日期 | 更新 |
 | --- | --- |
-| 2026-05-26 | 合并 README 当天更新记录并固化“同一天只保留一条总结”的项目规则；同时完成聊天内 CowCli 权限分级与角色化 `/help`、Web 扫码接入管理员/普通用户选择与单管理员限制、本地账本按当前 `memory_user_id` 查询、`china-expense-ledger` 本地记账/截图澄清/汇总缓存优化、`work-progress-reporter`、`project-restart`、`cowagent-workflow-auditor` 与 `cowwechat-project-optimizer` Skills、本地 `.venv` 验证环境统一、项目优化每日 0 点按 300 次增量模型调用触发、LLM 后端额度状态和 CAPI 月卡日重置展示修复，以及 CowCli 快答与 Agent 跨用户转述上下文修复：明确“告诉/转述/发给/推送给某人或群里”等社交发送意图交给 Agent，快答的功能说明/今日更新会同步进后续 Agent 上下文，社交桥授权说明也区分发送用户自己的内容或公开摘要与读取对方私密记忆 |
+| 2026-05-26 | 合并 README 当天更新记录并固化“同一天只保留一条总结”的项目规则；同时完成聊天内 CowCli 权限分级与角色化 `/help`、Web 扫码接入管理员/普通用户选择与单管理员限制、本地账本按当前 `memory_user_id` 查询、`china-expense-ledger` 本地记账/截图澄清/汇总缓存优化、`work-progress-reporter`、`project-restart`、`cowagent-workflow-auditor` 与 `cowwechat-project-optimizer` Skills、本地 `.venv` 验证环境统一、项目优化每日 0 点按 300 次增量模型调用触发、LLM 后端额度状态和 CAPI 月卡日重置展示修复，以及 CowCli 快答与 Agent 跨用户转述上下文修复：明确“告诉/转述/发给/推送给某人或群里”等社交发送意图交给 Agent，由 Agent 解析具体收件人，CowCli 只做快答退让；快答的功能说明/今日更新会同步进后续 Agent 上下文，社交桥授权说明也区分发送用户自己的内容或公开摘要与读取对方私密记忆 |
 | 2026-05-25 | 重写并规范 CowWeCom README，新增代码/运行行为变更必须同步 README 的项目规则；增强旅行规划的“规划前确认”、复杂规划预算、过夜住宿与 FlyAI wrapper 路径；改善企业微信长任务分段回复、完成回执、远程图链处理和订阅 ACK 超时重连；加固 CAPI/Codex 后端接力、额度卡/月卡路由、自然语言后端切换、自我进化缓存策略，以及按目标对象总结当天更新的体验 |
 | 2026-05-24 | 修复图像生成后台任务在服务重启后的恢复、失败通知和图片发送结果处理；启动时自动恢复定时任务服务并支持错过运行、失败通知、`run_now`、`skip_pending` 等调度动作；强化企业微信群聊按 `chatid` 隔离记忆并记录群成员上下文；增强 LLM 后端路由、Codex/CAPI 额度查询、自动切换、推理强度策略和审计数据 |
 | 2026-05-23 | 企业微信智能机器人配置改为优先手动填写 Bot ID/Secret 并补充 `wecom_bot_auth_source`，降低扫码创建的权限误解；同步多种本地 Skills，覆盖安全上传、GitHub、图像生成、企业微信 CLI、文档处理、搜索、天气、行情和旅行等能力 |

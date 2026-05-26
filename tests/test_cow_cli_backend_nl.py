@@ -435,6 +435,7 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertIsNone(plugin._parse_command("把自助记账这个功能发给小王，告诉他怎么用"))
         self.assertIsNone(plugin._parse_command("帮我转述自助记账这个功能给我妈，通俗一点"))
+        self.assertIsNone(plugin._parse_command("告诉我妈自助记账这个功能怎么用"))
         self.assertIsNone(plugin._parse_command("通知群里自助记账这个功能已经可以用了"))
 
     def test_tell_me_skill_request_still_uses_fast_answer(self):
@@ -444,6 +445,11 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed[0], "skill")
+
+    def test_send_howto_question_does_not_force_direct_relay_bypass(self):
+        plugin = _load_cow_cli_plugin()
+
+        self.assertEqual(plugin._direct_social_target("这个功能怎么发给小王"), "")
 
     def test_recommendation_question_can_still_use_updates_fast_answer(self):
         plugin = _load_cow_cli_plugin()
