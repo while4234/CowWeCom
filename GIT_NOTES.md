@@ -1,5 +1,7 @@
 ﻿# Git Notes
 
+- `2026-05-26` pending commit `feat: add project optimizer evidence skill`: Added local-only project optimizer evidence capture for Agent task starts/ends, LLM request shapes, final provider payload shapes, tool summaries, and tmp/workspace script snapshots under ignored `agent_workspace/data/project-optimizer/`. Added `cowwechat-project-optimizer` skill and report/query scripts to analyze cache-hit opportunities, local reasoning-depth routing, repeated tool chains, and temporary scripts, consuming/deleting raw input cache only after a sanitized report is written. The old in-Agent threshold optimizer is now gated off by `reasoning_effort_policy_runtime_auto_optimize_enabled=false`; the primary machine uses a Codex daily 00:00 automation that first checks for 300 incremental model calls. Safe GitHub preflight now blocks `memory/` and `data/project-optimizer/` so user memory, raw model inputs, and temporary script archives cannot be uploaded.
+
 - `2026-05-26` pending commit `feat: add workflow auditor skill`: Added `cowagent-workflow-auditor` to scan logs, tool traces, and repeated tmp/workspace artifacts without exposing raw private messages; extended `github` with `--list-repos` and `--recent-updates` so common GitHub reporting no longer requires temporary wrapper scripts. Validation: auditor script ran against project/runtime logs; GitHub helper `--check-auth`, `--help`, and `--list-repos` passed; skill quick validation and Python compile checks passed.
 
 ## Repository Purpose
@@ -8,7 +10,7 @@ Personal CowWeCom deployment and development workspace for WeCom Bot integration
 
 ## Ignore And Secret Policy
 
-Runtime secrets and local state stay out of Git. The repository ignores `config.json`, env files, key/certificate files, Weixin/WeCom credentials, cookies, tokens, session files, logs, virtual environments, generated build output, personal knowledge, conversation-generated summaries, knowledge-wiki outputs, `.codex/`, `.playwright-mcp/`, and other local workspace artifacts. The only committed knowledge artifacts are administrator Web-uploaded public protocol/specification libraries under `public_protocol_knowledge/`.
+Runtime secrets and local state stay out of Git. The repository ignores `config.json`, env files, key/certificate files, Weixin/WeCom credentials, cookies, tokens, session files, logs, virtual environments, generated build output, personal knowledge, conversation-generated summaries, knowledge-wiki outputs, `memory/`, `data/project-optimizer/`, `.codex/`, `.playwright-mcp/`, and other local workspace artifacts. The only committed knowledge artifacts are administrator Web-uploaded public protocol/specification libraries under `public_protocol_knowledge/`.
 
 Do not commit API keys, QR login material, credential JSON files, chat logs, cookies, tokens, or local auth material. Use committed templates and documentation only for placeholders and safe defaults.
 

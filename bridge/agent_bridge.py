@@ -227,6 +227,7 @@ class AgentLLMModel(LLMModel):
                 if effort in ("none", "low", "medium", "high", "xhigh", "max"):
                     kwargs['reasoning_effort'] = effort
 
+                self._record_project_optimizer_request(request, kwargs)
                 self._note_user_visible_model_call(request)
                 response = self.bot.call_with_tools(**kwargs)
                 return self._format_response(response)
@@ -310,6 +311,7 @@ class AgentLLMModel(LLMModel):
                 if effort in ("none", "low", "medium", "high", "xhigh", "max"):
                     kwargs['reasoning_effort'] = effort
 
+                self._record_project_optimizer_request(request, kwargs)
                 self._note_user_visible_model_call(request)
                 stream = self.bot.call_with_tools(**kwargs)
                 
@@ -333,6 +335,27 @@ class AgentLLMModel(LLMModel):
         """Format Claude stream chunk to our expected format"""
         # This would need to be implemented based on Claude's stream format
         return chunk
+
+    def _record_project_optimizer_request(self, request: LLMRequest, kwargs: dict) -> None:
+        try:
+            from common.project_optimizer_evidence import record_llm_request
+
+            request_id = record_llm_request(
+                request,
+                metadata={
+                    "channel_type": kwargs.get("channel_type") or getattr(self, "channel_type", ""),
+                    "session_id": kwargs.get("session_id") or getattr(self, "session_id", ""),
+                    "user_id": kwargs.get("user_id") or getattr(self, "user_id", ""),
+                    "user_label": kwargs.get("user_label") or getattr(self, "user_label", ""),
+                    "model": kwargs.get("model") or self.model,
+                    "request_kind": (kwargs.get("cache_shape_metadata") or {}).get("request_kind", ""),
+                    "reasoning_effort_selected": kwargs.get("reasoning_effort", ""),
+                },
+            )
+            if request_id:
+                kwargs["project_optimizer_request_id"] = request_id
+        except Exception as e:
+            logger.debug("[ProjectOptimizer] LLM request evidence skipped: %s", e)
 
     def _note_user_visible_model_call(self, request: LLMRequest) -> None:
         if not self._is_user_visible_model_call(request):

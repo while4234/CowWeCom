@@ -1,0 +1,4 @@
+interface:
+  display_name: "CowWeCom Project Optimizer"
+  short_description: "Analyze local CowWeCom optimization evidence."
+  default_prompt: "优化本项目，分析缓存命中、思考深度和临时脚本复用空间"

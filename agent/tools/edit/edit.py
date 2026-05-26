@@ -85,6 +85,7 @@ class Edit(BaseTool):
                     normalized_new_text = normalize_to_lf(new_text)
                     with open(absolute_path, 'w', encoding='utf-8') as f:
                         f.write(normalized_new_text)
+                    self._archive_temp_script(absolute_path, normalized_new_text, path)
 
                     self._notify_memory_manager(path)
 
@@ -174,6 +175,7 @@ class Edit(BaseTool):
             # Write file
             with open(absolute_path, 'w', encoding='utf-8') as f:
                 f.write(final_content)
+            self._archive_temp_script(absolute_path, final_content, path)
             
             # Generate diff
             diff_result = generate_diff_string(base_content, new_content)
@@ -218,3 +220,17 @@ class Edit(BaseTool):
             except Exception:
                 # Don't fail the edit if memory notification fails.
                 pass
+
+    def _archive_temp_script(self, absolute_path: str, content: str, visible_path: str) -> None:
+        try:
+            from common.project_optimizer_evidence import archive_temp_script
+
+            archive_temp_script(
+                absolute_path,
+                content=content,
+                cwd=self.cwd,
+                source="edit_tool",
+                visible_path=visible_path,
+            )
+        except Exception:
+            pass

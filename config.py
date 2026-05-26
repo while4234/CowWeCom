@@ -127,6 +127,15 @@ available_setting = {
     "llm_usage_tracking": True,  # Persist token/cache usage counters for the web dashboard
     "llm_usage_history_limit": 2000,  # Max local usage records to keep
     "llm_usage_user_labels": {},  # Optional usage-dashboard display labels keyed by actor id, raw id, or telemetry hash
+    "project_optimizer_evidence_enabled": True,  # Local-only evidence for CowWeCom project optimization
+    "project_optimizer_raw_capture_enabled": True,  # Store raw model/user inputs locally until optimizer consumes them
+    "project_optimizer_preserve_temp_scripts": True,  # Snapshot tmp/workspace scripts into ignored optimizer archive
+    "project_optimizer_delete_raw_after_run": True,  # Optimizer skill deletes consumed raw input cache after report
+    "project_optimizer_data_dir": "",  # Default: <agent_workspace>/data/project-optimizer
+    "project_optimizer_raw_max_string_chars": 20000,
+    "project_optimizer_raw_max_payload_chars": 250000,
+    "project_optimizer_temp_script_max_bytes": 1000000,
+    "reasoning_effort_policy_runtime_auto_optimize_enabled": False,  # Keep legacy in-Agent optimizer disabled unless explicitly enabled
     "cowagent_self_evolution_post_task_enabled": True,  # Run background lesson mining after completed Agent tasks
     "cowagent_self_evolution_post_task_max_texts": 12,  # Max assistant process statements per reflection
     "cowagent_self_evolution_post_task_max_chars": 6000,  # Max process-text chars per reflection

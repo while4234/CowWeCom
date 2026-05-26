@@ -175,6 +175,8 @@ http://127.0.0.1:9899
 | `knowledge_backend` | 协议/规范公共知识库后端配置 |
 | `skill` | Skills 的运行时配置，例如图像生成 Codex auth |
 | `llm_backend` | Codex/CAPI 等后端路由与自动切换配置 |
+| `project_optimizer_*` | 本地优化证据记录、原始输入缓存消费和临时脚本快照配置；默认写入 `agent_workspace/data/project-optimizer/`，不得进入 Git |
+| `reasoning_effort_policy_runtime_auto_optimize_enabled` | 旧的 Agent 内后台思考深度自动调优开关；默认关闭，主力机器改用 Codex 每日 0 点 automation 先检查 300 次增量模型调用再运行项目优化 |
 
 ## 微信接入
 
@@ -467,6 +469,8 @@ CowWeCom/
 
 | 日期 | 更新 |
 | --- | --- |
+| 2026-05-26 | 调整项目优化触发方式：关闭旧的 CowAgent 运行时按阈值自动调优，新增 `query_incremental_calls.py` 快速统计本地 `llm_cache_usage.jsonl` 增量调用数；本机 Codex automation 每天 0 点先判断是否新增 300 次模型调用，满足后再运行 `cowwechat-project-optimizer` 并删除已消费原始输入缓存 |
+| 2026-05-26 | 新增 `cowwechat-project-optimizer` Skill 和本地优化证据记录：Agent 会把任务开始/结束、模型请求形状、最终 provider payload 形状、工具步骤摘要、临时脚本快照写入 `agent_workspace/data/project-optimizer/`；原始用户/模型输入只保存在本机 ignored raw cache，优化 skill 成功生成脱敏报告后再删除已消费 raw cache；同时加固 safe GitHub preflight，禁止上传临时脚本归档、用户记忆和优化证据 |
 | 2026-05-26 | 新增 `cowagent-workflow-auditor` Skill：用于脱敏审计 CowAgent/CowWechat 运行日志、工具调用链路、`tmp`/`workspace` 临时产物、已安装 Skills/Plugins，识别可沉淀为 Skill 的重复工作流；同时扩展 `github` Skill，内置仓库列表和近期更新查询，减少反复创建 GitHub 临时包装脚本 |
 | 2026-05-26 | 增强 `china-expense-ledger` 私聊账单截图流程：清晰账单默认自动记账并提示可撤销，模糊账单只追问缺失的 App/平台、分类、商品或方向；用户回答后会按用户学习相同截图 UI、商品和商户规则；群聊仍不自动记账，菜单/价目表等非账单图片不会误入账；新增日/周/月/上月 per-user 汇总缓存，便于快速回答今天、本周、本月和上月消费 |
 | 2026-05-26 | 新增 `china-expense-ledger` 本地记账 Skill：支持自然语言记账、截图经 Agent 视觉提取后的结构化入库、支付宝/微信 CSV 导入、SQLite 本地学习纠错和分类汇总；明确禁止爬虫、逆向、绕过登录、自动抓取 App 账单或默认启用官方支付/电商接口 |
@@ -528,6 +532,8 @@ py -3 "$root\skills\safe-github-upload\scripts\preflight.py" --root $root
 
 - 不要提交 `config.json`、`.env`、真实密钥、登录凭证、日志、运行数据库或本地工作区文件。
 - `agent_workspace` 下包含用户记忆、文件、Skills 配置和运行状态，默认不应进入 Git。
+- `memory/`、`data/project-optimizer/`、`tmp/`、`workspace/` 均属于本地隐私/运行证据范围；临时脚本快照和原始模型输入只用于本机优化分析，不允许上传到 GitHub。
+- 用户记忆必须继续按 `memory/users/<memory_user_id>/` 隔离；优化报告只能使用哈希、计数和脱敏摘要，不能跨用户展示记忆原文。
 - Web 控制台对外暴露时必须配置 `web_password`，并配合防火墙或反向代理访问控制。
 - Agent 具备读写本地文件、执行命令和调用外部服务的能力。请谨慎设置管理员用户、普通用户读写根目录和敏感路径。
 - 企业微信和微信账号的使用应遵守平台规则、企业制度和所在地法律法规。

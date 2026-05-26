@@ -59,6 +59,7 @@ class TestReasoningEffortPolicy(unittest.TestCase):
             "reasoning_effort_policy_default_effort": "medium",
             "reasoning_effort_policy_quality_effort": "xhigh",
             "reasoning_effort_policy_audit_enabled": True,
+            "reasoning_effort_policy_runtime_auto_optimize_enabled": False,
             "reasoning_effort_policy_auto_optimize_enabled": False,
             "llm_backend": {"current_backend": BACKEND_CAPI, "state_path": os.path.join(self.tmp.name, "state.json")},
             "model": "gpt-5.5",
@@ -249,6 +250,7 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertEqual(outcome["tool_failure_class"], "repeat_error")
 
     def test_auto_optimizer_triggers_after_threshold_without_blocking(self):
+        conf()["reasoning_effort_policy_runtime_auto_optimize_enabled"] = True
         conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
         conf()["reasoning_effort_policy_auto_optimize_every_tasks"] = 2
         event = threading.Event()
@@ -267,6 +269,18 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertTrue(event.wait(1))
         self.assertEqual(len(calls), 1)
         self.assertGreaterEqual(calls[0]["record_count"], 2)
+
+    def test_legacy_auto_optimizer_key_alone_does_not_trigger_runtime_optimizer(self):
+        conf()["reasoning_effort_policy_runtime_auto_optimize_enabled"] = False
+        conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
+        conf()["reasoning_effort_policy_auto_optimize_every_tasks"] = 1
+
+        model = FakePolicyModel()
+        with patch.object(reasoning_effort_policy, "run_policy_optimizer_once") as optimizer:
+            resolve_reasoning_effort_for_task("please look at whether this sentence has issues", model)
+
+        optimizer.assert_not_called()
+        self.assertFalse(os.path.exists(reasoning_effort_policy.learning_buffer_path()))
 
     def test_optimizer_reads_group_and_private_logs_together(self):
         private_model = FakePolicyModel()
@@ -345,6 +359,7 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertEqual(classify_local_task("write a python script")[0], "xhigh")
 
     def test_optimizer_applies_supported_rule_and_deletes_raw_learning_buffer(self):
+        conf()["reasoning_effort_policy_runtime_auto_optimize_enabled"] = True
         conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
         conf()["reasoning_effort_policy_auto_apply_min_support"] = 2
         response = json.dumps({
@@ -390,6 +405,7 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertNotIn("quick lunchbox suggestion", serialized_report)
 
     def test_optimizer_rejects_medium_rule_without_success_outcomes(self):
+        conf()["reasoning_effort_policy_runtime_auto_optimize_enabled"] = True
         conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
         conf()["reasoning_effort_policy_auto_apply_min_support"] = 2
         model = FakePolicyModel(response=json.dumps({
@@ -412,6 +428,7 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertEqual(resolve_reasoning_effort_for_task("bookchat later", model).selected_effort, "xhigh")
 
     def test_optimizer_rejects_insufficient_support_without_persisting_raw_text(self):
+        conf()["reasoning_effort_policy_runtime_auto_optimize_enabled"] = True
         conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
         conf()["reasoning_effort_policy_auto_apply_min_support"] = 2
         model = FakePolicyModel(response=json.dumps({

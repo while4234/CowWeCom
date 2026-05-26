@@ -32,6 +32,8 @@ REQUIRED_IGNORE_RULES = [
     ".weixin_cow_credentials.json",
     ".codex/",
     ".playwright-mcp/",
+    "memory/",
+    "data/project-optimizer/",
 ]
 
 PROTECTED_PATTERNS = [
@@ -55,6 +57,8 @@ PROTECTED_PATTERNS = [
     "secrets/*",
     "workspace/*",
     "tmp/*",
+    "memory/*",
+    "data/project-optimizer/*",
     ".codex/*",
     ".playwright-mcp/*",
     ".venv/*",
@@ -126,8 +130,10 @@ def is_protected(path: str) -> bool:
     if lower.startswith("public_protocol_knowledge/reports/"):
         return False
     parts = lower.split("/")
-    protected_dirs = {".codex", ".playwright-mcp", ".venv", "node_modules", "logs", "secrets"}
+    protected_dirs = {".codex", ".playwright-mcp", ".venv", "node_modules", "logs", "secrets", "memory"}
     if any(part in protected_dirs for part in parts):
+        return True
+    if len(parts) >= 2 and parts[0] == "data" and parts[1] == "project-optimizer":
         return True
     return any(fnmatch.fnmatch(lower, pattern.lower()) for pattern in PROTECTED_PATTERNS)
 

@@ -371,8 +371,10 @@ class TestSchedulerExecutionIdentity(unittest.TestCase):
     def test_registers_reasoning_policy_optimizer_as_hidden_system_task_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_enabled = conf().get("reasoning_effort_policy_auto_optimize_enabled")
+            old_runtime_enabled = conf().get("reasoning_effort_policy_runtime_auto_optimize_enabled")
             old_seconds = conf().get("reasoning_effort_policy_auto_optimize_check_seconds")
             conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
+            conf()["reasoning_effort_policy_runtime_auto_optimize_enabled"] = True
             conf()["reasoning_effort_policy_auto_optimize_check_seconds"] = 180
             try:
                 store = TaskStore(os.path.join(tmp, "tasks.json"))
@@ -398,10 +400,36 @@ class TestSchedulerExecutionIdentity(unittest.TestCase):
                     conf().pop("reasoning_effort_policy_auto_optimize_enabled", None)
                 else:
                     conf()["reasoning_effort_policy_auto_optimize_enabled"] = old_enabled
+                if old_runtime_enabled is None:
+                    conf().pop("reasoning_effort_policy_runtime_auto_optimize_enabled", None)
+                else:
+                    conf()["reasoning_effort_policy_runtime_auto_optimize_enabled"] = old_runtime_enabled
                 if old_seconds is None:
                     conf().pop("reasoning_effort_policy_auto_optimize_check_seconds", None)
                 else:
                     conf()["reasoning_effort_policy_auto_optimize_check_seconds"] = old_seconds
+
+    def test_reasoning_policy_optimizer_task_disabled_when_runtime_gate_is_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_enabled = conf().get("reasoning_effort_policy_auto_optimize_enabled")
+            old_runtime_enabled = conf().get("reasoning_effort_policy_runtime_auto_optimize_enabled")
+            conf()["reasoning_effort_policy_auto_optimize_enabled"] = True
+            conf()["reasoning_effort_policy_runtime_auto_optimize_enabled"] = False
+            try:
+                store = TaskStore(os.path.join(tmp, "tasks.json"))
+                task = ensure_reasoning_effort_policy_optimizer_task(store, now=datetime(2026, 5, 25, 9, 0, 0))
+
+                self.assertEqual(task["id"], REASONING_POLICY_OPTIMIZER_TASK_ID)
+                self.assertFalse(task["enabled"])
+            finally:
+                if old_enabled is None:
+                    conf().pop("reasoning_effort_policy_auto_optimize_enabled", None)
+                else:
+                    conf()["reasoning_effort_policy_auto_optimize_enabled"] = old_enabled
+                if old_runtime_enabled is None:
+                    conf().pop("reasoning_effort_policy_runtime_auto_optimize_enabled", None)
+                else:
+                    conf()["reasoning_effort_policy_runtime_auto_optimize_enabled"] = old_runtime_enabled
 
     def test_llm_backend_auto_switch_action_runs_router_without_agent_reply(self):
         bridge = FakeAgentBridge()

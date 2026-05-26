@@ -91,7 +91,9 @@ def ensure_reasoning_effort_policy_optimizer_task(task_store, now: Optional[date
         return None
 
     now = now or datetime.now()
-    enabled = bool(conf().get("reasoning_effort_policy_auto_optimize_enabled", False))
+    enabled = bool(conf().get("reasoning_effort_policy_runtime_auto_optimize_enabled", False)) and bool(
+        conf().get("reasoning_effort_policy_auto_optimize_enabled", False)
+    )
     try:
         seconds = int(conf().get("reasoning_effort_policy_auto_optimize_check_seconds") or 300)
     except (TypeError, ValueError):

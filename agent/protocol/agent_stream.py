@@ -118,6 +118,7 @@ class AgentStreamExecutor:
         self._tool_attempt_memory_snapshot = {}
         self._readonly_tool_result_cache = {}
         self._reasoning_effort_decision = None
+        self._project_optimizer_task_event_id = ""
         self._reset_request_tool_counters()
         
         # Track files to send (populated by read tool)
@@ -219,6 +220,65 @@ class AgentStreamExecutor:
             failure_reason=failure_reason,
             final_response=final_response,
         )
+
+    def _record_project_optimizer_task_start(self, user_message: str) -> str:
+        try:
+            from common.project_optimizer_evidence import record_agent_task_start
+
+            return record_agent_task_start(
+                user_message,
+                model_adapter=self.model,
+                reasoning_decision=self._reasoning_effort_decision,
+            )
+        except Exception as e:
+            logger.debug(f"[ProjectOptimizer] Task-start evidence skipped: {e}")
+            return ""
+
+    def _record_project_optimizer_task_end(
+            self,
+            status: str,
+            turn_count: int,
+            failure_reason: str,
+            final_response: str,
+    ) -> None:
+        try:
+            from common.project_optimizer_evidence import record_agent_task_end
+
+            record_agent_task_end(
+                self._project_optimizer_task_event_id,
+                model_adapter=self.model,
+                status=status,
+                turn_count=turn_count,
+                failure_reason=failure_reason,
+                final_response=final_response,
+                runtime_stats=self._reasoning_effort_runtime_stats(),
+            )
+        except Exception as e:
+            logger.debug(f"[ProjectOptimizer] Task-end evidence skipped: {e}")
+
+    def _record_project_optimizer_tool_event(
+            self,
+            tool_name: str,
+            tool_id: str,
+            arguments: Dict[str, Any],
+            result: Any,
+            status: str,
+            execution_time: float = 0.0,
+    ) -> None:
+        try:
+            from common.project_optimizer_evidence import record_tool_event
+
+            record_tool_event(
+                tool_name=tool_name,
+                tool_call_id=tool_id,
+                arguments=arguments,
+                result=result,
+                status=status,
+                execution_time=execution_time,
+                model_adapter=self.model,
+            )
+        except Exception as e:
+            logger.debug(f"[ProjectOptimizer] Tool evidence skipped: {e}")
 
     def _raise_if_cancelled(self):
         if self.cancellation_token and self.cancellation_token.is_cancelled():
@@ -551,6 +611,7 @@ class AgentStreamExecutor:
         thinking_enabled = self._is_thinking_enabled()
         self._request_runtime_context = self._build_request_context_text(user_message)
         self._reasoning_effort_decision = resolve_reasoning_effort_for_task(user_message, self.model)
+        self._project_optimizer_task_event_id = self._record_project_optimizer_task_start(user_message)
         thinking_label = " | 💭 thinking" if thinking_enabled else ""
         effort_label = ""
         if self._reasoning_effort_decision:
@@ -930,6 +991,12 @@ class AgentStreamExecutor:
         finally:
             final_response = final_response.strip() if final_response else final_response
             self._record_reasoning_effort_outcome(
+                outcome_status,
+                turn,
+                outcome_failure_reason,
+                final_response or "",
+            )
+            self._record_project_optimizer_task_end(
                 outcome_status,
                 turn,
                 outcome_failure_reason,
@@ -1505,6 +1572,14 @@ class AgentStreamExecutor:
             self._tool_skip_count += 1
             self._tool_attempt_error_count += 1
             self._record_tool_result(tool_name, arguments, False)
+            self._record_project_optimizer_tool_event(
+                tool_name,
+                tool_id,
+                arguments,
+                result.get("result"),
+                result.get("status", "error"),
+                0,
+            )
             return result
 
         skip_decision = self._persisted_tool_skip_decision(tool_name, arguments)
@@ -1543,6 +1618,14 @@ class AgentStreamExecutor:
                 "tool_name": tool_name,
                 **result,
             })
+            self._record_project_optimizer_tool_event(
+                tool_name,
+                tool_id,
+                arguments,
+                result.get("result"),
+                result.get("status", "error"),
+                0,
+            )
             return result
 
         reused_result = self._reuse_readonly_tool_result(tool_name, tool_id, arguments)
@@ -1571,6 +1654,14 @@ class AgentStreamExecutor:
                     "result": f"{stop_reason}\n\n当前方法行不通，请尝试完全不同的方法或向用户询问更多信息。",
                     "execution_time": 0
                 }
+            self._record_project_optimizer_tool_event(
+                tool_name,
+                tool_id,
+                arguments,
+                result.get("result"),
+                result.get("status", "error"),
+                0,
+            )
             return result
 
         self._emit_event("tool_execution_start", {
@@ -1620,6 +1711,14 @@ class AgentStreamExecutor:
                 self._remember_readonly_tool_result(tool_name, arguments, result_dict)
             if is_mutating_tool(tool_name):
                 self._readonly_tool_result_cache = {}
+            self._record_project_optimizer_tool_event(
+                tool_name,
+                tool_id,
+                arguments,
+                result_dict.get("result"),
+                result_dict.get("status", result.status),
+                execution_time,
+            )
 
             # Auto-refresh skills after skill creation
             if tool_name == "bash" and result.status == "success":
@@ -1650,6 +1749,14 @@ class AgentStreamExecutor:
             self._record_safe_tool_attempt(tool_name, arguments, "error", str(e))
             if is_mutating_tool(tool_name):
                 self._readonly_tool_result_cache = {}
+            self._record_project_optimizer_tool_event(
+                tool_name,
+                tool_id,
+                arguments,
+                error_result.get("result"),
+                error_result.get("status", "error"),
+                0,
+            )
             
             self._emit_event("tool_execution_end", {
                 "tool_call_id": tool_id,

@@ -132,6 +132,7 @@ class CodexBot(Bot, OpenAICompatibleBot):
             request_id = uuid4().hex[:12]
             tokens = self._credential_source.resolve_access_tokens()
             metadata = self._usage_metadata(kwargs)
+            self._record_project_optimizer_payload(payload, metadata)
             client_config = self._client_config()
             request_timeout = kwargs.get("request_timeout") or kwargs.get("timeout")
             if request_timeout is not None:
@@ -201,6 +202,10 @@ class CodexBot(Bot, OpenAICompatibleBot):
             payload.pop("max_output_tokens", None)
             payload["stream"] = True
             payload["store"] = False
+            self._record_project_optimizer_payload(
+                payload,
+                {"model": payload.get("model"), "channel_type": "vision"},
+            )
 
             request_id = uuid4().hex[:12]
             tokens = self._credential_source.resolve_access_tokens()
@@ -401,6 +406,15 @@ class CodexBot(Bot, OpenAICompatibleBot):
             yield chunk
 
     @staticmethod
+    def _record_project_optimizer_payload(payload: Mapping[str, Any], metadata: Mapping[str, Any]) -> None:
+        try:
+            from common.project_optimizer_evidence import record_provider_payload
+
+            record_provider_payload(wire_api="codex", payload=payload, metadata=metadata)
+        except Exception as exc:
+            logger.debug("[ProjectOptimizer] Codex payload evidence skipped: %s", exc)
+
+    @staticmethod
     def _resolve_codex_reasoning_effort(kwargs: Mapping[str, Any]) -> Optional[str]:
         if kwargs.get("reasoning_effort_locked"):
             return normalize_codex_reasoning_effort(kwargs.get("reasoning_effort"))
@@ -429,6 +443,8 @@ class CodexBot(Bot, OpenAICompatibleBot):
         for key in ("channel_type", "session_id", "user_id", "user_label"):
             if kwargs.get(key):
                 metadata[key] = kwargs[key]
+        if kwargs.get("project_optimizer_request_id"):
+            metadata["project_optimizer_request_id"] = kwargs["project_optimizer_request_id"]
         metadata["model"] = kwargs.get("model") or CodexBot._configured_model()
         return metadata
 

@@ -114,6 +114,7 @@ class OpenAICompatibleBot:
                 "session_id": kwargs.get("session_id") or getattr(self, "session_id", ""),
                 "user_id": kwargs.get("user_id") or getattr(self, "user_id", ""),
                 "user_label": kwargs.get("user_label") or getattr(self, "user_label", ""),
+                "project_optimizer_request_id": kwargs.get("project_optimizer_request_id", ""),
             }
             cache_shape_metadata = kwargs.get("cache_shape_metadata")
             if isinstance(cache_shape_metadata, dict):
@@ -271,6 +272,20 @@ class OpenAICompatibleBot:
         )
 
     @staticmethod
+    def _record_project_optimizer_provider_payload(
+        payload: Dict[str, Any],
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+        wire_api: str = "",
+    ) -> None:
+        try:
+            from common.project_optimizer_evidence import record_provider_payload
+
+            record_provider_payload(wire_api=wire_api, payload=payload, metadata=metadata or {})
+        except Exception as e:
+            logger.debug(f"[ProjectOptimizer] Provider payload evidence skipped: {e}")
+
+    @staticmethod
     def _is_prompt_cache_param_error(chunk: Dict[str, Any]) -> bool:
         if not isinstance(chunk, dict) or not chunk.get("error"):
             return False
@@ -362,6 +377,11 @@ class OpenAICompatibleBot:
                         cache_metadata,
                     )
                 )
+                self._record_project_optimizer_provider_payload(
+                    responses_payload,
+                    metadata=cache_metadata,
+                    wire_api=wire_api,
+                )
                 events = self._responses_events_with_cache_fallback(
                     client,
                     api_key=api_key,
@@ -387,6 +407,11 @@ class OpenAICompatibleBot:
                 timeout=timeout,
                 stream=False,
                 **params,
+            )
+            self._record_project_optimizer_provider_payload(
+                params,
+                metadata=cache_metadata,
+                wire_api=wire_api,
             )
             self._record_prompt_cache_usage(
                 result.get("usage") if isinstance(result, dict) else None,
@@ -445,6 +470,11 @@ class OpenAICompatibleBot:
                         cache_metadata,
                     )
                 )
+                self._record_project_optimizer_provider_payload(
+                    responses_payload,
+                    metadata=cache_metadata,
+                    wire_api=wire_api,
+                )
                 events = self._responses_events_with_cache_fallback(
                     client,
                     api_key=api_key,
@@ -471,6 +501,11 @@ class OpenAICompatibleBot:
                 timeout=timeout,
                 stream=True,
                 **params,
+            )
+            self._record_project_optimizer_provider_payload(
+                params,
+                metadata=cache_metadata,
+                wire_api=wire_api,
             )
             recorded_usage = False
             for chunk in stream:
@@ -702,6 +737,11 @@ class OpenAICompatibleBot:
                     store=self._resolve_response_store(),
                     reasoning_effort=normalized_effort,
                 )
+                self._record_project_optimizer_provider_payload(
+                    response_payload,
+                    metadata={"model": vision_model, "channel_type": "vision"},
+                    wire_api=self._get_wire_api(api_config),
+                )
                 events = client.responses(
                     api_key=api_key,
                     api_base=self._responses_api_base(api_base),
@@ -714,6 +754,11 @@ class OpenAICompatibleBot:
             else:
                 if normalized_effort:
                     payload["reasoning_effort"] = normalized_effort
+                self._record_project_optimizer_provider_payload(
+                    payload,
+                    metadata={"model": vision_model, "channel_type": "vision"},
+                    wire_api=self._get_wire_api(api_config),
+                )
                 data = client.chat_completions(
                     api_key=api_key,
                     api_base=api_base,

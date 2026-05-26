@@ -45,6 +45,8 @@ class SafeGithubUploadSkillTest(unittest.TestCase):
                 ".weixin_cow_credentials.json",
                 ".codex/",
                 ".playwright-mcp/",
+                "memory/",
+                "data/project-optimizer/",
                 "",
             ]
         )
@@ -145,6 +147,23 @@ class SafeGithubUploadSkillTest(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["status"], "blocked")
         self.assertIn("knowledge_backend/derived/chat-summary.md", payload["protected_staged"])
+
+    def test_preflight_blocks_user_memory_and_optimizer_raw_evidence(self):
+        memory_dir = self.root / "memory" / "users" / "u1"
+        optimizer_dir = self.root / "data" / "project-optimizer" / "raw_model_inputs"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        optimizer_dir.mkdir(parents=True, exist_ok=True)
+        (memory_dir / "MEMORY.md").write_text("private memory\n", encoding="utf-8")
+        (optimizer_dir / "2026-05-26.jsonl").write_text('{"user_message":"private"}\n', encoding="utf-8")
+        run_git(self.root, "add", "-f", "memory/users/u1/MEMORY.md")
+        run_git(self.root, "add", "-f", "data/project-optimizer/raw_model_inputs/2026-05-26.jsonl")
+
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 2)
+        payload = json.loads(result.stdout)
+        self.assertIn("memory/users/u1/MEMORY.md", payload["protected_staged"])
+        self.assertIn("data/project-optimizer/raw_model_inputs/2026-05-26.jsonl", payload["protected_staged"])
 
 
 if __name__ == "__main__":

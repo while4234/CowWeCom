@@ -31,6 +31,8 @@ plugins.json
 logs/
 secrets/
 workspace
+memory/
+data/project-optimizer/
 knowledge_backend/
 /knowledge/
 /workspace/knowledge/

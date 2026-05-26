@@ -242,6 +242,9 @@ def record_policy_task_outcome(
 
 def maybe_trigger_policy_optimizer_async(model_adapter: Any = None) -> bool:
     """Start a non-blocking optimizer pass when enough new decisions exist."""
+    if not _runtime_auto_optimizer_enabled():
+        return False
+
     due, total_count, _ = _optimizer_due_status()
     if not due:
         return False
@@ -601,6 +604,11 @@ def _optimizer_due_status() -> Tuple[bool, int, str]:
     return True, total_count, ""
 
 
+def _runtime_auto_optimizer_enabled() -> bool:
+    """Gate the old in-Agent optimizer; Codex scheduled optimization is preferred."""
+    return bool(conf().get("reasoning_effort_policy_runtime_auto_optimize_enabled", False))
+
+
 def _begin_optimizer_run() -> bool:
     global _OPTIMIZER_RUNNING
     with _OPTIMIZER_LOCK:
@@ -662,6 +670,8 @@ def _append_learning_sample(
 
 def _should_capture_learning_sample(decision: ReasoningEffortDecision, user_message: str) -> bool:
     if decision.local_rule != "uncertain_default_quality":
+        return False
+    if not _runtime_auto_optimizer_enabled():
         return False
     if not bool(conf().get("reasoning_effort_policy_auto_optimize_enabled", False)):
         return False

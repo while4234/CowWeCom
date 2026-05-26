@@ -54,6 +54,7 @@ class TestLLMUsageTracker(unittest.TestCase):
                     {"prompt_tokens": 2048, "completion_tokens": 20, "cached_tokens": 1024},
                     {
                         "model": "gpt-5.5",
+                        "project_optimizer_request_id": "abc123evidence",
                         "request_kind": "knowledge_auto",
                         "system_hash": "abc123",
                         "tools_hash": "def456",
@@ -94,6 +95,7 @@ class TestLLMUsageTracker(unittest.TestCase):
                 record = json.loads(f.readline())
 
         self.assertEqual(record["request_kind"], "knowledge_auto")
+        self.assertEqual(record["project_optimizer_request_id"], "abc123evidence")
         self.assertEqual(record["message_count"], 12)
         self.assertEqual(record["self_evolution_context_chars"], 220)
         self.assertEqual(record["self_evolution_context_hash"], "selfevohash")

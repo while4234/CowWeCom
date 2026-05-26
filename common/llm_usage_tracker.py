@@ -351,6 +351,7 @@ def _safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "model": _safe_text(metadata.get("model")),
         "wire_api": _safe_text(metadata.get("wire_api")),
         "channel_type": _safe_text(metadata.get("channel_type")),
+        "project_optimizer_request_id": _safe_text(metadata.get("project_optimizer_request_id"), max_len=32),
     }
     session_id = metadata.get("session_id")
     if session_id:

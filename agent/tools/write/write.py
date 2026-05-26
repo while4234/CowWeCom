@@ -67,6 +67,7 @@ class Write(BaseTool):
             # Write file
             with open(absolute_path, 'w', encoding='utf-8') as f:
                 f.write(content)
+            self._archive_temp_script(absolute_path, content, path)
             
             # Get bytes written
             bytes_written = len(content.encode('utf-8'))
@@ -101,3 +102,17 @@ class Write(BaseTool):
         if os.path.isabs(path):
             return path
         return os.path.abspath(os.path.join(self.cwd, path))
+
+    def _archive_temp_script(self, absolute_path: str, content: str, visible_path: str) -> None:
+        try:
+            from common.project_optimizer_evidence import archive_temp_script
+
+            archive_temp_script(
+                absolute_path,
+                content=content,
+                cwd=self.cwd,
+                source="write_tool",
+                visible_path=visible_path,
+            )
+        except Exception:
+            pass
