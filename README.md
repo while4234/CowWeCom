@@ -473,6 +473,7 @@ CowWeCom/
 | 2026-05-26 | 新增 `cowwechat-project-optimizer` Skill 和本地优化证据记录：Agent 会把任务开始/结束、模型请求形状、最终 provider payload 形状、工具步骤摘要、临时脚本快照写入 `agent_workspace/data/project-optimizer/`；原始用户/模型输入只保存在本机 ignored raw cache，优化 skill 成功生成脱敏报告后再删除已消费 raw cache；同时加固 safe GitHub preflight，禁止上传临时脚本归档、用户记忆和优化证据 |
 | 2026-05-26 | 新增 `cowagent-workflow-auditor` Skill：用于脱敏审计 CowAgent/CowWechat 运行日志、工具调用链路、`tmp`/`workspace` 临时产物、已安装 Skills/Plugins，识别可沉淀为 Skill 的重复工作流；同时扩展 `github` Skill，内置仓库列表和近期更新查询，减少反复创建 GitHub 临时包装脚本 |
 | 2026-05-26 | 增强 `china-expense-ledger` 私聊账单截图流程：清晰账单默认自动记账并提示可撤销，模糊账单只追问缺失的 App/平台、分类、商品或方向；用户回答后会按用户学习相同截图 UI、商品和商户规则；群聊仍不自动记账，菜单/价目表等非账单图片不会误入账；新增日/周/月/上月 per-user 汇总缓存，便于快速回答今天、本周、本月和上月消费 |
+| 2026-05-26 | 修复 `china-expense-ledger` 私聊账单澄清后反复追问的问题：用户补充“买的是什么”后会自动尝试分类，稳定领域如中转 API token/额度卡归入 `AI工具`，不适合作为大类的新商品会入 `其他` 并按用户学习；多轮澄清会保存已补的平台、商品和分类，避免后续执行卡住 |
 | 2026-05-26 | 新增 `china-expense-ledger` 本地记账 Skill：支持自然语言记账、截图经 Agent 视觉提取后的结构化入库、支付宝/微信 CSV 导入、SQLite 本地学习纠错和分类汇总；明确禁止爬虫、逆向、绕过登录、自动抓取 App 账单或默认启用官方支付/电商接口 |
 | 2026-05-26 | 统一本地验证环境到 `.venv`：补齐当前 `.venv` 的 `PyYAML` 和 `pytest`，并在可选依赖中声明 `pytest`，后续 skill 校验和 focused pytest 默认使用 `.venv` |
 | 2026-05-26 | 新增 `work-progress-reporter` Skill：所有用户都可在私聊中独立管理本周/下周工作计划、每日进度、临时任务、收获和周末加班安排；真实状态写入各自 `memory_user_id` 私有目录，群聊触发只做隐私引导，周五可生成中文 Markdown 周报 |

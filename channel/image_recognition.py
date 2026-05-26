@@ -368,9 +368,15 @@ class ImageRecognitionManager:
             "支付宝",
             "微信支付",
             "闲鱼",
+            "咸鱼",
             "淘宝",
             "京东",
             "美团",
+            "token",
+            "Token",
+            "API",
+            "api",
+            "额度",
         )
         if not any(word in compact for word in intent_words):
             return False

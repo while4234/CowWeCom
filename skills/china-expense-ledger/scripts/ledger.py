@@ -129,6 +129,29 @@ CATEGORY_RULES = [
     ("转账", ["转账"]),
 ]
 
+# Curated category extensions are deliberately small. We only promote a new
+# primary category when the signal is stable enough to be useful across users.
+CURATED_MAJOR_CATEGORY_RULES = [
+    (
+        "AI工具",
+        [
+            "中转API",
+            "中转api",
+            "api token",
+            "API token",
+            "apitoken",
+            "API额度",
+            "api额度",
+            "额度卡",
+            "token",
+            "Token",
+            "API密钥",
+            "api key",
+            "apikey",
+        ],
+    ),
+]
+
 PLATFORM_KEYWORDS = [
     ("闲鱼", ["闲鱼", "咸鱼", "xianyu"]),
     ("美团外卖", ["美团外卖", "外卖"]),
@@ -652,7 +675,9 @@ def infer_direction(payload: dict[str, Any]) -> str:
 
 def infer_category(payload: dict[str, Any], direction: str) -> str:
     explicit = normalize_text(payload.get("category"))
-    if explicit in DEFAULT_CATEGORIES:
+    category_names = set(DEFAULT_CATEGORIES)
+    category_names.update(category for category, _keywords in CURATED_MAJOR_CATEGORY_RULES)
+    if explicit in category_names:
         return explicit
     if direction == "refund":
         return "退款"
@@ -664,6 +689,9 @@ def infer_category(payload: dict[str, Any], direction: str) -> str:
         for key in ("raw_text", "merchant", "item_name", "order_platform", "source_app")
     )
     for category, keywords in CATEGORY_RULES:
+        if any(keyword.lower() in haystack.lower() for keyword in keywords):
+            return category
+    for category, keywords in CURATED_MAJOR_CATEGORY_RULES:
         if any(keyword.lower() in haystack.lower() for keyword in keywords):
             return category
     return explicit or "其他"
@@ -961,7 +989,10 @@ def fields_from_answer_text(answer_text: str) -> dict[str, Any]:
     amount = extract_amount_cents_from_text(text)
     if amount is not None:
         fields["amount_cents"] = amount
-    category = next((name for name in DEFAULT_CATEGORIES if name in text), None)
+    category = next(
+        (name for name in [*DEFAULT_CATEGORIES, *(name for name, _ in CURATED_MAJOR_CATEGORY_RULES)] if name in text),
+        None,
+    )
     if category:
         fields["category"] = category
     platform = infer_order_platform({"raw_text": text})
@@ -975,8 +1006,12 @@ def fields_from_answer_text(answer_text: str) -> dict[str, Any]:
         fields["merchant"] = merchant
     item_name = extract_field_from_text(text, ("商品", "商品名称", "物品", "买的是", "买了", "买的"))
     if not item_name:
+        item_match = re.search(r"(?:买的是|买了|买的)\s*([^，,。；;]+)", text)
+        if item_match:
+            item_name = item_match.group(1).strip()
+    if not item_name:
         cleaned = text
-        for category_name in DEFAULT_CATEGORIES:
+        for category_name in [*DEFAULT_CATEGORIES, *(name for name, _ in CURATED_MAJOR_CATEGORY_RULES)]:
             cleaned = cleaned.replace(category_name, "")
         for platform_name, keywords in PLATFORM_KEYWORDS:
             cleaned = cleaned.replace(platform_name, "")
@@ -986,12 +1021,24 @@ def fields_from_answer_text(answer_text: str) -> dict[str, Any]:
             cleaned = cleaned.replace(app_name, "")
             for keyword in keywords:
                 cleaned = cleaned.replace(keyword, "")
-        cleaned = re.sub(r"(分类|类别|是|这个|这笔|消费|记到|归到|归类为|买的是|买了|买的|商品|商户|商家|店铺|卖家|收款方)", " ", cleaned)
+        cleaned = re.sub(r"(分类|类别|是|一个|这个|这笔|这张|截图|账单|订单|消费|记到|归到|归类为|买的是|买了|买的|商品|商户|商家|店铺|卖家|收款方)", " ", cleaned)
         cleaned = re.sub(r"[，,。；;：:\s]+", " ", cleaned).strip()
         if cleaned and len(cleaned) <= 40 and not re.fullmatch(r"\d+(?:\.\d+)?", cleaned):
             item_name = cleaned
     if item_name:
         fields["item_name"] = item_name[:80]
+    if not fields.get("category"):
+        inferred_category = infer_category(
+            {
+                "raw_text": text,
+                "item_name": fields.get("item_name"),
+                "merchant": fields.get("merchant"),
+                "order_platform": fields.get("order_platform"),
+            },
+            "expense",
+        )
+        if inferred_category:
+            fields["category"] = inferred_category
     return fields
 
 
@@ -1005,10 +1052,10 @@ def bill_missing_fields(payload: dict[str, Any], transaction: dict[str, Any] | N
     if not payment_app and not order_platform:
         missing.append("app_or_platform")
     category = normalize_text(data.get("category"))
-    if not category or category == "其他":
-        missing.append("category")
     item_name = normalize_text(data.get("item_name"))
     merchant = normalize_text(data.get("merchant"))
+    if not category or (category == "其他" and not item_name and not merchant):
+        missing.append("category")
     if order_platform in BROAD_SHOPPING_PLATFORMS and not item_name:
         missing.append("item_name")
     if data.get("direction") in {"unknown", "transfer"}:
@@ -1606,8 +1653,13 @@ def confirm_bill_context(conn: sqlite3.Connection, payload: dict[str, Any]) -> d
             item for item in clarification if item not in clarification_text_for_fields(missing)
         ]
         conn.execute(
-            "UPDATE bill_contexts SET clarification_json = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(clarification, ensure_ascii=False), now_iso(), context["id"]),
+            "UPDATE bill_contexts SET payload_json = ?, clarification_json = ?, updated_at = ? WHERE id = ?",
+            (
+                json.dumps(merged, ensure_ascii=False, sort_keys=True),
+                json.dumps(clarification, ensure_ascii=False),
+                now_iso(),
+                context["id"],
+            ),
         )
         conn.commit()
         return {

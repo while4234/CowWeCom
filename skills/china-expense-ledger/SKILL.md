@@ -82,6 +82,8 @@ Default categories:
    - 盒马, 山姆, 沃尔玛, 永辉, 朴朴, 叮咚买菜, 菜, 肉, 蛋, 奶, 水果 -> 生鲜买菜 or 商超日用.
    - 淘宝, 天猫, 京东, 拼多多, 抖音商城: if the item is clear, categorize by item; otherwise use 其他.
    - 滴滴, 曹操出行, T3, 公交, 地铁, 12306, 机票, 打车 -> 交通出行.
+   - 中转 API token, API 额度, 额度卡, API key -> AI工具.
+   - If the user names an item but it does not match a stable built-in or curated major category, use 其他 and learn the user's item rule instead of inventing a new category.
 4. Call `record-json`.
 
 Example:
@@ -101,7 +103,7 @@ Private-chat automation:
 - In private chat, if the image is clearly a bill and has amount, app/platform, item/merchant, and category confidence, use `analyze-bill` and auto-record it. Reply: `已记账。如果不需要记账，请回复“不记账”或“撤销记账”，我会撤销这笔。`
 - In group chat, never auto-record. Group images may be recognized for context, but ledger writes require private chat.
 - If it looks like a bill but the app/platform, category, item, merchant, amount, or direction is unclear, ask only for the missing fields and do not invent them.
-- After the user answers a missing field, call `confirm-bill`. This stores screenshot UI rules plus item/merchant learning rules, so the same UI or same item can be recognized later without asking again.
+- After the user answers a missing field, call `confirm-bill`. Partial answers are kept across multiple clarifications, and final confirmation stores screenshot UI rules plus item/merchant learning rules, so the same UI or same item can be recognized later without asking again.
 - If the user replies `不记账`, `撤销记账`, `取消记账`, or similar after an auto-recorded bill, call `undo-bill` for the same user/chat.
 - Do not treat menus, product lists, coupons, or shopping-cart pages with visible prices as bills unless there are bill markers such as 支付成功, 交易成功, 账单详情, 订单编号, 交易单号, or 付款方式.
 

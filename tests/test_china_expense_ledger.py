@@ -421,6 +421,83 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_xianyu_api_token_answer_auto_classifies_and_confirms(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                first = ledger.analyze_bill_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "record_id": "image-xianyu",
+                        "raw_text": "卖家已发货 待确认收货 成交价 ¥99.88 订单编号 3303779739048007681",
+                    },
+                )
+                self.assertEqual(first["status"], "needs_clarification")
+
+                answer_fields = ledger.fields_from_answer_text("这是一个咸鱼账单，我买的是中转API的token")
+                self.assertEqual(answer_fields["order_platform"], "闲鱼")
+                self.assertEqual(answer_fields["category"], "AI工具")
+                self.assertEqual(answer_fields["item_name"], "中转API的token")
+
+                confirmed = ledger.confirm_bill_context(
+                    conn,
+                    {
+                        **answer_fields,
+                        "context_id": first["context_id"],
+                    },
+                )
+
+                self.assertTrue(confirmed["ok"])
+                self.assertEqual(confirmed["status"], "confirmed")
+                self.assertEqual(confirmed["transaction"]["amount_cents"], 9988)
+                self.assertEqual(confirmed["transaction"]["order_platform"], "闲鱼")
+                self.assertEqual(confirmed["transaction"]["category"], "AI工具")
+                self.assertEqual(confirmed["transaction"]["item_name"], "中转API的token")
+            finally:
+                conn.close()
+
+    def test_partial_bill_clarification_is_saved_for_next_answer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                first = ledger.analyze_bill_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "record_id": "image-partial",
+                        "raw_text": "卖家已发货 待确认收货 成交价 ¥66.00 订单编号 987654321000",
+                    },
+                )
+                self.assertEqual(first["status"], "needs_clarification")
+
+                partial = ledger.confirm_bill_context(
+                    conn,
+                    {
+                        "context_id": first["context_id"],
+                        "item_name": "神秘服务",
+                    },
+                )
+                self.assertEqual(partial["status"], "needs_clarification")
+
+                confirmed = ledger.confirm_bill_context(
+                    conn,
+                    {
+                        "context_id": first["context_id"],
+                        "order_platform": "闲鱼",
+                    },
+                )
+
+                self.assertTrue(confirmed["ok"])
+                self.assertEqual(confirmed["status"], "confirmed")
+                self.assertEqual(confirmed["transaction"]["order_platform"], "闲鱼")
+                self.assertEqual(confirmed["transaction"]["item_name"], "神秘服务")
+                self.assertEqual(confirmed["transaction"]["category"], "其他")
+            finally:
+                conn.close()
+
     def test_undo_bill_rejects_latest_auto_recorded_transaction_and_refreshes_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             conn = self.open_temp_db(Path(tmp))
