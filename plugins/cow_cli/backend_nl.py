@@ -372,6 +372,13 @@ def _looks_like_quota_analysis_request(normalized: str, compact: str) -> bool:
 
 
 def _looks_like_sensitive_secret_request(normalized: str, compact: str) -> bool:
+    has_quota_context = any(
+        marker in compact or marker in normalized
+        for marker in (*_QUOTA_MARKERS, *_LOCALIZED_QUOTA_MARKERS)
+    )
+    if has_quota_context and _looks_like_current_backend_quota(normalized, compact):
+        return False
+
     has_sensitive_word = (
         _SENSITIVE_WORD_RE.search(normalized)
         or any(marker in compact or marker in normalized for marker in _SENSITIVE_COMPACT_MARKERS)

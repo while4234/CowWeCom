@@ -3,6 +3,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from datetime import datetime
+from unittest.mock import patch
 
 
 def _load_token_usage_module():
@@ -75,6 +77,52 @@ class TestTokenUsageTrackerSkill(unittest.TestCase):
 
         self.assertEqual(resolved_hash, "hashed-user")
         self.assertEqual(matched, events)
+
+    def test_today_period_uses_shanghai_day_for_utc_llm_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "token-usage-tracker"
+            cache_file = root / "llm_cache_usage.jsonl"
+            records = [
+                ("before-local-day", "2026-05-25T15:59:59+00:00", 100),
+                ("local-day-start", "2026-05-25T16:00:00+00:00", 200),
+                ("local-day-end", "2026-05-26T15:59:59+00:00", 300),
+                ("after-local-day", "2026-05-26T16:00:00+00:00", 400),
+            ]
+            cache_file.write_text(
+                "\n".join(
+                    json.dumps({
+                        "id": record_id,
+                        "timestamp": timestamp,
+                        "user_hash": "userhash12345678",
+                        "prompt_tokens": tokens,
+                        "completion_tokens": 0,
+                        "total_tokens": tokens,
+                    })
+                    for record_id, timestamp, tokens in records
+                ) + "\n",
+                encoding="utf-8",
+            )
+
+            args = token_usage.build_parser().parse_args([
+                "summary",
+                "--all",
+                "--period",
+                "today",
+                "--data-dir",
+                str(data_dir),
+                "--llm-cache-file",
+                str(cache_file),
+            ])
+
+            local_noon = datetime(2026, 5, 26, 12, 0, tzinfo=token_usage.LOCAL_TZ)
+            with patch.object(token_usage, "now_local", return_value=local_noon):
+                events, source, _ = token_usage.events_for_summary(token_usage.get_data_dir(args), args)
+            summary = token_usage.summarize_events(events)
+
+            self.assertEqual(source, "llm-cache")
+            self.assertEqual(summary["events"], 2)
+            self.assertEqual(summary["input_tokens"], 500)
 
 
 if __name__ == "__main__":

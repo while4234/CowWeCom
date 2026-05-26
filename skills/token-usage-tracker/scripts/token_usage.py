@@ -16,6 +16,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # Python 3.8 and older.
+    ZoneInfo = None
 
 USER_ENV_KEYS = [
     "COW_CURRENT_USER_ID",
@@ -27,10 +31,16 @@ USER_ENV_KEYS = [
 ]
 
 SOURCE_CHOICES = ("auto", "token-tracker", "llm-cache", "both")
+LOCAL_TZ_NAME = "Asia/Shanghai"
+LOCAL_TZ = ZoneInfo(LOCAL_TZ_NAME) if ZoneInfo else timezone(timedelta(hours=8), LOCAL_TZ_NAME)
+
+
+def now_local() -> datetime:
+    return datetime.now(LOCAL_TZ)
 
 
 def now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    return now_local().isoformat(timespec="seconds")
 
 
 def parse_dt(value: str) -> datetime:
@@ -38,10 +48,10 @@ def parse_dt(value: str) -> datetime:
         raise ValueError("empty datetime")
     value = value.strip().replace("Z", "+00:00")
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
-        return datetime.fromisoformat(value).replace(tzinfo=datetime.now().astimezone().tzinfo)
+        return datetime.fromisoformat(value).replace(tzinfo=LOCAL_TZ)
     dt = datetime.fromisoformat(value)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+        dt = dt.replace(tzinfo=LOCAL_TZ)
     return dt
 
 
@@ -262,10 +272,10 @@ def event_in_range(event: dict, args: argparse.Namespace) -> bool:
     if not ts:
         return False
     try:
-        dt = parse_dt(ts)
+        dt = parse_dt(ts).astimezone(LOCAL_TZ)
     except Exception:
         return False
-    local_now = datetime.now().astimezone()
+    local_now = now_local()
 
     period = getattr(args, "period", "all")
     from_time = getattr(args, "from_time", None)

@@ -136,6 +136,11 @@ Today:
 python "<base_dir>/scripts/token_usage.py" summary --user-id "<stable-user-id>" --period today
 ```
 
+`--period today` and `--period month` are evaluated in `Asia/Shanghai`
+local time. CowAgent's automatic runtime log may store UTC timestamps; the
+script converts those timestamps to Beijing time before applying day/month
+boundaries.
+
 Current month:
 
 ```bash
@@ -166,6 +171,10 @@ python "<base_dir>/scripts/token_usage.py" summary --all --source llm-cache
 If the user asks for current local token usage and no `users/*.jsonl` files
 exist, use the default auto source or `--source llm-cache`; do not conclude that
 usage is zero until `<workspace>/data/llm_cache_usage.jsonl` has been checked.
+Inside a running CowWechat chat, prefer the CowCli `/tokens` fast path for
+read-only local token summaries. It uses the currently running Python
+interpreter and the configured `agent_workspace`, so it does not depend on a
+relative `.venv` existing in the chat runtime directory.
 
 List local users:
 

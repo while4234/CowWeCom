@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import unittest
 import importlib.util
 import tempfile
@@ -685,6 +686,55 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertIn("不能显示原始", result)
         self.assertNotIn("LLM backend status", result)
         self.assertNotIn("TEST", result)
+
+    def test_local_token_usage_natural_query_routes_to_tokens_command(self):
+        plugin = _load_cow_cli_plugin()
+
+        self.assertEqual(plugin._parse_command("查询本机 token"), ("tokens", "today"))
+        self.assertEqual(plugin._parse_command("查询本地 CowAgent token 用量"), ("tokens", "today"))
+        self.assertEqual(plugin._parse_command("统计本地 CowWechat 本月 token 用量"), ("tokens", "month"))
+        self.assertEqual(
+            parse_backend_natural_command("查询当前后端 token 使用量"),
+            ("backend", "quota-current"),
+        )
+
+    def test_local_token_usage_uses_running_python_not_relative_venv(self):
+        plugin = _load_cow_cli_plugin()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            period = argv[argv.index("--period") + 1]
+            total = 1234 if period == "today" else 5678
+            payload = {
+                "scope": "all-users",
+                "source": "llm-cache",
+                "period": period,
+                "summary": {
+                    "events": 2,
+                    "input_tokens": total,
+                    "output_tokens": 10,
+                    "total_tokens": total + 10,
+                    "cached_tokens": 100,
+                    "reasoning_tokens": 20,
+                },
+                "users": {"userhash12345678": {}},
+            }
+            return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+        with patch("plugins.cow_cli.cow_cli.subprocess.run", side_effect=fake_run):
+            result = plugin.execute("查询本机 token", session_id="test")
+
+        self.assertIn("本地 CowAgent/CowWechat token 用量", result)
+        self.assertIn("北京时间", result)
+        self.assertIn("今日", result)
+        self.assertIn("累计", result)
+        self.assertEqual(len(calls), 2)
+        for argv, kwargs in calls:
+            self.assertEqual(argv[0], sys.executable)
+            self.assertIn("token_usage.py", argv[1])
+            self.assertEqual(kwargs["env"]["PYTHONUTF8"], "1")
+            self.assertIn("COW_WORKSPACE", kwargs["env"])
 
     def test_skill_natural_language_routes_to_model_grounded_catalog_answer(self):
         plugin = _load_cow_cli_plugin()

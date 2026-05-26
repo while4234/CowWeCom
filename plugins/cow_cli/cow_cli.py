@@ -39,7 +39,7 @@ KNOWN_COMMANDS = {
     "help", "version", "status", "logs",
     "start", "stop", "restart",
     "skill", "context", "config",
-    "knowledge", "memory", "backend", "updates", "ledger",
+    "knowledge", "memory", "backend", "updates", "ledger", "tokens",
     "install-browser",
 }
 
@@ -70,6 +70,7 @@ COMMAND_ACCESS = {
     "backend": ACCESS_PUBLIC,
     "updates": ACCESS_ADMIN,
     "ledger": ACCESS_PUBLIC,
+    "tokens": ACCESS_PUBLIC,
     "install-browser": ACCESS_ADMIN,
 }
 
@@ -103,6 +104,29 @@ _LEDGER_PERIOD_LABELS = {
     "month": "本月",
     "last_month": "上月",
     "all": "全部",
+}
+_TOKEN_USAGE_LOCAL_MARKERS = ("本机", "本地", "本项目", "local", "cowagent", "cowwechat", "cowwecom")
+_TOKEN_USAGE_QUERY_MARKERS = ("查", "查询", "统计", "汇总", "看一下", "看下", "多少", "用了", "用量", "消耗")
+_TOKEN_USAGE_EXCLUDED_CONTEXT = (
+    "后端",
+    "额度",
+    "余额",
+    "剩余",
+    "codex",
+    "gpt",
+    "chatgpt",
+    "openai",
+    "capi",
+    "api key",
+    "apikey",
+    "secret",
+    "密钥",
+    "秘钥",
+)
+_TOKEN_USAGE_PERIOD_LABELS = {
+    "today": "今日",
+    "month": "本月",
+    "all": "累计",
 }
 
 
@@ -347,6 +371,10 @@ class CowCliPlugin(Plugin):
         if normalized in QUOTA_ALIASES:
             return "backend", "quota"
 
+        token_usage_command = self._parse_token_usage_natural_command(content)
+        if token_usage_command is not None:
+            return token_usage_command
+
         backend_command = parse_backend_natural_command(content)
         if backend_command is not None:
             return backend_command
@@ -479,6 +507,34 @@ class CowCliPlugin(Plugin):
             period = "today"
         mode = "query" if str(data.get("mode") or "").strip() == "query" else "summary"
         return {"period": period, "mode": mode}
+
+    def _parse_token_usage_natural_command(self, content: str):
+        text = str(content or "").strip()
+        if not text or text.startswith("/") or text.lower().startswith("cow "):
+            return None
+        normalized = text.lower()
+        compact = re.sub(r"[\s,，。?!？！；;:\"'`“”‘’（）()\[\]【】<>《》]+", "", normalized)
+        if "token" not in normalized and "tokens" not in normalized:
+            return None
+        if any(marker in compact or marker in normalized for marker in _TOKEN_USAGE_EXCLUDED_CONTEXT):
+            return None
+        if not any(marker in compact or marker in normalized for marker in _TOKEN_USAGE_LOCAL_MARKERS):
+            return None
+        if not any(marker in compact or marker in normalized for marker in _TOKEN_USAGE_QUERY_MARKERS):
+            return None
+        return "tokens", self._token_usage_period_from_text(normalized, compact)
+
+    @staticmethod
+    def _token_usage_period_from_text(normalized: str, compact: str) -> str:
+        if any(marker in compact for marker in ("本月", "这个月", "当月", "月度")):
+            return "month"
+        if any(marker in compact for marker in ("累计", "全部", "总计", "历史", "all")):
+            return "all"
+        if any(marker in compact for marker in ("今天", "今日", "当天", "本日", "today")):
+            return "today"
+        if "thismonth" in normalized.replace(" ", ""):
+            return "month"
+        return "today"
 
     @staticmethod
     def _encode_project_update_args(question: str, period: str = "today") -> str:
@@ -785,6 +841,171 @@ class CowCliPlugin(Plugin):
         ])
 
     # ------------------------------------------------------------------
+    # local token usage
+    # ------------------------------------------------------------------
+
+    def _cmd_tokens(self, args: str, e_context: EventContext, session_id: str = "", **_) -> str:
+        period = self._token_usage_arg_period(args)
+        is_admin = self._is_admin_context(e_context)
+        if self._token_usage_args_request_all_users(args) and not is_admin:
+            return self._permission_denied_text("tokens --all-users")
+
+        scope_all = is_admin
+        user_id = "" if scope_all else self._get_memory_user_id(e_context)
+        if not scope_all and not user_id:
+            return "没有识别到当前用户身份，不能安全查询本地 token 用量。请在微信或企业微信会话里重试。"
+
+        script = self._find_token_usage_script()
+        if not script:
+            return "未找到 token-usage-tracker 脚本，无法查询本地 token 用量。"
+
+        periods = [period] if period == "all" else [period, "all"]
+        snapshots = []
+        for item_period in periods:
+            try:
+                snapshots.append(self._run_token_usage_summary(script, item_period, scope_all, user_id))
+            except Exception as exc:
+                logger.warning(f"[CowCli] local token usage query failed: {exc}")
+                return f"本地 token 用量查询失败: {str(exc)[:1000]}"
+
+        return self._format_token_usage_reply(snapshots, scope_all)
+
+    @staticmethod
+    def _token_usage_arg_period(args: str) -> str:
+        raw = str(args or "").strip().lower()
+        parts = {part.strip() for part in re.split(r"[\s,，]+", raw) if part.strip()}
+        if parts & {"month", "this-month", "本月", "月度"}:
+            return "month"
+        if parts & {"all", "total", "history", "累计", "全部", "历史"}:
+            return "all"
+        return "today"
+
+    @staticmethod
+    def _token_usage_args_request_all_users(args: str) -> bool:
+        raw = str(args or "").strip().lower()
+        parts = {part.strip() for part in re.split(r"[\s,，]+", raw) if part.strip()}
+        return bool(parts & {"--all-users", "all-users", "users", "所有用户", "全员"})
+
+    @staticmethod
+    def _project_root() -> str:
+        return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def _find_token_usage_script(self) -> str:
+        project_root = self._project_root()
+        workspace = self._agent_workspace_root()
+        candidates = [
+            os.path.join(project_root, "skills", "token-usage-tracker", "scripts", "token_usage.py"),
+            os.path.join(workspace, "skills", "token-usage-tracker", "scripts", "token_usage.py"),
+            os.path.join(os.path.expanduser("~/cow"), "skills", "token-usage-tracker", "scripts", "token_usage.py"),
+        ]
+        for candidate in candidates:
+            if os.path.isfile(candidate):
+                return candidate
+        return ""
+
+    def _agent_workspace_root(self) -> str:
+        try:
+            from config import conf
+            from common.utils import expand_path
+
+            workspace = conf().get("agent_workspace", "")
+            if workspace:
+                return expand_path(workspace)
+        except Exception:
+            pass
+        for key in ("COW_WORKSPACE", "COW_HOME"):
+            workspace = os.getenv(key)
+            if workspace:
+                return os.path.abspath(os.path.expanduser(workspace))
+        cow_home = os.path.abspath(os.path.expanduser("~/cow"))
+        if os.path.isdir(cow_home):
+            return cow_home
+        return self._project_root()
+
+    def _run_token_usage_summary(self, script: str, period: str, scope_all: bool, user_id: str) -> dict:
+        env = os.environ.copy()
+        env["PYTHONUTF8"] = "1"
+        env["COW_WORKSPACE"] = self._agent_workspace_root()
+        command = [
+            sys.executable,
+            script,
+            "summary",
+            "--period",
+            period,
+            "--source",
+            "auto",
+        ]
+        if scope_all:
+            command.append("--all")
+        else:
+            command.extend(["--user-id", user_id])
+
+        proc = subprocess.run(
+            command,
+            cwd=self._project_root(),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            raise RuntimeError(detail or f"token_usage.py exited with {proc.returncode}")
+        try:
+            payload = json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"token_usage.py returned non-JSON output: {exc}")
+        if not isinstance(payload, dict):
+            raise RuntimeError("token_usage.py returned an invalid payload")
+        return payload
+
+    def _format_token_usage_reply(self, snapshots: list, scope_all: bool) -> str:
+        lines = [
+            "本地 CowAgent/CowWechat token 用量",
+            "统计口径：本机运行日志，按北京时间自然日/自然月；不是 CAPI/Codex 后台额度。",
+            "",
+        ]
+        if scope_all:
+            lines.append("范围：管理员视图，汇总本机已记录用户。")
+        else:
+            lines.append("范围：当前用户。")
+        for payload in snapshots:
+            label = _TOKEN_USAGE_PERIOD_LABELS.get(str(payload.get("period") or "all"), str(payload.get("period") or "all"))
+            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+            lines.extend(["", f"{label}", *self._format_token_usage_summary_lines(summary)])
+            if scope_all and isinstance(payload.get("users"), dict):
+                lines.append(f"- 已记录用户数: {len(payload.get('users') or {})}")
+            source = payload.get("source")
+            if source:
+                lines.append(f"- 来源: {source}")
+        return "\n".join(lines)
+
+    @classmethod
+    def _format_token_usage_summary_lines(cls, summary: dict) -> list:
+        input_tokens = cls._format_int(summary.get("input_tokens"))
+        output_tokens = cls._format_int(summary.get("output_tokens"))
+        total_tokens = cls._format_int(summary.get("total_tokens"))
+        cached_tokens = int(summary.get("cached_tokens") or 0)
+        prompt_tokens = int(summary.get("input_tokens") or 0)
+        cache_rate = (cached_tokens / prompt_tokens * 100) if prompt_tokens else 0.0
+        return [
+            f"- 请求/事件: {cls._format_int(summary.get('events'))}",
+            f"- 输入: {input_tokens}，输出: {output_tokens}，总计: {total_tokens}",
+            f"- 缓存命中: {cls._format_int(cached_tokens)} ({cache_rate:.1f}%)",
+            f"- 推理 tokens: {cls._format_int(summary.get('reasoning_tokens'))}",
+        ]
+
+    @staticmethod
+    def _format_int(value) -> str:
+        try:
+            return f"{int(value or 0):,}"
+        except (TypeError, ValueError):
+            return "0"
+
+    # ------------------------------------------------------------------
     # local expense ledger
     # ------------------------------------------------------------------
 
@@ -884,6 +1105,7 @@ class CowCliPlugin(Plugin):
                 ("help", "", "/help：查看可用命令"),
                 ("status", "", "/status：查看运行状态"),
                 ("version", "", "/version：查看版本"),
+                ("tokens", "", "/tokens：查询本地 CowAgent/CowWechat token 用量"),
                 ("logs", "20", "/logs 20：查看最近日志"),
             ]),
             ("账本", [
