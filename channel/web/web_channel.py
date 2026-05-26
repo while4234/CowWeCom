@@ -26,6 +26,7 @@ from channel.weixin.weixin_identity import (
     extract_real_wechat_id,
     is_real_wechat_id,
     looks_internal_weixin_id,
+    normalize_role as normalize_weixin_role,
     remember_wechat_identity,
     weixin_role_for_identity,
 )
@@ -1464,6 +1465,127 @@ class ChannelsHandler:
             pass
         return "unknown"
 
+    @staticmethod
+    def _normalize_role(value) -> str:
+        return normalize_weixin_role(value)
+
+    @classmethod
+    def _configured_admin_actor_ids(cls) -> set:
+        try:
+            from config import global_config
+        except Exception:
+            global_config = {"admin_users": []}
+
+        admin_users = conf().get("agent_admin_users", []) or []
+        if isinstance(admin_users, str):
+            values = [item.strip() for item in admin_users.split(",") if item.strip()]
+        else:
+            values = [str(item).strip() for item in admin_users if str(item).strip()]
+        values.extend(
+            str(item).strip()
+            for item in (global_config.get("admin_users", []) or [])
+            if str(item).strip()
+        )
+
+        profiles = conf().get("agent_user_profiles", {}) or {}
+        if isinstance(profiles, dict):
+            for actor_id, profile in profiles.items():
+                if isinstance(profile, dict) and cls._normalize_role(profile.get("role")) == "admin":
+                    values.append(str(actor_id).strip())
+        weixin_channel = conf().get("weixin_channel", {}) or {}
+        if isinstance(weixin_channel, dict) and cls._normalize_role(weixin_channel.get("role")) == "admin":
+            raw_user_id = str(weixin_channel.get("user_id") or "").strip()
+            values.append(cls._weixin_actor_id("weixin", raw_user_id) or "weixin")
+        instances = conf().get("weixin_instances", {}) or {}
+        if isinstance(instances, dict):
+            for instance_id, instance_config in instances.items():
+                if not isinstance(instance_config, dict):
+                    continue
+                if cls._normalize_role(instance_config.get("role")) != "admin":
+                    continue
+                raw_user_id = str(instance_config.get("user_id") or "").strip()
+                values.append(cls._weixin_actor_id(str(instance_id), raw_user_id) or str(instance_id))
+        return {value for value in values if value}
+
+    @classmethod
+    def _requested_weixin_role(cls, value, actor_id: str = "") -> str:
+        role = cls._normalize_role(value)
+        admin_actors = cls._configured_admin_actor_ids()
+        actor_candidates = {actor_id} if actor_id else set()
+        if actor_id and ":" in actor_id:
+            actor_candidates.add(actor_id.split(":", 1)[1])
+        admin_candidates = set(admin_actors)
+        for admin_actor in admin_actors:
+            if ":" in admin_actor:
+                admin_candidates.add(admin_actor.split(":", 1)[1])
+        if role == "admin" and admin_actors and actor_candidates.isdisjoint(admin_candidates):
+            return "user"
+        return role
+
+    @classmethod
+    def _connect_weixin_role(cls, channel_name: str, updates: dict) -> str:
+        existing_role = cls._normalize_role(cls._weixin_instance_config(channel_name).get("role"))
+        requested = (updates or {}).get("role")
+        if existing_role == "admin":
+            return "admin"
+        if requested:
+            return cls._requested_weixin_role(requested)
+        return existing_role
+
+    @staticmethod
+    def _weixin_actor_id(instance_id: str, raw_user_id: str) -> str:
+        return f"{instance_id}:{raw_user_id}" if instance_id and raw_user_id else ""
+
+    @staticmethod
+    def _upsert_agent_user_profile(
+        *,
+        actor_id: str,
+        raw_user_id: str,
+        role: str,
+        wechat_id: str = "",
+        channel_type: str = "weixin",
+    ) -> dict:
+        if not actor_id:
+            return {}
+
+        try:
+            from agent.user_profiles import safe_actor_slug
+        except Exception:
+            safe_actor_slug = lambda value: str(value or "").replace(":", "_")
+
+        profiles = conf().get("agent_user_profiles", {}) or {}
+        if not isinstance(profiles, dict):
+            profiles = {}
+        profiles = dict(profiles)
+        profile = dict(profiles.get(actor_id, {}) or {})
+
+        defaults = {
+            "role": ChannelsHandler._normalize_role(role),
+            "raw_user_id": raw_user_id,
+            "raw_weixin_user_id": raw_user_id,
+            "platform": channel_type or "weixin",
+            "memory_user_id": profile.get("memory_user_id") or safe_actor_slug(actor_id),
+        }
+        if wechat_id:
+            defaults["wechat_id"] = wechat_id
+            defaults.setdefault("display_name", profile.get("display_name") or wechat_id)
+
+        for key, value in defaults.items():
+            if value:
+                profile[key] = value
+        profiles[actor_id] = profile
+        conf()["agent_user_profiles"] = profiles
+        return profiles
+
+    @classmethod
+    def _role_options(cls) -> dict:
+        admin_actors = sorted(cls._configured_admin_actor_ids())
+        return {
+            "admin_available": not bool(admin_actors),
+            "admin_actor_id": admin_actors[0] if admin_actors else "",
+            "default_role": "user" if admin_actors else "admin",
+        }
+
     @classmethod
     def _channel_def(cls, channel_name: str) -> dict:
         if channel_name in cls.CHANNEL_DEFS:
@@ -1746,7 +1868,11 @@ class ChannelsHandler:
                 if ch_name == "weixin":
                     continue
                 channels.append(self._build_channel_info(ch_name, local_config, active_channels))
-            return json.dumps({"status": "success", "channels": channels}, ensure_ascii=False)
+            return json.dumps({
+                "status": "success",
+                "channels": channels,
+                "role_options": self._role_options(),
+            }, ensure_ascii=False)
         except Exception as e:
             logger.error(f"[WebChannel] Channels API error: {e}")
             return json.dumps({"status": "error", "message": str(e)})
@@ -1850,11 +1976,15 @@ class ChannelsHandler:
         inst_conf = self._weixin_instance_config(channel_name)
         creds = self._save_weixin_credentials_patch(channel_name, {"wechat_id": wechat_id})
         raw_user_id = str(inst_conf.get("user_id") or creds.get("user_id") or "").strip()
+        role = self._requested_weixin_role(
+            updates.get("role") or inst_conf.get("role") or "user",
+            self._weixin_actor_id(channel_name, raw_user_id),
+        )
 
         if channel_name == "weixin":
             channel_conf = dict(conf().get("weixin_channel", {}) or {})
             channel_conf["wechat_id"] = wechat_id
-            channel_conf.setdefault("role", "user")
+            channel_conf["role"] = role
             if raw_user_id:
                 channel_conf["user_id"] = raw_user_id
             conf()["weixin_channel"] = channel_conf
@@ -1866,7 +1996,7 @@ class ChannelsHandler:
             inst_conf = dict(instances.get(channel_name, {}) or {})
             inst_conf["wechat_id"] = wechat_id
             inst_conf.setdefault("credentials_path", self._weixin_raw_credentials_path(channel_name))
-            inst_conf.setdefault("role", "user")
+            inst_conf["role"] = role
             if raw_user_id:
                 inst_conf["user_id"] = raw_user_id
             instances[channel_name] = inst_conf
@@ -1874,10 +2004,18 @@ class ChannelsHandler:
             self._save_config_patch({"weixin_instances": instances})
 
         if raw_user_id:
+            self._upsert_agent_user_profile(
+                actor_id=self._weixin_actor_id(channel_name, raw_user_id),
+                raw_user_id=raw_user_id,
+                role=role,
+                wechat_id=wechat_id,
+                channel_type=channel_name,
+            )
             remember_wechat_identity(
                 channel_type=channel_name,
                 raw_user_id=raw_user_id,
                 wechat_id=wechat_id,
+                role=role,
             )
             self._apply_weixin_identity_to_runtime(channel_name, raw_user_id, wechat_id)
 
@@ -1887,6 +2025,7 @@ class ChannelsHandler:
             "status": "success",
             "applied": ["wechat_id"],
             "wechat_id": wechat_id,
+            "role": role,
         }, ensure_ascii=False)
 
     def _handle_connect(self, channel_name: str, updates: dict):
@@ -1894,6 +2033,9 @@ class ChannelsHandler:
         ch_def = self._channel_def(channel_name)
         valid_keys = {f["key"] for f in ch_def["fields"]}
         secret_keys = {f["key"] for f in ch_def["fields"] if f["type"] == "secret"}
+        weixin_role = None
+        if self._is_weixin_instance(channel_name):
+            weixin_role = self._connect_weixin_role(channel_name, updates or {})
 
         # Feishu connected via web console must use websocket (long connection) mode
         if channel_name == "feishu":
@@ -1929,10 +2071,15 @@ class ChannelsHandler:
                 instances = {}
             inst_conf = dict(instances.get(channel_name, {}) or {})
             inst_conf.setdefault("credentials_path", self._weixin_raw_credentials_path(channel_name))
-            inst_conf.setdefault("role", "user")
+            inst_conf["role"] = weixin_role or inst_conf.get("role") or "user"
             instances[channel_name] = inst_conf
             local_config["weixin_instances"] = instances
             applied["weixin_instances"] = instances
+        elif self._is_weixin_instance(channel_name):
+            channel_conf = dict(local_config.get("weixin_channel", {}) or {})
+            channel_conf["role"] = weixin_role or channel_conf.get("role") or "user"
+            local_config["weixin_channel"] = channel_conf
+            applied["weixin_channel"] = channel_conf
 
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__)))), "config.json")
@@ -2166,8 +2313,11 @@ class WeixinQrHandler:
         _require_auth()
         web.header('Content-Type', 'application/json; charset=utf-8')
         try:
-            params = web.input(instance="weixin")
+            params = web.input(instance="weixin", role="")
             instance_id = self._normalize_instance(params.instance)
+            requested_role = ChannelsHandler._requested_weixin_role(
+                params.role or self._instance_config(instance_id).get("role") or "user",
+            )
             running_ch = self._get_running_channel(instance_id)
             if running_ch and hasattr(running_ch, '_current_qr_url') and running_ch._current_qr_url:
                 qr_image = self._qr_to_data_uri(running_ch._current_qr_url)
@@ -2177,6 +2327,7 @@ class WeixinQrHandler:
                     "qrcode_url": running_ch._current_qr_url,
                     "qr_image": qr_image,
                     "source": "channel",
+                    "role": requested_role,
                 })
 
             from channel.weixin.weixin_api import WeixinApi, DEFAULT_BASE_URL
@@ -2193,6 +2344,7 @@ class WeixinQrHandler:
                 "qrcode_url": qrcode_url,
                 "base_url": base_url,
                 "instance": instance_id,
+                "role": requested_role,
             }
             self._start_background_poll(instance_id)
             return json.dumps({
@@ -2200,6 +2352,7 @@ class WeixinQrHandler:
                 "instance": instance_id,
                 "qrcode_url": qrcode_url,
                 "qr_image": qr_image,
+                "role": requested_role,
             })
         except Exception as e:
             logger.error(f"[WebChannel] WeixinQr GET error: {e}")
@@ -2246,6 +2399,10 @@ class WeixinQrHandler:
             result_base_url = status_resp.get("baseurl", base_url)
             user_id = status_resp.get("ilink_user_id", "")
             wechat_id = extract_real_wechat_id(status_resp)
+            role = ChannelsHandler._requested_weixin_role(
+                state.get("role") or self._instance_config(instance_id).get("role") or "user",
+                ChannelsHandler._weixin_actor_id(instance_id, user_id),
+            )
 
             if not bot_token or not bot_id:
                 return json.dumps({"status": "error", "message": "Login confirmed but missing token"})
@@ -2257,19 +2414,44 @@ class WeixinQrHandler:
                 "base_url": result_base_url,
                 "bot_id": bot_id,
                 "user_id": user_id,
+                "role": role,
             }
             if wechat_id:
                 credentials["wechat_id"] = wechat_id
             _save_credentials(cred_path, credentials)
-            if user_id and wechat_id:
-                remember_wechat_identity(
-                    channel_type=instance_id,
+
+            profiles = {}
+            if user_id:
+                profiles = ChannelsHandler._upsert_agent_user_profile(
+                    actor_id=ChannelsHandler._weixin_actor_id(instance_id, user_id),
                     raw_user_id=user_id,
+                    role=role,
                     wechat_id=wechat_id,
+                    channel_type=instance_id,
                 )
+                if wechat_id:
+                    remember_wechat_identity(
+                        channel_type=instance_id,
+                        raw_user_id=user_id,
+                        wechat_id=wechat_id,
+                        role=role,
+                    )
+
             if instance_id == "weixin":
                 conf()["weixin_token"] = bot_token
                 conf()["weixin_base_url"] = result_base_url
+                channel_conf = dict(conf().get("weixin_channel", {}) or {})
+                channel_conf["role"] = role
+                channel_conf["user_id"] = user_id
+                if wechat_id:
+                    channel_conf["wechat_id"] = wechat_id
+                conf()["weixin_channel"] = channel_conf
+                self._save_config_patch({
+                    "weixin_channel": channel_conf,
+                    "agent_user_profiles": profiles,
+                    "weixin_token": bot_token,
+                    "weixin_base_url": result_base_url,
+                })
             else:
                 instances = conf().get("weixin_instances", {}) or {}
                 if not isinstance(instances, dict):
@@ -2277,7 +2459,7 @@ class WeixinQrHandler:
                 inst_conf = dict(instances.get(instance_id, {}) or {})
                 inst_conf["credentials_path"] = self._raw_credentials_path(instance_id)
                 inst_conf["base_url"] = result_base_url
-                inst_conf.setdefault("role", "user")
+                inst_conf["role"] = role
                 inst_conf["user_id"] = user_id
                 if wechat_id:
                     inst_conf["wechat_id"] = wechat_id
@@ -2291,6 +2473,7 @@ class WeixinQrHandler:
                 self._save_config_patch({
                     "weixin_instances": instances,
                     "channel_type": conf()["channel_type"],
+                    "agent_user_profiles": profiles,
                 })
 
                 mgr = self._get_manager()
@@ -2305,6 +2488,7 @@ class WeixinQrHandler:
                 "instance": instance_id,
                 "qr_status": "confirmed",
                 "bot_id": bot_id,
+                "role": role,
             })
 
         if qr_status == "expired":
@@ -2315,12 +2499,14 @@ class WeixinQrHandler:
             WeixinQrHandler._qr_state.setdefault(instance_id, {})
             WeixinQrHandler._qr_state[instance_id]["qrcode"] = new_qrcode
             WeixinQrHandler._qr_state[instance_id]["qrcode_url"] = new_qrcode_url
+            WeixinQrHandler._qr_state[instance_id]["role"] = state.get("role") or "user"
             return json.dumps({
                 "status": "success",
                 "instance": instance_id,
                 "qr_status": "expired",
                 "qrcode_url": new_qrcode_url,
                 "qr_image": new_qr_image,
+                "role": WeixinQrHandler._qr_state[instance_id]["role"],
             })
 
         return json.dumps({"status": "success", "instance": instance_id, "qr_status": qr_status})

@@ -87,6 +87,7 @@ def remember_wechat_identity(
     channel_type: str,
     raw_user_id: str,
     wechat_id: str,
+    role: str = "",
 ) -> bool:
     """Persist a raw-id -> display WeChat id mapping for future reports."""
     channel_type = _safe_text(channel_type)
@@ -122,6 +123,12 @@ def remember_wechat_identity(
     if profile.get("raw_weixin_user_id") != raw_user_id:
         profile["raw_weixin_user_id"] = raw_user_id
         changed = True
+    selected_role = _safe_text(role).lower()
+    if selected_role:
+        normalized_role = normalize_role(selected_role)
+        if profile.get("role") != normalized_role:
+            profile["role"] = normalized_role
+            changed = True
     profiles[actor_id] = profile
 
     if not changed:
@@ -169,6 +176,12 @@ def weixin_role_for_identity(
         f"{channel_type}:{raw_user_id}" if channel_type and raw_user_id else "",
         f"{channel_type}:{wechat_id}" if channel_type and wechat_id else "",
     }
+    profiles = conf().get("agent_user_profiles", {}) or {}
+    if isinstance(profiles, dict):
+        for candidate in candidates:
+            profile = profiles.get(candidate)
+            if isinstance(profile, dict) and normalize_role(profile.get("role")) == ROLE_ADMIN:
+                return ROLE_ADMIN
     return ROLE_ADMIN if any(candidate in admin_users for candidate in candidates if candidate) else ROLE_USER
 
 

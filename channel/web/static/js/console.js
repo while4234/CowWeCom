@@ -87,6 +87,12 @@ const I18N = {
         weixin_scan_scanned: '已扫码，请在手机上确认', weixin_scan_expired: '二维码已过期，正在刷新...',
         weixin_scan_success: '登录成功，正在启动通道...', weixin_scan_fail: '获取二维码失败',
         weixin_qr_tip: '二维码约2分钟后过期',
+        weixin_role_title: '连接身份',
+        weixin_role_admin: '管理员',
+        weixin_role_user: '普通用户',
+        weixin_role_admin_hint: '可管理配置、技能、记忆和高风险命令',
+        weixin_role_user_hint: '使用隔离工作区和受控权限',
+        weixin_role_admin_locked: '已存在管理员，只能选择普通用户',
         wecom_scan_btn: '扫码创建企微机器人', wecom_scan_desc: '使用企业微信扫码，一键创建智能机器人',
         wecom_scan_success: '创建成功，正在启动通道...',
         wecom_scan_fail: '创建失败',
@@ -206,6 +212,12 @@ const I18N = {
         weixin_scan_scanned: 'Scanned, please confirm on your phone', weixin_scan_expired: 'QR code expired, refreshing...',
         weixin_scan_success: 'Login successful, starting channel...', weixin_scan_fail: 'Failed to load QR code',
         weixin_qr_tip: 'QR code expires in ~2 minutes',
+        weixin_role_title: 'Connection role',
+        weixin_role_admin: 'Admin',
+        weixin_role_user: 'Normal user',
+        weixin_role_admin_hint: 'Can manage config, skills, memory, and high-risk commands',
+        weixin_role_user_hint: 'Uses an isolated workspace and controlled permissions',
+        weixin_role_admin_locked: 'An admin already exists; only normal user is available',
         wecom_scan_btn: 'Scan to Create WeCom Bot', wecom_scan_desc: 'Scan with WeCom to create a bot instantly',
         wecom_scan_success: 'Bot created, starting channel...',
         wecom_scan_fail: 'Bot creation failed',
@@ -3221,6 +3233,11 @@ function showConfirmDialog({ title, message, okText, cancelText, onConfirm }) {
 // Channels View
 // =====================================================================
 let channelsData = [];
+let channelRoleOptions = {
+    admin_available: true,
+    admin_actor_id: '',
+    default_role: 'admin',
+};
 
 function isWeixinChannelName(name) {
     return name === 'weixin' || String(name || '').startsWith('weixin_');
@@ -3228,6 +3245,51 @@ function isWeixinChannelName(name) {
 
 function makeWeixinInstanceId() {
     return 'weixin_' + Date.now().toString(36);
+}
+
+function normalizeChannelRole(role) {
+    return role === 'admin' ? 'admin' : 'user';
+}
+
+function getSelectedWeixinRole() {
+    const checked = document.querySelector('input[name="weixin-role"]:checked');
+    return normalizeChannelRole(checked ? checked.value : channelRoleOptions.default_role);
+}
+
+function buildWeixinRoleSelector() {
+    const adminAvailable = channelRoleOptions.admin_available !== false;
+    const defaultRole = normalizeChannelRole(channelRoleOptions.default_role || (adminAvailable ? 'admin' : 'user'));
+    const selectedRole = adminAvailable ? defaultRole : 'user';
+    const adminChecked = selectedRole === 'admin' ? 'checked' : '';
+    const userChecked = selectedRole !== 'admin' ? 'checked' : '';
+    const adminDisabled = adminAvailable ? '' : 'disabled';
+    const adminClasses = adminAvailable
+        ? 'cursor-pointer hover:border-primary-300 dark:hover:border-primary-700'
+        : 'opacity-50 cursor-not-allowed';
+
+    return `
+        <div class="w-full max-w-sm mb-4">
+            <div class="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">${t('weixin_role_title')}</div>
+            <div class="grid grid-cols-2 gap-2">
+                <label class="rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.03] p-3 ${adminClasses}">
+                    <div class="flex items-center gap-2">
+                        <input type="radio" name="weixin-role" value="admin" ${adminChecked} ${adminDisabled}
+                            class="text-primary-500 focus:ring-primary-400">
+                        <span class="text-sm font-medium text-slate-700 dark:text-slate-200">${t('weixin_role_admin')}</span>
+                    </div>
+                    <p class="mt-1 text-[11px] leading-snug text-slate-400 dark:text-slate-500">${t('weixin_role_admin_hint')}</p>
+                </label>
+                <label class="rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.03] p-3 cursor-pointer hover:border-primary-300 dark:hover:border-primary-700">
+                    <div class="flex items-center gap-2">
+                        <input type="radio" name="weixin-role" value="user" ${userChecked}
+                            class="text-primary-500 focus:ring-primary-400">
+                        <span class="text-sm font-medium text-slate-700 dark:text-slate-200">${t('weixin_role_user')}</span>
+                    </div>
+                    <p class="mt-1 text-[11px] leading-snug text-slate-400 dark:text-slate-500">${t('weixin_role_user_hint')}</p>
+                </label>
+            </div>
+            ${adminAvailable ? '' : `<p class="mt-2 text-xs text-amber-500">${t('weixin_role_admin_locked')}</p>`}
+        </div>`;
 }
 
 function safeDomId(value) {
@@ -3242,6 +3304,7 @@ function loadChannelsView() {
     fetch('/api/channels').then(r => r.json()).then(data => {
         if (data.status !== 'success') return;
         channelsData = data.channels || [];
+        channelRoleOptions = data.role_options || channelRoleOptions;
         renderActiveChannels();
     }).catch(() => {
         container.innerHTML = '<p class="text-sm text-red-400 py-8 text-center">Failed to load channels</p>';
@@ -3714,9 +3777,13 @@ function onAddChannelSelect(chName) {
         actions.classList.add('hidden');
         fieldsContainer.innerHTML = `
             <div id="weixin-qr-panel" class="flex flex-col items-center py-4">
-                <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">${t('weixin_scan_loading')}</p>
+                ${buildWeixinRoleSelector()}
+                <button id="weixin-start-scan-btn" onclick="startWeixinQrLogin('${instanceId}')"
+                    class="px-5 py-2 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium
+                           cursor-pointer transition-colors duration-150">
+                    <i class="fas fa-qrcode mr-2"></i>${t('weixin_scan_title')}
+                </button>
             </div>`;
-        startWeixinQrLogin(instanceId);
         return;
     }
 
@@ -3795,6 +3862,7 @@ function submitAddChannel() {
 let _weixinQrPollTimer = null;
 let _weixinStatusPollTimer = null;
 let _weixinQrInstance = 'weixin';
+let _weixinQrRole = 'user';
 
 function stopWeixinStatusPoll() {
     if (_weixinStatusPollTimer) {
@@ -3814,6 +3882,7 @@ function startWeixinActiveStatusPoll() {
             );
             if (waiting.length === 0) {
                 channelsData = data.channels;
+                channelRoleOptions = data.role_options || channelRoleOptions;
                 renderActiveChannels();
             } else {
                 waiting.forEach(wx => {
@@ -3826,6 +3895,7 @@ function startWeixinActiveStatusPoll() {
                         ch.role = wx.role;
                     }
                 });
+                channelRoleOptions = data.role_options || channelRoleOptions;
                 startWeixinActiveStatusPoll();
             }
         }).catch(() => { startWeixinActiveStatusPoll(); });
@@ -3834,6 +3904,9 @@ function startWeixinActiveStatusPoll() {
 
 function showWeixinActiveQr(instance) {
     const instanceId = instance || 'weixin';
+    const ch = channelsData.find(c => c.name === instanceId);
+    _weixinQrRole = normalizeChannelRole(ch ? ch.role : 'user');
+    const requestedRole = _weixinQrRole;
     const container = document.getElementById(`weixin-active-qr-${safeDomId(instanceId)}`);
     if (!container) return;
     container.innerHTML = `
@@ -3841,7 +3914,7 @@ function showWeixinActiveQr(instance) {
             <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">${t('weixin_scan_loading')}</p>
         </div>`;
     stopWeixinStatusPoll();
-    startWeixinQrLogin(instanceId);
+    startWeixinQrLogin(instanceId, requestedRole);
 }
 
 function stopWeixinQrPoll() {
@@ -3851,10 +3924,19 @@ function stopWeixinQrPoll() {
     }
 }
 
-function startWeixinQrLogin(instance) {
+function startWeixinQrLogin(instance, role) {
     stopWeixinQrPoll();
     _weixinQrInstance = instance || 'weixin';
-    fetch(`/api/weixin/qrlogin?instance=${encodeURIComponent(_weixinQrInstance)}`)
+    _weixinQrRole = normalizeChannelRole(role || getSelectedWeixinRole());
+    if (_weixinQrRole === 'admin' && channelRoleOptions.admin_available === false) {
+        _weixinQrRole = 'user';
+    }
+    const startBtn = document.getElementById('weixin-start-scan-btn');
+    if (startBtn) {
+        startBtn.disabled = true;
+        startBtn.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>${t('weixin_scan_loading')}`;
+    }
+    fetch(`/api/weixin/qrlogin?instance=${encodeURIComponent(_weixinQrInstance)}&role=${encodeURIComponent(_weixinQrRole)}`)
         .then(r => r.json())
         .then(data => {
             const panel = document.getElementById('weixin-qr-panel');
@@ -3863,6 +3945,7 @@ function startWeixinQrLogin(instance) {
                 panel.innerHTML = `<p class="text-sm text-red-500">${t('weixin_scan_fail')}: ${data.message || ''}</p>`;
                 return;
             }
+            _weixinQrRole = normalizeChannelRole(data.role || _weixinQrRole);
             renderWeixinQr(data.qr_image || data.qrcode_url, 'waiting');
             if (data.source === 'channel') {
                 startWeixinActiveStatusPoll();
@@ -3873,6 +3956,12 @@ function startWeixinQrLogin(instance) {
         .catch(() => {
             const panel = document.getElementById('weixin-qr-panel');
             if (panel) panel.innerHTML = `<p class="text-sm text-red-500">${t('weixin_scan_fail')}</p>`;
+        })
+        .finally(() => {
+            if (startBtn) {
+                startBtn.disabled = false;
+                startBtn.innerHTML = `<i class="fas fa-qrcode mr-2"></i>${t('weixin_scan_title')}`;
+            }
         });
 }
 
@@ -3911,7 +4000,7 @@ function pollWeixinQrStatus(instance) {
         fetch('/api/weixin/qrlogin', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'poll', instance: instanceId })
+            body: JSON.stringify({ action: 'poll', instance: instanceId, role: _weixinQrRole })
         })
         .then(r => r.json())
         .then(data => {
@@ -3933,7 +4022,7 @@ function pollWeixinQrStatus(instance) {
                         </div>
                         <p class="text-sm font-medium text-primary-600 dark:text-primary-400">${t('weixin_scan_success')}</p>
                     </div>`;
-                connectWeixinAfterQr(data.instance || instanceId);
+                connectWeixinAfterQr(data.instance || instanceId, data.role || _weixinQrRole);
             } else if (qrStatus === 'expired' && (data.qr_image || data.qrcode_url)) {
                 renderWeixinQr(data.qr_image || data.qrcode_url, 'waiting');
                 pollWeixinQrStatus(data.instance || instanceId);
@@ -3952,7 +4041,7 @@ function pollWeixinQrStatus(instance) {
     }, 2000);
 }
 
-function connectWeixinAfterQr(instance) {
+function connectWeixinAfterQr(instance, role) {
     const instanceId = instance || 'weixin';
     if (instanceId !== 'weixin') {
         setTimeout(() => loadChannelsView(), 1500);
@@ -3961,14 +4050,17 @@ function connectWeixinAfterQr(instance) {
     fetch('/api/channels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'connect', channel: instanceId, config: {} })
+        body: JSON.stringify({ action: 'connect', channel: instanceId, config: { role: normalizeChannelRole(role) } })
     })
     .then(r => r.json())
     .then(data => {
         if (data.status === 'success') {
             const ch = channelsData.find(c => c.name === 'weixin');
-            if (ch) ch.active = true;
-            setTimeout(() => renderActiveChannels(), 1500);
+            if (ch) {
+                ch.active = true;
+                ch.role = normalizeChannelRole(role);
+            }
+            setTimeout(() => loadChannelsView(), 1500);
         }
     })
     .catch(() => {});

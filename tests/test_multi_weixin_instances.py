@@ -10,7 +10,11 @@ import requests
 from channel import channel_factory
 from channel.weixin.weixin_api import WeixinApi
 from channel.weixin.weixin_channel import WeixinChannel
-from channel.weixin.weixin_identity import extract_real_wechat_id, extract_wechat_nickname
+from channel.weixin.weixin_identity import (
+    extract_real_wechat_id,
+    extract_wechat_nickname,
+    remember_wechat_identity,
+)
 from channel.web.web_channel import ChannelsHandler
 from channel.web.web_channel import WeixinQrHandler
 from bridge.context import Context, ContextType
@@ -401,6 +405,118 @@ class TestMultiWeixinInstances(unittest.TestCase):
             self.assertEqual(labels["opaque@im.wechat"], "y553344388")
             self.assertEqual(profiles["weixin:opaque@im.wechat"]["wechat_id"], "y553344388")
 
+    def test_weixin_role_options_allow_first_admin_only(self):
+        conf()["agent_admin_users"] = []
+        conf()["agent_user_profiles"] = {}
+
+        self.assertEqual(
+            ChannelsHandler._role_options(),
+            {"admin_available": True, "admin_actor_id": "", "default_role": "admin"},
+        )
+        self.assertEqual(ChannelsHandler._requested_weixin_role("admin"), "admin")
+
+        conf()["agent_user_profiles"] = {
+            "weixin:admin@im.wechat": {"role": "admin", "memory_user_id": "admin-memory"},
+        }
+
+        role_options = ChannelsHandler._role_options()
+        self.assertFalse(role_options["admin_available"])
+        self.assertEqual(role_options["default_role"], "user")
+        self.assertEqual(role_options["admin_actor_id"], "weixin:admin@im.wechat")
+        self.assertEqual(ChannelsHandler._requested_weixin_role("admin"), "user")
+        self.assertEqual(
+            ChannelsHandler._requested_weixin_role("admin", "weixin:admin@im.wechat"),
+            "admin",
+        )
+        self.assertEqual(
+            ChannelsHandler._requested_weixin_role("admin", "admin@im.wechat"),
+            "admin",
+        )
+
+    def test_connect_weixin_role_preserves_existing_admin_after_qr_confirmation(self):
+        conf()["agent_user_profiles"] = {
+            "weixin:raw-admin@im.wechat": {"role": "admin", "memory_user_id": "admin-memory"},
+        }
+        conf()["weixin_channel"] = {
+            "role": "admin",
+            "user_id": "raw-admin@im.wechat",
+        }
+
+        self.assertEqual(ChannelsHandler._connect_weixin_role("weixin", {}), "admin")
+        self.assertEqual(ChannelsHandler._connect_weixin_role("weixin", {"role": "user"}), "admin")
+
+    def test_existing_weixin_instance_admin_locks_new_admin_selection(self):
+        conf()["agent_user_profiles"] = {}
+        conf()["weixin_instances"] = {
+            "weixin_admin": {
+                "role": "admin",
+                "user_id": "raw-admin@im.wechat",
+            }
+        }
+
+        role_options = ChannelsHandler._role_options()
+
+        self.assertFalse(role_options["admin_available"])
+        self.assertEqual(role_options["admin_actor_id"], "weixin_admin:raw-admin@im.wechat")
+        self.assertEqual(ChannelsHandler._requested_weixin_role("admin", "weixin_new:raw-user"), "user")
+        self.assertEqual(
+            ChannelsHandler._requested_weixin_role("admin", "weixin_admin:raw-admin@im.wechat"),
+            "admin",
+        )
+
+    def test_remember_wechat_identity_persists_selected_role(self):
+        conf()["agent_user_profiles"] = {}
+
+        with patch("channel.weixin.weixin_identity._save_config_patch"):
+            changed = remember_wechat_identity(
+                channel_type="weixin",
+                raw_user_id="raw-admin@im.wechat",
+                wechat_id="admin_wxid",
+                role="admin",
+            )
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            conf()["agent_user_profiles"]["weixin:raw-admin@im.wechat"]["role"],
+            "admin",
+        )
+
+    def test_weixin_role_for_identity_reads_agent_profile_role(self):
+        from channel.weixin.weixin_identity import weixin_role_for_identity
+
+        conf()["agent_admin_users"] = []
+        conf()["agent_user_profiles"] = {
+            "weixin:raw-admin@im.wechat": {
+                "role": "admin",
+                "memory_user_id": "admin-memory",
+            },
+        }
+
+        self.assertEqual(
+            weixin_role_for_identity(
+                channel_type="weixin",
+                raw_user_id="raw-admin@im.wechat",
+            ),
+            "admin",
+        )
+
+    def test_upsert_weixin_profile_records_role_and_memory_id(self):
+        conf()["agent_user_profiles"] = {}
+
+        profiles = ChannelsHandler._upsert_agent_user_profile(
+            actor_id="weixin_user:raw-user@im.wechat",
+            raw_user_id="raw-user@im.wechat",
+            role="user",
+            wechat_id="member_wxid",
+            channel_type="weixin_user",
+        )
+
+        profile = profiles["weixin_user:raw-user@im.wechat"]
+        self.assertEqual(profile["role"], "user")
+        self.assertEqual(profile["platform"], "weixin_user")
+        self.assertEqual(profile["wechat_id"], "member_wxid")
+        self.assertTrue(profile["memory_user_id"])
+
     def test_extract_real_wechat_id_ignores_ilink_raw_id(self):
         self.assertEqual(
             extract_real_wechat_id({
@@ -444,6 +560,7 @@ class TestMultiWeixinInstances(unittest.TestCase):
             channel_type="weixin",
             raw_user_id="opaque@im.wechat",
             wechat_id="y553344388",
+            role="user",
         )
 
     def test_weixin_channel_resolves_profile_from_get_config(self):
@@ -495,6 +612,7 @@ class TestMultiWeixinInstances(unittest.TestCase):
                 channel_type="weixin",
                 raw_user_id="opaque@im.wechat",
                 wechat_id="y553344388",
+                role="user",
             )
 
 

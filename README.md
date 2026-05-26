@@ -169,8 +169,8 @@ http://127.0.0.1:9899
 | `web_console` | 是否自动启动 Web 控制台 |
 | `web_host` | Web 控制台监听地址。留空时，本地无密码默认只监听 `127.0.0.1` |
 | `web_password` | Web 控制台访问密码。公网或局域网暴露时必须设置 |
-| `agent_admin_users` | 管理员用户 actor id 列表 |
-| `agent_user_profiles` | 用户角色、展示名、记忆 ID 等覆盖配置 |
+| `agent_admin_users` | 管理员用户 actor id 列表；Web 扫码接入同样遵守单管理员约束 |
+| `agent_user_profiles` | 用户角色、展示名、记忆 ID 等覆盖配置；扫码选择的管理员/普通用户身份会写入这里 |
 | `external_reply_inject_to_agent_context` | 是否把 CowCli 等非 Agent 快答的可见问答同步进后续 Agent 会话上下文，默认开启，便于“把这个转述给她”这类跟进指令引用最新回复 |
 | `knowledge` | 是否启用本地知识库 |
 | `knowledge_backend` | 协议/规范公共知识库后端配置 |
@@ -190,6 +190,8 @@ http://127.0.0.1:9899
   "agent": true
 }
 ```
+
+部署完成后可在 Web 控制台「通道」页面扫码接入微信，并在扫码前选择「管理员」或「普通用户」。系统只允许存在一个管理员；如果已配置或已扫码产生管理员，后续扫码只能选择普通用户。
 
 首次启动时会出现二维码，使用微信扫码并确认后即可登录。登录凭证默认保存到：
 
@@ -478,7 +480,7 @@ CowWeCom/
 
 | 日期 | 更新 |
 | --- | --- |
-| 2026-05-26 | 合并 README 当天更新记录并固化“同一天只保留一条总结”的项目规则；同时完成聊天内 CowCli 权限分级与角色化 `/help`、本地账本按当前 `memory_user_id` 查询、`china-expense-ledger` 本地记账/截图澄清/汇总缓存优化、`work-progress-reporter`、`project-restart`、`cowagent-workflow-auditor` 与 `cowwechat-project-optimizer` Skills、本地 `.venv` 验证环境统一、项目优化每日 0 点按 300 次增量模型调用触发、LLM 后端额度状态和 CAPI 月卡日重置展示修复，以及 CowCli 快答与 Agent 跨用户转述上下文修复：明确“告诉/转述/发给/推送给我老婆”等社交发送意图交给 Agent，快答的功能说明/今日更新会同步进后续 Agent 上下文，社交桥授权说明也区分发送用户自己的内容或公开摘要与读取对方私密记忆 |
+| 2026-05-26 | 合并 README 当天更新记录并固化“同一天只保留一条总结”的项目规则；同时完成聊天内 CowCli 权限分级与角色化 `/help`、Web 扫码接入管理员/普通用户选择与单管理员限制、本地账本按当前 `memory_user_id` 查询、`china-expense-ledger` 本地记账/截图澄清/汇总缓存优化、`work-progress-reporter`、`project-restart`、`cowagent-workflow-auditor` 与 `cowwechat-project-optimizer` Skills、本地 `.venv` 验证环境统一、项目优化每日 0 点按 300 次增量模型调用触发、LLM 后端额度状态和 CAPI 月卡日重置展示修复，以及 CowCli 快答与 Agent 跨用户转述上下文修复：明确“告诉/转述/发给/推送给我老婆”等社交发送意图交给 Agent，快答的功能说明/今日更新会同步进后续 Agent 上下文，社交桥授权说明也区分发送用户自己的内容或公开摘要与读取对方私密记忆 |
 | 2026-05-25 | 重写并规范 CowWeCom README，新增代码/运行行为变更必须同步 README 的项目规则；增强旅行规划的“规划前确认”、复杂规划预算、过夜住宿与 FlyAI wrapper 路径；改善企业微信长任务分段回复、完成回执、远程图链处理和订阅 ACK 超时重连；加固 CAPI/Codex 后端接力、额度卡/月卡路由、自然语言后端切换、自我进化缓存策略，以及按目标对象总结当天更新的体验 |
 | 2026-05-24 | 修复图像生成后台任务在服务重启后的恢复、失败通知和图片发送结果处理；启动时自动恢复定时任务服务并支持错过运行、失败通知、`run_now`、`skip_pending` 等调度动作；强化企业微信群聊按 `chatid` 隔离记忆并记录群成员上下文；增强 LLM 后端路由、Codex/CAPI 额度查询、自动切换、推理强度策略和审计数据 |
 | 2026-05-23 | 企业微信智能机器人配置改为优先手动填写 Bot ID/Secret 并补充 `wecom_bot_auth_source`，降低扫码创建的权限误解；同步多种本地 Skills，覆盖安全上传、GitHub、图像生成、企业微信 CLI、文档处理、搜索、天气、行情和旅行等能力 |

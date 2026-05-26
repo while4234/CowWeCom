@@ -23,6 +23,7 @@ from channel.weixin.weixin_api import (
 from channel.weixin.weixin_identity import (
     extract_real_wechat_id,
     extract_wechat_nickname,
+    weixin_role_for_identity,
     remember_wechat_identity,
 )
 from channel.weixin.weixin_message import WeixinMessage
@@ -115,6 +116,14 @@ class WeixinChannel(ChatChannel):
         if self.instance_id == "weixin":
             return conf().get(f"weixin_{key}", default)
         return default
+
+    def _configured_login_role(self, raw_user_id: str = "", wechat_id: str = "") -> str:
+        return weixin_role_for_identity(
+            channel_type=self.channel_type,
+            raw_user_id=raw_user_id,
+            wechat_id=wechat_id,
+            configured_role=self._get_instance_value("role", ""),
+        )
 
     def _ensure_api(self) -> bool:
         if self.api is not None:
@@ -364,12 +373,16 @@ class WeixinChannel(ChatChannel):
                 }
                 if wechat_id:
                     creds["wechat_id"] = wechat_id
+                role = self._configured_login_role(user_id, wechat_id)
+                if role:
+                    creds["role"] = role
                 _save_credentials(self._credentials_path, creds)
                 if user_id and wechat_id:
                     remember_wechat_identity(
                         channel_type=self.channel_type,
                         raw_user_id=user_id,
                         wechat_id=wechat_id,
+                        role=role,
                     )
                 logger.info(f"[Weixin] Credentials saved to {self._credentials_path}")
 
@@ -464,6 +477,7 @@ class WeixinChannel(ChatChannel):
                 channel_type=self.channel_type,
                 raw_user_id=raw_user_id,
                 wechat_id=existing_wechat_id,
+                role=self._configured_login_role(raw_user_id, existing_wechat_id),
             )
         return existing_wechat_id
 
@@ -646,6 +660,7 @@ class WeixinChannel(ChatChannel):
                 channel_type=self.channel_type,
                 raw_user_id=raw_user_id,
                 wechat_id=wechat_id,
+                role=self._configured_login_role(raw_user_id, wechat_id),
             ):
                 logger.info(f"[Weixin] Remembered WeChat id mapping for channel={self.channel_type}")
         if nickname:
