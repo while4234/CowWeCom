@@ -1364,6 +1364,68 @@ class AgentBridge:
                     f"for session={session_id}: {e}"
                 )
 
+    def remember_external_visible_reply(
+        self,
+        context,
+        user_text: str,
+        assistant_text: str,
+        source: str = "external",
+    ) -> None:
+        """Keep a non-Agent visible reply available for the next Agent turn.
+
+        Some chat plugins answer directly and stop the normal Agent path. From
+        the user's point of view that reply is still part of the conversation,
+        especially when the next message says "send this to her". Store a small
+        user/assistant pair in the same conversation and update any live Agent
+        instance so follow-up references resolve to the latest visible reply.
+        """
+        from config import conf
+
+        if not conf().get("external_reply_inject_to_agent_context", True):
+            return
+        user_text = self._compact_external_reply_text(user_text)
+        assistant_text = self._compact_external_reply_text(assistant_text)
+        if not context or not user_text or not assistant_text:
+            return
+
+        try:
+            profile = resolve_agent_user_profile(context)
+            apply_profile_to_context(context, profile)
+            conversation_id = profile.conversation_id
+        except Exception as e:
+            logger.warning(f"[AgentBridge] Failed to resolve external reply profile: {e}")
+            conversation_id = str(context.get("conversation_id") or context.get("session_id") or "").strip()
+        if not conversation_id:
+            return
+
+        channel_type = str(context.get("channel_type") or context.get("channel") or "")
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": user_text}]},
+            {"role": "assistant", "content": [{"type": "text", "text": assistant_text}]},
+        ]
+
+        self._persist_messages(conversation_id, messages, channel_type)
+        agent = self.agents.get(conversation_id)
+        if agent:
+            try:
+                with agent.messages_lock:
+                    agent.messages.extend(messages)
+            except Exception as e:
+                logger.warning(
+                    f"[AgentBridge] Failed to update in-memory external reply "
+                    f"for session={conversation_id}: {e}"
+                )
+        logger.debug(
+            f"[AgentBridge] Remembered {source} visible reply for session={conversation_id}"
+        )
+
+    @staticmethod
+    def _compact_external_reply_text(text: str, max_len: int = 4000) -> str:
+        value = str(text or "").strip()
+        if len(value) <= max_len:
+            return value
+        return value[:max_len] + "..."
+
     @staticmethod
     def _trim_in_memory_to_turns(agent, keep_turns: int) -> None:
         """Bound ``agent.messages`` to the most recent ``keep_turns`` real

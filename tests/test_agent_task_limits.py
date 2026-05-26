@@ -2,7 +2,7 @@ import re
 import threading
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agent.protocol.agent import Agent
 from agent.chat.service import ChatService
@@ -20,6 +20,35 @@ from config import conf
 
 
 class TestAgentTaskLimits(unittest.TestCase):
+    def test_remember_external_visible_reply_persists_and_updates_live_agent(self):
+        bridge = AgentBridge(SimpleNamespace())
+        bridge._persist_messages = Mock()
+        agent = SimpleNamespace(messages=[], messages_lock=threading.Lock())
+        bridge.agents["wecom_bot:sender"] = agent
+        context = Context(
+            kwargs={
+                "actor_id": "wecom_bot:sender",
+                "channel_type": "wecom_bot",
+                "conversation_id": "wecom_bot:sender",
+                "session_id": "sender",
+            }
+        )
+
+        bridge.remember_external_visible_reply(
+            context=context,
+            user_text="自助记账这个功能怎么用",
+            assistant_text="发付款截图就能自动记账。",
+            source="cow_cli",
+        )
+
+        bridge._persist_messages.assert_called_once()
+        session_id, messages, channel_type = bridge._persist_messages.call_args.args
+        self.assertEqual(session_id, "wecom_bot:sender")
+        self.assertEqual(channel_type, "wecom_bot")
+        self.assertEqual(messages[0]["role"], "user")
+        self.assertEqual(messages[1]["role"], "assistant")
+        self.assertEqual(agent.messages, messages)
+
     def test_development_tasks_use_development_step_budget(self):
         settings = {
             "agent_max_steps": 20,

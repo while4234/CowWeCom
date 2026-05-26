@@ -221,7 +221,14 @@ class BridgeSendMessageTool(SocialBridgeTool):
     name = "bridge_send_message"
     description = (
         "Send a message through the social bridge service on behalf of the "
-        "current actor. Requires explicit authorization in the parameters."
+        "current actor. Requires explicit authorization in the parameters. "
+        "When the current user asks you to tell, forward, send, push, or relay "
+        "their own message, a public feature summary, or an assistant-drafted "
+        "message to another person, that request is the authorization: send it "
+        "with authorized=true. Do not ask the recipient for consent in that "
+        "case. Ask for consent only when the user is requesting the recipient's "
+        "private chat content, memories, or other private information to be "
+        "revealed back to the user."
     )
     params = {
         "type": "object",
@@ -236,7 +243,12 @@ class BridgeSendMessageTool(SocialBridgeTool):
             },
             "authorized": {
                 "type": "boolean",
-                "description": "Set to true only after explicit user authorization.",
+                "description": (
+                    "Set to true after explicit user authorization. A direct "
+                    "request like 'tell/send/forward this to my wife' authorizes "
+                    "sending the user's own content or a drafted/public feature "
+                    "summary; it does not require recipient consent."
+                ),
                 "default": False,
             },
             "authorization_phrase": {

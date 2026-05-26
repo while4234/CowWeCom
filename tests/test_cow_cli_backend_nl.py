@@ -4,7 +4,7 @@ import importlib.util
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -420,6 +420,71 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertEqual(e_context.action, EventAction.BREAK_PASS)
         self.assertIn("没有识别到当前用户的记账身份", e_context["reply"].content)
+
+    def test_direct_social_skill_request_bypasses_cow_cli_fast_answer(self):
+        plugin = _load_cow_cli_plugin()
+        question = (
+            "\u5c06\u81ea\u52a9\u8bb0\u8d26\u8fd9\u4e2a\u529f\u80fd"
+            "\u544a\u8bc9\u6211\u8001\u5a46\uff0c\u8ba9\u5979\u660e\u767d\u600e\u4e48\u7528"
+        )
+
+        self.assertIsNone(plugin._parse_command(question))
+
+    def test_recommendation_question_can_still_use_updates_fast_answer(self):
+        plugin = _load_cow_cli_plugin()
+        question = "\u4eca\u5929\u66f4\u65b0\u4e86\u54ea\u4e9b\u529f\u80fd\u9002\u5408\u63a8\u9001\u7ed9\u6211\u8001\u5a46\u7684"
+
+        parsed = plugin._parse_command(question)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed[0], "updates")
+
+    def test_skill_fast_answer_marks_followup_context(self):
+        from bridge.context import Context, ContextType
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        question = "\u81ea\u52a9\u8bb0\u8d26\u8fd9\u4e2a\u529f\u80fd\u600e\u4e48\u7528"
+        answer = "\u53d1\u4ed8\u6b3e\u622a\u56fe\u5c31\u80fd\u81ea\u52a8\u8bb0\u8d26\u3002"
+        context = Context(
+            ContextType.TEXT,
+            question,
+            kwargs={"channel_type": "wecom_bot", "session_id": "LiuHao"},
+        )
+        e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
+
+        with patch.object(plugin, "_call_skill_answer_model", return_value=answer):
+            plugin.on_handle_context(e_context)
+
+        self.assertEqual(e_context.action, EventAction.BREAK_PASS)
+        self.assertEqual(context["_cow_cli_followup_context"]["user_text"], question)
+        self.assertEqual(context["_cow_cli_followup_context"]["assistant_text"], answer)
+
+    def test_chat_channel_remembers_marked_cow_cli_reply_after_send(self):
+        from bridge.context import Context, ContextType
+        from bridge.reply import Reply, ReplyType
+        from channel.chat_channel import ChatChannel
+
+        context = Context(ContextType.TEXT, "ignored")
+        context["_cow_cli_followup_context"] = {
+            "source": "cow_cli",
+            "user_text": "自助记账这个功能怎么用",
+            "assistant_text": "发付款截图就能自动记账。",
+        }
+        agent_bridge = SimpleNamespace(remember_external_visible_reply=Mock())
+        bridge = SimpleNamespace(get_agent_bridge=lambda: agent_bridge)
+
+        with patch("bridge.bridge.Bridge", return_value=bridge):
+            ChatChannel._remember_cow_cli_followup_context(
+                context,
+                Reply(ReplyType.TEXT, "已发送给用户的最终回复"),
+            )
+
+        agent_bridge.remember_external_visible_reply.assert_called_once()
+        call = agent_bridge.remember_external_visible_reply.call_args.kwargs
+        self.assertEqual(call["context"], context)
+        self.assertEqual(call["user_text"], "自助记账这个功能怎么用")
+        self.assertEqual(call["assistant_text"], "发付款截图就能自动记账。")
 
     def test_execute_monthly_quota_uses_monthly_provider_key(self):
         from config import conf

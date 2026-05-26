@@ -561,6 +561,8 @@ class ChatChannel(Channel):
                     runtime.mark_visible_output("final_reply")
                     if reply.type == ReplyType.TEXT:
                         self._send_completion_notice_if_needed(context, runtime)
+                if sent is not False and reply.type == ReplyType.TEXT:
+                    self._remember_cow_cli_followup_context(context, reply)
         except Exception as e:
             final_phase = "error"
             if runtime:
@@ -584,6 +586,27 @@ class ChatChannel(Channel):
                 getattr(reply, "type", "none") if reply else "none",
                 len(content) if isinstance(content, str) else 0,
             )
+
+    @staticmethod
+    def _remember_cow_cli_followup_context(context: Context, reply: Reply) -> None:
+        payload = context.get("_cow_cli_followup_context") if context else None
+        if not isinstance(payload, dict):
+            return
+        user_text = str(payload.get("user_text") or context.content or "").strip()
+        assistant_text = str(payload.get("assistant_text") or reply.content or "").strip()
+        if not user_text or not assistant_text:
+            return
+        try:
+            from bridge.bridge import Bridge
+
+            Bridge().get_agent_bridge().remember_external_visible_reply(
+                context=context,
+                user_text=user_text,
+                assistant_text=assistant_text,
+                source=str(payload.get("source") or "cow_cli"),
+            )
+        except Exception as e:
+            logger.warning(f"[CowCli] Failed to remember direct reply for follow-up: {e}")
 
     @staticmethod
     def _schedule_post_task_self_evolution(context: Context):

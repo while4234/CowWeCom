@@ -158,10 +158,69 @@ class CowCliPlugin(Plugin):
         logger.info(f"[CowCli] intercepted command: {cmd} {args}")
 
         result = self._dispatch(cmd, args, e_context)
+        self._mark_agent_followup_context(
+            cmd,
+            args,
+            content,
+            result,
+            e_context,
+        )
 
         reply = Reply(ReplyType.TEXT, result)
         e_context["reply"] = reply
         e_context.action = EventAction.BREAK_PASS
+
+    def _mark_agent_followup_context(
+        self,
+        cmd: str,
+        args: str,
+        user_text: str,
+        assistant_text: str,
+        e_context: EventContext,
+    ) -> None:
+        if e_context is None or not self._should_remember_for_agent_followup(cmd, args):
+            return
+        if not str(user_text or "").strip() or not str(assistant_text or "").strip():
+            return
+        try:
+            context = e_context["context"]
+        except Exception:
+            return
+        context["_cow_cli_followup_context"] = {
+            "source": "cow_cli",
+            "command": cmd,
+            "user_text": str(user_text).strip(),
+            "assistant_text": str(assistant_text).strip(),
+        }
+
+    @staticmethod
+    def _should_remember_for_agent_followup(cmd: str, args: str) -> bool:
+        parts = str(args or "").strip().split(None, 1)
+        first = parts[0].lower() if parts else ""
+        return (cmd == "updates" and first == "summary") or (cmd == "skill" and first == "answer")
+
+    @classmethod
+    def _direct_social_target(cls, text: str) -> str:
+        compact = cls._compact_for_social_intent(text)
+        if not compact:
+            return ""
+        if cls._looks_like_recommendation_question(compact):
+            return ""
+        if not any(marker in compact for marker in ("告诉", "转述", "发给", "发送给", "推送给", "同步给", "通知", "跟她说", "让她知道")):
+            return ""
+        if any(marker in compact for marker in ("老婆", "妻子", "太太", "媳妇", "夫人")):
+            return "老婆"
+        return ""
+
+    @staticmethod
+    def _compact_for_social_intent(text: str) -> str:
+        return re.sub(r"[\s,，。?!？！；;：:\"'`“”‘’（）()\[\]【】<>《》]+", "", str(text or "").lower())
+
+    @staticmethod
+    def _looks_like_recommendation_question(compact: str) -> bool:
+        if "适合" not in compact:
+            return False
+        return any(marker in compact for marker in ("哪些", "有什么", "推荐", "更新了哪些", "功能"))
 
     def _parse_command(self, content: str):
         """
@@ -187,6 +246,9 @@ class CowCliPlugin(Plugin):
         backend_command = parse_backend_natural_command(content)
         if backend_command is not None:
             return backend_command
+
+        if self._direct_social_target(content):
+            return None
 
         update_command = self._parse_project_update_natural_command(content)
         if update_command is not None:
