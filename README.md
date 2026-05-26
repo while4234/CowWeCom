@@ -392,6 +392,7 @@ public_protocol_knowledge/
 | 项目运维 | `project-restart`，管理员说“重启/重启项目/重启服务”时默认触发，安全重启当前 CowWechat 服务 |
 | 文档处理 | `docx`、`pptx`、`xlsx`、`pdf` |
 | 检索与生活工具 | `reliable-search`、`quick-weather`、`fast-market-price` |
+| 本地生活记账 | `china-expense-ledger`，本地记录用户主动提供的文字、截图视觉提取结果和支付宝/微信 CSV 账单，不自动抓取 App 账单 |
 | 用量与额度 | `token-usage-tracker`、`codex-quota-query`、`capi-usage-monitor` |
 | 工作进度与周报 | `work-progress-reporter`，私聊记录个人工作进度、临时任务和收获，并在周五生成中文周报；不同用户数据互相隔离 |
 | 旅行与本地助手 | `travel-manager`、`amap-cowwechat`、`takeout-lite-recommender`、`shopping-lite-compare` |
@@ -466,6 +467,8 @@ CowWeCom/
 
 | 日期 | 更新 |
 | --- | --- |
+| 2026-05-26 | 新增 `china-expense-ledger` 本地记账 Skill：支持自然语言记账、截图经 Agent 视觉提取后的结构化入库、支付宝/微信 CSV 导入、SQLite 本地学习纠错和分类汇总；明确禁止爬虫、逆向、绕过登录、自动抓取 App 账单或默认启用官方支付/电商接口 |
+| 2026-05-26 | 统一本地验证环境到 `.venv`：补齐当前 `.venv` 的 `PyYAML` 和 `pytest`，并在可选依赖中声明 `pytest`，后续 skill 校验和 focused pytest 默认使用 `.venv` |
 | 2026-05-26 | 新增 `work-progress-reporter` Skill：所有用户都可在私聊中独立管理本周/下周工作计划、每日进度、临时任务、收获和周末加班安排；真实状态写入各自 `memory_user_id` 私有目录，群聊触发只做隐私引导，周五可生成中文 Markdown 周报 |
 | 2026-05-26 | 修复 LLM backend status 的当前后端额度展示：CAPI 额度卡、CAPI 月卡和 Codex 的手动额度查询都会回写统一的 `backend_quota` 状态缓存，`/backend status` 始终展示当前后端已记录的最新值；默认每 50 次非静默用户模型调用会在后台刷新当前后端额度 |
 | 2026-05-26 | 新增 `project-restart` Skill：管理员对 Agent 说“重启/重启项目/重启服务”时默认走该技能，先派生延迟 worker 再复用 `cli.cli restart` 关闭当前项目所有匹配 `app.py` 的进程并拉起新服务，避免运行中的 Agent 直接杀掉自己的工具子进程 |
@@ -498,6 +501,9 @@ CowWeCom/
 常用验证命令：
 
 ```powershell
+# 安装常用验证依赖
+.\.venv\Scripts\python.exe -m pip install -r requirements-optional.txt
+
 # Python 语法检查示例
 .\.venv\Scripts\python.exe -m py_compile app.py config.py
 

@@ -1,4 +1,5 @@
 tiktoken>=0.3.2 # openai calculate token
+pytest>=8.0 # local validation and regression tests
 
 #voice
 pydub>=0.25.1 # need ffmpeg

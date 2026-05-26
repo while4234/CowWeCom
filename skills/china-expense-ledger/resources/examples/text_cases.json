@@ -1,0 +1,64 @@
+[
+  {
+    "name": "taobao_cable_alipay",
+    "input": "刚才在淘宝买了数据线 19.9，支付宝付的",
+    "payload": {
+      "user_id": "example-user",
+      "source_type": "text",
+      "raw_text": "刚才在淘宝买了数据线 19.9，支付宝付的",
+      "amount_cents": 1990,
+      "currency": "CNY",
+      "direction": "expense",
+      "order_platform": "淘宝",
+      "payment_app": "支付宝",
+      "item_name": "数据线",
+      "category": "数码家电"
+    }
+  },
+  {
+    "name": "meituan_takeout_wechat",
+    "input": "美团外卖黄焖鸡 28.5，微信付的",
+    "payload": {
+      "user_id": "example-user",
+      "source_type": "text",
+      "raw_text": "美团外卖黄焖鸡 28.5，微信付的",
+      "amount_cents": 2850,
+      "currency": "CNY",
+      "direction": "expense",
+      "order_platform": "美团外卖",
+      "payment_app": "微信支付",
+      "item_name": "黄焖鸡",
+      "category": "外卖"
+    }
+  },
+  {
+    "name": "taobao_refund",
+    "input": "收到退款 88，淘宝退的",
+    "payload": {
+      "user_id": "example-user",
+      "source_type": "text",
+      "raw_text": "收到退款 88，淘宝退的",
+      "amount_cents": 8800,
+      "currency": "CNY",
+      "direction": "refund",
+      "order_platform": "淘宝",
+      "category": "退款"
+    }
+  },
+  {
+    "name": "unclear_transfer",
+    "input": "给小李转账 200",
+    "payload": {
+      "user_id": "example-user",
+      "source_type": "text",
+      "raw_text": "给小李转账 200",
+      "amount_cents": 20000,
+      "currency": "CNY",
+      "direction": "transfer",
+      "merchant": "小李",
+      "category": "转账",
+      "status": "pending",
+      "needs_clarification": ["请确认这是消费、收入、退款，还是个人转账。"]
+    }
+  }
+]

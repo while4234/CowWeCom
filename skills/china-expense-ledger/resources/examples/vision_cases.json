@@ -1,0 +1,41 @@
+[
+  {
+    "name": "wechat_meituan_takeout_payment",
+    "source": "vision-extracted screenshot fields",
+    "payload": {
+      "user_id": "example-user",
+      "source_type": "image",
+      "source_app": "微信支付",
+      "payment_app": "微信支付",
+      "order_platform": "美团外卖",
+      "merchant": "美团外卖",
+      "item_name": null,
+      "amount_cents": 2850,
+      "currency": "CNY",
+      "direction": "expense",
+      "category": "外卖",
+      "raw_text": "微信支付 支付成功 美团外卖 ¥28.50",
+      "confidence": 0.76,
+      "needs_clarification": ["截图中商品名不清楚，请补充。"]
+    }
+  },
+  {
+    "name": "alipay_hema_grocery",
+    "source": "vision-extracted screenshot fields",
+    "payload": {
+      "user_id": "example-user",
+      "source_type": "image",
+      "source_app": "支付宝",
+      "payment_app": "支付宝",
+      "order_platform": "盒马",
+      "merchant": "盒马鲜生",
+      "item_name": "牛奶、鸡蛋、水果",
+      "amount_cents": 6720,
+      "currency": "CNY",
+      "direction": "expense",
+      "category": "生鲜买菜",
+      "raw_text": "支付宝 交易成功 盒马鲜生 商品明细 牛奶 鸡蛋 水果 ¥67.20",
+      "confidence": 0.86
+    }
+  }
+]
