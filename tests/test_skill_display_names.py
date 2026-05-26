@@ -92,6 +92,45 @@ class SkillDisplayNameSyncTest(unittest.TestCase):
                 "Manual Label",
             )
 
+    def test_loads_skills_config_with_utf8_bom(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            custom_dir = Path(tmp) / "skills"
+            skill_dir = custom_dir / "sample"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: sample\n"
+                "description: Fresh description.\n"
+                "---\n"
+                "# Test\n",
+                encoding="utf-8",
+            )
+            config_path = custom_dir / "skills_config.json"
+            config_path.write_text(
+                "\ufeff" + json.dumps(
+                    {
+                        "sample": {
+                            "name": "sample",
+                            "description": "old",
+                            "source": "custom",
+                            "enabled": False,
+                            "category": "system_dev",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manager = SkillManager(
+                builtin_dir=str(Path(tmp) / "empty"),
+                custom_dir=str(custom_dir),
+            )
+
+            entry = manager.get_skills_config()["sample"]
+            self.assertFalse(entry["enabled"])
+            self.assertEqual(entry["category"], "system_dev")
+            self.assertEqual(entry["description"], "Fresh description.")
+
 
 if __name__ == "__main__":
     unittest.main()

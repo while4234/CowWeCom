@@ -199,6 +199,31 @@ class SkillCatalogCacheTest(unittest.TestCase):
             self.assertIn("行程结构", summary)
             self.assertIn("路线证据", summary)
 
+    def test_codex_quota_summary_mentions_analysis_strategy_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            builtin = root / "builtin"
+            custom = root / "custom"
+            write_skill(
+                builtin / "codex-quota-query",
+                "codex-quota-query",
+                (
+                    "Query and analyze Codex quota, fair-share overuse, "
+                    "and follow-up usage strategy. For analysis requests, "
+                    "run the decision command before answering."
+                ),
+                body=(
+                    "## Analysis Workflow\n"
+                    "Run codex_quota.py decision --format json first.\n"
+                ),
+            )
+
+            catalog = SkillCatalogCache(str(builtin), str(custom))
+            detail = catalog.format_skill_detail_summary("codex-quota-query")
+
+            self.assertIn("follow-up usage strategy", detail)
+            self.assertIn("codex_quota.py decision", detail)
+
     def test_generic_skill_word_does_not_match_system_dev_category(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

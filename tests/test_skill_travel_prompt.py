@@ -93,3 +93,12 @@ def test_travel_skill_includes_default_overnight_hotel_guidance():
     assert "FlyAI/search source used" in template
     assert "Any itinerary with at least one overnight stay should include lodging guidance by default" in routing
     assert "FlyAI `search-hotel`" in routing
+
+
+def test_codex_quota_skill_prompt_covers_analysis_strategy_requests(tmp_path):
+    prompt = _manager(tmp_path).build_skills_prompt(skill_filter=["codex-quota-query"])
+
+    assert "<name>codex-quota-query</name>" in prompt
+    assert "average usage is over budget" in prompt
+    assert "follow-up usage strategy" in prompt
+    assert "run the decision or JSON snapshot command before answering" in prompt

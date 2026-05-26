@@ -1,6 +1,6 @@
 ---
 name: codex-quota-query
-description: Query the current Codex/GPT/ChatGPT subscription quota, remaining quota, usage, or token usage through the official local Codex app-server, with sanitized text/JSON output for manual status checks. Use this instead of local token-usage tracking when the request explicitly asks to query Codex, GPT, ChatGPT, OpenAI subscription quota, or current Codex backend usage.
+description: Query and analyze the current Codex/GPT/ChatGPT subscription quota, rate-limit windows, remaining quota, usage pace, fair-share overuse, and follow-up usage strategy through the official local Codex app-server. Use when the user asks to 查询/查看 Codex 额度/用量, analyze whether Codex average usage is over budget, compare used progress vs time progress, decide whether to keep using Codex or switch/fallback to CAPI, or plan later Codex usage allocation. For analysis/strategy requests, read this SKILL.md and run the decision or JSON snapshot command before answering; do not browse project files first.
 metadata:
   requires:
     bins: ["python", "codex"]
@@ -8,9 +8,43 @@ metadata:
 
 # Codex Quota Query
 
-Use this skill when the user asks to query Codex, GPT, OpenAI, or ChatGPT subscription quota for the logged-in local Codex account. It calls the official `codex app-server` over stdio, injects the configured Codex auth JSON with `account/login/start`, then reads `account/read` and `account/rateLimits/read`.
+Use this skill when the user asks to query or analyze Codex, GPT, OpenAI, or ChatGPT subscription quota for the logged-in local Codex account. It calls the official `codex app-server` over stdio, injects the configured Codex auth JSON with `account/login/start`, then reads `account/read` and `account/rateLimits/read`.
 
-Do not use this fast path for broader analysis requests such as "分析 Codex 平均用量是否超了，后续策略怎么分配". Those should stay in the Agent reasoning path so the assistant can combine quota data, history, and strategy.
+This skill is not only a quick lookup. Use it for strategic questions such as:
+
+- "分析一下 Codex 当前的平均用量超了多少，后续的使用策略如何分配更合适"
+- "Codex 额度是否超预算，还能不能继续用"
+- "对比 Codex 已用进度和时间进度，给我一个后续分配策略"
+- "当前后端是 Codex 时，先看额度再决定要不要切 CAPI"
+
+For these analysis requests, do not inspect project source code to find quota logic first. Read this SKILL.md, run the command below, then reason from the returned JSON.
+
+## Analysis Workflow
+
+1. Run the decision command first when the user asks whether Codex usage is over budget or asks for a follow-up strategy:
+
+```powershell
+py -3 D:\CowAgent\skills\codex-quota-query\scripts\codex_quota.py decision --format json --timeout-seconds 120
+```
+
+2. If the user asks for raw quota windows or a current snapshot, run:
+
+```powershell
+py -3 D:\CowAgent\skills\codex-quota-query\scripts\check_codex_quota.py --project-dir D:\CowAgent --format json --timeout-ms 120000
+```
+
+3. Explain the result in Chinese. Prefer these fields:
+
+- `decision.reason`: `under_fair_share`, `used_above_fair_share`, `remaining_below_minimum`, `rate_limit_reached`, or `quota_window_missing`.
+- `decision.allowed_used_percent`: the fair-share usage percent allowed by elapsed days in the window.
+- `decision.window.used_percent`: current used percent for the selected Codex quota window.
+- `decision.window.remaining_percent`: remaining quota percent.
+- `decision.window.resets_at`: reset time for the selected quota window.
+- `account.plan_type`: current account plan.
+
+4. If `used_percent > allowed_used_percent`, say how much the account is ahead of the fair-share pace and suggest reducing Codex usage, using CAPI/monthly CAPI for ordinary tasks, and reserving Codex for high-value work until the reset window catches up.
+
+5. If the command fails, report the concrete failure category: missing `codex` app-server, missing/expired auth file, network/backend API failure, or no quota data. Do not fall back to OpenClaw.
 
 ## Commands
 
@@ -24,6 +58,8 @@ D:\CowWechat\.venv\Scripts\python.exe D:\CowWechat\skills\codex-quota-query\scri
 ```
 
 In the chat/runtime workspace (`C:\Users\RondleLiu\cow`), do not assume relative `.venv\Scripts\python.exe` points at CowWechat. Prefer the absolute CowWechat venv and script paths above. Natural-language chat requests like "查询 codex 使用量" or "查询当前后端 token 使用量" should be handled by the `/backend quota` fast path when available, so they do not need an Agent reasoning loop.
+
+If the Agent is already in a reasoning loop because the user asked for analysis or strategy, still use this skill. The fast path and the skill share the same direct app-server query; the fast path is only for simple chat-visible lookup commands.
 
 ## Runtime Requirements
 
