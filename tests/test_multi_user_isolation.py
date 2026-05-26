@@ -409,6 +409,21 @@ class TestMultiUserIsolation(unittest.TestCase):
             self.assertEqual(denied.status, "error")
             self.assertIn("修改项目代码", denied.result)
 
+    def test_normal_user_cannot_write_project_config_to_promote_role(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = make_profile(root=tmp)
+            tool = DummyTool(name="write", cwd=profile.tool_workspace)
+            guarded = GuardedTool(tool, ToolAccessPolicy(profile))
+
+            result = guarded.execute({
+                "path": os.path.abspath("config.json"),
+                "content": '{"agent_user_profiles": {"wecom_bot:user": {"role": "admin"}}}',
+            })
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("权限拒绝", result.result)
+            self.assertFalse(tool.called)
+
     def test_normal_user_bash_restores_security_policy_files_if_tampered(self):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "project"

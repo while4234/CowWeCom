@@ -49,6 +49,33 @@ def _wecom_group_memory_user_id(channel_type: str, chat_id: str) -> str:
     return safe_actor_slug(_wecom_group_actor_id(channel_type, chat_id))
 
 
+def _wecom_actor_id(channel_type: str, raw_user_id: str) -> str:
+    return f"{channel_type}:{raw_user_id}" if channel_type and raw_user_id else ""
+
+
+def _normalise_role(value) -> str:
+    return "admin" if str(value or "").strip().lower() == "admin" else "user"
+
+
+def _configured_admin_user_values() -> set:
+    try:
+        from config import global_config
+    except Exception:
+        global_config = {"admin_users": []}
+
+    admin_users = conf().get("agent_admin_users", []) or []
+    if isinstance(admin_users, str):
+        configured = {item.strip() for item in admin_users.split(",") if item.strip()}
+    else:
+        configured = {str(item).strip() for item in admin_users if str(item).strip()}
+    configured.update(
+        str(item).strip()
+        for item in (global_config.get("admin_users", []) or [])
+        if str(item).strip()
+    )
+    return configured
+
+
 def _read_relative_workspace_file(relative_path: str) -> str:
     relative_path = str(relative_path or "").replace("\\", "/").lstrip("/")
     if not relative_path:
@@ -489,6 +516,10 @@ class WecomBotChannel(ChatChannel):
                     "msg": SimpleNamespace(from_user_id=raw_user_id, actual_user_id=None),
                     "session_id": raw_user_id,
                 }
+            channel_type = str(context.get("channel_type") or self.channel_type or "wecom_bot")
+            context["channel_type"] = channel_type
+            context["actor_id"] = _wecom_actor_id(channel_type, raw_user_id)
+            context["actor_role"] = self._resolve_single_chat_role(raw_user_id, channel_type)
             profile = resolve_agent_user_profile(context)
             apply_profile_to_context(context, profile)
             display_name = display_name or profile.display_name or raw_user_id
@@ -518,6 +549,67 @@ class WecomBotChannel(ChatChannel):
         except Exception as e:
             logger.debug(f"[WecomBot] Social bridge user registration skipped: {e}")
 
+    @classmethod
+    def _configured_wecom_admin_actor_ids(cls, channel_type: str = "wecom_bot") -> set:
+        channel_type = str(channel_type or "wecom_bot").strip() or "wecom_bot"
+        prefix = f"{channel_type}:"
+        values = set()
+
+        values.update(item for item in _configured_admin_user_values() if item.startswith(prefix))
+
+        profiles = conf().get("agent_user_profiles", {}) or {}
+        if isinstance(profiles, dict):
+            for actor_id, profile in profiles.items():
+                if not isinstance(profile, dict):
+                    continue
+                if _normalise_role(profile.get("role")) != "admin":
+                    continue
+                actor_text = str(actor_id or "").strip()
+                platform = str(profile.get("platform") or profile.get("channel_type") or "").strip()
+                if actor_text.startswith(prefix) or platform == channel_type:
+                    values.add(actor_text)
+
+        return {value for value in values if value}
+
+    @classmethod
+    def _is_configured_wecom_admin(cls, raw_user_id: str, channel_type: str = "wecom_bot") -> bool:
+        raw_user_id = str(raw_user_id or "").strip()
+        if not raw_user_id:
+            return False
+
+        actor_id = _wecom_actor_id(channel_type, raw_user_id)
+        prefix = f"{channel_type}:"
+        candidates = {raw_user_id, actor_id}
+
+        if candidates & _configured_admin_user_values():
+            return True
+
+        profiles = conf().get("agent_user_profiles", {}) or {}
+        if not isinstance(profiles, dict):
+            return False
+        for candidate in candidates:
+            profile = profiles.get(candidate)
+            if not isinstance(profile, dict) or _normalise_role(profile.get("role")) != "admin":
+                continue
+            actor_text = str(candidate or "").strip()
+            platform = str(profile.get("platform") or profile.get("channel_type") or "").strip()
+            if (
+                actor_text == actor_id
+                or actor_text.startswith(prefix)
+                or platform == channel_type
+                or (actor_text == raw_user_id and not platform)
+            ):
+                return True
+        return False
+
+    @classmethod
+    def _resolve_single_chat_role(cls, raw_user_id: str, channel_type: str = "wecom_bot") -> str:
+        if cls._is_configured_wecom_admin(raw_user_id, channel_type):
+            return "admin"
+        if cls._configured_wecom_admin_actor_ids(channel_type):
+            return "user"
+        return "admin"
+
     @staticmethod
     def _remember_agent_user_profile(profile, raw_user_id: str, display_name: str) -> None:
         """Persist discovered WeCom users so console/user management stays in sync."""
@@ -529,11 +621,13 @@ class WecomBotChannel(ChatChannel):
 
             current = dict(profiles.get(profile.actor_id, {}) or {})
             changed = False
+            role = "admin" if _normalise_role(current.get("role")) == "admin" else (profile.role or "user")
             defaults = {
                 "display_name": display_name or raw_user_id,
                 "raw_user_id": raw_user_id,
                 "platform": "wecom_bot",
-                "role": profile.role or "user",
+                "channel_type": profile.channel_type,
+                "role": role,
                 "memory_user_id": profile.memory_user_id,
             }
             for key, value in defaults.items():

@@ -57,6 +57,8 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         self.channel._stream_states = {}
         self.channel._connected = False
         self.channel._ws = None
+        conf()["agent_admin_users"] = []
+        conf()["agent_user_profiles"] = {}
         self._save_config_patch_patcher = patch(
             "channel.wecom_bot.wecom_bot_channel._save_config_patch",
             lambda patch_data: None,
@@ -169,7 +171,7 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         self.assertEqual(registered["metadata"]["receiver"], "wecom-user-1")
         self.assertTrue(registered["metadata"]["can_active_send"])
         self.assertFalse(registered["metadata"]["is_group"])
-        self.assertEqual(conf()["agent_user_profiles"]["wecom_bot:wecom-user-1"]["role"], "user")
+        self.assertEqual(conf()["agent_user_profiles"]["wecom_bot:wecom-user-1"]["role"], "admin")
         self.assertEqual(
             conf()["agent_user_profiles"]["wecom_bot:wecom-user-1"]["memory_user_id"],
             produced[0]["memory_user_id"],
@@ -482,7 +484,7 @@ class TestWecomBotSocialBridge(unittest.TestCase):
 
         self.assertEqual(conf()["agent_user_profiles"]["wecom_bot:wecom-user-1"]["role"], "admin")
 
-    def test_enter_chat_event_registers_user_as_normal_by_default(self):
+    def test_enter_chat_event_registers_first_wecom_user_as_admin(self):
         store = FakeBridgeStore()
         service = FakeBridgeService()
 
@@ -503,7 +505,66 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         registered = store.registered[0]
         self.assertEqual(registered["actor_user_id"], "wecom_bot:fresh-user")
         self.assertEqual(registered["display_name"], "Fresh User")
-        self.assertEqual(conf()["agent_user_profiles"]["wecom_bot:fresh-user"]["role"], "user")
+        self.assertEqual(conf()["agent_user_profiles"]["wecom_bot:fresh-user"]["role"], "admin")
+
+    def test_enter_chat_event_registers_later_wecom_user_as_normal(self):
+        conf()["agent_user_profiles"] = {
+            "wecom_bot:first-user": {
+                "role": "admin",
+                "platform": "wecom_bot",
+                "channel_type": "wecom_bot",
+                "memory_user_id": "first-memory",
+            }
+        }
+        store = FakeBridgeStore()
+        service = FakeBridgeService()
+
+        with patch("agent.social_bridge.get_bridge_store", return_value=store), patch(
+            "agent.social_bridge.get_social_bridge_service",
+            return_value=service,
+        ):
+            self.channel._handle_event_callback(
+                {
+                    "body": {
+                        "event": {"eventtype": "enter_chat"},
+                        "from": {"userid": "second-user", "name": "Second User"},
+                    }
+                }
+            )
+
+        self.assertEqual(len(store.registered), 1)
+        self.assertEqual(store.registered[0]["actor_user_id"], "wecom_bot:second-user")
+        self.assertEqual(conf()["agent_user_profiles"]["wecom_bot:second-user"]["role"], "user")
+
+    def test_weixin_admin_does_not_block_first_wecom_admin(self):
+        conf()["agent_admin_users"] = ["weixin:wx-admin"]
+        conf()["agent_user_profiles"] = {
+            "weixin:wx-admin": {
+                "role": "admin",
+                "platform": "weixin",
+                "channel_type": "weixin",
+                "memory_user_id": "wx-admin-memory",
+            }
+        }
+        store = FakeBridgeStore()
+        service = FakeBridgeService()
+
+        with patch("agent.social_bridge.get_bridge_store", return_value=store), patch(
+            "agent.social_bridge.get_social_bridge_service",
+            return_value=service,
+        ):
+            self.channel._handle_event_callback(
+                {
+                    "body": {
+                        "event": {"eventtype": "enter_chat"},
+                        "from": {"userid": "fresh-wecom-user", "name": "Fresh WeCom"},
+                    }
+                }
+            )
+
+        self.assertEqual(len(store.registered), 1)
+        self.assertEqual(store.registered[0]["actor_user_id"], "wecom_bot:fresh-wecom-user")
+        self.assertEqual(conf()["agent_user_profiles"]["wecom_bot:fresh-wecom-user"]["role"], "admin")
 
     def test_channels_api_summarizes_wecom_connected_users_with_roles(self):
         class FakeStore:
