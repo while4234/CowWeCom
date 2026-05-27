@@ -134,9 +134,23 @@ class KnowledgeStorage:
         source_spans = list(source_spans)
         entities = list(entities)
         relations = list(relations)
+        old_document = self.get_document(document.id)
+        old_version_id = old_document.version_id if old_document else ""
         kb_id = document.kb_id or "kb_default"
         version_id = document.version_id or stable_version_id(document.id, document.content_hash)
         self.ensure_knowledge_base(KnowledgeBase(id=kb_id, name=kb_id))
+        if old_version_id and old_version_id != version_id:
+            self._delete_stale_visual_chunks(document.id, version_id)
+            self.conn.execute(
+                """
+                UPDATE visual_artifacts
+                SET retrievable = 0,
+                    updated_at = ?
+                WHERE document_id = ?
+                  AND version_id != ?
+                """,
+                (_now(), document.id, version_id),
+            )
         self.conn.execute(
             """
             INSERT OR REPLACE INTO documents(
@@ -405,6 +419,31 @@ class KnowledgeStorage:
             ),
         )
         self.conn.commit()
+
+    def _delete_stale_visual_chunks(self, document_id: str, current_version_id: str) -> None:
+        rows = self.conn.execute(
+            """
+            SELECT id, source_span_ids
+            FROM chunks
+            WHERE document_id = ?
+              AND version_id != ?
+              AND COALESCE(json_extract(metadata, '$.source'), '') = 'visual_analysis'
+            """,
+            (document_id, current_version_id),
+        ).fetchall()
+        chunk_ids = [row["id"] for row in rows]
+        span_ids: List[str] = []
+        for row in rows:
+            span_ids.extend(_loads(row["source_span_ids"]) or [])
+        if chunk_ids:
+            placeholders = ",".join("?" for _ in chunk_ids)
+            self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE chunk_id IN ({placeholders})", chunk_ids)
+            self.conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", chunk_ids)
+            if self.fts5_available:
+                self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
+        if span_ids:
+            placeholders = ",".join("?" for _ in span_ids)
+            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", span_ids)
 
     def update_visual_artifact_image(self, artifact_id: str, image_path: str, image_hash: str) -> None:
         self.conn.execute(

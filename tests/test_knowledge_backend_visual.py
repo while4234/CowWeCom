@@ -7,7 +7,7 @@ from agent.knowledge.backend import KnowledgeBackendConfig, KnowledgeBackendServ
 from agent.knowledge.backend.models import ExtractedDocument, DocumentPage, KnowledgeDocument, VisualAnalysisResult, VisualArtifactCandidate
 from agent.knowledge.backend.service import dispatch_admin_request
 from agent.knowledge.backend.storage import KnowledgeStorage
-from agent.knowledge.backend.visual_extractors import PyMuPDFVisualArtifactExtractor
+from agent.knowledge.backend.visual_extractors import PyMuPDFVisualArtifactExtractor, is_strict_caption_block
 
 
 def _config(tmp_path, **overrides):
@@ -99,6 +99,23 @@ class FakeRangeExtractor(FakeExtractor):
         end_page = start_page + max_pages - 1
         candidates = [candidate for candidate in self.candidates if start_page <= candidate.page <= end_page]
         return list(candidates), {"pages_scanned": self.pages_per_call, "candidates": len(candidates)}
+
+    def ensure_visual_artifact_image(self, candidate, config):
+        return candidate
+
+
+class FakeRangeSequenceExtractor:
+    def __init__(self, batches):
+        self.batches = list(batches)
+        self.calls = []
+
+    def extract_candidates_for_page_range(self, document, extracted_document, storage, config, start_page, max_pages):
+        self.calls.append((start_page, max_pages))
+        if self.batches:
+            pages_scanned, candidates = self.batches.pop(0)
+        else:
+            pages_scanned, candidates = 0, []
+        return list(candidates), {"pages_scanned": pages_scanned, "candidates": len(candidates)}
 
     def ensure_visual_artifact_image(self, candidate, config):
         return candidate
@@ -347,6 +364,22 @@ def test_visual_backends_admin_api_lists_supported_ids(monkeypatch, tmp_path):
     assert {item["id"] for item in response["backends"]} == {"current", "capi", "capi_monthly", "codex"}
 
 
+def test_visual_backends_current_availability_reflects_resolved_backend(monkeypatch, tmp_path):
+    service = _service(tmp_path)
+    from common import llm_backend_router
+
+    monkeypatch.setattr(llm_backend_router, "get_current_backend", lambda: "capi")
+    monkeypatch.setattr(llm_backend_router, "get_effective_model", lambda: "gpt-5.5")
+    monkeypatch.setattr(llm_backend_router, "get_effective_openai_api_config", lambda backend: {"api_key": "", "model": ""})
+    monkeypatch.setattr(llm_backend_router, "get_codex_provider_config", lambda: {"model": "gpt-5.5", "auth_file": ""})
+    monkeypatch.setattr("agent.knowledge.backend.service._visual_backend_available", lambda backend: False if backend == "capi" else True)
+
+    response = service.get_visual_analysis_backends()
+    current = next(item for item in response["backends"] if item["id"] == "current")
+
+    assert current["available"] is False
+
+
 def test_visual_build_progress_fields_and_failed_not_has_more(tmp_path):
     service = _service(tmp_path)
     document_id, version_id = _ingest(service)
@@ -392,6 +425,37 @@ def test_visual_build_prepares_pages_incrementally(tmp_path):
     assert second["prepare"]["prepared_pages"] >= 2
     assert first["processed"] == 1
     assert second["processed"] == 1
+
+
+def test_visual_build_continues_when_prepare_scans_pages_without_candidates(tmp_path):
+    service = _service(tmp_path, visual_analysis={"prepare_pages_per_request": 3})
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    storage.conn.execute(
+        "UPDATE documents SET metadata = ? WHERE id = ?",
+        (json.dumps({"page_count": 6}), document_id),
+    )
+    storage.conn.commit()
+    candidate = _candidate(document_id, version_id, 4)
+    service._visual_extractor = FakeRangeSequenceExtractor([(3, []), (3, [candidate])])
+    service._visual_analyzer = QueueAnalyzer([_high_result("late_candidate_visualfact")])
+
+    first = service.build_visual_knowledge(document_id=document_id, limit=1)
+    advanced_prepare = (
+        first["prepared_pages_delta"] > 0
+        or first["scanned_pages_delta"] > 0
+        or first["prepare"]["prepared_pages"] > 0
+    )
+    second = service.build_visual_knowledge(document_id=document_id, limit=1)
+
+    assert first["has_more"] is True
+    assert first["processed"] == 0
+    assert first["prepared_pages_delta"] == 3
+    assert first["prepared_artifacts_delta"] == 0
+    assert advanced_prepare is True
+    assert second["processed"] == 1
+    assert second["succeeded"] == 1
+    assert service.search("late_candidate_visualfact", limit=5)
 
 
 def test_force_build_does_not_claim_same_artifact_twice_in_one_batch(tmp_path):
@@ -453,3 +517,111 @@ def test_visual_extractor_skips_toc_pages_but_keeps_strict_caption(tmp_path):
     assert report["skipped_toc_pages"] == 1
     assert all(candidate.page != 1 for candidate in candidates)
     assert any(candidate.page == 2 and "Figure 5-34" in candidate.caption for candidate in candidates)
+
+
+def test_visual_extractor_rejects_body_figure_references(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "references.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    page.insert_text((72, 72), "Figure 1-1 demonstrates an SoC package integration example.")
+    page.insert_text((72, 105), "Table 1-3 gives a summary of supported modes.")
+    page.insert_text((72, 138), "Figure 3-6 to Figure 3-11 represent examples of valid configurations.")
+    page.insert_text((72, 455), "Figure 5-34.")
+    page.insert_text((72, 478), "Standard Package x16 interface: Signal exit order")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    config = _config(tmp_path, ingest={"allowed_extensions": [".pdf"]})
+    document = KnowledgeDocument(
+        id="doc",
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        size=pdf_path.stat().st_size,
+        content_hash="hash",
+        status="ready",
+        version_id="v1",
+    )
+    extracted = ExtractedDocument(
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[
+            DocumentPage(
+                1,
+                "Figure 1-1 demonstrates an SoC package integration example.\n"
+                "Table 1-3 gives a summary of supported modes.\n"
+                "Figure 3-6 to Figure 3-11 represent examples of valid configurations.\n"
+                "Figure 5-34.\n"
+                "Standard Package x16 interface: Signal exit order",
+            )
+        ],
+    )
+
+    candidates, _ = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        config,
+        start_page=1,
+        max_pages=1,
+    )
+
+    captions = "\n".join(candidate.caption for candidate in candidates)
+    assert not is_strict_caption_block("Figure 1-1 demonstrates an SoC package integration example.")
+    assert not is_strict_caption_block("Table 1-3 gives a summary of supported modes.")
+    assert not is_strict_caption_block("Figure 3-6 to Figure 3-11 represent examples of valid configurations.")
+    assert "Figure 5-34" in captions
+    assert "demonstrates" not in captions
+    assert "gives a summary" not in captions
+
+
+def test_visual_extractor_dedupes_image_inside_caption_region(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "caption-image.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    image_doc = fitz.open()
+    image_page = image_doc.new_page(width=120, height=90)
+    image_page.draw_rect(fitz.Rect(10, 10, 110, 80), color=(1, 0, 0), fill=(1, 0, 0))
+    image_bytes = image_doc.convert_to_pdf()
+    image_doc.close()
+    page.show_pdf_page(fitz.Rect(120, 230, 480, 500), fitz.open("pdf", image_bytes), 0)
+    page.insert_text((72, 455), "Figure 5-34. Standard Package x16 interface: Signal exit order")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    config = _config(
+        tmp_path,
+        ingest={"allowed_extensions": [".pdf"]},
+        visual_analysis={"max_image_candidates_per_page": 3},
+    )
+    document = KnowledgeDocument(
+        id="doc",
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        size=pdf_path.stat().st_size,
+        content_hash="hash",
+        status="ready",
+        version_id="v1",
+    )
+    extracted = ExtractedDocument(
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[DocumentPage(1, "Figure 5-34. Standard Package x16 interface: Signal exit order")],
+    )
+
+    candidates, _ = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        config,
+        start_page=1,
+        max_pages=1,
+    )
+
+    assert any(candidate.caption for candidate in candidates)
+    assert not any(candidate.artifact_type == "image" and not candidate.caption for candidate in candidates)

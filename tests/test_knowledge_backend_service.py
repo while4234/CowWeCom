@@ -126,7 +126,7 @@ def test_backend_exports_indexed_document_to_visible_markdown_library(tmp_path):
     assert "AMBA AXI4-Stream Test" in exported_text
     assert "TVALID and TREADY" in exported_text
     assert "Source span IDs" in exported_text
-    assert (tmp_path / "knowledge" / "protocols" / "axi4_stream" / "index.md").is_file()
+    assert (tmp_path / "knowledge" / "documents" / "axi4_stream" / "index.md").is_file()
 
 
 def test_single_document_export_keeps_all_protocol_indexes(tmp_path):
@@ -164,14 +164,52 @@ def test_single_document_export_keeps_all_protocol_indexes(tmp_path):
     ucie_service.close()
 
     assert export["documents_exported"] == 1
-    root_index = (tmp_path / "knowledge" / "protocols" / "index.md").read_text(encoding="utf-8")
+    root_index = (tmp_path / "knowledge" / "documents" / "index.md").read_text(encoding="utf-8")
     assert "[axi4_stream](axi4_stream/index.md) - 1 document(s)" in root_index
     assert "[ucie_1_1](ucie_1_1/index.md) - 1 document(s)" in root_index
 
-    axi_index = (tmp_path / "knowledge" / "protocols" / "axi4_stream" / "index.md").read_text(encoding="utf-8")
-    ucie_index = (tmp_path / "knowledge" / "protocols" / "ucie_1_1" / "index.md").read_text(encoding="utf-8")
+    axi_index = (tmp_path / "knowledge" / "documents" / "axi4_stream" / "index.md").read_text(encoding="utf-8")
+    ucie_index = (tmp_path / "knowledge" / "documents" / "ucie_1_1" / "index.md").read_text(encoding="utf-8")
     assert "AMBA AXI4-Stream Test" in axi_index
     assert "UCIe Test" in ucie_index
+
+
+def test_export_uses_documents_category_not_protocols(tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "backend-data"),
+                "default_kb_id": "sv_book",
+                "ingest": {"allowed_extensions": [".md"], "document_library_root": str(tmp_path)},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    result = service.ingest_upload_bytes(
+        "systemverilog.md",
+        b"# SystemVerilog Guide\n\nInterfaces and classes support verification code reuse.",
+        title="SystemVerilog Guide",
+    )
+    document_id = result["document"]["id"]
+
+    export = service.export_document_library(document_id=document_id)
+
+    assert export["status"] == "success"
+    assert export["documents"][0]["path"].startswith("knowledge/documents/sv_book/")
+    exported_text = (tmp_path / export["documents"][0]["path"]).read_text(encoding="utf-8")
+    root_index = (tmp_path / "knowledge" / "documents" / "index.md").read_text(encoding="utf-8")
+    kb_index = (tmp_path / "knowledge" / "documents" / "sv_book" / "index.md").read_text(encoding="utf-8")
+    combined = "\n".join([exported_text, root_index, kb_index])
+    assert "Protocol Knowledge Libraries" not in combined
+    assert "Protocol Knowledge Base" not in combined
+    assert "protocol-specific" not in combined
+    assert "# Local Document Knowledge Libraries" in root_index
+    assert "# Local Document Knowledge Base: sv_book" in kb_index
+    assert "document-specific questions" in exported_text
+    assert not (tmp_path / "knowledge" / "protocols").exists()
 
 
 def test_protocol_markdown_source_chunks_skip_visual_analysis_chunks():
@@ -340,6 +378,95 @@ def test_reingest_preserves_visual_chunks_and_fts(tmp_path):
     assert storage.list_visual_artifacts(document_id=document_id)[0]["analysis_status"] == "succeeded"
     assert storage.conn.execute("SELECT COUNT(*) FROM visual_artifact_chunks").fetchone()[0] >= 1
     assert service.search("fts_visual_preserve_fact", limit=5)
+
+
+def test_reingest_same_path_new_version_removes_old_visual_chunks(tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "backend-data"),
+                "ingest": {"allowed_extensions": [".md"]},
+                "visual_analysis": {"enabled": True},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    doc_path = tmp_path / "doc.md"
+    doc_path.write_text("# Doc\n\nOriginal ordinary text.", encoding="utf-8")
+    service.ingest_path(doc_path)
+    document = next(item for item in service.list_documents() if item["title"] == "doc")
+    document_id = document["id"]
+    old_version_id = document["version_id"]
+    storage = service._backend._get_storage(writable=True)
+    artifact = VisualArtifactCandidate(
+        id="visual_old_version_1",
+        document_id=document_id,
+        version_id=old_version_id,
+        kb_id="kb_default",
+        artifact_type="figure",
+        page=1,
+        label="Figure 1",
+        caption="Figure 1. Old visual",
+        bbox={"x0": 1, "y0": 2, "x1": 3, "y1": 4},
+        image_path="",
+        image_hash="old-prehash",
+        context_hash="ctx",
+        parser="fake",
+        parser_confidence=0.9,
+    )
+    storage.upsert_visual_artifact(artifact)
+    visual_chunk = KnowledgeChunk(
+        id="visual_chunk_old_version_1",
+        document_id=document_id,
+        ordinal=99,
+        page_start=1,
+        page_end=1,
+        text="[视觉图表]\nold_visual_fact",
+        kb_id="kb_default",
+        version_id=old_version_id,
+        source_span_ids=["visual_span_old_version_1"],
+        metadata={"source": "visual_analysis"},
+    )
+    visual_span = SourceSpan(
+        id="visual_span_old_version_1",
+        document_id=document_id,
+        version_id=old_version_id,
+        source_file=str(doc_path),
+        page_start=1,
+        page_end=1,
+        text="old_visual_fact",
+    )
+    storage.append_visual_chunks(document_id, old_version_id, artifact.id, [visual_chunk], [visual_span])
+    storage.complete_visual_artifact_success(
+        artifact.id,
+        VisualAnalysisResult(
+            artifact_type="figure",
+            title="Old",
+            summary="old_visual_fact",
+            structured_markdown="",
+            key_facts=[{"fact": "old_visual_fact", "confidence": 0.9}],
+            confidence={"overall": 0.9, "ocr": 0.9, "structure": 0.9, "semantic": 0.9},
+            should_index=True,
+        ).to_dict(),
+        0.9,
+        retrievable=True,
+    )
+    assert service.search("old_visual_fact", limit=5)
+
+    doc_path.write_text("# Doc\n\nReplacement ordinary text.", encoding="utf-8")
+    service.ingest_path(doc_path)
+    updated = next(item for item in service.list_documents() if item["id"] == document_id)
+
+    assert updated["version_id"] != old_version_id
+    assert service.search("old_visual_fact", limit=5) == []
+    chunks = storage.list_chunks(document_id)
+    assert not any(chunk.version_id == old_version_id and chunk.metadata.get("source") == "visual_analysis" for chunk in chunks)
+    old_artifact = storage.get_visual_artifact(artifact.id)
+    assert old_artifact["retrievable"] is False
+    assert any("Replacement ordinary text" in chunk.text for chunk in chunks if chunk.metadata.get("source") != "visual_analysis")
 
 
 def test_backend_generates_validated_llm_study_document(tmp_path, monkeypatch):

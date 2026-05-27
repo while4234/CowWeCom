@@ -713,6 +713,7 @@ class OpenAICompatibleBot:
             vision_model = model or api_config.get("model", "gpt-4o")
             api_key = api_config.get("api_key", "")
             api_base = (api_config.get("api_base") or "https://api.openai.com/v1").rstrip("/")
+            request_timeout = self._resolve_vision_timeout(api_config)
 
             messages = [{
                 "role": "user",
@@ -745,7 +746,7 @@ class OpenAICompatibleBot:
                 events = client.responses(
                     api_key=api_key,
                     api_base=self._responses_api_base(api_base),
-                    timeout=60,
+                    timeout=request_timeout,
                     stream=True,
                     **response_payload,
                 )
@@ -762,7 +763,7 @@ class OpenAICompatibleBot:
                 data = client.chat_completions(
                     api_key=api_key,
                     api_base=api_base,
-                    timeout=60,
+                    timeout=request_timeout,
                     stream=False,
                     **payload,
                 )
@@ -780,3 +781,16 @@ class OpenAICompatibleBot:
         except Exception as e:
             logger.error(f"[{self.__class__.__name__}] call_vision error: {e}")
             return {"error": True, "message": str(e)}
+
+    def _resolve_vision_timeout(self, api_config: Dict[str, Any]) -> int:
+        try:
+            from config import conf
+
+            configured = api_config.get("request_timeout_seconds") or conf().get("request_timeout") or 120
+        except Exception:
+            configured = api_config.get("request_timeout_seconds") or 120
+        try:
+            timeout = int(float(configured))
+        except Exception:
+            timeout = 120
+        return max(30, min(600, timeout))

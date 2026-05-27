@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .models import DocumentPage
-from .visual_extractors import STRICT_CAPTION_RE, _is_toc_or_list_page
+from .visual_extractors import (
+    is_caption_label_line,
+    is_strict_caption_block,
+    normalize_caption_text,
+    _is_toc_or_list_page,
+)
 
 
 _SIGNALISH_RE = re.compile(r"^[A-Za-z0-9_./:\-\[\](),+<>|]+$")
@@ -84,7 +89,7 @@ def is_visual_noise_line(line: str) -> bool:
     """Return True for lines that are clearly PDF chart-internal noise."""
 
     text = _normalize_line(line)
-    if not text or STRICT_CAPTION_RE.search(text):
+    if not text or is_strict_caption_block(text) or is_caption_label_line(text):
         return False
 
     tokens = text.split()
@@ -153,7 +158,7 @@ def _sanitize_pdf_pages_with_pymupdf(
                 if not text:
                     continue
                 in_visual_region = _rect_overlaps_any(block["rect"], visual_regions, threshold=0.55)
-                is_caption_block = index in caption_block_indexes or bool(STRICT_CAPTION_RE.search(text))
+                is_caption_block = index in caption_block_indexes or is_strict_caption_block(text)
                 if (
                     in_visual_region
                     and not is_caption_block
@@ -167,7 +172,7 @@ def _sanitize_pdf_pages_with_pymupdf(
                 cleaned_lines, removed_lines, kept_caption_lines = _sanitize_lines(
                     text,
                     strip_visual_noise_lines=strip_visual_noise_lines,
-                    in_visual_region=in_visual_region,
+                    in_visual_region=in_visual_region and not is_caption_block,
                 )
                 page_report["removed_lines"] += removed_lines
                 page_report["kept_caption_lines"] += kept_caption_lines
@@ -234,12 +239,23 @@ def _sanitize_lines(
     kept: List[str] = []
     removed = 0
     kept_caption = 0
+    keep_next_caption_title = False
     for raw_line in str(text or "").splitlines():
         line = _normalize_line(raw_line)
         if not line:
             continue
-        if STRICT_CAPTION_RE.search(line):
+        if keep_next_caption_title:
             kept.append(line)
+            kept_caption += 1
+            keep_next_caption_title = False
+            continue
+        if is_caption_label_line(line):
+            kept.append(line)
+            kept_caption += 1
+            keep_next_caption_title = True
+            continue
+        if is_strict_caption_block(line):
+            kept.append(normalize_caption_text(line))
             kept_caption += 1
             continue
         if strip_visual_noise_lines and is_visual_noise_line(line):
@@ -284,10 +300,13 @@ def _caption_regions(page_rect: Any, blocks: List[Dict[str, Any]]) -> Tuple[List
     regions: List[Any] = []
     caption_indexes: set[int] = set()
     for index, block in enumerate(blocks):
-        text = block["text"]
-        if not STRICT_CAPTION_RE.search(text):
+        text = _caption_text_from_block(blocks, index)
+        if not is_strict_caption_block(text):
             continue
         caption_indexes.add(index)
+        original_lines = [_normalize_line(line) for line in str(block["text"] or "").splitlines() if _normalize_line(line)]
+        if original_lines and is_caption_label_line(original_lines[0]) and len(original_lines) < 2 and index + 1 < len(blocks):
+            caption_indexes.add(index + 1)
         caption_rect = block["rect"]
         height = max(page_rect.height * 0.22, caption_rect.height * 7)
         top = max(page_rect.y0, caption_rect.y0 - height * 0.65)
@@ -358,7 +377,7 @@ def _looks_like_concatenated_signal_line(text: str) -> bool:
 
 def _is_visual_region_label_line(line: str) -> bool:
     text = _normalize_line(line)
-    if not text or STRICT_CAPTION_RE.search(text) or _is_section_heading(text):
+    if not text or is_caption_label_line(text) or is_strict_caption_block(text) or _is_section_heading(text):
         return False
     tokens = text.split()
     if len(tokens) <= 4 and len(text) <= 48:
@@ -374,7 +393,7 @@ def _is_visual_region_label_line(line: str) -> bool:
 
 def _is_section_heading(text: str) -> bool:
     first_line = _normalize_line(str(text or "").splitlines()[0] if text else "")
-    if not first_line or len(first_line) > 180 or STRICT_CAPTION_RE.search(first_line):
+    if not first_line or len(first_line) > 180 or is_caption_label_line(first_line) or is_strict_caption_block(first_line):
         return False
     if _SECTION_HEADING_RE.match(first_line):
         return True
@@ -391,3 +410,14 @@ def _is_natural_language_block(text: str) -> bool:
     signalish_tokens = [_is_signalish_token(token) for token in compact.split()]
     signalish_ratio = sum(1 for item in signalish_tokens if item) / max(1, len(signalish_tokens))
     return signalish_ratio < 0.45
+
+
+def _caption_text_from_block(blocks: List[Dict[str, Any]], index: int) -> str:
+    text = str(blocks[index].get("text") or "")
+    lines = [_normalize_line(line) for line in text.splitlines() if _normalize_line(line)]
+    if lines and is_caption_label_line(lines[0]) and len(lines) < 2 and index + 1 < len(blocks):
+        next_text = str(blocks[index + 1].get("text") or "")
+        next_lines = [_normalize_line(line) for line in next_text.splitlines() if _normalize_line(line)]
+        if next_lines:
+            return f"{text.rstrip()}\n{next_lines[0]}"
+    return text

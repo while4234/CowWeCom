@@ -73,6 +73,7 @@ DEFAULT_VISUAL_ANALYSIS_CONFIG: Dict[str, Any] = {
     "page_render_dpi": 180,
     "crop_padding_px": 12,
     "max_image_long_edge": 1800,
+    "max_image_candidates_per_page": 3,
     "candidate_min_area_ratio": 0.015,
     "include_page_context": True,
     "context_before_chars": 1200,
@@ -102,6 +103,7 @@ class IngestConfig:
     allowed_import_roots: List[Path] = field(default_factory=list)
     max_file_size_mb: int = 500
     document_library_root: Optional[Path] = None
+    document_library_category: str = "documents"
     sanitize_pdf_visual_text: bool = True
     sanitize_pdf_visual_regions: bool = True
     sanitize_pdf_noise_lines: bool = True
@@ -155,6 +157,7 @@ class KnowledgeBackendConfig:
                 "allowed_import_roots": _csv(os.environ.get("KNOWLEDGE_BACKEND_ALLOWED_IMPORT_ROOTS")),
                 "max_file_size_mb": int(os.environ.get("KNOWLEDGE_BACKEND_MAX_FILE_SIZE_MB") or 500),
                 "document_library_root": os.environ.get("KNOWLEDGE_BACKEND_DOCUMENT_LIBRARY_ROOT") or "",
+                "document_library_category": os.environ.get("KNOWLEDGE_BACKEND_DOCUMENT_LIBRARY_CATEGORY") or "documents",
                 "sanitize_pdf_visual_text": parse_knowledge_backend_enabled(
                     os.environ.get("KNOWLEDGE_BACKEND_SANITIZE_PDF_VISUAL_TEXT", "true")
                 ),
@@ -282,6 +285,9 @@ class KnowledgeBackendConfig:
         allowed = ingest_raw.get("allowed_extensions") or [".pdf", ".docx", ".txt", ".md"]
         allowed_import_roots = ingest_raw.get("allowed_import_roots") or []
         document_library_root = ingest_raw.get("document_library_root") or ingest_raw.get("docs_root") or ""
+        document_library_category = _normalize_document_library_category(
+            ingest_raw.get("document_library_category") or "documents"
+        )
         return cls(
             enabled=parse_knowledge_backend_enabled(mapping.get("enabled")),
             admin_api_enabled=parse_knowledge_backend_enabled(mapping.get("admin_api_enabled", True)),
@@ -302,6 +308,7 @@ class KnowledgeBackendConfig:
                 allowed_import_roots=[Path(str(root)).expanduser() for root in allowed_import_roots],
                 max_file_size_mb=int(ingest_raw.get("max_file_size_mb") or 500),
                 document_library_root=Path(str(document_library_root)).expanduser() if document_library_root else None,
+                document_library_category=document_library_category,
                 sanitize_pdf_visual_text=parse_knowledge_backend_enabled(
                     ingest_raw.get("sanitize_pdf_visual_text", True)
                 ),
@@ -522,7 +529,7 @@ class KnowledgeBackendService:
                 "kb_id": document.kb_id,
                 "doc_type": document.doc_type,
                 "version_id": document.version_id,
-                "document_library_path": _document_library_path(document),
+                "document_library_path": _document_library_path(document, self.config),
                 "metadata": document.metadata,
             }
             for document in storage.list_documents()
@@ -557,6 +564,9 @@ class KnowledgeBackendService:
             documents = [document for document in documents if document.kb_id == kb_id]
         documents = [document for document in documents if (document.doc_type or "document") == "document"]
         prepared = 0
+        prepared_pages_delta = 0
+        prepared_artifacts_delta = 0
+        scanned_pages_delta = 0
         errors: List[str] = []
         visual_config = self.config.visual_analysis or {}
         pages_per_request = max(1, int(max_pages or visual_config.get("prepare_pages_per_request") or 3))
@@ -616,6 +626,9 @@ class KnowledgeBackendService:
                     storage.upsert_visual_artifact(candidate)
                     prepared += 1
                 scanned_pages = max(0, int(prepare_report.get("pages_scanned") or 0))
+                prepared_pages_delta += scanned_pages
+                prepared_artifacts_delta += len(candidates)
+                scanned_pages_delta += scanned_pages
                 next_page = start_page + scanned_pages
                 prepared_pages = min(total_pages, int(state.get("prepared_pages") or 0) + scanned_pages)
                 prepared_artifacts = int(state.get("prepared_artifacts") or 0) + len(candidates)
@@ -647,6 +660,9 @@ class KnowledgeBackendService:
             "document_id": document_id or "",
             "kb_id": kb_id or "",
             "prepared": prepared,
+            "prepared_pages_delta": prepared_pages_delta,
+            "prepared_artifacts_delta": prepared_artifacts_delta,
+            "scanned_pages_delta": scanned_pages_delta,
             "errors": errors,
             "prepare": prepare_stats,
             **stats,
@@ -698,6 +714,9 @@ class KnowledgeBackendService:
         )
         processed = succeeded = low_confidence = failed = 0
         prepared = 0
+        prepared_pages_delta = 0
+        prepared_artifacts_delta = 0
+        scanned_pages_delta = 0
         processed_artifact_ids: set[str] = set()
 
         for _ in range(batch_limit):
@@ -715,6 +734,9 @@ class KnowledgeBackendService:
             if artifact is None and (prepare.get("status") != "done" or stats["total"] == 0):
                 prepare_result = self.prepare_visual_artifacts(document_id=document_id, kb_id=kb_id, force=False)
                 prepared += int(prepare_result.get("prepared") or 0)
+                prepared_pages_delta += int(prepare_result.get("prepared_pages_delta") or 0)
+                prepared_artifacts_delta += int(prepare_result.get("prepared_artifacts_delta") or 0)
+                scanned_pages_delta += int(prepare_result.get("scanned_pages_delta") or 0)
                 stats = storage.visual_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
                 prepare = storage.visual_prepare_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
                 artifact = storage.claim_next_visual_artifact(
@@ -750,6 +772,9 @@ class KnowledgeBackendService:
             "kb_id": kb_id or "",
             "analysis_backend": effective_backend,
             "prepared": prepared,
+            "prepared_pages_delta": prepared_pages_delta,
+            "prepared_artifacts_delta": prepared_artifacts_delta,
+            "scanned_pages_delta": scanned_pages_delta,
             "processed": processed,
             "succeeded": succeeded,
             "low_confidence": low_confidence,
@@ -821,6 +846,7 @@ class KnowledgeBackendService:
 
         visual_config = self.config.visual_analysis or {}
         current_backend = llm_backend_router.get_current_backend()
+        resolved_current = resolve_visual_analysis_backend("current")
         effective_model = llm_backend_router.get_effective_model()
         default_analysis_backend = normalize_visual_analysis_backend(visual_config.get("analysis_backend") or "current")
 
@@ -828,48 +854,29 @@ class KnowledgeBackendService:
             routed = llm_backend_router.get_effective_openai_api_config(backend)
             return str(routed.get("model") or "")
 
-        def capi_available(backend: str) -> bool:
-            from config import conf
-
-            if backend == "capi_monthly" and llm_backend_router.has_capi_monthly_credentials():
-                return True
-            if backend == "capi" and llm_backend_router.has_capi_credentials("capi"):
-                return True
-            return _openai_backend_effective_available(backend, llm_backend_router, conf)
-
-        def codex_available() -> bool:
-            try:
-                provider = llm_backend_router.get_codex_provider_config()
-                from models.codex.codex_auth import CodexAuthCredentialSource
-
-                CodexAuthCredentialSource(provider.get("auth_file") or None).load()
-                return True
-            except Exception:
-                return False
-
         backends = [
             {
                 "id": "current",
                 "label": f"当前后端：{current_backend}",
-                "available": True,
+                "available": _visual_backend_available(resolved_current),
                 "model": effective_model,
             },
             {
                 "id": "capi",
                 "label": "CAPI",
-                "available": capi_available("capi"),
+                "available": _visual_backend_available("capi"),
                 "model": capi_model("capi"),
             },
             {
                 "id": "capi_monthly",
                 "label": "CAPI 月卡",
-                "available": capi_available("capi_monthly"),
+                "available": _visual_backend_available("capi_monthly"),
                 "model": capi_model("capi_monthly"),
             },
             {
                 "id": "codex",
                 "label": "Codex",
-                "available": codex_available(),
+                "available": _visual_backend_available("codex"),
                 "model": str(llm_backend_router.get_codex_provider_config().get("model") or "gpt-5.5"),
             },
         ]
@@ -978,27 +985,9 @@ class KnowledgeBackendService:
     def _ensure_visual_backend_available(self, backend: str) -> None:
         if not isinstance(self._visual_analyzer, VisualAnalyzer):
             return
-        from common import llm_backend_router
-        from config import conf
-
         normalized = normalize_visual_analysis_backend(backend)
-        if normalized == "codex":
-            try:
-                provider = llm_backend_router.get_codex_provider_config()
-                from models.codex.codex_auth import CodexAuthCredentialSource
-
-                CodexAuthCredentialSource(provider.get("auth_file") or None).load()
-                return
-            except Exception as exc:
-                raise RuntimeError(f"selected visual analysis backend is unavailable: codex ({exc})") from exc
-        if normalized == "capi_monthly":
-            if llm_backend_router.has_capi_monthly_credentials() or _openai_backend_effective_available("capi_monthly", llm_backend_router, conf):
-                return
-            raise RuntimeError("selected visual analysis backend is unavailable: capi_monthly")
-        if normalized == "capi":
-            if llm_backend_router.has_capi_credentials("capi") or _openai_backend_effective_available("capi", llm_backend_router, conf):
-                return
-            raise RuntimeError("selected visual analysis backend is unavailable: capi")
+        if _visual_backend_available(normalized):
+            return
         raise RuntimeError(f"selected visual analysis backend is unavailable: {normalized}")
 
     def export_document_library(self, document_id: str = "") -> Dict[str, Any]:
@@ -1025,7 +1014,7 @@ class KnowledgeBackendService:
                 version_id=document.version_id,
                 limit=1000,
             )
-            rel_path = _write_protocol_document_page(document_root, document, chunks, visual_artifacts)
+            rel_path = _write_protocol_document_page(self.config, document_root, document, chunks, visual_artifacts)
             item = {
                 "document_id": document.id,
                 "title": document.title,
@@ -1036,11 +1025,11 @@ class KnowledgeBackendService:
             }
             exported.append(item)
 
-        index_by_kb = _protocol_index_documents_by_kb(document_root, all_documents)
+        index_by_kb = _protocol_index_documents_by_kb(self.config, document_root, all_documents)
         kb_index_files = []
         for kb_id, items in sorted(index_by_kb.items()):
-            kb_index_files.append(_write_protocol_kb_index(document_root, kb_id, items))
-        root_index = _write_protocol_root_index(document_root, index_by_kb)
+            kb_index_files.append(_write_protocol_kb_index(self.config, document_root, kb_id, items))
+        root_index = _write_protocol_root_index(self.config, document_root, index_by_kb)
         files = [item["path"] for item in exported] + kb_index_files + [root_index]
         return {
             "status": "success",
@@ -1048,6 +1037,7 @@ class KnowledgeBackendService:
             "document_library_root": str(document_root),
             "files": files,
             "documents": exported,
+            "legacy_protocol_exports_detected": _legacy_protocol_exports_detected(document_root),
         }
 
     def generate_llm_study_document(
@@ -1112,7 +1102,7 @@ class KnowledgeBackendService:
             }
 
         document_root = _document_library_root(self.config)
-        rel_path = _write_llm_study_document_page(document_root, source_document, llm_text)
+        rel_path = _write_llm_study_document_page(self.config, document_root, source_document, llm_text)
         report = {
             "status": "success",
             "source_document_id": source_document.id,
@@ -1386,7 +1376,7 @@ def _build_llm_study_prompt(document: KnowledgeDocument, chunks: List[KnowledgeC
             )
         )
     source_packet = "\n\n---\n\n".join(source_blocks)
-    return f"""你是协议知识库的学习文档生成器。请只基于下面的 SOURCE PACKET 生成中文 Markdown 学习文档，禁止补充来源中没有的信息。
+    return f"""你是技术文档知识库的学习文档生成器。请只基于下面的 SOURCE PACKET 生成中文 Markdown 学习文档，禁止补充来源中没有的信息，并根据来源内容自适应组织重点。
 
 目标文档：{document.title}
 知识库：{document.kb_id}
@@ -1394,8 +1384,8 @@ def _build_llm_study_prompt(document: KnowledgeDocument, chunks: List[KnowledgeC
 硬性要求：
 1. 每一个事实性要点都必须引用至少一个原始 source span，格式必须原样写成 `source_span:<id>`。
 2. 不要把 source span 当成装饰；如果某个结论不能从 SOURCE PACKET 支撑，请写“来源片段未覆盖”。
-3. 输出结构必须包含：协议定位、信号速查、握手与传输规则、Packet/Byte Qualifier、互连与路由、验证关注点、微信问答高频问题、Source Map。
-4. 保留英文术语，例如 TVALID、TREADY、TDATA、TKEEP、TSTRB、TLAST、TID、TDEST、TUSER。
+3. 输出结构必须包含：文档定位、核心概念与术语、关键规则/机制、表格与图示要点、接口/信号/代码示例（若来源中存在）、实现/验证/调试关注点（若来源中存在）、高频问答、Source Map。
+4. 保留来源中的英文术语、接口名、信号名、代码符号、章节编号和表/图编号；不要强制生成协议专属章节。
 5. 语言要像给硬件验证工程师看的学习文档：清楚、分层、可直接用于提问和复习。
 
 SOURCE PACKET:
@@ -1428,7 +1418,7 @@ def _call_llm_for_study_document(prompt: str, config: KnowledgeBackendConfig) ->
             {
                 "role": "system",
                 "content": (
-                    "Generate source-grounded protocol study notes. "
+                    "Generate source-grounded technical document study notes. "
                     "Never invent facts outside the provided source packet."
                 ),
             },
@@ -1496,30 +1486,35 @@ def _sanitize_invalid_llm_source_refs(markdown_text: str, invalid_refs: List[str
     return text.rstrip() + note
 
 
-def _write_llm_study_document_page(workspace_root: Path, document: KnowledgeDocument, markdown_text: str) -> str:
-    rel_path = _llm_study_rel_path(document)
+def _write_llm_study_document_page(
+    config: KnowledgeBackendConfig,
+    workspace_root: Path,
+    document: KnowledgeDocument,
+    markdown_text: str,
+) -> str:
+    rel_path = _llm_study_rel_path(config, document)
     target_dir = _workspace_path(workspace_root, rel_path.parent)
     target_dir.mkdir(parents=True, exist_ok=True)
     _workspace_path(workspace_root, rel_path).write_text(markdown_text.rstrip() + "\n", encoding="utf-8")
     return rel_path.as_posix()
 
 
-def _llm_study_rel_path(document: KnowledgeDocument) -> Path:
+def _llm_study_rel_path(config: KnowledgeBackendConfig, document: KnowledgeDocument) -> Path:
     return (
         Path("knowledge")
-        / "protocols"
+        / _document_library_category(config)
         / _slug(document.kb_id or "kb_default")
         / f"{_slug(document.title or document.id)}-{document.id[:8]}-llm-study.md"
     )
 
 
-def _document_library_path(document: KnowledgeDocument) -> str:
+def _document_library_path(document: KnowledgeDocument, config: Optional[KnowledgeBackendConfig] = None) -> str:
     metadata_path = ""
     if isinstance(document.metadata, dict):
         metadata_path = str(document.metadata.get("document_library_path") or "")
     if metadata_path:
         return metadata_path
-    return _protocol_document_rel_path(document).as_posix()
+    return _protocol_document_rel_path(config or KnowledgeBackendConfig(ingest=IngestConfig()), document).as_posix()
 
 
 def _write_llm_study_report(
@@ -1542,12 +1537,13 @@ def _trim_for_prompt(value: str, max_chars: int) -> str:
 
 
 def _write_protocol_document_page(
+    config: KnowledgeBackendConfig,
     workspace_root: Path,
     document: KnowledgeDocument,
     chunks: List[KnowledgeChunk],
     visual_artifacts: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
-    rel_path = _protocol_document_rel_path(document)
+    rel_path = _protocol_document_rel_path(config, document)
     rel_dir = rel_path.parent
     target_dir = _workspace_path(workspace_root, rel_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -1559,13 +1555,18 @@ def _write_protocol_document_page(
     return rel_path.as_posix()
 
 
-def _write_protocol_kb_index(workspace_root: Path, kb_id: str, documents: List[Dict[str, Any]]) -> str:
-    rel_dir = Path("knowledge") / "protocols" / _slug(kb_id or "kb_default")
+def _write_protocol_kb_index(
+    config: KnowledgeBackendConfig,
+    workspace_root: Path,
+    kb_id: str,
+    documents: List[Dict[str, Any]],
+) -> str:
+    rel_dir = Path("knowledge") / _document_library_category(config) / _slug(kb_id or "kb_default")
     target_dir = _workspace_path(workspace_root, rel_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     rel_path = rel_dir / "index.md"
     lines = [
-        f"# Protocol Knowledge Base: {kb_id or 'kb_default'}",
+        f"# Local Document Knowledge Base: {kb_id or 'kb_default'}",
         "",
         "This page is generated from the local structured knowledge backend.",
         "",
@@ -1580,10 +1581,14 @@ def _write_protocol_kb_index(workspace_root: Path, kb_id: str, documents: List[D
     return rel_path.as_posix()
 
 
-def _protocol_index_documents_by_kb(workspace_root: Path, documents: List[KnowledgeDocument]) -> Dict[str, List[Dict[str, Any]]]:
+def _protocol_index_documents_by_kb(
+    config: KnowledgeBackendConfig,
+    workspace_root: Path,
+    documents: List[KnowledgeDocument],
+) -> Dict[str, List[Dict[str, Any]]]:
     documents_by_kb: Dict[str, List[Dict[str, Any]]] = {}
     for document in documents:
-        rel_path = _protocol_index_document_path(workspace_root, document)
+        rel_path = _protocol_index_document_path(config, workspace_root, document)
         item = {
             "document_id": document.id,
             "title": document.title,
@@ -1594,20 +1599,28 @@ def _protocol_index_documents_by_kb(workspace_root: Path, documents: List[Knowle
     return documents_by_kb
 
 
-def _protocol_index_document_path(workspace_root: Path, document: KnowledgeDocument) -> str:
-    metadata_path = _document_library_path(document)
+def _protocol_index_document_path(
+    config: KnowledgeBackendConfig,
+    workspace_root: Path,
+    document: KnowledgeDocument,
+) -> str:
+    metadata_path = _document_library_path(document, config)
     if metadata_path and _workspace_path(workspace_root, Path(metadata_path)).is_file():
         return metadata_path
-    return _protocol_document_rel_path(document).as_posix()
+    return _protocol_document_rel_path(config, document).as_posix()
 
 
-def _write_protocol_root_index(workspace_root: Path, documents_by_kb: Dict[str, List[Dict[str, Any]]]) -> str:
-    rel_dir = Path("knowledge") / "protocols"
+def _write_protocol_root_index(
+    config: KnowledgeBackendConfig,
+    workspace_root: Path,
+    documents_by_kb: Dict[str, List[Dict[str, Any]]],
+) -> str:
+    rel_dir = Path("knowledge") / _document_library_category(config)
     target_dir = _workspace_path(workspace_root, rel_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     rel_path = rel_dir / "index.md"
     lines = [
-        "# Protocol Knowledge Libraries",
+        "# Local Document Knowledge Libraries",
         "",
         "This page is generated from the local structured knowledge backend.",
         "",
@@ -1619,10 +1632,10 @@ def _write_protocol_root_index(workspace_root: Path, documents_by_kb: Dict[str, 
     return rel_path.as_posix()
 
 
-def _protocol_document_rel_path(document: KnowledgeDocument) -> Path:
+def _protocol_document_rel_path(config: KnowledgeBackendConfig, document: KnowledgeDocument) -> Path:
     return (
         Path("knowledge")
-        / "protocols"
+        / _document_library_category(config)
         / _slug(document.kb_id or "kb_default")
         / f"{_slug(document.title or document.id)}-{document.id[:8]}.md"
     )
@@ -1638,6 +1651,35 @@ def _document_library_root(config: KnowledgeBackendConfig) -> Path:
     except Exception:
         pass
     return Path("~/cow").expanduser()
+
+
+def _document_library_category(config: KnowledgeBackendConfig) -> str:
+    return _normalize_document_library_category(getattr(config.ingest, "document_library_category", "documents"))
+
+
+def _normalize_document_library_category(value: Any) -> str:
+    text = str(value or "documents").strip().strip("/\\")
+    if not text:
+        return "documents"
+    return _slug(text)
+
+
+def _legacy_protocol_exports_detected(workspace_root: Path) -> bool:
+    legacy_dir = _workspace_path(workspace_root, Path("knowledge") / "protocols")
+    if not legacy_dir.is_dir():
+        return False
+    markers = (
+        "Generated from CowAgent local structured knowledge backend",
+        "This page is generated from the local structured knowledge backend",
+    )
+    for path in legacy_dir.rglob("*.md"):
+        try:
+            head = path.read_text(encoding="utf-8", errors="ignore")[:2048]
+        except Exception:
+            continue
+        if any(marker in head for marker in markers):
+            return True
+    return False
 
 
 def _render_protocol_document_markdown(
@@ -1661,7 +1703,7 @@ def _render_protocol_document_markdown(
         "",
         "## Query Hints",
         "",
-        "Ask the Agent protocol-specific questions and require source-backed answers with page references.",
+        "Ask the Agent document-specific questions and require source-backed answers with page references.",
         "",
         "## Source Chunks",
         "",
@@ -1761,7 +1803,7 @@ def _normalize_visual_analysis_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
     config.update(dict(raw or {}))
     for key in ("enabled", "auto_build_after_upload", "use_current_model", "index_low_confidence", "include_page_context", "unstructured_enabled"):
         config[key] = parse_knowledge_backend_enabled(config.get(key))
-    for key in ("max_items_per_request", "prepare_pages_per_request", "page_render_dpi", "crop_padding_px", "max_image_long_edge", "context_before_chars", "context_after_chars"):
+    for key in ("max_items_per_request", "prepare_pages_per_request", "page_render_dpi", "crop_padding_px", "max_image_long_edge", "max_image_candidates_per_page", "context_before_chars", "context_after_chars"):
         config[key] = int(config.get(key) or DEFAULT_VISUAL_ANALYSIS_CONFIG[key])
     for key in ("min_confidence", "min_ocr_confidence", "min_structure_confidence", "min_semantic_confidence", "candidate_min_area_ratio"):
         config[key] = float(config.get(key) or DEFAULT_VISUAL_ANALYSIS_CONFIG[key])
@@ -1896,6 +1938,29 @@ def _openai_backend_effective_available(backend: str, router: Any, conf_func: An
     api_key = (routed or {}).get("api_key") or app_config.get("open_ai_api_key")
     model = (routed or {}).get("model") or app_config.get("model")
     return bool(api_key and model)
+
+
+def _visual_backend_available(backend: str) -> bool:
+    normalized = normalize_visual_analysis_backend(backend)
+    if normalized == "codex":
+        try:
+            from common import llm_backend_router
+            from models.codex.codex_auth import CodexAuthCredentialSource
+
+            provider = llm_backend_router.get_codex_provider_config()
+            CodexAuthCredentialSource(provider.get("auth_file") or None).load()
+            return True
+        except Exception:
+            return False
+    if normalized in ("capi", "capi_monthly"):
+        try:
+            from common import llm_backend_router
+            from config import conf
+
+            return _openai_backend_effective_available(normalized, llm_backend_router, conf)
+        except Exception:
+            return False
+    return False
 
 
 def require_provider_token(provider: str, token: Optional[str], env_var: str) -> str:

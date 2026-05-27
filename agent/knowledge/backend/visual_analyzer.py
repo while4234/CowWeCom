@@ -15,8 +15,8 @@ from .storage import stable_visual_chunk_id, stable_visual_span_id
 
 
 SYSTEM_PROMPT = (
-    "你是协议文档视觉元素解析器。你的任务是把协议中的表格、图、时序图、状态机、"
-    "位域图、流程图、截图、嵌入图片解析为可用于 RAG 检索的高质量结构化内容。"
+    "你是技术文档视觉元素解析器。你的任务是把技术文档中的协议图、表格、时序图、状态机、"
+    "位域图、流程图、截图、代码图、架构图和嵌入图片解析为可用于 RAG 检索的高质量结构化内容。"
     "必须严格基于给定图片和上下文，不得猜测。无法确认的内容写入 uncertain_fields。"
     "图片模糊、文字不可辨、结构不清时降低 confidence，并把 should_index 设为 false。"
     "只输出合法 JSON，不要输出 Markdown fence。"
@@ -142,7 +142,7 @@ def build_visual_prompt(candidate: VisualArtifactCandidate, document: KnowledgeD
         "bbox": candidate.bbox,
         "output_schema": OUTPUT_SCHEMA,
     }
-    return "Analyze this protocol visual artifact. Return strict JSON only.\n\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+    return "Analyze this document visual artifact. Return strict JSON only.\n\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def validate_visual_analysis_json(

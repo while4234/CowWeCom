@@ -82,3 +82,35 @@ def test_pdf_upload_does_not_generate_visual_noise_source_chunk(tmp_path):
     assert "Figure 5-34. Standard Package x16 interface: Signal exit order" in chunk_text
     assert "L a y e r 1 0 1 2 3" not in chunk_text
     assert "rxdatasbtxdatasb txcksb rxcksb" not in chunk_text
+
+
+def test_sanitizer_preserves_multiline_caption_label(tmp_path):
+    pdf_path = tmp_path / "multiline-caption.pdf"
+    fitz = pytest.importorskip("fitz")
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=800)
+    page.insert_text((72, 250), "Figure 5-33.")
+    page.insert_text((72, 275), "Standard Package Bump Map: x16 interface")
+    page.insert_text((72, 310), "L a y e r 1 0 1 2 3 t r k v l d")
+    page.insert_text((72, 340), "rxdatasbtxdatasb txcksb rxcksb")
+    doc.save(pdf_path)
+    doc.close()
+    pages = [
+        DocumentPage(
+            page=1,
+            text=(
+                "Figure 5-33.\n"
+                "Standard Package Bump Map: x16 interface\n"
+                "L a y e r 1 0 1 2 3 t r k v l d\n"
+                "rxdatasbtxdatasb txcksb rxcksb"
+            ),
+        )
+    ]
+
+    sanitized, _ = sanitize_pages_for_knowledge_chunks(pdf_path, pages)
+    text = sanitized[0].text
+
+    assert "Figure 5-33." in text
+    assert "Standard Package Bump Map: x16 interface" in text
+    assert "L a y e r 1 0 1 2 3" not in text
+    assert "rxdatasbtxdatasb txcksb rxcksb" not in text

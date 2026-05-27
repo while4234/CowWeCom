@@ -1,4 +1,4 @@
-"""Visual artifact extraction for protocol knowledge backend PDFs."""
+"""Visual artifact extraction for local document knowledge backend PDFs."""
 
 from __future__ import annotations
 
@@ -13,15 +13,115 @@ from .models import ExtractedDocument, KnowledgeDocument, VisualArtifactCandidat
 from .storage import stable_visual_artifact_id
 
 
-STRICT_CAPTION_RE = re.compile(
-    r"(?im)^\s*(?:Figure|Fig\.?|Table)\s+\d+(?:[-.]\d+)*\s*[.:：-]?\s+\S+|"
-    r"^\s*[图表]\s*\d+(?:[-.]\d+)*\s*[.:：-]?\s+\S+"
-)
+_CAPTION_PREFIX = r"(?:(?:Figure|Fig\.?|Table)\s+\d+(?:[-.]\d+)*|[图表]\s*\d+(?:[-.]\d+)*)"
+STRICT_CAPTION_LABEL_RE = re.compile(rf"^\s*{_CAPTION_PREFIX}\s*[.:：-]\s*$", re.IGNORECASE)
+STRICT_CAPTION_BLOCK_RE = re.compile(rf"^\s*{_CAPTION_PREFIX}\s*[.:：-]\s+(?P<title>\S.*)$", re.IGNORECASE)
+STRICT_CAPTION_RE = STRICT_CAPTION_BLOCK_RE
 VISUAL_KEYWORD_RE = re.compile(
     r"\b(?:timing|waveform|state\s*machine|bit\s*field|diagram|chart)\b|时序|状态机|流程图|位域",
     re.IGNORECASE,
 )
 CAPTION_RE = STRICT_CAPTION_RE
+_REFERENCE_CAPTION_VERBS = {
+    "show",
+    "shows",
+    "shown",
+    "illustrate",
+    "illustrates",
+    "illustrated",
+    "demonstrate",
+    "demonstrates",
+    "demonstrated",
+    "summarize",
+    "summarizes",
+    "summarized",
+    "give",
+    "gives",
+    "given",
+    "represent",
+    "represents",
+    "represented",
+    "describe",
+    "describes",
+    "described",
+    "list",
+    "lists",
+    "listed",
+    "provide",
+    "provides",
+    "provided",
+}
+
+
+def normalize_caption_text(text: str) -> str:
+    """Normalize the caption lines that are safe to persist as labels."""
+
+    lines = _first_nonempty_lines(text, limit=3)
+    if not lines:
+        return ""
+    if STRICT_CAPTION_BLOCK_RE.match(lines[0]):
+        return lines[0]
+    if is_caption_label_line(lines[0]) and len(lines) >= 2:
+        return "\n".join(lines[:2])
+    return lines[0]
+
+
+def is_caption_label_line(line: str) -> bool:
+    return bool(STRICT_CAPTION_LABEL_RE.match(_normalize_caption_line(line)))
+
+
+def is_strict_caption_block(text: str) -> bool:
+    """Return True only for actual caption blocks, not body references."""
+
+    lines = _first_nonempty_lines(text, limit=3)
+    if not lines:
+        return False
+    first = lines[0]
+    inline_match = STRICT_CAPTION_BLOCK_RE.match(first)
+    if inline_match:
+        return not _caption_line_looks_like_reference(first, inline_match.group("title"))
+    if is_caption_label_line(first) and len(lines) >= 2:
+        return not _caption_title_looks_like_reference(lines[1])
+    return False
+
+
+def _first_nonempty_lines(text: str, *, limit: int) -> List[str]:
+    lines: List[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = _normalize_caption_line(raw_line)
+        if line:
+            lines.append(line)
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def _normalize_caption_line(line: str) -> str:
+    return re.sub(r"[ \t]+", " ", str(line or "").strip())
+
+
+def _caption_line_looks_like_reference(line: str, title: str = "") -> bool:
+    lowered = _normalize_caption_line(line).lower()
+    if re.search(r"\b(?:figure|fig\.?|table)\s+\d+(?:[-.]\d+)*\s+to\s+(?:figure|fig\.?|table)\b", lowered):
+        return True
+    return _caption_title_looks_like_reference(title)
+
+
+def _caption_title_looks_like_reference(title: str) -> bool:
+    text = _normalize_caption_line(title)
+    if not text:
+        return True
+    first_word_match = re.match(r"([A-Za-z]+)", text)
+    if first_word_match and first_word_match.group(1).lower() in _REFERENCE_CAPTION_VERBS:
+        return True
+    tokens = text.split()
+    if len(tokens) >= 8:
+        one_char_tokens = sum(1 for token in tokens if len(token) == 1 and token.isalnum())
+        if one_char_tokens / max(1, len(tokens)) >= 0.55:
+            return True
+    compact = re.sub(r"[^A-Za-z0-9_]", "", text).lower()
+    signal_markers = sum(1 for marker in ("rx", "tx", "clk", "ck", "data", "vld", "sb") if marker in compact)
+    return bool(len(compact) >= 16 and signal_markers >= 3)
 
 
 class VisualArtifactExtractor:
@@ -92,6 +192,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         dpi = int(visual_config.get("page_render_dpi", 180))
         padding = int(visual_config.get("crop_padding_px", 12))
         min_area_ratio = float(visual_config.get("candidate_min_area_ratio", 0.015))
+        max_image_candidates = max(0, int(visual_config.get("max_image_candidates_per_page", 3) or 0))
         candidates: List[VisualArtifactCandidate] = []
         page_texts = {page.page: page.text for page in extracted_document.pages}
 
@@ -110,29 +211,12 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                     report["skipped_toc_pages"] += 1
                     continue
 
-                for rect in self._image_rects(page):
-                    if self._area_ratio(rect, page_area) < min_area_ratio:
-                        continue
-                    candidates.append(
-                        self._candidate_from_rect(
-                            rect,
-                            document,
-                            extracted_document,
-                            "image",
-                            page_index,
-                            page_text,
-                            dpi,
-                            padding,
-                            source_path=str(source),
-                            parser_confidence=0.70,
-                        )
-                    )
-
                 caption_candidates = self._caption_candidates(page_rect, text_blocks)
+                page_candidates: List[VisualArtifactCandidate] = []
                 for rect, caption, artifact_type in caption_candidates:
                     if self._area_ratio(rect, page_area) < min_area_ratio:
                         continue
-                    candidates.append(
+                    page_candidates.append(
                         self._candidate_from_rect(
                             rect,
                             document,
@@ -148,8 +232,35 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                         )
                     )
 
+                image_candidates = 0
+                for rect in self._image_rects(page):
+                    if self._area_ratio(rect, page_area) < min_area_ratio:
+                        continue
+                    if caption_candidates and any(_rect_overlap_ratio(rect, caption_rect) >= 0.65 for caption_rect, _, _ in caption_candidates):
+                        continue
+                    if image_candidates >= max_image_candidates:
+                        continue
+                    page_candidates.append(
+                        self._candidate_from_rect(
+                            rect,
+                            document,
+                            extracted_document,
+                            "image",
+                            page_index,
+                            page_text,
+                            dpi,
+                            padding,
+                            source_path=str(source),
+                            parser_confidence=0.70,
+                        )
+                    )
+                    image_candidates += 1
+
+                for candidate in page_candidates:
+                    candidates.append(candidate)
+
                 if self._should_add_page_fallback(page_text, caption_candidates, candidates, page_index):
-                    candidates.append(
+                    page_candidates.append(
                         self._candidate_from_rect(
                             page_rect,
                             document,
@@ -164,6 +275,8 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                             parser_confidence=0.55,
                         )
                     )
+                    candidates.append(page_candidates[-1])
+
         deduped = self._dedupe(candidates)
         report["candidates"] = len(deduped)
         return deduped, report
@@ -199,9 +312,9 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         except ImportError:
             return []
         candidates = []
-        for block in blocks:
-            text = block["text"]
-            if _looks_like_toc_entry(text) or not STRICT_CAPTION_RE.search(text):
+        for index, block in enumerate(blocks):
+            text = self._caption_text_from_block(blocks, index)
+            if _looks_like_toc_entry(text) or not is_strict_caption_block(text):
                 continue
             x0, y0, x1, y1 = block["bbox"]
             caption_rect = fitz.Rect(x0, y0, x1, y1)
@@ -209,8 +322,19 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             top = max(page_rect.y0, y0 - height * 0.65)
             bottom = min(page_rect.y1, y1 + height * 0.65)
             rect = fitz.Rect(page_rect.x0, top, page_rect.x1, bottom)
-            candidates.append((rect, text[:300], self._artifact_type_from_caption(text)))
+            caption = normalize_caption_text(text)
+            candidates.append((rect, caption[:300], self._artifact_type_from_caption(caption)))
         return candidates
+
+    def _caption_text_from_block(self, blocks: List[Dict[str, Any]], index: int) -> str:
+        text = str(blocks[index].get("text") or "")
+        lines = _first_nonempty_lines(text, limit=3)
+        if is_caption_label_line(lines[0] if lines else "") and len(lines) < 2 and index + 1 < len(blocks):
+            next_text = str(blocks[index + 1].get("text") or "")
+            next_lines = _first_nonempty_lines(next_text, limit=1)
+            if next_lines:
+                return f"{text.rstrip()}\n{next_lines[0]}"
+        return text
 
     def _candidate_from_rect(
         self,
@@ -370,7 +494,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         text = page_text or ""
         if _is_toc_or_list_page(text):
             return False
-        return bool(STRICT_CAPTION_RE.search(text) and VISUAL_KEYWORD_RE.search(text))
+        return bool(is_strict_caption_block(text) and VISUAL_KEYWORD_RE.search(text))
 
     def _context_around_caption(
         self,
@@ -401,7 +525,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         return []
 
     def _label(self, caption: str) -> str:
-        match = re.search(r"(?:Figure|Fig\.?|Table)\s+\d+(?:[-.]\d+)*|图\s*\d+|表\s*\d+", caption or "", re.IGNORECASE)
+        match = re.search(r"(?:Figure|Fig\.?|Table)\s+\d+(?:[-.]\d+)*|图\s*\d+(?:[-.]\d+)*|表\s*\d+(?:[-.]\d+)*", caption or "", re.IGNORECASE)
         return match.group(0) if match else ""
 
     def _artifact_type_from_caption(self, caption: str) -> str:
@@ -449,8 +573,6 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         area_b = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
         union = area_a + area_b - intersection
         return intersection / union if union else 0.0
-
-
 def _is_toc_or_list_page(page_text: str) -> bool:
     lowered = (page_text or "").lower()
     return any(
@@ -469,3 +591,10 @@ def _looks_like_toc_entry(text: str) -> bool:
     dotted = bool(re.search(r"\.{5,}\s*\d+\s*$", value))
     many_sections = len(re.findall(r"\b\d+(?:\.\d+)*\b", value)) >= 5 and value.count("\n") >= 3
     return dotted or value.count("....") >= 1 or many_sections
+
+
+def _rect_overlap_ratio(inner: Any, outer: Any) -> float:
+    intersection = inner & outer
+    intersection_area = max(0.0, float(intersection.width * intersection.height))
+    inner_area = max(1.0, float(inner.width * inner.height))
+    return intersection_area / inner_area
