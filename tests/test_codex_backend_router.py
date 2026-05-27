@@ -307,6 +307,7 @@ class TestCodexBackendRouter(unittest.TestCase):
         self.assertTrue(is_capi_runtime_fallback_error("RemoteDisconnected: remote end closed connection"))
         self.assertTrue(is_capi_runtime_fallback_error("ReadTimeout: request timed out"))
         self.assertTrue(is_capi_runtime_fallback_error("Stream interrupted: ChunkedEncodingError"))
+        self.assertTrue(is_capi_runtime_fallback_error("stream_read_error (Status: N/A, Code: stream_read_error, Type: upstream_error)"))
         self.assertTrue(is_capi_runtime_fallback_error("Concurrency limit exceeded for account (Status: 429)"))
         self.assertTrue(is_capi_runtime_fallback_error("Payment Required: monthly quota exhausted (Status: 402)"))
         self.assertFalse(is_capi_runtime_fallback_error("invalid_request_error (Status: 400)"))

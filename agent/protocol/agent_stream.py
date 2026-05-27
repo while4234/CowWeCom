@@ -18,6 +18,7 @@ from common.log import logger
 from common.llm_backend_router import (
     BACKEND_CAPI,
     BACKEND_CAPI_MONTHLY,
+    BACKEND_CODEX,
     get_current_backend,
     is_capi_quota_exhausted_error,
     is_capi_runtime_fallback_error,
@@ -145,6 +146,33 @@ class AgentStreamExecutor:
                 })
             except Exception as e:
                 logger.error(f"Event callback error: {e}")
+
+    @staticmethod
+    def _backend_display_name(backend: str) -> str:
+        labels = {
+            BACKEND_CAPI: "CAPI quota card",
+            BACKEND_CAPI_MONTHLY: "CAPI monthly card",
+            BACKEND_CODEX: "Codex",
+        }
+        backend_id = str(backend or "").strip()
+        label = labels.get(backend_id, backend_id or "unknown")
+        return f"{label} ({backend_id})" if backend_id else label
+
+    def _backend_switch_notice(self, previous_backend: str, fallback_backend: str) -> str:
+        return (
+            f"模型服务流式连接中断，已自动从 {self._backend_display_name(previous_backend)} "
+            f"切换到 {self._backend_display_name(fallback_backend)} 继续处理本次任务。\n\n"
+        )
+
+    @staticmethod
+    def _should_announce_backend_switch(error: str) -> bool:
+        error_text = str(error or "").lower()
+        return any(marker in error_text for marker in (
+            "stream_read_error",
+            "stream read error",
+            "upstream_error",
+            "upstream error",
+        ))
 
     def _reset_request_tool_counters(self):
         """Reset per-user-request counters used by cache telemetry."""
@@ -1452,6 +1480,7 @@ class AgentStreamExecutor:
             is_retryable = any(keyword in error_str_lower for keyword in [
                 'timeout', 'timed out', 'connection', 'network', 
                 'rate limit', 'overloaded', 'unavailable', 'busy', 'retry',
+                'stream_read_error', 'stream read error', 'upstream_error', 'upstream error',
                 '429', '500', '502', '503', '504', '512'
             ])
 
@@ -1504,7 +1533,14 @@ class AgentStreamExecutor:
                         max_retries,
                         error_str[:180],
                     )
-                    return self._call_llm_stream(
+                    switch_notice = ""
+                    if self._should_announce_backend_switch(error_str):
+                        switch_notice = self._backend_switch_notice(
+                            previous_backend,
+                            fallback_backend,
+                        )
+                        self._emit_event("message_update", {"delta": switch_notice})
+                    response, tool_calls = self._call_llm_stream(
                         retry_on_empty=retry_on_empty,
                         retry_count=0,
                         max_retries=max_retries,
@@ -1512,6 +1548,9 @@ class AgentStreamExecutor:
                         _capi_fallback_retry=True,
                         _capi_fallback_attempted=fallback_attempted,
                     )
+                    if response and switch_notice not in response:
+                        response = switch_notice + response
+                    return response, tool_calls
             
             if is_retryable and retry_count < max_retries:
                 # Rate limit needs longer wait time

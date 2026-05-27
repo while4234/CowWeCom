@@ -155,6 +155,29 @@ class PartialTextNetworkErrorThenCodexModel(NetworkErrorThenCodexModel):
         yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
 
 
+class StreamReadErrorThenCodexModel(NetworkErrorThenCodexModel):
+    def __init__(self):
+        super().__init__("stream_read_error")
+
+    def call_stream(self, request):
+        self.requests.append(request)
+        self.backends.append(get_current_backend())
+        if get_current_backend() != BACKEND_CODEX:
+            yield {
+                "type": "error",
+                "sequence_number": 0,
+                "error": {
+                    "type": "upstream_error",
+                    "message": "stream_read_error",
+                    "code": "stream_read_error",
+                },
+            }
+            return
+
+        yield {"choices": [{"delta": {"content": "continued on codex"}}]}
+        yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+
 def current_task_messages():
     return [
         {"role": "user", "content": [{"type": "text", "text": "current travel request"}]},
@@ -336,6 +359,46 @@ class TestAgentStreamCapiFallback(unittest.TestCase):
             response, tool_calls = executor._call_llm_stream(max_retries=1)
 
         self.assertEqual(response, "continued on codex")
+        self.assertEqual(tool_calls, [])
+        self.assertEqual(model.backends, [BACKEND_CAPI_MONTHLY, BACKEND_CAPI_MONTHLY, BACKEND_CODEX])
+        self.assertEqual(get_current_backend(), BACKEND_CODEX)
+        self.assertEqual(model.requests[-1].messages, model.requests[0].messages)
+        self.assertEqual(model.requests[-1].system, "system prompt")
+
+    def test_stream_read_error_switches_backend_and_tells_user(self):
+        conf()["llm_backend"] = {
+            "current_backend": BACKEND_CAPI_MONTHLY,
+            "state_path": str(Path(self.tmp.name) / "state.json"),
+            "providers": {
+                "capi": {"api_key": "TEST-CAPI-KEY", "model": "gpt-5.5"},
+                "capi_monthly": {"api_key": "TEST-MONTHLY-KEY", "model": "gpt-5.5"},
+                "codex": {"model": "gpt-5.5", "tools_enabled": True},
+            },
+        }
+        save_state({"current_backend": BACKEND_CAPI_MONTHLY})
+        events = []
+        model = StreamReadErrorThenCodexModel()
+        executor = AgentStreamExecutor(
+            agent=FakeAgent(),
+            model=model,
+            system_prompt="system prompt",
+            tools=[],
+            messages=current_task_messages(),
+            on_event=events.append,
+        )
+
+        with patch.object(executor, "_sleep_with_cancel", return_value=None):
+            response, tool_calls = executor._call_llm_stream(max_retries=1)
+
+        notice_deltas = [
+            event["data"].get("delta", "")
+            for event in events
+            if event.get("type") == "message_update"
+            and "已自动从 CAPI monthly card (capi_monthly) 切换到 Codex (codex)" in event.get("data", {}).get("delta", "")
+        ]
+        self.assertTrue(notice_deltas)
+        self.assertIn("模型服务流式连接中断", response)
+        self.assertIn("continued on codex", response)
         self.assertEqual(tool_calls, [])
         self.assertEqual(model.backends, [BACKEND_CAPI_MONTHLY, BACKEND_CAPI_MONTHLY, BACKEND_CODEX])
         self.assertEqual(get_current_backend(), BACKEND_CODEX)
