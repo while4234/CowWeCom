@@ -1078,10 +1078,10 @@
 }
 
 .knowledge-backend-doc {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
+    gap: 16px;
     padding: 10px 0;
     border-bottom: 1px solid #e2e8f0;
 }
@@ -1092,6 +1092,9 @@
 }
 .dark .knowledge-backend-doc {
     border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+.knowledge-backend-doc-main {
+    min-width: 0;
 }
 .knowledge-backend-doc-title {
     font-size: 13px;
@@ -1111,20 +1114,37 @@
     font-size: 11px;
     color: #94a3b8;
 }
+.knowledge-backend-doc-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+}
 .knowledge-backend-doc-action {
     flex-shrink: 0;
-    width: 28px;
-    height: 28px;
+    min-height: 28px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    gap: 5px;
     border: none;
     border-radius: 7px;
     background: #f1f5f9;
     color: #64748b;
     cursor: pointer;
     font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
     transition: background 0.15s, color 0.15s;
+}
+.knowledge-backend-doc-action-icon {
+    width: 28px;
+    height: 28px;
+}
+.knowledge-backend-doc-action-text {
+    width: auto;
+    padding: 0 9px;
 }
 .knowledge-backend-doc-action:hover {
     background: #EDFDF3;
@@ -1137,6 +1157,18 @@
 .dark .knowledge-backend-doc-action:hover {
     background: rgba(74, 190, 110, 0.14);
     color: #4ABE6E;
+}
+@media (max-width: 768px) {
+    .knowledge-backend-doc {
+        grid-template-columns: minmax(0, 1fr);
+        align-items: start;
+    }
+    .knowledge-backend-doc-actions {
+        justify-content: flex-start;
+        max-width: 100%;
+        overflow-x: auto;
+        padding-bottom: 1px;
+    }
 }
 .knowledge-backend-stat {
     display: flex;

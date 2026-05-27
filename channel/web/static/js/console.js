@@ -5020,18 +5020,25 @@ function renderKnowledgeBackendDocuments(documents) {
         const path = (doc.document_library_path || '').replace(/^knowledge\//, '');
         const openBtn = path
             ? `<button type="button" onclick="navigateTo('knowledge'); setTimeout(() => openKnowledgeFile('${escapeAttr(escapeJs(path))}', '${escapeAttr(escapeJs(doc.title || doc.id))}'), 100)"
-                       class="knowledge-backend-doc-action"><i class="fas fa-arrow-up-right-from-square"></i></button>`
+                       class="knowledge-backend-doc-action knowledge-backend-doc-action-icon"
+                       title="打开导出的文档" aria-label="打开导出的文档"><i class="fas fa-arrow-up-right-from-square"></i></button>`
             : '';
         const safeDocId = escapeAttr(escapeJs(doc.id || ''));
         const visualBtns = (doc.doc_type || 'document') !== 'llm_study'
             ? `<button type="button" onclick="selectKnowledgeBackendDocument('${safeDocId}'); startVisualBuildLoop('${safeDocId}', false, false)"
-                       class="knowledge-backend-doc-action text-[11px] px-2">补全此文档</button>
+                       class="knowledge-backend-doc-action knowledge-backend-doc-action-text"
+                       title="只补全此文档的视觉图表知识">
+                   <i class="fas fa-chart-simple text-[10px]"></i><span>补全此文档</span>
+               </button>
                <button type="button" onclick="selectKnowledgeBackendDocument('${safeDocId}'); showLowConfidenceVisualArtifacts('${safeDocId}')"
-                       class="knowledge-backend-doc-action text-[11px] px-2">低置信</button>`
+                       class="knowledge-backend-doc-action knowledge-backend-doc-action-text"
+                       title="查看此文档未入库的低置信图表">
+                   <i class="fas fa-eye-low-vision text-[10px]"></i><span>低置信</span>
+               </button>`
             : '';
         return `
             <div class="knowledge-backend-doc">
-                <div class="min-w-0">
+                <div class="knowledge-backend-doc-main">
                     <div class="knowledge-backend-doc-title">${escapeHtml(doc.title || doc.id || 'document')}</div>
                     <div class="knowledge-backend-doc-meta">
                         <span>${escapeHtml(doc.kb_id || 'kb_default')}</span>
@@ -5040,8 +5047,10 @@ function renderKnowledgeBackendDocuments(documents) {
                         <span class="truncate">${escapeHtml(doc.source_path || '')}</span>
                     </div>
                 </div>
-                ${visualBtns}
-                ${openBtn}
+                <div class="knowledge-backend-doc-actions">
+                    ${visualBtns}
+                    ${openBtn}
+                </div>
             </div>
         `;
     }).join('');
