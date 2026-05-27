@@ -88,9 +88,11 @@ class QueueAnalyzer:
     def __init__(self, results):
         self.results = list(results)
         self.calls = []
+        self.backends = []
 
-    def analyze(self, candidate, config, document=None):
+    def analyze(self, candidate, config, document=None, analysis_backend=None):
         self.calls.append(candidate.id)
+        self.backends.append(analysis_backend)
         item = self.results.pop(0)
         return item(candidate) if callable(item) else item
 
@@ -260,4 +262,83 @@ def test_visual_model_json_validation_failures_do_not_index(tmp_path):
     assert first["failed"] == 1
     assert second["failed"] == 1
     assert third["low_confidence"] == 1
+    retry_failed = service.build_visual_knowledge(document_id=document_id, limit=1, retry_failed=True)
+    assert retry_failed["failed"] == 1
     assert service.search("poor_but_claimed_indexable", limit=5) == []
+
+
+def test_visual_build_filters_to_single_document(tmp_path):
+    service = _service(tmp_path)
+    doc1_id, doc1_version = _ingest(service)
+    doc2 = service.ingest_upload_bytes(
+        "visual-source-2.md",
+        b"# Visual Source 2\n\nFigure 2 shows a protocol timing table.",
+        title="Visual Source 2",
+    )
+    doc2_id = doc2["document"]["id"]
+    doc2_version = doc2["document"]["version_id"]
+    service._visual_extractor = FakeExtractor(
+        [
+            _candidate(doc1_id, doc1_version, 1),
+            _candidate(doc2_id, doc2_version, 2),
+        ]
+    )
+    analyzer = QueueAnalyzer([_high_result("doc2_visualfact")])
+    service._visual_analyzer = analyzer
+
+    result = service.build_visual_knowledge(document_id=doc2_id, limit=1)
+
+    assert result["processed"] == 1
+    assert analyzer.calls == ["visual_test_2"]
+    assert service.search("doc2_visualfact", limit=5)
+    assert service.get_visual_stats(doc1_id)["pending"] == 1
+
+
+def test_visual_build_records_selected_analysis_backend(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    analyzer = QueueAnalyzer([_high_result("codex_visualfact")])
+    service._visual_extractor = FakeExtractor([_candidate(document_id, version_id, 1)])
+    service._visual_analyzer = analyzer
+
+    result = service.build_visual_knowledge(document_id=document_id, limit=1, analysis_backend="codex")
+
+    assert result["analysis_backend"] == "codex"
+    assert analyzer.backends == ["codex"]
+    storage = service._backend._get_read_storage()
+    artifact = storage.list_visual_artifacts(document_id=document_id)[0]
+    assert artifact["analysis_backend"] == "codex"
+    chunks = storage.list_chunks(document_id)
+    visual_chunks = [chunk for chunk in chunks if chunk.metadata.get("source") == "visual_analysis"]
+    assert visual_chunks
+    assert visual_chunks[0].metadata["analysis_backend"] == "codex"
+    assert visual_chunks[0].metadata["analysis_model"] == "gpt-5.5"
+
+
+def test_visual_backends_admin_api_lists_supported_ids(monkeypatch, tmp_path):
+    service = _service(tmp_path)
+    monkeypatch.setattr(KnowledgeBackendConfig, "from_project_config", classmethod(lambda cls: service.config))
+    monkeypatch.setattr("agent.knowledge.backend.service.build_knowledge_backend", lambda _: service)
+
+    response = dispatch_admin_request("GET", "visual/backends", {})
+
+    assert response["ok"] is True
+    assert {item["id"] for item in response["backends"]} == {"current", "capi", "capi_monthly", "codex"}
+
+
+def test_visual_build_progress_fields_and_failed_not_has_more(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    service._visual_extractor = FakeExtractor([_candidate(document_id, version_id, 1)])
+    service._visual_analyzer = QueueAnalyzer(["not json"])
+
+    result = service.build_visual_knowledge(document_id=document_id, limit=1)
+    repeat = service.build_visual_knowledge(document_id=document_id, limit=1)
+
+    assert result["failed"] == 1
+    assert repeat["processed"] == 0
+    assert result["has_more"] is False
+    assert result["has_retryable_failed"] is True
+    assert result["stats"]["total"] == 1
+    assert result["stats"]["pending"] == 0
+    assert result["stats"]["failed"] == 1

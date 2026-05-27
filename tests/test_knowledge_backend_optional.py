@@ -47,6 +47,10 @@ def test_config_from_env_parses_disabled_backend(monkeypatch, tmp_path):
     monkeypatch.setenv("KNOWLEDGE_BACKEND_MAX_FILE_SIZE_MB", "42")
     monkeypatch.setenv("KNOWLEDGE_BACKEND_VECTOR_PROVIDER", "qdrant")
     monkeypatch.setenv("KNOWLEDGE_BACKEND_SQLITE_PATH", str(tmp_path / "knowledge.db"))
+    monkeypatch.setenv("KNOWLEDGE_BACKEND_SANITIZE_PDF_VISUAL_TEXT", "false")
+    monkeypatch.setenv("KNOWLEDGE_BACKEND_SANITIZE_PDF_VISUAL_REGIONS", "true")
+    monkeypatch.setenv("KNOWLEDGE_BACKEND_SANITIZE_PDF_NOISE_LINES", "false")
+    monkeypatch.setenv("KNOWLEDGE_BACKEND_VISUAL_ANALYSIS_BACKEND", "codex")
 
     config = KnowledgeBackendConfig.from_env()
 
@@ -54,6 +58,10 @@ def test_config_from_env_parses_disabled_backend(monkeypatch, tmp_path):
     assert _field(config, "admin_api_enabled") is False
     assert _field(config, "provider_api_enabled") is True
     assert _field(_field(config, "ingest"), "max_file_size_mb") == 42
+    assert _field(_field(config, "ingest"), "sanitize_pdf_visual_text") is False
+    assert _field(_field(config, "ingest"), "sanitize_pdf_visual_regions") is True
+    assert _field(_field(config, "ingest"), "sanitize_pdf_noise_lines") is False
+    assert _field(config, "visual_analysis")["analysis_backend"] == "codex"
     assert _vector_provider(config) == "qdrant"
     assert os.fspath(_sqlite_path(config)) == str(tmp_path / "knowledge.db")
 

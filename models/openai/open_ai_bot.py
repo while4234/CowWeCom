@@ -18,7 +18,7 @@ from models.openai.open_ai_session import OpenAISession
 from models.session_manager import SessionManager
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
-from common.llm_backend_router import get_effective_openai_api_config
+from common.llm_backend_router import get_effective_openai_api_config, normalize_backend
 from common.log import logger
 from config import conf
 
@@ -27,9 +27,10 @@ user_session = dict()
 
 # OpenAI对话模型API (可用)
 class OpenAIBot(Bot, OpenAIImage, OpenAICompatibleBot):
-    def __init__(self):
+    def __init__(self, backend_override=None):
         super().__init__()
-        routed = get_effective_openai_api_config()
+        self._backend_override = normalize_backend(backend_override) if backend_override else None
+        routed = get_effective_openai_api_config(self._backend_override)
         self._api_key = routed.get("api_key") or conf().get("open_ai_api_key")
         self._api_base = routed.get("api_base") or conf().get("open_ai_api_base") or None
         self._proxy = conf().get("proxy") or None
@@ -54,7 +55,7 @@ class OpenAIBot(Bot, OpenAIImage, OpenAICompatibleBot):
     
     def get_api_config(self):
         """Get API configuration for OpenAI-compatible base class"""
-        routed = get_effective_openai_api_config()
+        routed = get_effective_openai_api_config(self._backend_override)
         return {
             'api_key': routed.get("api_key") or conf().get("open_ai_api_key"),
             'api_base': routed.get("api_base") or conf().get("open_ai_api_base"),

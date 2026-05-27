@@ -219,7 +219,10 @@
       "max_file_size_mb": 500,
       "document_library_root": "~/cow",
       "preserve_original": true,
-      "ocr_enabled": false
+      "ocr_enabled": false,
+      "sanitize_pdf_visual_text": true,
+      "sanitize_pdf_visual_regions": true,
+      "sanitize_pdf_noise_lines": true
     },
     "llm_builder": {
       "enabled": true,
@@ -253,6 +256,7 @@
       "include_page_context": true,
       "context_before_chars": 1200,
       "context_after_chars": 1200,
+      "analysis_backend": "current",
       "parser_provider": "pymupdf",
       "mineru_api_url": "",
       "unstructured_enabled": false

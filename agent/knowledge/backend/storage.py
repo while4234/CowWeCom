@@ -345,7 +345,7 @@ class KnowledgeStorage:
                 parser_confidence = excluded.parser_confidence,
                 updated_at = excluded.updated_at,
                 analysis_status = CASE
-                    WHEN visual_artifacts.analysis_status IN ('succeeded', 'low_confidence')
+                    WHEN visual_artifacts.analysis_status IN ('succeeded', 'low_confidence', 'failed')
                      AND visual_artifacts.image_hash = excluded.image_hash
                      AND visual_artifacts.context_hash = excluded.context_hash
                     THEN visual_artifacts.analysis_status
@@ -376,6 +376,7 @@ class KnowledgeStorage:
     def list_visual_artifacts(
         self,
         document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
         version_id: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 100,
@@ -386,6 +387,9 @@ class KnowledgeStorage:
         if document_id:
             clauses.append("document_id = ?")
             params.append(document_id)
+        if kb_id:
+            clauses.append("kb_id = ?")
+            params.append(kb_id)
         if version_id:
             clauses.append("version_id = ?")
             params.append(version_id)
@@ -419,10 +423,13 @@ class KnowledgeStorage:
     def claim_next_visual_artifact(
         self,
         document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
         version_id: Optional[str] = None,
         force: bool = False,
+        retry_failed: bool = False,
         model: str = "",
         prompt_version: str = "",
+        analysis_backend: str = "",
     ) -> Optional[Dict[str, Any]]:
         now = _now()
         stale_before = now - 30 * 60
@@ -431,6 +438,10 @@ class KnowledgeStorage:
         if document_id:
             doc_clause = "AND document_id = ?"
             params.append(document_id)
+        kb_clause = ""
+        if kb_id:
+            kb_clause = "AND kb_id = ?"
+            params.append(kb_id)
         version_clause = ""
         if version_id:
             version_clause = "AND version_id = ?"
@@ -438,22 +449,25 @@ class KnowledgeStorage:
         if force:
             status_clause = "analysis_status IN ('pending', 'failed', 'low_confidence', 'succeeded', 'running')"
         else:
-            status_clause = (
-                "analysis_status IN ('pending', 'failed') "
-                "OR (analysis_status = 'running' AND updated_at < ?) "
-                "OR (analysis_status IN ('succeeded', 'low_confidence') AND (analysis_model <> ? OR prompt_version <> ?))"
-            )
-            params = [stale_before, model, prompt_version, *params]
+            status_parts = [
+                "analysis_status = 'pending'",
+                "(analysis_status = 'running' AND updated_at < ?)",
+            ]
+            params = [stale_before, *params]
+            if retry_failed:
+                status_parts.append("analysis_status = 'failed'")
+            status_clause = " OR ".join(status_parts)
         rows = self.conn.execute(
             f"""
             SELECT *
             FROM visual_artifacts
-            WHERE ({status_clause}) {doc_clause} {version_clause}
+            WHERE ({status_clause}) {doc_clause} {kb_clause} {version_clause}
             ORDER BY CASE analysis_status
                 WHEN 'pending' THEN 0
-                WHEN 'failed' THEN 1
-                WHEN 'low_confidence' THEN 2
-                WHEN 'succeeded' THEN 3
+                WHEN 'running' THEN 1
+                WHEN 'failed' THEN 2
+                WHEN 'low_confidence' THEN 3
+                WHEN 'succeeded' THEN 4
                 ELSE 4
             END, page ASC, updated_at ASC
             LIMIT 1
@@ -475,12 +489,13 @@ class KnowledgeStorage:
             UPDATE visual_artifacts
             SET analysis_status = 'running',
                 analysis_model = ?,
+                analysis_backend = ?,
                 prompt_version = ?,
                 error = '',
                 updated_at = ?
             WHERE id = ?
             """,
-            (model, prompt_version, now, row["id"]),
+            (model, analysis_backend, prompt_version, now, row["id"]),
         )
         self.conn.commit()
         return self.get_visual_artifact(row["id"])
@@ -493,6 +508,7 @@ class KnowledgeStorage:
         retrievable: bool,
         model: str = "",
         prompt_version: str = "",
+        analysis_backend: str = "",
     ) -> None:
         now = _now()
         self.conn.execute(
@@ -502,6 +518,7 @@ class KnowledgeStorage:
                 analysis_confidence = ?,
                 retrievable = ?,
                 analysis_model = COALESCE(NULLIF(?, ''), analysis_model),
+                analysis_backend = COALESCE(NULLIF(?, ''), analysis_backend),
                 prompt_version = COALESCE(NULLIF(?, ''), prompt_version),
                 result_json = ?,
                 error = '',
@@ -509,7 +526,17 @@ class KnowledgeStorage:
                 analyzed_at = ?
             WHERE id = ?
             """,
-            (float(confidence or 0), 1 if retrievable else 0, model, prompt_version, _json(result_json), now, now, artifact_id),
+            (
+                float(confidence or 0),
+                1 if retrievable else 0,
+                model,
+                analysis_backend,
+                prompt_version,
+                _json(result_json),
+                now,
+                now,
+                artifact_id,
+            ),
         )
         self.conn.commit()
 
@@ -521,6 +548,7 @@ class KnowledgeStorage:
         reason: str,
         model: str = "",
         prompt_version: str = "",
+        analysis_backend: str = "",
     ) -> None:
         now = _now()
         self.conn.execute(
@@ -530,6 +558,7 @@ class KnowledgeStorage:
                 analysis_confidence = ?,
                 retrievable = 0,
                 analysis_model = COALESCE(NULLIF(?, ''), analysis_model),
+                analysis_backend = COALESCE(NULLIF(?, ''), analysis_backend),
                 prompt_version = COALESCE(NULLIF(?, ''), prompt_version),
                 result_json = ?,
                 error = ?,
@@ -537,23 +566,34 @@ class KnowledgeStorage:
                 analyzed_at = ?
             WHERE id = ?
             """,
-            (float(confidence or 0), model, prompt_version, _json(result_json), str(reason or ""), now, now, artifact_id),
+            (
+                float(confidence or 0),
+                model,
+                analysis_backend,
+                prompt_version,
+                _json(result_json),
+                str(reason or ""),
+                now,
+                now,
+                artifact_id,
+            ),
         )
         self.conn.commit()
 
-    def complete_visual_artifact_failed(self, artifact_id: str, error: str) -> None:
+    def complete_visual_artifact_failed(self, artifact_id: str, error: str, analysis_backend: str = "") -> None:
         now = _now()
         self.conn.execute(
             """
             UPDATE visual_artifacts
             SET analysis_status = 'failed',
                 retrievable = 0,
+                analysis_backend = COALESCE(NULLIF(?, ''), analysis_backend),
                 error = ?,
                 updated_at = ?,
                 analyzed_at = ?
             WHERE id = ?
             """,
-            (str(error or ""), now, now, artifact_id),
+            (analysis_backend, str(error or ""), now, now, artifact_id),
         )
         self.conn.commit()
 
@@ -678,12 +718,20 @@ class KnowledgeStorage:
         self.conn.execute("DELETE FROM visual_artifact_chunks WHERE artifact_id = ?", (artifact_id,))
         self.conn.commit()
 
-    def visual_stats(self, document_id: Optional[str] = None, version_id: Optional[str] = None) -> Dict[str, Any]:
+    def visual_stats(
+        self,
+        document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        version_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         params: List[Any] = []
         clauses: List[str] = []
         if document_id:
             clauses.append("document_id = ?")
             params.append(document_id)
+        if kb_id:
+            clauses.append("kb_id = ?")
+            params.append(kb_id)
         if version_id:
             clauses.append("version_id = ?")
             params.append(version_id)
@@ -727,15 +775,20 @@ class KnowledgeStorage:
             ),
         }
 
-    def create_visual_run(self, document_id: Optional[str] = None, kb_id: str = "kb_default") -> str:
+    def create_visual_run(
+        self,
+        document_id: Optional[str] = None,
+        kb_id: str = "kb_default",
+        analysis_backend: str = "",
+    ) -> str:
         run_id = f"visual_run_{uuid.uuid4().hex[:16]}"
         now = _now()
         self.conn.execute(
             """
-            INSERT INTO visual_analysis_runs(id, document_id, kb_id, status, created_at, updated_at)
-            VALUES (?, ?, ?, 'running', ?, ?)
+            INSERT INTO visual_analysis_runs(id, document_id, kb_id, analysis_backend, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'running', ?, ?)
             """,
-            (run_id, document_id or "", kb_id or "kb_default", now, now),
+            (run_id, document_id or "", kb_id or "kb_default", analysis_backend or "", now, now),
         )
         self.conn.commit()
         self.update_visual_run_stats(run_id)
@@ -746,7 +799,8 @@ class KnowledgeStorage:
         if not row:
             return {}
         document_id = row["document_id"] or None
-        stats = self.visual_stats(document_id=document_id)
+        kb_id = None if document_id else (row["kb_id"] or None)
+        stats = self.visual_stats(document_id=document_id, kb_id=kb_id)
         status = "done" if stats["pending"] == 0 and stats["running"] == 0 else "running"
         now = _now()
         self.conn.execute(
@@ -1127,6 +1181,7 @@ class KnowledgeStorage:
                 analysis_confidence REAL NOT NULL DEFAULT 0,
                 retrievable INTEGER NOT NULL DEFAULT 0,
                 analysis_model TEXT NOT NULL DEFAULT '',
+                analysis_backend TEXT NOT NULL DEFAULT '',
                 prompt_version TEXT NOT NULL DEFAULT '',
                 result_json TEXT NOT NULL DEFAULT '{}',
                 error TEXT NOT NULL DEFAULT '',
@@ -1137,6 +1192,7 @@ class KnowledgeStorage:
             )
             """
         )
+        self._ensure_column("visual_artifacts", "analysis_backend", "TEXT NOT NULL DEFAULT ''")
         self.conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_visual_artifacts_doc
@@ -1155,6 +1211,7 @@ class KnowledgeStorage:
                 id TEXT PRIMARY KEY,
                 document_id TEXT NOT NULL DEFAULT '',
                 kb_id TEXT NOT NULL DEFAULT 'kb_default',
+                analysis_backend TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL,
                 total INTEGER NOT NULL DEFAULT 0,
                 pending INTEGER NOT NULL DEFAULT 0,
@@ -1170,6 +1227,7 @@ class KnowledgeStorage:
             )
             """
         )
+        self._ensure_column("visual_analysis_runs", "analysis_backend", "TEXT NOT NULL DEFAULT ''")
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS visual_artifact_chunks (
@@ -1532,6 +1590,7 @@ def _row_to_visual_artifact(row: sqlite3.Row) -> Dict[str, Any]:
         "analysis_confidence": float(row["analysis_confidence"] or 0),
         "retrievable": bool(row["retrievable"]),
         "analysis_model": row["analysis_model"] or "",
+        "analysis_backend": _row_value(row, "analysis_backend", ""),
         "prompt_version": row["prompt_version"] or "",
         "result_json": _loads(row["result_json"]) or {},
         "error": row["error"] or "",
@@ -1571,6 +1630,16 @@ def _loads(value: Any) -> Any:
         return json.loads(value)
     except Exception:
         return []
+
+
+def _row_value(row: sqlite3.Row, key: str, default: Any = "") -> Any:
+    try:
+        if key in row.keys():
+            value = row[key]
+            return default if value is None else value
+    except Exception:
+        pass
+    return default
 
 
 def _normalize_alias(value: str) -> str:

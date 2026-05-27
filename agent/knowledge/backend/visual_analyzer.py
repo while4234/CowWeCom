@@ -8,7 +8,7 @@ import json
 import mimetypes
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .models import KnowledgeChunk, KnowledgeDocument, SourceSpan, VisualAnalysisResult, VisualArtifactCandidate
 from .storage import stable_visual_chunk_id, stable_visual_span_id
@@ -49,20 +49,44 @@ OUTPUT_SCHEMA = {
 class VisualAnalyzer:
     """Analyze one visual artifact via the configured OpenAI-compatible vision path."""
 
-    def analyze(self, candidate: VisualArtifactCandidate, config: Any, document: KnowledgeDocument | None = None) -> VisualAnalysisResult:
+    def analyze(
+        self,
+        candidate: VisualArtifactCandidate,
+        config: Any,
+        document: KnowledgeDocument | None = None,
+        *,
+        analysis_backend: Optional[str] = None,
+    ) -> VisualAnalysisResult:
         visual_config = getattr(config, "visual_analysis", {}) or {}
-        content = self._call_model(candidate, config, document)
+        content = self._call_model(candidate, config, document, analysis_backend=analysis_backend)
         return validate_visual_analysis_json(content, candidate, visual_config)
 
-    def _call_model(self, candidate: VisualArtifactCandidate, config: Any, document: KnowledgeDocument | None) -> str:
+    def _call_model(
+        self,
+        candidate: VisualArtifactCandidate,
+        config: Any,
+        document: KnowledgeDocument | None,
+        *,
+        analysis_backend: Optional[str],
+    ) -> str:
         from models.openai.open_ai_bot import OpenAIBot
 
         visual_config = getattr(config, "visual_analysis", {}) or {}
         model = str(visual_config.get("model") or "gpt-5.5")
         reasoning_effort = str(visual_config.get("reasoning_effort") or "xhigh")
+        effective_backend = resolve_visual_analysis_backend(
+            analysis_backend if analysis_backend is not None else visual_config.get("analysis_backend")
+        )
+        bot: Any
+        if effective_backend == "codex":
+            from models.codex.codex_bot import CodexBot
+
+            bot = CodexBot()
+        else:
+            bot = OpenAIBot(backend_override=effective_backend)
         prompt = build_visual_prompt(candidate, document, visual_config)
         image_url = image_file_to_data_url(candidate.image_path, int(visual_config.get("max_image_long_edge", 1800) or 1800))
-        response = OpenAIBot().call_vision(
+        response = bot.call_vision(
             image_url=image_url,
             question=f"{SYSTEM_PROMPT}\n\n{prompt}",
             model=model,
@@ -76,6 +100,28 @@ class VisualAnalyzer:
         if not str(content).strip():
             raise RuntimeError("vision model response was empty")
         return str(content).strip()
+
+
+def normalize_visual_analysis_backend(value: Any) -> str:
+    if value is None:
+        return "current"
+    text = str(value or "").strip().lower()
+    if text in ("", "current"):
+        return "current"
+    if text in ("capi", "capi_monthly", "codex"):
+        return text
+    if text in ("capi-monthly", "capi_month", "capi-month", "monthly", "month"):
+        return "capi_monthly"
+    raise ValueError(f"unsupported visual analysis backend: {value}")
+
+
+def resolve_visual_analysis_backend(value: Any) -> str:
+    requested = normalize_visual_analysis_backend(value)
+    if requested == "current":
+        from common.llm_backend_router import get_current_backend
+
+        return normalize_visual_analysis_backend(get_current_backend())
+    return requested
 
 
 def build_visual_prompt(candidate: VisualArtifactCandidate, document: KnowledgeDocument | None, visual_config: Dict[str, Any]) -> str:
@@ -177,8 +223,11 @@ def visual_result_to_chunks(
     result: VisualAnalysisResult,
     document: KnowledgeDocument,
     visual_config: Dict[str, Any],
+    *,
+    analysis_backend: str = "",
+    analysis_model: str = "",
 ) -> Tuple[List[KnowledgeChunk], List[SourceSpan]]:
-    model = str(visual_config.get("model") or "gpt-5.5")
+    model = str(analysis_model or visual_config.get("model") or "gpt-5.5")
     prompt_version = str(visual_config.get("prompt_version") or "visual-v1")
     section_path = "/".join(candidate.section_path) if candidate.section_path else ""
     metadata = {
@@ -191,6 +240,7 @@ def visual_result_to_chunks(
         "caption": result.caption or candidate.caption,
         "prompt_version": prompt_version,
         "analysis_model": model,
+        "analysis_backend": analysis_backend or normalize_visual_analysis_backend(visual_config.get("analysis_backend")),
         "source": "visual_analysis",
     }
     texts = _chunk_texts(candidate, result, document)

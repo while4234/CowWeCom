@@ -3,7 +3,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from agent.knowledge.backend import KnowledgeBackendConfig, KnowledgeBackendService
+from agent.knowledge.backend.models import KnowledgeChunk, KnowledgeDocument
 import agent.knowledge.backend.service as backend_service
+from agent.knowledge.backend.service import _render_protocol_document_markdown
 
 
 def _field(value, name, default=None):
@@ -168,6 +170,62 @@ def test_single_document_export_keeps_all_protocol_indexes(tmp_path):
     ucie_index = (tmp_path / "knowledge" / "protocols" / "ucie_1_1" / "index.md").read_text(encoding="utf-8")
     assert "AMBA AXI4-Stream Test" in axi_index
     assert "UCIe Test" in ucie_index
+
+
+def test_protocol_markdown_source_chunks_skip_visual_analysis_chunks():
+    document = KnowledgeDocument(
+        id="doc1",
+        title="Protocol Doc",
+        source_path="protocol.pdf",
+        mime_type="application/pdf",
+        size=123,
+        content_hash="hash",
+        status="ready",
+        kb_id="ucie",
+        version_id="v1",
+    )
+    chunks = [
+        KnowledgeChunk(
+            id="chunk1",
+            document_id="doc1",
+            ordinal=1,
+            page_start=1,
+            page_end=1,
+            text="Ordinary source prose.",
+        ),
+        KnowledgeChunk(
+            id="chunk2",
+            document_id="doc1",
+            ordinal=2,
+            page_start=2,
+            page_end=2,
+            text="[视觉图表]\nVisual chunk text should not appear in Source Chunks.",
+            metadata={"source": "visual_analysis"},
+        ),
+    ]
+    visual_artifacts = [
+        {
+            "analysis_status": "succeeded",
+            "retrievable": True,
+            "page": 2,
+            "artifact_type": "figure",
+            "analysis_confidence": 0.9,
+            "caption": "Figure 1. Visual caption",
+            "bbox": {},
+            "result_json": {
+                "caption": "Figure 1. Visual caption",
+                "summary": "High-confidence visual summary.",
+                "key_facts": [{"fact": "Visual fact", "confidence": 0.9}],
+            },
+        }
+    ]
+
+    markdown = _render_protocol_document_markdown(document, chunks, visual_artifacts)
+    source_section = markdown.split("## 视觉图表补全", 1)[0]
+
+    assert "Ordinary source prose." in source_section
+    assert "[视觉图表]" not in source_section
+    assert "High-confidence visual summary." in markdown
 
 
 def test_backend_generates_validated_llm_study_document(tmp_path, monkeypatch):

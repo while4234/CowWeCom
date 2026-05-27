@@ -4887,6 +4887,7 @@ let _knowledgeCurrentFile = null;
 let _knowledgeGraphLoaded = false;
 let _knowledgeBackendDocuments = [];
 let _knowledgeBackendVisualRunning = false;
+let _knowledgeBackendVisualBackends = null;
 
 function loadKnowledgeBackendPanel() {
     const docsEl = document.getElementById('knowledge-backend-docs');
@@ -4903,7 +4904,8 @@ function loadKnowledgeBackendPanel() {
         fetch('/api/knowledge/admin/status').then(_knowledgeBackendJson),
         fetch('/api/knowledge/admin/documents').then(_knowledgeBackendJson),
         fetch('/api/knowledge/admin/visual/status').then(_knowledgeBackendJson).catch(() => ({})),
-    ]).then(([statusData, docsData, visualData]) => {
+        fetch('/api/knowledge/admin/visual/backends').then(_knowledgeBackendJson).catch(() => ({})),
+    ]).then(([statusData, docsData, visualData, backendsData]) => {
         const enabled = statusData && statusData.enabled === true;
         statusEl.textContent = enabled ? t('knowledge_backend_ready') : t('knowledge_backend_disabled');
         statusEl.className = enabled
@@ -4916,12 +4918,88 @@ function loadKnowledgeBackendPanel() {
         }
 
         _knowledgeBackendDocuments = (docsData && docsData.documents) || [];
+        renderKnowledgeBackendDocumentSelector(_knowledgeBackendDocuments);
+        renderVisualAnalysisBackendSelector(backendsData);
         renderKnowledgeBackendDocuments(_knowledgeBackendDocuments);
         renderKnowledgeBackendSummary(statusData, _knowledgeBackendDocuments, visualData);
     }).catch(err => {
         statusEl.textContent = t('knowledge_backend_disabled');
         docsEl.innerHTML = `<div class="text-xs text-red-500">${escapeHtml(err.message || 'Failed to load backend documents')}</div>`;
     });
+}
+
+function loadVisualAnalysisBackends() {
+    return fetch('/api/knowledge/admin/visual/backends')
+        .then(_knowledgeBackendJson)
+        .then(data => {
+            renderVisualAnalysisBackendSelector(data);
+            return data;
+        })
+        .catch(() => {
+            renderVisualAnalysisBackendSelector({});
+            return {};
+        });
+}
+
+function renderVisualAnalysisBackendSelector(data) {
+    _knowledgeBackendVisualBackends = data || {};
+    const select = document.getElementById('knowledge-backend-visual-backend-select');
+    if (!select) return;
+    const backends = Array.isArray(data && data.backends) ? data.backends : [];
+    if (!backends.length) {
+        select.innerHTML = '<option value="current">current</option>';
+        return;
+    }
+    const defaultId = (data && data.default_analysis_backend) || 'current';
+    select.innerHTML = backends.map(item => {
+        const id = item.id || 'current';
+        const label = `${item.label || id}${item.model ? ` / ${item.model}` : ''}`;
+        const disabled = item.available === false ? ' disabled' : '';
+        const selected = id === defaultId ? ' selected' : '';
+        return `<option value="${escapeAttr(id)}"${disabled}${selected}>${escapeHtml(label)}</option>`;
+    }).join('');
+    if (!select.value && backends[0]) {
+        select.value = backends[0].id || 'current';
+    }
+}
+
+function getSelectedVisualAnalysisBackend() {
+    const select = document.getElementById('knowledge-backend-visual-backend-select');
+    return (select && select.value) || 'current';
+}
+
+function renderKnowledgeBackendDocumentSelector(documents) {
+    const select = document.getElementById('knowledge-backend-document-select');
+    if (!select) return;
+    const sourceDocs = (documents || []).filter(doc => (doc.doc_type || 'document') !== 'llm_study');
+    if (!sourceDocs.length) {
+        select.innerHTML = '<option value="">请选择协议文档</option>';
+        return;
+    }
+    const previous = select.value;
+    select.innerHTML = sourceDocs.map(doc => {
+        const id = doc.id || '';
+        const title = doc.title || id || 'document';
+        const label = `${title} / ${doc.kb_id || 'kb_default'} / ${doc.doc_type || 'document'} / ${id.slice(0, 8)}`;
+        return `<option value="${escapeAttr(id)}">${escapeHtml(label)}</option>`;
+    }).join('');
+    if (previous && sourceDocs.some(doc => doc.id === previous)) {
+        select.value = previous;
+    }
+}
+
+function getSelectedKnowledgeBackendDocumentId() {
+    const select = document.getElementById('knowledge-backend-document-select');
+    if (select && select.value) return select.value;
+    const doc = _knowledgeBackendSourceDocument();
+    return doc ? doc.id : '';
+}
+
+function selectKnowledgeBackendDocument(documentId) {
+    const select = document.getElementById('knowledge-backend-document-select');
+    if (select && documentId) {
+        select.value = documentId;
+    }
 }
 
 function _knowledgeBackendJson(resp) {
@@ -4944,6 +5022,13 @@ function renderKnowledgeBackendDocuments(documents) {
             ? `<button type="button" onclick="navigateTo('knowledge'); setTimeout(() => openKnowledgeFile('${escapeAttr(escapeJs(path))}', '${escapeAttr(escapeJs(doc.title || doc.id))}'), 100)"
                        class="knowledge-backend-doc-action"><i class="fas fa-arrow-up-right-from-square"></i></button>`
             : '';
+        const safeDocId = escapeAttr(escapeJs(doc.id || ''));
+        const visualBtns = (doc.doc_type || 'document') !== 'llm_study'
+            ? `<button type="button" onclick="selectKnowledgeBackendDocument('${safeDocId}'); startVisualBuildLoop('${safeDocId}', false, false)"
+                       class="knowledge-backend-doc-action text-[11px] px-2">补全此文档</button>
+               <button type="button" onclick="selectKnowledgeBackendDocument('${safeDocId}'); showLowConfidenceVisualArtifacts('${safeDocId}')"
+                       class="knowledge-backend-doc-action text-[11px] px-2">低置信</button>`
+            : '';
         return `
             <div class="knowledge-backend-doc">
                 <div class="min-w-0">
@@ -4955,6 +5040,7 @@ function renderKnowledgeBackendDocuments(documents) {
                         <span class="truncate">${escapeHtml(doc.source_path || '')}</span>
                     </div>
                 </div>
+                ${visualBtns}
                 ${openBtn}
             </div>
         `;
@@ -5023,24 +5109,41 @@ function _knowledgeBackendSourceDocument() {
     return (_knowledgeBackendDocuments || []).find(doc => (doc.doc_type || 'document') !== 'llm_study') || null;
 }
 
-async function startVisualBuildLoop(documentId, force) {
+function _knowledgeBackendDocumentById(documentId) {
+    return (_knowledgeBackendDocuments || []).find(doc => doc.id === documentId) || null;
+}
+
+async function startVisualBuildLoop(documentId, force, retryFailed) {
     if (_knowledgeBackendVisualRunning) return;
     const messageEl = document.getElementById('knowledge-backend-message');
-    const sourceDoc = documentId ? { id: documentId } : _knowledgeBackendSourceDocument();
+    const selectedId = documentId || getSelectedKnowledgeBackendDocumentId();
+    const sourceDoc = selectedId ? (_knowledgeBackendDocumentById(selectedId) || { id: selectedId }) : _knowledgeBackendSourceDocument();
     if (!sourceDoc || !sourceDoc.id) {
         if (messageEl) messageEl.textContent = '请先上传协议';
         return;
     }
+    selectKnowledgeBackendDocument(sourceDoc.id);
     _knowledgeBackendVisualRunning = true;
     let runId = '';
+    const backend = getSelectedVisualAnalysisBackend();
     let totals = { processed: 0, succeeded: 0, low_confidence: 0, failed: 0, pending: 0 };
+    let changed = false;
+    setVisualBuildProgressVisible(true);
+    resetVisualBuildProgress();
     if (messageEl) messageEl.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>${t('knowledge_backend_visual_running')}`;
     try {
         while (true) {
             const resp = await fetch('/api/knowledge/admin/visual/build', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ document_id: sourceDoc.id, limit: 1, force: !!force, run_id: runId })
+                body: JSON.stringify({
+                    document_id: sourceDoc.id,
+                    limit: 1,
+                    force: !!force,
+                    run_id: runId,
+                    analysis_backend: backend,
+                    retry_failed: !!retryFailed
+                })
             });
             const data = await _knowledgeBackendJson(resp);
             if (data.status === 'disabled' || data.ok === false) {
@@ -5053,10 +5156,19 @@ async function startVisualBuildLoop(documentId, force) {
             totals.low_confidence += data.low_confidence || 0;
             totals.failed += data.failed || 0;
             totals.pending = data.pending || 0;
+            changed = changed || ((data.processed || 0) > 0) || ((data.failed || 0) > 0) || ((data.low_confidence || 0) > 0);
+            updateVisualBuildProgress(data, totals, sourceDoc, data.analysis_backend || backend);
             if (messageEl) {
                 messageEl.textContent = `图表补全：已处理 ${totals.processed}，高置信入库 ${totals.succeeded}，低置信跳过 ${totals.low_confidence}，失败 ${totals.failed}，剩余 ${totals.pending}`;
             }
-            if (!data.has_more || (data.processed || 0) === 0 || (data.failed || 0) > 0) break;
+            if (!data.has_more || (data.processed || 0) === 0) break;
+        }
+        if (changed) {
+            await fetch('/api/knowledge/admin/export', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ document_id: sourceDoc.id })
+            }).then(_knowledgeBackendJson).catch(() => null);
         }
         loadKnowledgeBackendPanel();
         loadKnowledgeView();
@@ -5067,13 +5179,63 @@ async function startVisualBuildLoop(documentId, force) {
     }
 }
 
-function showLowConfidenceVisualArtifacts() {
+function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
+    const stats = (data && data.stats) || {};
+    const total = Number(stats.total || 0);
+    const pending = Number(stats.pending || 0);
+    const running = Number(stats.running || 0);
+    const succeeded = Number(stats.succeeded || 0);
+    const lowConfidence = Number(stats.low_confidence || 0);
+    const failed = Number(stats.failed || 0);
+    const done = succeeded + lowConfidence + failed;
+    const remaining = Math.max(0, pending + running);
+    const percent = total > 0 ? Math.round(done * 100 / total) : 0;
+    const labelEl = document.getElementById('knowledge-backend-visual-progress-label');
+    const percentEl = document.getElementById('knowledge-backend-visual-progress-percent');
+    const barEl = document.getElementById('knowledge-backend-visual-progress-bar');
+    const detailEl = document.getElementById('knowledge-backend-visual-progress-detail');
+    if (labelEl) labelEl.textContent = `文档：${sourceDoc.title || sourceDoc.id || ''}`;
+    if (percentEl) percentEl.textContent = `${percent}%`;
+    if (barEl) barEl.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    if (detailEl) {
+        detailEl.innerHTML = [
+            `后端：${escapeHtml(backend || getSelectedVisualAnalysisBackend())}`,
+            `总数：${total}`,
+            `已处理：${done}`,
+            `高置信入库：${succeeded}`,
+            `低置信跳过：${lowConfidence}`,
+            `失败：${failed}`,
+            `剩余：${remaining}`,
+        ].join('<br>');
+    }
+}
+
+function resetVisualBuildProgress() {
+    const labelEl = document.getElementById('knowledge-backend-visual-progress-label');
+    const percentEl = document.getElementById('knowledge-backend-visual-progress-percent');
+    const barEl = document.getElementById('knowledge-backend-visual-progress-bar');
+    const detailEl = document.getElementById('knowledge-backend-visual-progress-detail');
+    if (labelEl) labelEl.textContent = '';
+    if (percentEl) percentEl.textContent = '0%';
+    if (barEl) barEl.style.width = '0%';
+    if (detailEl) detailEl.textContent = '';
+}
+
+function setVisualBuildProgressVisible(visible) {
+    const el = document.getElementById('knowledge-backend-visual-progress');
+    if (!el) return;
+    el.classList.toggle('hidden', !visible);
+}
+
+function showLowConfidenceVisualArtifacts(documentId) {
     const messageEl = document.getElementById('knowledge-backend-message');
-    const sourceDoc = _knowledgeBackendSourceDocument();
+    const selectedId = documentId || getSelectedKnowledgeBackendDocumentId();
+    const sourceDoc = selectedId ? (_knowledgeBackendDocumentById(selectedId) || { id: selectedId }) : _knowledgeBackendSourceDocument();
     if (!sourceDoc || !sourceDoc.id) {
         if (messageEl) messageEl.textContent = '请先上传协议';
         return;
     }
+    selectKnowledgeBackendDocument(sourceDoc.id);
     const url = `/api/knowledge/admin/visual/artifacts?document_id=${encodeURIComponent(sourceDoc.id)}&status=low_confidence`;
     fetch(url)
         .then(_knowledgeBackendJson)
