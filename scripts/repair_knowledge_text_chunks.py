@@ -70,6 +70,8 @@ def main() -> int:
             {
                 "ok": bool(report.get("ok")),
                 "mode": report.get("mode"),
+                "message": report.get("message", ""),
+                "error": report.get("error", ""),
                 "summary": report.get("summary", {}),
                 "backup_path": report.get("backup_path", ""),
                 "report_path": report.get("report_path", ""),
@@ -354,19 +356,39 @@ def delete_unreferenced_source_spans_for_document(storage: KnowledgeStorage, doc
     chunks = storage.list_chunks(document_id)
     referenced = set()
     for chunk in chunks:
-        referenced.update(chunk.source_span_ids or [])
+        referenced.update(span_id for span_id in (chunk.source_span_ids or []) if span_id)
     if not referenced:
-        cursor = storage.conn.execute("DELETE FROM source_spans WHERE document_id = ?", (document_id,))
-        return cursor.rowcount or 0
+        rows = storage.conn.execute("SELECT id FROM source_spans WHERE document_id = ?", (document_id,)).fetchall()
+        delete_ids = [row["id"] for row in rows if row["id"]]
+        return delete_source_spans_for_document(storage, document_id, delete_ids)
 
     placeholders = ",".join("?" for _ in referenced)
-    cursor = storage.conn.execute(
+    rows = storage.conn.execute(
         f"""
-        DELETE FROM source_spans
+        SELECT id
+        FROM source_spans
         WHERE document_id = ?
           AND id NOT IN ({placeholders})
         """,
         [document_id, *sorted(referenced)],
+    ).fetchall()
+    delete_ids = [row["id"] for row in rows if row["id"]]
+    return delete_source_spans_for_document(storage, document_id, delete_ids)
+
+
+def delete_source_spans_for_document(storage: KnowledgeStorage, document_id: str, span_ids: Iterable[str]) -> int:
+    delete_ids = [span_id for span_id in dict.fromkeys(span_ids) if span_id]
+    if not delete_ids:
+        return 0
+    storage.prune_source_span_references(delete_ids)
+    placeholders = ",".join("?" for _ in delete_ids)
+    cursor = storage.conn.execute(
+        f"""
+        DELETE FROM source_spans
+        WHERE document_id = ?
+          AND id IN ({placeholders})
+        """,
+        [document_id, *delete_ids],
     )
     return cursor.rowcount or 0
 
@@ -676,7 +698,15 @@ def default_report_path(options: RepairOptions, started_at: int) -> Path:
     if not data_dir:
         data_dir = options.db_path.parent.parent
     timestamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(started_at))
-    return data_dir / "reports" / f"repair-text-chunks-{timestamp}.json"
+    base_path = data_dir / "reports" / f"repair-text-chunks-{timestamp}.json"
+    if not base_path.exists():
+        return base_path
+    index = 1
+    while True:
+        candidate = base_path.with_name(f"{base_path.stem}-{index}{base_path.suffix}")
+        if not candidate.exists():
+            return candidate
+        index += 1
 
 
 def normalize_options(options: RepairOptions, project_root: Path) -> RepairOptions:

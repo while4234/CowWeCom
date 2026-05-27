@@ -134,6 +134,43 @@ class KnowledgeStorage:
         *,
         commit: bool = True,
     ) -> None:
+        if not commit:
+            self._save_document_impl(document, chunks, source_spans, entities, relations)
+            return
+
+        savepoint_name = f"save_document_{uuid.uuid4().hex}"
+        self.conn.execute(f"SAVEPOINT {savepoint_name}")
+        try:
+            self._save_document_impl(document, chunks, source_spans, entities, relations)
+        except Exception:
+            self._rollback_save_document_savepoint(savepoint_name)
+            raise
+
+        try:
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def _rollback_save_document_savepoint(self, savepoint_name: str) -> None:
+        try:
+            self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+        except Exception:
+            pass
+        try:
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        except Exception:
+            pass
+
+    def _save_document_impl(
+        self,
+        document: KnowledgeDocument,
+        chunks: Iterable[KnowledgeChunk],
+        source_spans: Iterable[SourceSpan],
+        entities: Iterable[KnowledgeEntity],
+        relations: Iterable[KnowledgeRelation],
+    ) -> None:
         chunks = list(chunks)
         source_spans = list(source_spans)
         entities = list(entities)
@@ -225,6 +262,7 @@ class KnowledgeStorage:
             if self.fts5_available:
                 self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", ordinary_chunk_ids)
         if ordinary_span_ids:
+            self.prune_source_span_references(ordinary_span_ids)
             placeholders = ",".join("?" for _ in ordinary_span_ids)
             self.conn.execute(
                 f"DELETE FROM source_spans WHERE document_id = ? AND id IN ({placeholders})",
@@ -298,8 +336,6 @@ class KnowledgeStorage:
             WHERE chunk_id NOT IN (SELECT id FROM chunks)
             """
         )
-        if commit:
-            self.conn.commit()
 
     def _source_span_ids_for_preserved_chunks(self, document_id: str, deleted_chunk_ids: List[str]) -> Set[str]:
         if not deleted_chunk_ids:
@@ -382,6 +418,58 @@ class KnowledgeStorage:
     def _all_source_span_ids(self) -> Set[str]:
         rows = self.conn.execute("SELECT id FROM source_spans").fetchall()
         return {row["id"] for row in rows if row["id"]}
+
+    def prune_source_span_references(self, span_ids: Iterable[str]) -> Dict[str, int]:
+        remove_ids = {str(span_id) for span_id in span_ids if span_id}
+        if not remove_ids:
+            return {"entities": 0, "relations": 0}
+
+        entity_updates = self._prune_entity_source_span_references(remove_ids)
+        relation_updates = self._prune_relation_source_span_references(remove_ids)
+        return {"entities": entity_updates, "relations": relation_updates}
+
+    def _prune_entity_source_span_references(self, remove_ids: Set[str]) -> int:
+        updates = 0
+        rows = self.conn.execute("SELECT id, source_span_ids FROM entities").fetchall()
+        for row in rows:
+            current_ids = _json_list(row["source_span_ids"])
+            filtered_ids = [span_id for span_id in current_ids if str(span_id) not in remove_ids]
+            if filtered_ids == current_ids:
+                continue
+            self.conn.execute(
+                "UPDATE entities SET source_span_ids = ?, updated_at = ? WHERE id = ?",
+                (_json(filtered_ids), _now(), row["id"]),
+            )
+            updates += 1
+        return updates
+
+    def _prune_relation_source_span_references(self, remove_ids: Set[str]) -> int:
+        updates = 0
+        rows = self.conn.execute("SELECT id, evidence_span_ids, metadata FROM knowledge_relations").fetchall()
+        for row in rows:
+            current_ids = _json_list(row["evidence_span_ids"])
+            removed_ids = [span_id for span_id in current_ids if str(span_id) in remove_ids]
+            if not removed_ids:
+                continue
+
+            filtered_ids = [span_id for span_id in current_ids if str(span_id) not in remove_ids]
+            metadata = _loads(row["metadata"])
+            if not isinstance(metadata, dict):
+                metadata = {}
+            if not filtered_ids:
+                metadata["evidence_pruned"] = True
+                metadata["pruned_source_span_ids"] = _unique(
+                    [
+                        *(_json_list(metadata.get("pruned_source_span_ids"))),
+                        *removed_ids,
+                    ]
+                )
+            self.conn.execute(
+                "UPDATE knowledge_relations SET evidence_span_ids = ?, metadata = ? WHERE id = ?",
+                (_json(filtered_ids), _json(metadata), row["id"]),
+            )
+            updates += 1
+        return updates
 
     def get_document(self, document_id: str) -> Optional[KnowledgeDocument]:
         row = self.conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
@@ -3054,6 +3142,11 @@ def _loads(value: Any) -> Any:
         return json.loads(value)
     except Exception:
         return []
+
+
+def _json_list(value: Any) -> List[Any]:
+    loaded = _loads(value)
+    return loaded if isinstance(loaded, list) else []
 
 
 def _merge_int_pages(old_pages: Iterable[Any], new_pages: Iterable[Any]) -> List[int]:

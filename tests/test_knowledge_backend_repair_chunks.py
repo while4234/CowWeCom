@@ -14,13 +14,18 @@ from agent.knowledge.backend.models import (
     VisualAnalysisResult,
     VisualArtifactCandidate,
 )
-from agent.knowledge.backend.storage import KnowledgeStorage, stable_relation_id
+from agent.knowledge.backend.storage import KnowledgeStorage, stable_entity_id, stable_relation_id
 from scripts import repair_knowledge_text_chunks as repair_script
 
 
 POLLUTION = "L a y e r 1 0 1 2 3 rxdatasbtxdatasb txcksb rxcksb"
 CAPTION = "Figure 5-34. Standard Package x16 interface: Signal exit order"
 CLEAN_TEXT = f"{CAPTION}\nClean package prose about UCIe sideband initialization."
+
+
+class FailingStorage(KnowledgeStorage):
+    def upsert_entity(self, entity):
+        raise RuntimeError("forced entity failure")
 
 
 def _options(tmp_path, db_path, **overrides):
@@ -371,6 +376,23 @@ def test_apply_creates_backup_and_report(monkeypatch, tmp_path):
     assert payload["report_path"] == str(report_path)
 
 
+def test_write_report_avoids_overwriting_same_second_path(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    options = _options(tmp_path, db_path)
+    started_at = 1_800_000_000
+
+    first = repair_script.write_report(options, {"ok": True, "summary": {}}, started_at)
+    second_report = {"ok": True, "summary": {}}
+    second = repair_script.write_report(options, second_report, started_at)
+
+    assert first != second
+    assert first.is_file()
+    assert second.is_file()
+    payload = json.loads(second.read_text(encoding="utf-8"))
+    assert payload["report_path"] == str(second)
+    assert second_report["report_path"] == str(second)
+
+
 def test_report_data_dir_prefers_db_layout_over_mismatched_config(monkeypatch, tmp_path):
     protocol_dir = tmp_path / "public_protocol_knowledge"
     db_path = protocol_dir / "indexes" / "kb.sqlite"
@@ -497,6 +519,37 @@ def test_missing_document_id_fails_before_backup(tmp_path):
     assert "document not found" in report["error"]
     assert report["backup_path"] == ""
     assert not list(tmp_path.glob("kb.sqlite.backup-*"))
+
+
+def test_main_prints_report_error_for_missing_selector(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-present-cli", _pdf(tmp_path, "present-cli.pdf"))
+    _seed_document(db_path, document, with_visual=False)
+    original_parse_args = repair_script.parse_args
+    monkeypatch.setattr(
+        repair_script,
+        "parse_args",
+        lambda: original_parse_args(
+            [
+                "--db",
+                str(db_path),
+                "--document-id",
+                "missing-doc",
+                "--dry-run",
+                "--workspace-root",
+                str(tmp_path),
+            ]
+        ),
+    )
+
+    exit_code = repair_script.main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert output["ok"] is False
+    assert output["message"] == ""
+    assert output["error"] == "document not found: missing-doc"
+    assert output["report_path"]
 
 
 def test_missing_kb_id_fails_before_backup(tmp_path):
@@ -715,17 +768,149 @@ def test_save_document_remaps_new_span_when_preserved_visual_uses_same_span_id(t
         storage.close()
 
 
+def test_save_document_commit_true_rolls_back_partial_writes_on_failure(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-atomic-save", _pdf(tmp_path, "atomic-save.pdf"))
+    old_chunk = _ordinary_chunk(document)
+    old_span = _ordinary_span(document)
+    new_chunk = KnowledgeChunk(
+        id="chunk-doc-atomic-save-new",
+        document_id=document.id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text=CLEAN_TEXT,
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=["span-doc-atomic-save-new"],
+    )
+    new_span = SourceSpan(
+        id="span-doc-atomic-save-new",
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=1,
+        page_end=1,
+        text=CLEAN_TEXT,
+    )
+    entity = KnowledgeEntity(
+        id="entity-forced-failure",
+        canonical_name="ForcedFailure",
+        entity_type="test",
+        source_span_ids=[new_span.id],
+    )
+
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document, [old_chunk], source_spans=[old_span])
+    finally:
+        storage.close()
+
+    storage = FailingStorage(db_path)
+    try:
+        try:
+            storage.save_document(document, [new_chunk], source_spans=[new_span], entities=[entity])
+            assert False, "save_document should raise the injected entity failure"
+        except RuntimeError as exc:
+            assert str(exc) == "forced entity failure"
+    finally:
+        storage.close()
+
+    storage = KnowledgeStorage(db_path)
+    try:
+        chunks = storage.list_chunks(document.id)
+        assert [chunk.id for chunk in chunks] == [old_chunk.id]
+        assert storage.get_source_span(old_span.id) is not None
+        assert storage.get_source_span(new_span.id) is None
+        assert not storage.list_entities(["ForcedFailure"])
+    finally:
+        storage.close()
+
+
+def test_repair_apply_prunes_entity_references_to_deleted_old_span(monkeypatch, tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-entity-prune", _pdf(tmp_path, "entity-prune.pdf"))
+    old_span = _ordinary_span(document)
+    _seed_document(db_path, document, with_visual=True)
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.upsert_entity(
+            KnowledgeEntity(
+                id=stable_entity_id("UCIe"),
+                canonical_name="UCIe",
+                entity_type="protocol",
+                source_span_ids=[old_span.id],
+            )
+        )
+        storage.conn.commit()
+    finally:
+        storage.close()
+    _patch_extract_and_sanitize(monkeypatch, sanitizer_text="UCIe is a die-to-die interconnect standard.")
+
+    report = repair_script.run_repair(_options(tmp_path, db_path, document_id=document.id, apply=True))
+
+    assert report["ok"] is True
+    storage = KnowledgeStorage(db_path)
+    try:
+        entity = storage.resolve_entity("UCIe")
+        assert entity is not None
+        assert old_span.id not in entity.source_span_ids
+        assert entity.source_span_ids
+        for span_id in entity.source_span_ids:
+            assert storage.get_source_span(span_id) is not None
+        chunks = storage.list_chunks(document.id)
+        ordinary = [chunk for chunk in chunks if chunk.metadata.get("source") != "visual_analysis"]
+        visual = [chunk for chunk in chunks if chunk.metadata.get("source") == "visual_analysis"]
+        assert ordinary
+        assert visual
+        assert not any(POLLUTION in chunk.text for chunk in ordinary)
+    finally:
+        storage.close()
+
+
 def test_delete_unreferenced_source_spans_deletes_all_when_no_chunks(tmp_path):
     db_path = tmp_path / "kb.sqlite"
     document = _document("doc-no-chunks", _pdf(tmp_path, "no-chunks.pdf"))
     storage = KnowledgeStorage(db_path)
     try:
+        span_id = f"span-{document.id}-ordinary"
         storage.save_document(document, [], source_spans=[_ordinary_span(document)])
-        assert storage.get_source_span(f"span-{document.id}-ordinary") is not None
+        storage.upsert_entity(
+            KnowledgeEntity(
+                id="entity-no-chunks",
+                canonical_name="NoChunks",
+                entity_type="test",
+                source_span_ids=[span_id],
+            )
+        )
+        storage.upsert_relation(
+            KnowledgeRelation(
+                id=stable_relation_id("entity-no-chunks", "mentions", "entity-target", [span_id]),
+                subject_entity_id="entity-no-chunks",
+                predicate="mentions",
+                object_entity_id="entity-target",
+                subject="NoChunks",
+                object="Target",
+                source_kb_id=document.kb_id,
+                evidence_span_ids=[span_id],
+                metadata={"kept": True},
+            ),
+            source_doc_id=document.id,
+        )
+        storage.conn.commit()
+        assert storage.get_source_span(span_id) is not None
 
         deleted = repair_script.delete_unreferenced_source_spans_for_document(storage, document.id)
 
         assert deleted == 1
-        assert storage.get_source_span(f"span-{document.id}-ordinary") is None
+        assert storage.get_source_span(span_id) is None
+        entity = storage.resolve_entity("NoChunks")
+        assert entity is not None
+        assert span_id not in entity.source_span_ids
+        relations = storage.list_relations(entity_id="entity-no-chunks")
+        assert relations[0].evidence_span_ids == []
+        assert relations[0].metadata["kept"] is True
+        assert relations[0].metadata["evidence_pruned"] is True
+        assert relations[0].metadata["pruned_source_span_ids"] == [span_id]
     finally:
         storage.close()
