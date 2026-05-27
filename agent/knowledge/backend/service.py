@@ -1231,8 +1231,7 @@ class KnowledgeBackendService:
                         document,
                         analysis_backend=analysis_backend,
                     )
-                    if not isinstance(result, VisualAnalysisResult):
-                        result = validate_visual_analysis_json(result, candidate, visual_config)
+                    result = validate_visual_analysis_json(result, candidate, visual_config)
                     if _should_retry_high_res(result, visual_config):
                         high_res_long_edge = int(visual_config.get("max_image_long_edge_high_res") or 3200)
                         high_res_candidate = VisualArtifactCandidate(
@@ -1254,8 +1253,7 @@ class KnowledgeBackendService:
                             document,
                             analysis_backend=analysis_backend,
                         )
-                        if not isinstance(retry_result, VisualAnalysisResult):
-                            retry_result = validate_visual_analysis_json(retry_result, high_res_candidate, retry_visual_config)
+                        retry_result = validate_visual_analysis_json(retry_result, high_res_candidate, retry_visual_config)
                         result = VisualAnalysisResult(
                             **{
                                 **retry_result.to_dict(),
@@ -1275,8 +1273,7 @@ class KnowledgeBackendService:
                     document,
                     analysis_backend=analysis_backend,
                 )
-                if not isinstance(result, VisualAnalysisResult):
-                    result = validate_visual_analysis_json(result, candidate, visual_config)
+                result = validate_visual_analysis_json(result, candidate, visual_config)
             result_json = result.to_dict()
             confidence = float(result.confidence.get("overall", 0.0) or 0.0)
             belongs_to_group = bool(artifact.get("group_id"))
@@ -1314,6 +1311,11 @@ class KnowledgeBackendService:
                     prompt_version=prompt_version,
                     analysis_backend=analysis_backend,
                 )
+                self._invalidate_visual_group_after_member_analysis(
+                    storage,
+                    artifact,
+                    "visual group member analysis succeeded",
+                )
                 return "succeeded"
             if belongs_to_group:
                 storage.delete_visual_page_chunks_for_artifact(artifact["id"])
@@ -1328,11 +1330,36 @@ class KnowledgeBackendService:
                 prompt_version=prompt_version,
                 analysis_backend=analysis_backend,
             )
+            self._invalidate_visual_group_after_member_analysis(
+                storage,
+                artifact,
+                result.low_confidence_reason or "visual group member analysis low confidence",
+            )
             return "low_confidence"
         except Exception as exc:
             logger.warning("[KnowledgeBackend] visual artifact analysis failed: %s", exc)
             storage.complete_visual_artifact_failed(artifact["id"], str(exc), analysis_backend=analysis_backend)
+            self._invalidate_visual_group_after_member_analysis(
+                storage,
+                artifact,
+                f"visual group member analysis failed: {exc}",
+            )
             return "failed"
+
+    def _invalidate_visual_group_after_member_analysis(
+        self,
+        storage: KnowledgeStorage,
+        artifact: Dict[str, Any],
+        reason: str,
+    ) -> None:
+        group_id = str(artifact.get("group_id") or "")
+        if not group_id:
+            return
+        storage.invalidate_visual_group_for_member_analysis_change(
+            group_id,
+            str(artifact.get("id") or ""),
+            reason,
+        )
 
     def _ensure_visual_backend_available(self, backend: str) -> None:
         if getattr(self._visual_analyzer, "skip_backend_availability_check", False):

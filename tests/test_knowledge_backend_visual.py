@@ -263,6 +263,26 @@ def _low_result(text="lowfact"):
     )
 
 
+def _raw_low_table_result(text="LOW_RAW_INDEXED", page=1, confidence=0.4, *, should_index=True):
+    return {
+        "artifact_type": "table",
+        "title": "Low Raw Table",
+        "caption": f"Table {page}. Low raw table",
+        "page": page,
+        "summary": f"Low confidence summary with {text}.",
+        "structured_markdown": f"| Signal | Meaning |\n| --- | --- |\n| {text} | low confidence |",
+        "key_facts": [{"fact": text, "confidence": confidence}],
+        "table": {
+            "headers": ["Signal", "Meaning"],
+            "rows": [{"Signal": text, "Meaning": "low confidence"}],
+            "markdown": f"| Signal | Meaning |\n| --- | --- |\n| {text} | low confidence |",
+        },
+        "readability": "poor",
+        "confidence": {"ocr": confidence, "structure": confidence, "semantic": confidence, "overall": confidence},
+        "should_index": should_index,
+    }
+
+
 def _append_page_visual_chunk(service, storage, candidate, result):
     document = storage.get_document(candidate.document_id)
     chunks, spans = visual_result_to_chunks(
@@ -391,6 +411,22 @@ def test_low_confidence_visual_result_is_not_indexed(tmp_path):
     artifact = service._backend._get_read_storage().list_visual_artifacts(document_id=document_id)[0]
     assert artifact["analysis_status"] == "low_confidence"
     assert artifact["retrievable"] is False
+
+
+def test_index_low_confidence_does_not_index_low_confidence_page_raw_result(tmp_path):
+    service = _service(tmp_path, visual_analysis={"index_low_confidence": True})
+    document_id, version_id = _ingest(service)
+    service._visual_extractor = FakeExtractor([_candidate(document_id, version_id, 1)])
+    service._visual_analyzer = QueueAnalyzer([_raw_low_table_result("LOW_RAW_INDEXED", page=1, should_index=True)])
+
+    result = service.build_visual_knowledge(document_id=document_id, limit=1)
+
+    assert result["low_confidence"] == 1
+    assert result["succeeded"] == 0
+    artifact = service._backend._get_read_storage().list_visual_artifacts(document_id=document_id)[0]
+    assert artifact["analysis_status"] == "low_confidence"
+    assert artifact["retrievable"] is False
+    assert service.search("LOW_RAW_INDEXED", limit=5) == []
 
 
 def test_force_retry_replaces_old_visual_chunks(tmp_path):
@@ -1015,6 +1051,99 @@ def test_group_hard_validation_not_bypassed_by_index_low_confidence(tmp_path):
     assert "merged_table rows require headers" in reason
 
 
+def test_group_threshold_validation_not_bypassed_by_index_low_confidence(tmp_path):
+    service = _service(tmp_path, visual_analysis={"index_low_confidence": True})
+    document_id, version_id = _ingest(service)
+    members = [
+        {"artifact_id": "a1", "page": 1, "analysis_status": "succeeded", "analysis_confidence": 0.9},
+        {"artifact_id": "a2", "page": 2, "analysis_status": "succeeded", "analysis_confidence": 0.9},
+    ]
+
+    result = validate_visual_group_analysis_json(
+        {
+            "artifact_type": "table",
+            "is_multipage": True,
+            "source_pages": [1, 2],
+            "summary": "LOW_GROUP_INDEXED",
+            "key_facts": [{"fact": "LOW_GROUP_INDEXED", "confidence": 0.9}],
+            "parts": [{"page": 1, "artifact_id": "a1"}, {"page": 2, "artifact_id": "a2"}],
+            "merged_table": {"headers": ["Signal"], "rows": [{"Signal": "LOW_GROUP_INDEXED"}]},
+            "confidence": {"ocr": 0.4, "structure": 0.4, "semantic": 0.4, "continuation": 0.9, "overall": 0.4},
+            "should_index": True,
+        },
+        {"id": "visual_group_threshold", "document_id": document_id, "version_id": version_id, "source_pages": [1, 2]},
+        members,
+        service.config.visual_analysis,
+    )
+
+    assert result["should_index"] is False
+    reason = result["low_confidence_reason"]
+    assert "overall confidence 0.40 below 0.78" in reason
+    assert "ocr confidence 0.40 below 0.70" in reason
+    assert "structure confidence 0.40 below 0.75" in reason
+    assert "semantic confidence 0.40 below 0.75" in reason
+
+
+def test_group_multipage_parts_validation_uses_actual_pages(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    members = [
+        {"artifact_id": "a1", "page": 1, "analysis_status": "succeeded", "analysis_confidence": 0.9},
+        {"artifact_id": "a2", "page": 2, "analysis_status": "succeeded", "analysis_confidence": 0.9},
+    ]
+
+    result = validate_visual_group_analysis_json(
+        {
+            "artifact_type": "table",
+            "is_multipage": False,
+            "source_pages": [1, 2],
+            "summary": "multipage fact",
+            "key_facts": [{"fact": "multipage fact", "confidence": 0.9}],
+            "parts": [{"page": 1, "artifact_id": "a1"}],
+            "merged_table": {"headers": ["Signal"], "rows": [{"Signal": "A"}]},
+            "confidence": {"ocr": 0.95, "structure": 0.95, "semantic": 0.95, "continuation": 0.9, "overall": 0.95},
+            "should_index": True,
+        },
+        {"id": "visual_group_multipage", "document_id": document_id, "version_id": version_id, "source_pages": [1, 2]},
+        members,
+        service.config.visual_analysis,
+    )
+
+    assert result["should_index"] is False
+    assert result["is_multipage"] is True
+    assert "multipage result has fewer than 2 parts" in result["low_confidence_reason"]
+
+
+def test_group_explicit_empty_source_pages_is_hard_failure(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    members = [
+        {"artifact_id": "a1", "page": 1, "analysis_status": "succeeded", "analysis_confidence": 0.9},
+        {"artifact_id": "a2", "page": 2, "analysis_status": "succeeded", "analysis_confidence": 0.9},
+    ]
+
+    result = validate_visual_group_analysis_json(
+        {
+            "artifact_type": "table",
+            "is_multipage": True,
+            "source_pages": [],
+            "summary": "empty source pages fact",
+            "key_facts": [{"fact": "empty source pages fact", "confidence": 0.9}],
+            "parts": [{"page": 1, "artifact_id": "a1"}, {"page": 2, "artifact_id": "a2"}],
+            "merged_table": {"headers": ["Signal"], "rows": [{"Signal": "A"}]},
+            "confidence": {"ocr": 0.95, "structure": 0.95, "semantic": 0.95, "continuation": 0.9, "overall": 0.95},
+            "should_index": True,
+        },
+        {"id": "visual_group_empty_pages", "document_id": document_id, "version_id": version_id, "source_pages": [1, 2]},
+        members,
+        service.config.visual_analysis,
+    )
+
+    assert result["should_index"] is False
+    assert result["source_pages"] == [1, 2]
+    assert "source_pages is empty" in result["low_confidence_reason"]
+
+
 def test_group_low_confidence_true_config_does_not_index_chunks(tmp_path):
     service = _service(tmp_path, visual_analysis={"index_low_confidence": True, "tile_large_artifacts": False})
     document_id, version_id = _ingest(service)
@@ -1065,6 +1194,43 @@ def test_group_low_confidence_true_config_does_not_index_chunks(tmp_path):
     assert result["outcome"] == "low_confidence"
     assert storage.get_visual_artifact_group(group_id)["status"] == "low_confidence"
     assert service.search("hard_group_should_not_index", limit=5) == []
+
+
+def test_group_threshold_low_confidence_true_config_does_not_index_chunks(tmp_path):
+    service = _service(tmp_path, visual_analysis={"index_low_confidence": True, "tile_large_artifacts": False})
+    document_id, version_id = _ingest(service)
+    group_id = "visual_group_threshold_storage"
+    storage = _seed_ready_group(service, document_id, version_id, group_id)
+    service._visual_analyzer = QueueVisualAnalyzer(
+        [],
+        group_results=[
+            {
+                "artifact_type": "table",
+                "title": "threshold storage",
+                "caption": "Table threshold storage",
+                "is_multipage": True,
+                "source_pages": [1, 2],
+                "summary": "LOW_GROUP_INDEXED",
+                "key_facts": [{"fact": "LOW_GROUP_INDEXED", "confidence": 0.9}],
+                "parts": [{"page": 1, "artifact_id": "visual_test_1"}, {"page": 2, "artifact_id": "visual_test_2"}],
+                "merged_table": {
+                    "headers": ["Signal"],
+                    "rows": [{"Signal": "LOW_GROUP_INDEXED"}],
+                    "markdown": "| Signal |\n| --- |\n| LOW_GROUP_INDEXED |",
+                },
+                "confidence": {"ocr": 0.4, "structure": 0.4, "semantic": 0.4, "continuation": 0.9, "overall": 0.4},
+                "should_index": True,
+            }
+        ],
+    )
+
+    result = service.analyze_visual_artifact_group(group_id, analysis_backend="codex")
+
+    assert result["outcome"] == "low_confidence"
+    group = storage.get_visual_artifact_group(group_id)
+    assert group["status"] == "low_confidence"
+    assert group["retrievable"] is False
+    assert service.search("LOW_GROUP_INDEXED", limit=5) == []
 
 
 def test_inferred_group_growth_reuses_existing_group_id(tmp_path):
@@ -1189,6 +1355,52 @@ def test_stale_group_membership_cannot_index_old_group(tmp_path):
 
     assert result["outcome"] in {"low_confidence", "skipped"}
     assert service.search("STALE_1", limit=5) == []
+
+
+def test_resolve_visual_group_id_ignores_legacy_stale_membership_rows(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    old_group = "visual_group_resolver_old"
+    new_group = "visual_group_resolver_new"
+    for group_id in (old_group, new_group):
+        storage.upsert_visual_artifact_group(
+            {
+                "id": group_id,
+                "document_id": document_id,
+                "version_id": version_id,
+                "kb_id": "kb_default",
+                "group_type": "table",
+                "title": group_id,
+                "caption": group_id,
+                "source_pages": [1, 2],
+                "status": "pending",
+                "confidence": 0.9,
+                "result_json": {},
+            }
+        )
+    candidate = _candidate(document_id, version_id, 1)
+    storage.upsert_visual_artifact(candidate)
+    storage.add_visual_artifact_group_member(new_group, candidate.id, 1, 2, "first", 0.9)
+    storage.mark_visual_artifact_group_membership(candidate.id, new_group, 1, "first", 0.9)
+    storage.conn.execute(
+        """
+        INSERT OR REPLACE INTO visual_artifact_group_members(group_id, artifact_id, part_index, page, role, confidence)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (old_group, candidate.id, 1, 1, "first", 0.9),
+    )
+    storage.conn.commit()
+
+    winner = storage.resolve_visual_group_id_for_members(
+        document_id=document_id,
+        version_id=version_id,
+        member_artifact_ids=[candidate.id],
+        preferred_group_id="visual_group_resolver_preferred",
+    )
+
+    assert winner == new_group
+    assert storage.cleanup_stale_visual_artifact_group_members() == 1
 
 
 def test_group_low_confidence_not_indexed(tmp_path):
@@ -1504,6 +1716,66 @@ def test_group_failed_clears_member_group_retrievable(tmp_path):
     storage.complete_visual_artifact_group_failed(group_id, "failed")
 
     assert not any(artifact["group_retrievable"] for artifact in storage.list_visual_artifacts(document_id=document_id, version_id=version_id))
+
+
+def test_group_member_retry_low_confidence_invalidates_existing_group_chunks(tmp_path):
+    service = _service(tmp_path, visual_analysis={"index_low_confidence": True})
+    document_id, version_id = _ingest(service)
+    group_id = "visual_group_retry_low"
+    storage = _seed_ready_group(service, document_id, version_id, group_id)
+    service._visual_analyzer = QueueAnalyzer([])
+    assert service.analyze_visual_artifact_group(group_id, analysis_backend="codex")["outcome"] == "succeeded"
+    assert service.search("READY_1", limit=5)
+
+    service._visual_analyzer = QueueAnalyzer([_raw_low_table_result("LOW_NEW", page=1, should_index=True)])
+    retry = service.retry_visual_artifact("visual_test_1")
+
+    assert retry["outcome"] == "low_confidence"
+    page1 = storage.get_visual_artifact("visual_test_1")
+    assert page1["analysis_status"] == "low_confidence"
+    group = storage.get_visual_artifact_group(group_id)
+    assert group["status"] in {"pending", "low_confidence"}
+    assert group["status"] != "succeeded"
+    assert group["retrievable"] is False
+    members = storage.list_visual_artifacts(document_id=document_id, version_id=version_id)
+    assert not any(artifact["group_retrievable"] for artifact in members)
+    assert service.search("READY_1", limit=5) == []
+    assert service.search("LOW_NEW", limit=5) == []
+
+    service._visual_analyzer = QueueAnalyzer([])
+    group_retry = service.analyze_visual_artifact_group(group_id, analysis_backend="codex")
+
+    assert group_retry["outcome"] == "low_confidence"
+    assert storage.get_visual_artifact_group(group_id)["retrievable"] is False
+    assert service.search("READY_1", limit=5) == []
+    assert service.search("LOW_NEW", limit=5) == []
+
+
+def test_group_member_retry_success_invalidates_old_group_fact_until_remerge(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    group_id = "visual_group_retry_success"
+    storage = _seed_ready_group(service, document_id, version_id, group_id)
+    service._visual_analyzer = QueueAnalyzer([])
+    assert service.analyze_visual_artifact_group(group_id, analysis_backend="codex")["outcome"] == "succeeded"
+    assert service.search("READY_1", limit=5)
+
+    service._visual_analyzer = QueueAnalyzer([_table_result("FRESH_1", page=1)])
+    retry = service.retry_visual_artifact("visual_test_1")
+
+    assert retry["outcome"] == "succeeded"
+    group = storage.get_visual_artifact_group(group_id)
+    assert group["status"] == "pending"
+    assert group["retrievable"] is False
+    assert service.search("READY_1", limit=5) == []
+    assert service.search("FRESH_1", limit=5) == []
+
+    service._visual_analyzer = QueueAnalyzer([])
+    rebuilt = service.analyze_visual_artifact_group(group_id, analysis_backend="codex")
+
+    assert rebuilt["outcome"] == "succeeded"
+    assert service.search("FRESH_1", limit=5)
+    assert service.search("READY_1", limit=5) == []
 
 
 def test_force_reanalysis_context_excludes_existing_visual_chunks(tmp_path):

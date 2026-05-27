@@ -356,7 +356,7 @@ def validate_visual_analysis_json(
         "semantic": _clamp01(confidence.get("semantic", 0)),
         "overall": _clamp01(confidence.get("overall", 0)),
     }
-    should_index = bool(data.get("should_index", False))
+    explicit_should_index = bool(data.get("should_index", False))
     reasons: List[str] = []
     if data.get("readability") == "poor":
         reasons.append("readability is poor")
@@ -378,9 +378,11 @@ def validate_visual_analysis_json(
     summary = str(data.get("summary") or "").strip()
     if not summary and not key_facts:
         reasons.append("summary and key_facts are empty")
-    if not bool(visual_config.get("index_low_confidence", False)) and reasons:
-        should_index = False
-    reason = str(data.get("low_confidence_reason") or "; ".join(reasons))
+    should_index = explicit_should_index and not reasons
+    existing_reason = str(data.get("low_confidence_reason") or "").strip()
+    reason_parts = [existing_reason] if existing_reason else []
+    reason_parts.extend(reasons)
+    reason = "; ".join(_unique_nonempty_terms(reason_parts))
     continuation = _normalize_continuation(data.get("continuation"))
     is_partial = bool(data.get("is_partial", False))
     if continuation["role"] != "single" and continuation["confidence"] >= 0.50:
@@ -426,7 +428,12 @@ def validate_visual_group_analysis_json(
         except json.JSONDecodeError as exc:
             raise ValueError(f"visual group analysis response is not valid JSON: {exc}") from exc
 
-    source_pages = [int(page) for page in (data.get("source_pages") or group.get("source_pages") or []) if page]
+    raw_has_source_pages = "source_pages" in data
+    raw_source_pages = data.get("source_pages") if raw_has_source_pages else None
+    model_source_pages = _normalize_source_pages(raw_source_pages) if raw_has_source_pages else []
+    group_source_pages = _normalize_source_pages(group.get("source_pages"))
+    member_pages = _normalize_source_pages([member.get("page") for member in members])
+    source_pages = _normalize_source_pages([*model_source_pages, *group_source_pages, *member_pages])
     parts = data.get("parts") if isinstance(data.get("parts"), list) else []
     confidence = data.get("confidence") if isinstance(data.get("confidence"), dict) else {}
     normalized_confidence = {
@@ -437,18 +444,30 @@ def validate_visual_group_analysis_json(
         "overall": _clamp01(confidence.get("overall", 0)),
     }
     data["confidence"] = normalized_confidence
-    data["is_multipage"] = bool(data.get("is_multipage", len(source_pages) >= 2))
+    is_multipage = (
+        bool(data.get("is_multipage"))
+        or len(model_source_pages) >= 2
+        or len(group_source_pages) >= 2
+        or len(member_pages) >= 2
+        or len(source_pages) >= 2
+    )
+    data["is_multipage"] = is_multipage
     data["source_pages"] = source_pages
     data["parts"] = parts
     merged_table = data.get("merged_table") if isinstance(data.get("merged_table"), dict) else {}
     data["merged_table"] = merged_table
     hard_reasons: List[str] = []
     threshold_reasons: List[str] = []
+    metadata_reasons: List[str] = []
     if normalized_confidence["continuation"] < 0.70:
         hard_reasons.append("continuation confidence below 0.70")
+    if raw_has_source_pages and not model_source_pages:
+        hard_reasons.append("source_pages is empty")
+    elif not raw_has_source_pages and source_pages:
+        metadata_reasons.append("source_pages missing in model output; filled from group metadata")
     if not source_pages:
         hard_reasons.append("source_pages is empty")
-    if data["is_multipage"] and len(parts) < 2:
+    if is_multipage and len(parts) < 2:
         hard_reasons.append("multipage result has fewer than 2 parts")
     if merged_table.get("rows") and not merged_table.get("headers"):
         hard_reasons.append("merged_table rows require headers")
@@ -473,18 +492,32 @@ def validate_visual_group_analysis_json(
         if normalized_confidence[key] < threshold:
             threshold_reasons.append(f"{key} confidence {normalized_confidence[key]:.2f} below {threshold:.2f}")
     should_index = explicit_should_index
-    if hard_reasons:
-        should_index = False
-    elif threshold_reasons and not bool(visual_config.get("index_low_confidence", False)):
+    if hard_reasons or threshold_reasons:
         should_index = False
     data["should_index"] = should_index
-    reasons = [*hard_reasons, *threshold_reasons]
+    reasons = [*hard_reasons, *threshold_reasons, *metadata_reasons]
     if reasons:
         existing_reason = str(data.get("low_confidence_reason") or "").strip()
         reason_parts = [existing_reason] if existing_reason else []
         reason_parts.extend(reasons)
         data["low_confidence_reason"] = "; ".join(_unique_nonempty_terms(reason_parts))
     return data
+
+
+def _normalize_source_pages(values: Any) -> List[int]:
+    if values is None:
+        return []
+    if not isinstance(values, list):
+        values = [values]
+    pages: set[int] = set()
+    for value in values:
+        try:
+            page = int(value)
+        except (TypeError, ValueError):
+            continue
+        if page > 0:
+            pages.add(page)
+    return sorted(pages)
 
 
 def _unreliable_group_member_reasons(members: List[Dict[str, Any]]) -> List[str]:

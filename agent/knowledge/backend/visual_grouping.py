@@ -70,6 +70,9 @@ class VisualArtifactGrouper:
     ) -> dict[str, Any]:
         if not document_id or not version_id:
             return {"groups": 0, "members": 0, "low_confidence": 0}
+        cleanup = getattr(self.storage, "cleanup_stale_visual_artifact_group_members", None)
+        if callable(cleanup):
+            cleanup()
         page_start = page_end = None
         if page_window:
             start_page, end_page = page_window

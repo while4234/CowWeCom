@@ -1282,11 +1282,15 @@ class KnowledgeStorage:
                 gm.group_id AS group_id,
                 COUNT(DISTINCT gm.artifact_id) AS overlap_count,
                 MIN(gm.page) AS min_page,
-                COUNT(DISTINCT all_members.artifact_id) AS member_count,
+                COUNT(DISTINCT all_member_artifacts.id) AS member_count,
                 MIN(g.created_at) AS created_at
             FROM visual_artifact_group_members gm
+            JOIN visual_artifacts va ON va.id = gm.artifact_id AND va.group_id = gm.group_id
             JOIN visual_artifact_groups g ON g.id = gm.group_id
             LEFT JOIN visual_artifact_group_members all_members ON all_members.group_id = gm.group_id
+            LEFT JOIN visual_artifacts all_member_artifacts
+              ON all_member_artifacts.id = all_members.artifact_id
+             AND all_member_artifacts.group_id = all_members.group_id
             WHERE gm.artifact_id IN ({placeholders})
               AND g.document_id = ?
               AND g.version_id = ?
@@ -1302,6 +1306,21 @@ class KnowledgeStorage:
         for loser_id in loser_ids:
             self.mark_visual_artifact_group_skipped(loser_id, "merged into overlapping visual group")
         return winner
+
+    def cleanup_stale_visual_artifact_group_members(self) -> int:
+        cursor = self.conn.execute(
+            """
+            DELETE FROM visual_artifact_group_members
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM visual_artifacts va
+              WHERE va.id = visual_artifact_group_members.artifact_id
+                AND va.group_id = visual_artifact_group_members.group_id
+            )
+            """
+        )
+        self.conn.commit()
+        return int(cursor.rowcount or 0)
 
     def list_visual_artifact_groups(
         self,
@@ -1739,9 +1758,10 @@ class KnowledgeStorage:
     def delete_visual_page_chunks_for_group_members(self, group_id: str) -> None:
         rows = self.conn.execute(
             """
-            SELECT artifact_id
-            FROM visual_artifact_group_members
-            WHERE group_id = ?
+            SELECT gm.artifact_id
+            FROM visual_artifact_group_members gm
+            JOIN visual_artifacts va ON va.id = gm.artifact_id AND va.group_id = gm.group_id
+            WHERE gm.group_id = ?
             """,
             (group_id,),
         ).fetchall()
@@ -1796,6 +1816,58 @@ class KnowledgeStorage:
         self.conn.execute(
             "UPDATE visual_artifact_groups SET retrievable = 0, updated_at = ? WHERE id = ?",
             (now, group_id),
+        )
+        self.conn.execute(
+            """
+            UPDATE visual_artifacts
+            SET group_retrievable = 0,
+                retrievable = 0,
+                updated_at = ?
+            WHERE group_id = ?
+            """,
+            (now, group_id),
+        )
+        self.conn.commit()
+        self.delete_visual_chunks_for_group(group_id)
+        self.delete_visual_page_chunks_for_group_members(group_id)
+
+    def invalidate_visual_group_for_member_analysis_change(
+        self,
+        group_id: str,
+        artifact_id: str = "",
+        reason: str = "",
+    ) -> None:
+        if not group_id or not self.get_visual_artifact_group(group_id):
+            return
+        self.cleanup_stale_visual_artifact_group_members()
+        rows = self.conn.execute(
+            """
+            SELECT gm.page
+            FROM visual_artifact_group_members gm
+            JOIN visual_artifacts va ON va.id = gm.artifact_id AND va.group_id = gm.group_id
+            WHERE gm.group_id = ?
+            ORDER BY gm.page ASC
+            """,
+            (group_id,),
+        ).fetchall()
+        pages = _merge_int_pages([row["page"] for row in rows], [])
+        status = "pending" if len(pages) >= 2 else "skipped"
+        error = str(reason or "visual group member analysis changed")
+        if status == "skipped":
+            error = "group has fewer than 2 current members"
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE visual_artifact_groups
+            SET source_pages = ?,
+                status = ?,
+                retrievable = 0,
+                analyzed_at = 0,
+                error = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (_json(pages), status, error, now, group_id),
         )
         self.conn.execute(
             """

@@ -491,7 +491,7 @@ CowWeCom/
 
 - 本地文档知识库从“协议资料”泛化为通用文档知识库，默认数据目录调整为 `public_document_knowledge/`，上传 PDF、DOCX、TXT、Markdown 后可导出到 `knowledge/documents/<kb_id>/`。
 - 图表/视觉知识补全改为页级增量准备和 artifact 级断点续跑，支持选择视觉分析后端、手动 reset、低置信结果隔离、Web 进度展示和 fake analyzer 单测注入。
-- 跨页图表进入 group-level 分析并继续加固：硬性低置信错误永不入检索，推断 group 会随窗口增长复用原组，移动成员会清理旧 membership 与旧 chunk，prepare 未稳定前不会过早写入可检索 group chunk。
+- 跨页图表进入 group-level 分析并继续加固：`index_low_confidence` 不再放行低置信 page/group 入检索，member retry/force 会让旧 group chunk 失效，显式空 `source_pages`、实际多页但 parts 不足、陈旧 membership 都会被拦截。
 - 高密度图表处理继续加固：小字图表高分辨率重试会使用独立长边上限，超大单页图表支持 tile 分块；force 重跑会重算 tile，tile 复用会校验模型、提示词和 image hash，任一 tile 低置信都会阻止整页入库。
 - PDF 文本清洗、caption 识别和导出链路继续收紧：过滤图内噪声，避免正文引用误判为图表，导出和 deep query 不再重复展示视觉 chunk；旧索引维护脚本支持 dry-run 报告、严格按 `<data_dir>/indexes/kb.sqlite` 推断数据目录、保留视觉结果、修复共享 source span 冲突，并在修复后清理失效溯源引用。
 - 修复每日记忆文件缺失误报、后台任务异常无提示、安全上传预检误拦源码目录等运行体验问题；CAPI 流式读上游中断时会重试并切换可用后端继续执行，同时在企微/Web 流式回复中明确提示后端切换。
