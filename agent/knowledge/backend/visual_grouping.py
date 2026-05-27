@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Any, Iterable, Mapping, Optional
 
 
@@ -69,24 +70,25 @@ class VisualArtifactGrouper:
     ) -> dict[str, Any]:
         if not document_id or not version_id:
             return {"groups": 0, "members": 0, "low_confidence": 0}
+        page_start = page_end = None
+        if page_window:
+            start_page, end_page = page_window
+            page_start = max(1, int(start_page) - 2)
+            page_end = max(page_start, int(end_page) + 2)
         artifacts = self.storage.list_visual_artifacts(
             document_id=document_id,
             version_id=version_id,
+            page_start=page_start,
+            page_end=page_end,
             limit=2000,
         )
-        if page_window:
-            start_page, end_page = page_window
-            artifacts = [
-                artifact
-                for artifact in artifacts
-                if int(start_page) - 2 <= int(artifact.get("page") or 0) <= int(end_page) + 2
-            ]
         proposals = self._propose_groups(artifacts)
         written_groups = written_members = low_confidence = 0
         for proposal in proposals:
             if proposal.confidence < 0.70:
                 low_confidence += 1
                 continue
+            proposal = self._resolve_existing_group_id(proposal)
             self.storage.upsert_visual_artifact_group(proposal.to_group_record())
             written_groups += 1
             total_parts = len(proposal.members)
@@ -111,6 +113,21 @@ class VisualArtifactGrouper:
                 )
                 written_members += 1
         return {"groups": written_groups, "members": written_members, "low_confidence": low_confidence}
+
+    def _resolve_existing_group_id(self, proposal: GroupProposal) -> GroupProposal:
+        resolver = getattr(self.storage, "resolve_visual_group_id_for_members", None)
+        if not callable(resolver):
+            return proposal
+        member_ids = [str(member.get("artifact_id") or "") for member in proposal.members]
+        group_id = resolver(
+            document_id=proposal.document_id,
+            version_id=proposal.version_id,
+            member_artifact_ids=member_ids,
+            preferred_group_id=proposal.group_id,
+        )
+        if group_id == proposal.group_id:
+            return proposal
+        return replace(proposal, group_id=group_id)
 
     def _propose_groups(self, artifacts: list[dict[str, Any]]) -> list[GroupProposal]:
         candidates = [
@@ -208,10 +225,8 @@ class VisualArtifactGrouper:
                         group_id=stable_visual_group_id_for_inferred(
                             first.document_id,
                             first.version_id,
-                            first_page,
-                            last_page,
+                            first.artifact_id,
                             _group_type(first.artifact_type),
-                            _bbox_signature([item.bbox for item in chain]),
                         ),
                         document_id=first.document_id,
                         version_id=first.version_id,
@@ -322,12 +337,10 @@ def stable_visual_group_id_for_caption(
 def stable_visual_group_id_for_inferred(
     document_id: str,
     version_id: str,
-    first_page: int,
-    last_page: int,
+    anchor_artifact_id: str,
     artifact_type: str,
-    bbox_signature: str,
 ) -> str:
-    raw = f"{document_id}|{version_id}|{first_page}|{last_page}|{artifact_type}|{bbox_signature}"
+    raw = f"{document_id}|{version_id}|inferred|{anchor_artifact_id}|{artifact_type}"
     return "visual_group_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 

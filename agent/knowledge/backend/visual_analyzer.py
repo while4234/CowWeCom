@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from common.log import logger
+
 from .models import KnowledgeChunk, KnowledgeDocument, SourceSpan, VisualAnalysisResult, VisualArtifactCandidate
 from .storage import stable_visual_chunk_id, stable_visual_group_chunk_id, stable_visual_group_span_id, stable_visual_span_id
 
@@ -79,6 +81,8 @@ GROUP_OUTPUT_SCHEMA = {
 
 class VisualAnalyzer:
     """Analyze one visual artifact via the configured OpenAI-compatible vision path."""
+
+    supports_group_vision_merge = True
 
     def analyze(
         self,
@@ -154,23 +158,73 @@ class VisualAnalyzer:
         *,
         analysis_backend: Optional[str],
     ) -> str:
+        try:
+            return self._call_group_vision_model(
+                group,
+                members,
+                config,
+                document,
+                analysis_backend=analysis_backend,
+            )
+        except Exception as exc:
+            logger.debug("[KnowledgeBackend] visual group vision merge unavailable: %s", exc)
+            fallback = merge_visual_group_from_member_results(group, members)
+            return json.dumps(fallback, ensure_ascii=False)
+
+    def _call_group_vision_model(
+        self,
+        group: Dict[str, Any],
+        members: List[Dict[str, Any]],
+        config: Any,
+        document: KnowledgeDocument | None,
+        *,
+        analysis_backend: Optional[str],
+    ) -> str:
         from models.openai.open_ai_bot import OpenAIBot
 
         visual_config = getattr(config, "visual_analysis", {}) or {}
         model = str(visual_config.get("model") or "gpt-5.5")
         reasoning_effort = str(visual_config.get("reasoning_effort") or "xhigh")
+        max_pages = int(visual_config.get("group_model_merge_max_pages") or 4)
+        ordered_members = sorted(members, key=lambda item: int(item.get("part_index") or 0))
+        if len(ordered_members) > max_pages:
+            raise RuntimeError("visual group has too many pages for model vision merge")
         effective_backend = resolve_visual_analysis_backend(
             analysis_backend if analysis_backend is not None else visual_config.get("analysis_backend")
         )
         if effective_backend == "codex":
-            from models.codex.codex_bot import CodexBot
-
-            bot: Any = CodexBot()
+            raise RuntimeError("codex backend does not expose a multi-image group wrapper yet")
         else:
             bot = OpenAIBot(backend_override=effective_backend)
         prompt = build_visual_group_prompt(group, members, document, visual_config)
+        max_long_edge = int(
+            visual_config.get("group_max_image_long_edge")
+            or visual_config.get("max_image_long_edge_high_res")
+            or visual_config.get("max_image_long_edge")
+            or 1800
+        )
+        content: List[Dict[str, Any]] = [{"type": "text", "text": f"{SYSTEM_PROMPT}\n\n{prompt}"}]
+        for index, member in enumerate(ordered_members, start=1):
+            image_path = str(member.get("image_path") or "").strip()
+            if not image_path:
+                raise FileNotFoundError(f"visual group member image missing: {member.get('artifact_id') or index}")
+            content.append(
+                {
+                    "type": "text",
+                    "text": (
+                        f"Part {index}: page={member.get('page')}, "
+                        f"artifact_id={member.get('artifact_id')}, role={member.get('role') or ''}"
+                    ),
+                }
+            )
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_file_to_data_url(image_path, max_long_edge)},
+                }
+            )
         response = bot.call_with_tools(
-            [{"role": "user", "content": f"{SYSTEM_PROMPT}\n\n{prompt}"}],
+            [{"role": "user", "content": content}],
             tools=None,
             stream=False,
             model=model,
@@ -388,19 +442,27 @@ def validate_visual_group_analysis_json(
     data["parts"] = parts
     merged_table = data.get("merged_table") if isinstance(data.get("merged_table"), dict) else {}
     data["merged_table"] = merged_table
-    reasons: List[str] = []
+    hard_reasons: List[str] = []
+    threshold_reasons: List[str] = []
     if normalized_confidence["continuation"] < 0.70:
-        reasons.append("continuation confidence below 0.70")
+        hard_reasons.append("continuation confidence below 0.70")
     if not source_pages:
-        reasons.append("source_pages is empty")
+        hard_reasons.append("source_pages is empty")
     if data["is_multipage"] and len(parts) < 2:
-        reasons.append("multipage result has fewer than 2 parts")
+        hard_reasons.append("multipage result has fewer than 2 parts")
     if merged_table.get("rows") and not merged_table.get("headers"):
-        reasons.append("merged_table rows require headers")
-    critical_low = any(float(member.get("analysis_confidence") or member.get("confidence") or 0) < 0.70 for member in members)
+        hard_reasons.append("merged_table rows require headers")
+    explicit_should_index = bool(data.get("should_index", False))
+    if not explicit_should_index:
+        hard_reasons.append("explicit model should_index=false")
+    unreliable_member_reasons = _unreliable_group_member_reasons(members)
+    hard_reasons.extend(unreliable_member_reasons)
+    critical_low = bool(unreliable_member_reasons) or any(
+        float(member.get("analysis_confidence") or member.get("confidence") or 0) < 0.70 for member in members
+    )
     if critical_low and normalized_confidence["overall"] > 0.75:
         normalized_confidence["overall"] = 0.75
-        reasons.append("critical part low confidence caps overall confidence")
+        threshold_reasons.append("critical part low confidence caps overall confidence")
     thresholds = {
         "overall": float(visual_config.get("min_confidence", 0.78)),
         "ocr": float(visual_config.get("min_ocr_confidence", 0.70)),
@@ -409,14 +471,45 @@ def validate_visual_group_analysis_json(
     }
     for key, threshold in thresholds.items():
         if normalized_confidence[key] < threshold:
-            reasons.append(f"{key} confidence {normalized_confidence[key]:.2f} below {threshold:.2f}")
-    should_index = bool(data.get("should_index", False))
-    if reasons and not bool(visual_config.get("index_low_confidence", False)):
+            threshold_reasons.append(f"{key} confidence {normalized_confidence[key]:.2f} below {threshold:.2f}")
+    should_index = explicit_should_index
+    if hard_reasons:
+        should_index = False
+    elif threshold_reasons and not bool(visual_config.get("index_low_confidence", False)):
         should_index = False
     data["should_index"] = should_index
+    reasons = [*hard_reasons, *threshold_reasons]
     if reasons:
-        data["low_confidence_reason"] = data.get("low_confidence_reason") or "; ".join(reasons)
+        existing_reason = str(data.get("low_confidence_reason") or "").strip()
+        reason_parts = [existing_reason] if existing_reason else []
+        reason_parts.extend(reasons)
+        data["low_confidence_reason"] = "; ".join(_unique_nonempty_terms(reason_parts))
     return data
+
+
+def _unreliable_group_member_reasons(members: List[Dict[str, Any]]) -> List[str]:
+    reasons: List[str] = []
+    for member in members:
+        status = str(member.get("analysis_status") or "").strip()
+        if status not in {"failed", "low_confidence"}:
+            continue
+        result_json = member.get("result_json") if isinstance(member.get("result_json"), dict) else {}
+        has_fallback = bool(
+            result_json.get("summary")
+            or result_json.get("structured_markdown")
+            or result_json.get("key_facts")
+            or (isinstance(result_json.get("table"), dict) and (result_json["table"].get("markdown") or result_json["table"].get("rows")))
+        )
+        confidence = float(
+            (result_json.get("confidence") or {}).get("overall")
+            or member.get("analysis_confidence")
+            or member.get("confidence")
+            or 0
+        )
+        if not has_fallback or confidence < 0.70:
+            artifact_id = member.get("artifact_id") or "unknown"
+            reasons.append(f"member {artifact_id} analysis_status={status} lacks reliable fallback")
+    return reasons
 
 
 def merge_visual_group_from_member_results(group: Dict[str, Any], members: List[Dict[str, Any]]) -> Dict[str, Any]:

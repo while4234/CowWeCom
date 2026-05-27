@@ -680,6 +680,8 @@ class KnowledgeStorage:
         kb_id: Optional[str] = None,
         version_id: Optional[str] = None,
         status: Optional[str] = None,
+        page_start: Optional[int] = None,
+        page_end: Optional[int] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -697,6 +699,12 @@ class KnowledgeStorage:
         if status:
             clauses.append("analysis_status = ?")
             params.append(status)
+        if page_start is not None:
+            clauses.append("page >= ?")
+            params.append(max(1, int(page_start)))
+        if page_end is not None:
+            clauses.append("page <= ?")
+            params.append(max(1, int(page_end)))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.extend([max(1, int(limit or 100)), max(0, int(offset or 0))])
         try:
@@ -1074,6 +1082,21 @@ class KnowledgeStorage:
         *,
         group_retrievable: int = 0,
     ) -> None:
+        previous_rows = self.conn.execute(
+            """
+            SELECT DISTINCT group_id
+            FROM visual_artifact_group_members
+            WHERE artifact_id = ? AND group_id != ?
+            """,
+            (artifact_id, group_id or ""),
+        ).fetchall()
+        previous_group_ids = [row["group_id"] for row in previous_rows if row["group_id"]]
+        if previous_group_ids:
+            placeholders = ",".join("?" for _ in previous_group_ids)
+            self.conn.execute(
+                f"DELETE FROM visual_artifact_group_members WHERE artifact_id = ? AND group_id IN ({placeholders})",
+                [artifact_id, *previous_group_ids],
+            )
         self.conn.execute(
             """
             UPDATE visual_artifacts
@@ -1097,6 +1120,8 @@ class KnowledgeStorage:
         )
         self.conn.commit()
         self.delete_visual_page_chunks_for_artifact(artifact_id)
+        for previous_group_id in previous_group_ids:
+            self._repair_visual_group_after_member_change(previous_group_id)
 
     def upsert_visual_artifact_group(self, group: Dict[str, Any]) -> None:
         now = _now()
@@ -1153,7 +1178,7 @@ class KnowledgeStorage:
             )
             self.conn.commit()
             if dirty:
-                self.delete_visual_chunks_for_group(group["id"])
+                self._mark_visual_group_not_retrievable(group["id"])
             return
         self.conn.execute(
             """
@@ -1239,6 +1264,45 @@ class KnowledgeStorage:
         if changed:
             self._mark_visual_group_member_change(group_id, normalized_page)
 
+    def resolve_visual_group_id_for_members(
+        self,
+        *,
+        document_id: str,
+        version_id: str,
+        member_artifact_ids: Iterable[str],
+        preferred_group_id: str,
+    ) -> str:
+        artifact_ids = _unique([artifact_id for artifact_id in member_artifact_ids if artifact_id])
+        if not artifact_ids:
+            return preferred_group_id
+        placeholders = ",".join("?" for _ in artifact_ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT
+                gm.group_id AS group_id,
+                COUNT(DISTINCT gm.artifact_id) AS overlap_count,
+                MIN(gm.page) AS min_page,
+                COUNT(DISTINCT all_members.artifact_id) AS member_count,
+                MIN(g.created_at) AS created_at
+            FROM visual_artifact_group_members gm
+            JOIN visual_artifact_groups g ON g.id = gm.group_id
+            LEFT JOIN visual_artifact_group_members all_members ON all_members.group_id = gm.group_id
+            WHERE gm.artifact_id IN ({placeholders})
+              AND g.document_id = ?
+              AND g.version_id = ?
+            GROUP BY gm.group_id
+            ORDER BY min_page ASC, member_count DESC, overlap_count DESC, created_at ASC, gm.group_id ASC
+            """,
+            [*artifact_ids, document_id, version_id],
+        ).fetchall()
+        if not rows:
+            return preferred_group_id
+        winner = str(rows[0]["group_id"] or preferred_group_id)
+        loser_ids = [str(row["group_id"]) for row in rows[1:] if row["group_id"] and str(row["group_id"]) != winner]
+        for loser_id in loser_ids:
+            self.mark_visual_artifact_group_skipped(loser_id, "merged into overlapping visual group")
+        return winner
+
     def list_visual_artifact_groups(
         self,
         document_id: Optional[str] = None,
@@ -1283,9 +1347,9 @@ class KnowledgeStorage:
             """
             SELECT gm.*, va.artifact_type, va.caption, va.label, va.bbox, va.result_json,
                    va.analysis_status, va.analysis_confidence, va.source_path, va.image_path,
-                   va.context_before, va.context_after, va.page_text
+                   va.context_before, va.context_after, va.page_text, va.group_id AS current_group_id
             FROM visual_artifact_group_members gm
-            JOIN visual_artifacts va ON va.id = gm.artifact_id
+            JOIN visual_artifacts va ON va.id = gm.artifact_id AND va.group_id = gm.group_id
             WHERE gm.group_id = ?
             ORDER BY gm.part_index ASC, gm.page ASC
             """,
@@ -1327,8 +1391,13 @@ class KnowledgeStorage:
                 retrievable = 0,
                 updated_at = ?
             WHERE group_id = ?
+              AND id IN (
+                SELECT artifact_id
+                FROM visual_artifact_group_members
+                WHERE group_id = ?
+              )
             """,
-            (now, group_id),
+            (now, group_id, group_id),
         )
         self.conn.commit()
 
@@ -1371,6 +1440,7 @@ class KnowledgeStorage:
             ),
         )
         self.conn.commit()
+        self._mark_visual_group_not_retrievable(group_id)
 
     def complete_visual_artifact_group_failed(self, group_id: str, error: str, analysis_backend: str = "") -> None:
         now = _now()
@@ -1386,6 +1456,38 @@ class KnowledgeStorage:
             WHERE id = ?
             """,
             (analysis_backend, str(error or ""), now, now, group_id),
+        )
+        self.conn.commit()
+        self._mark_visual_group_not_retrievable(group_id)
+
+    def mark_visual_artifact_group_skipped(self, group_id: str, reason: str = "") -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE visual_artifact_groups
+            SET status = 'skipped',
+                retrievable = 0,
+                error = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (str(reason or "visual group skipped"), now, group_id),
+        )
+        self.conn.commit()
+        self._mark_visual_group_not_retrievable(group_id)
+
+    def reset_visual_artifact_group_pending(self, group_id: str, reason: str = "") -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE visual_artifact_groups
+            SET status = 'pending',
+                retrievable = 0,
+                error = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (str(reason or ""), now, group_id),
         )
         self.conn.commit()
 
@@ -1689,11 +1791,41 @@ class KnowledgeStorage:
             self.conn.execute("DELETE FROM visual_artifact_chunks WHERE artifact_id = ?", (group_id,))
         self.conn.commit()
 
+    def _mark_visual_group_not_retrievable(self, group_id: str) -> None:
+        now = _now()
+        self.conn.execute(
+            "UPDATE visual_artifact_groups SET retrievable = 0, updated_at = ? WHERE id = ?",
+            (now, group_id),
+        )
+        self.conn.execute(
+            """
+            UPDATE visual_artifacts
+            SET group_retrievable = 0,
+                retrievable = 0,
+                updated_at = ?
+            WHERE group_id = ?
+            """,
+            (now, group_id),
+        )
+        self.conn.commit()
+        self.delete_visual_chunks_for_group(group_id)
+        self.delete_visual_page_chunks_for_group_members(group_id)
+
     def _mark_visual_group_member_change(self, group_id: str, page: int) -> None:
         group = self.get_visual_artifact_group(group_id)
         if not group:
             return
-        pages = _merge_int_pages(group.get("source_pages") or [], [page] if page else [])
+        member_rows = self.conn.execute(
+            """
+            SELECT page
+            FROM visual_artifact_group_members
+            WHERE group_id = ?
+            ORDER BY page ASC
+            """,
+            (group_id,),
+        ).fetchall()
+        member_pages = [row["page"] for row in member_rows]
+        pages = _merge_int_pages(member_pages, [page] if page else [])
         now = _now()
         self.conn.execute(
             """
@@ -1709,7 +1841,40 @@ class KnowledgeStorage:
             (_json(pages), now, group_id),
         )
         self.conn.commit()
-        self.delete_visual_chunks_for_group(group_id)
+        self._mark_visual_group_not_retrievable(group_id)
+
+    def _repair_visual_group_after_member_change(self, group_id: str) -> None:
+        group = self.get_visual_artifact_group(group_id)
+        if not group:
+            return
+        rows = self.conn.execute(
+            """
+            SELECT gm.page
+            FROM visual_artifact_group_members gm
+            JOIN visual_artifacts va ON va.id = gm.artifact_id AND va.group_id = gm.group_id
+            WHERE gm.group_id = ?
+            ORDER BY gm.page ASC
+            """,
+            (group_id,),
+        ).fetchall()
+        pages = _merge_int_pages([row["page"] for row in rows], [])
+        status = "pending" if len(pages) >= 2 else "skipped"
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE visual_artifact_groups
+            SET source_pages = ?,
+                status = ?,
+                retrievable = 0,
+                analyzed_at = CASE WHEN ? = 'pending' THEN 0 ELSE analyzed_at END,
+                error = CASE WHEN ? = 'skipped' THEN 'group has fewer than 2 current members' ELSE '' END,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (_json(pages), status, status, status, now, group_id),
+        )
+        self.conn.commit()
+        self._mark_visual_group_not_retrievable(group_id)
 
     def upsert_visual_artifact_tile(self, tile: Dict[str, Any]) -> None:
         now = _now()
@@ -1759,6 +1924,10 @@ class KnowledgeStorage:
         ).fetchall()
         return [_row_to_visual_artifact_tile(row) for row in rows]
 
+    def delete_visual_artifact_tiles(self, artifact_id: str) -> None:
+        self.conn.execute("DELETE FROM visual_artifact_tiles WHERE artifact_id = ?", (artifact_id,))
+        self.conn.commit()
+
 
     def reset_visual_cache(
         self,
@@ -1799,15 +1968,7 @@ class KnowledgeStorage:
             for row in rows:
                 chunk_ids.append(row["id"])
                 span_ids.extend(_loads(row["source_span_ids"]) or [])
-            if chunk_ids:
-                chunk_placeholders = ",".join("?" for _ in chunk_ids)
-                self.conn.execute(f"DELETE FROM chunks WHERE id IN ({chunk_placeholders})", chunk_ids)
-                if self.fts5_available:
-                    self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({chunk_placeholders})", chunk_ids)
-        if span_ids:
-            span_ids = _unique(span_ids)
-            span_placeholders = ",".join("?" for _ in span_ids)
-            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({span_placeholders})", span_ids)
+            self._delete_chunks_and_spans(chunk_ids, span_ids)
             self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE artifact_id IN ({placeholders})", artifact_ids)
 
         group_clauses: List[str] = []
@@ -1841,10 +2002,10 @@ class KnowledgeStorage:
                 span_ids.extend(_loads(row["source_span_ids"]) or [])
             if rows:
                 group_chunk_ids = [row["id"] for row in rows]
-                chunk_placeholders = ",".join("?" for _ in group_chunk_ids)
-                self.conn.execute(f"DELETE FROM chunks WHERE id IN ({chunk_placeholders})", group_chunk_ids)
-                if self.fts5_available:
-                    self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({chunk_placeholders})", group_chunk_ids)
+                group_span_ids: List[str] = []
+                for row in rows:
+                    group_span_ids.extend(_loads(row["source_span_ids"]) or [])
+                self._delete_chunks_and_spans(group_chunk_ids, group_span_ids)
             self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE artifact_id IN ({placeholders})", group_ids)
         deleted_groups = int(
             self.conn.execute(f"SELECT COUNT(*) FROM visual_artifact_groups {group_where}", group_params).fetchone()[0]
@@ -3074,6 +3235,7 @@ def _row_to_visual_group_member(row: sqlite3.Row) -> Dict[str, Any]:
         "context_before": _row_value(row, "context_before", ""),
         "context_after": _row_value(row, "context_after", ""),
         "page_text": _row_value(row, "page_text", ""),
+        "current_group_id": _row_value(row, "current_group_id", ""),
     }
 
 
