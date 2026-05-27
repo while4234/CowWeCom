@@ -768,6 +768,191 @@ def test_save_document_remaps_new_span_when_preserved_visual_uses_same_span_id(t
         storage.close()
 
 
+def test_save_document_deletes_unreferenced_conflicting_source_span_before_insert(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-orphan-conflict", _pdf(tmp_path, "orphan-conflict.pdf"))
+    orphan_span = SourceSpan(
+        id="new-span",
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=7,
+        page_end=7,
+        text="orphan old span text",
+    )
+    visual_span = SourceSpan(
+        id="visual-preserved-span",
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=2,
+        page_end=2,
+        text="preserved visual span text",
+    )
+    visual_chunk = KnowledgeChunk(
+        id="chunk-orphan-conflict-visual",
+        document_id=document.id,
+        ordinal=2,
+        page_start=2,
+        page_end=2,
+        text="preserved visual chunk text",
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[visual_span.id],
+        metadata={"source": "visual_analysis"},
+    )
+    replacement_span = SourceSpan(
+        id=orphan_span.id,
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=1,
+        page_end=1,
+        text="new repaired span text",
+    )
+    replacement_chunk = KnowledgeChunk(
+        id="chunk-orphan-conflict-new",
+        document_id=document.id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text="new ordinary repaired text",
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[replacement_span.id],
+    )
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document, [_ordinary_chunk(document)], source_spans=[_ordinary_span(document)])
+        storage.conn.execute(
+            """
+            INSERT INTO source_spans(
+                id, document_id, version_id, source_file, page_start, page_end, section_path,
+                paragraph_index_start, paragraph_index_end, char_start, char_end, bbox, text_hash, text
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                orphan_span.id,
+                orphan_span.document_id,
+                orphan_span.version_id,
+                orphan_span.source_file,
+                orphan_span.page_start,
+                orphan_span.page_end,
+                orphan_span.section_path,
+                orphan_span.paragraph_index_start,
+                orphan_span.paragraph_index_end,
+                orphan_span.char_start,
+                orphan_span.char_end,
+                json.dumps(orphan_span.bbox or {}, ensure_ascii=False),
+                orphan_span.text_hash,
+                orphan_span.text,
+            ),
+        )
+        storage.append_visual_chunks(document.id, document.version_id, "artifact-orphan-conflict", [visual_chunk], [visual_span])
+
+        storage.save_document(document, [replacement_chunk], source_spans=[replacement_span])
+
+        chunks = storage.list_chunks(document.id)
+        ordinary_chunks = [chunk for chunk in chunks if chunk.metadata.get("source") != "visual_analysis"]
+        visual_chunks = [chunk for chunk in chunks if chunk.metadata.get("source") == "visual_analysis"]
+        assert [chunk.id for chunk in ordinary_chunks] == [replacement_chunk.id]
+        assert storage.get_source_span(orphan_span.id).text == replacement_span.text
+        assert visual_chunks[0].source_span_ids == [visual_span.id]
+        assert storage.get_source_span(visual_span.id).text == visual_span.text
+    finally:
+        storage.close()
+
+
+def test_save_document_remaps_new_span_when_other_document_uses_same_span_id(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    other_document = _document("doc-global-other", _pdf(tmp_path, "global-other.pdf"))
+    document = _document("doc-global-current", _pdf(tmp_path, "global-current.pdf"))
+    global_span = SourceSpan(
+        id="global-conflict",
+        document_id=other_document.id,
+        version_id=other_document.version_id,
+        source_file=other_document.source_path,
+        page_start=1,
+        page_end=1,
+        text="other document span text",
+    )
+    other_chunk = KnowledgeChunk(
+        id="chunk-global-other",
+        document_id=other_document.id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text="other document text",
+        kb_id=other_document.kb_id,
+        version_id=other_document.version_id,
+        source_span_ids=[global_span.id],
+    )
+    replacement_span = SourceSpan(
+        id=global_span.id,
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=1,
+        page_end=1,
+        text="current document repaired text",
+    )
+    replacement_chunk = KnowledgeChunk(
+        id="chunk-global-current-new",
+        document_id=document.id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text="current document repaired text",
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[replacement_span.id],
+    )
+    entity = KnowledgeEntity(
+        id="entity-global-current",
+        canonical_name="GlobalCurrent",
+        entity_type="test",
+        source_span_ids=[replacement_span.id],
+    )
+    relation = KnowledgeRelation(
+        id=stable_relation_id("entity-global-current", "mentions", "entity-target", [replacement_span.id]),
+        subject_entity_id="entity-global-current",
+        predicate="mentions",
+        object_entity_id="entity-target",
+        subject="GlobalCurrent",
+        object="Target",
+        source_kb_id=document.kb_id,
+        evidence_span_ids=[replacement_span.id],
+    )
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(other_document, [other_chunk], source_spans=[global_span])
+        storage.save_document(document, [_ordinary_chunk(document)], source_spans=[_ordinary_span(document)])
+
+        storage.save_document(
+            document,
+            [replacement_chunk],
+            source_spans=[replacement_span],
+            entities=[entity],
+            relations=[relation],
+        )
+
+        assert storage.get_source_span(global_span.id).document_id == other_document.id
+        assert storage.get_source_span(global_span.id).text == global_span.text
+        current_chunks = [chunk for chunk in storage.list_chunks(document.id) if chunk.metadata.get("source") != "visual_analysis"]
+        remapped_span_id = current_chunks[0].source_span_ids[0]
+        assert remapped_span_id != global_span.id
+        assert storage.get_source_span(remapped_span_id).document_id == document.id
+        assert storage.get_source_span(remapped_span_id).text == replacement_span.text
+        entity_rows = storage.list_entities(["GlobalCurrent"])
+        assert entity_rows[0].source_span_ids == [remapped_span_id]
+        relations = storage.list_relations(entity_id="entity-global-current")
+        assert relations[0].evidence_span_ids == [remapped_span_id]
+        assert relations[0].id == stable_relation_id("entity-global-current", "mentions", "entity-target", [remapped_span_id])
+    finally:
+        storage.close()
+
+
 def test_save_document_commit_true_rolls_back_partial_writes_on_failure(tmp_path):
     db_path = tmp_path / "kb.sqlite"
     document = _document("doc-atomic-save", _pdf(tmp_path, "atomic-save.pdf"))
@@ -912,5 +1097,166 @@ def test_delete_unreferenced_source_spans_deletes_all_when_no_chunks(tmp_path):
         assert relations[0].metadata["kept"] is True
         assert relations[0].metadata["evidence_pruned"] is True
         assert relations[0].metadata["pruned_source_span_ids"] == [span_id]
+    finally:
+        storage.close()
+
+
+def test_save_document_prunes_entity_refs_when_deleting_stale_visual_spans(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document_v1 = _document("doc-stale-visual-prune", _pdf(tmp_path, "stale-visual-prune.pdf"))
+    document_v2 = KnowledgeDocument(
+        id=document_v1.id,
+        title=document_v1.title,
+        source_path=document_v1.source_path,
+        mime_type=document_v1.mime_type,
+        size=document_v1.size,
+        content_hash=f"{document_v1.content_hash}-v2",
+        status="ready",
+        kb_id=document_v1.kb_id,
+        version_id=f"{document_v1.version_id}-v2",
+    )
+    visual_span = _visual_span(document_v1, text="stale visual span text")
+    visual_chunk = _visual_chunk(document_v1, text="stale visual chunk text")
+    replacement_span = SourceSpan(
+        id="span-doc-stale-visual-prune-new",
+        document_id=document_v2.id,
+        version_id=document_v2.version_id,
+        source_file=document_v2.source_path,
+        page_start=1,
+        page_end=1,
+        text="replacement ordinary text",
+    )
+    replacement_chunk = KnowledgeChunk(
+        id="chunk-doc-stale-visual-prune-new",
+        document_id=document_v2.id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text="replacement ordinary text",
+        kb_id=document_v2.kb_id,
+        version_id=document_v2.version_id,
+        source_span_ids=[replacement_span.id],
+    )
+    entity_id = "entity-stale-visual"
+    relation_id = stable_relation_id(entity_id, "mentions", "entity-target", [visual_span.id])
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document_v1, [_ordinary_chunk(document_v1)], source_spans=[_ordinary_span(document_v1)])
+        storage.upsert_visual_artifact(_visual_candidate(document_v1))
+        storage.append_visual_chunks(document_v1.id, document_v1.version_id, "artifact-stale-visual", [visual_chunk], [visual_span])
+        storage.upsert_entity(
+            KnowledgeEntity(
+                id=entity_id,
+                canonical_name="StaleVisual",
+                entity_type="test",
+                source_span_ids=[visual_span.id],
+            )
+        )
+        storage.upsert_relation(
+            KnowledgeRelation(
+                id=relation_id,
+                subject_entity_id=entity_id,
+                predicate="mentions",
+                object_entity_id="entity-target",
+                subject="StaleVisual",
+                object="Target",
+                source_kb_id=document_v1.kb_id,
+                evidence_span_ids=[visual_span.id],
+                metadata={"kept": True},
+            )
+        )
+
+        storage.save_document(document_v2, [replacement_chunk], source_spans=[replacement_span])
+
+        chunks = storage.list_chunks(document_v1.id)
+        assert not any(chunk.id == visual_chunk.id for chunk in chunks)
+        assert storage.get_source_span(visual_span.id) is None
+        entity = storage.resolve_entity("StaleVisual")
+        assert entity is not None
+        assert visual_span.id not in entity.source_span_ids
+        relations = storage.list_relations(entity_id=entity_id)
+        assert relations[0].evidence_span_ids == []
+        assert relations[0].metadata["kept"] is True
+        assert relations[0].metadata["evidence_pruned"] is True
+        assert relations[0].metadata["pruned_source_span_ids"] == [visual_span.id]
+    finally:
+        storage.close()
+
+
+def test_delete_stale_visual_chunks_keeps_span_still_referenced_by_remaining_chunk(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-stale-visual-shared", _pdf(tmp_path, "stale-visual-shared.pdf"))
+    shared_span = SourceSpan(
+        id="shared-stale-visual-span",
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=1,
+        page_end=1,
+        text="shared source span text",
+    )
+    remaining_chunk = KnowledgeChunk(
+        id="chunk-stale-visual-shared-remaining",
+        document_id=document.id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text="remaining ordinary chunk text",
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[shared_span.id],
+    )
+    stale_chunk = KnowledgeChunk(
+        id="chunk-stale-visual-shared-old",
+        document_id=document.id,
+        ordinal=2,
+        page_start=1,
+        page_end=1,
+        text="stale visual chunk text",
+        kb_id=document.kb_id,
+        version_id=f"{document.version_id}-old",
+        source_span_ids=[shared_span.id],
+        metadata={"source": "visual_analysis"},
+    )
+    entity_id = "entity-shared-stale-visual"
+    relation_id = stable_relation_id(entity_id, "mentions", "entity-target", [shared_span.id])
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document, [remaining_chunk], source_spans=[shared_span])
+        storage.append_visual_chunks(document.id, f"{document.version_id}-old", "artifact-stale-shared", [stale_chunk], [])
+        storage.upsert_entity(
+            KnowledgeEntity(
+                id=entity_id,
+                canonical_name="SharedStaleVisual",
+                entity_type="test",
+                source_span_ids=[shared_span.id],
+            )
+        )
+        storage.upsert_relation(
+            KnowledgeRelation(
+                id=relation_id,
+                subject_entity_id=entity_id,
+                predicate="mentions",
+                object_entity_id="entity-target",
+                subject="SharedStaleVisual",
+                object="Target",
+                source_kb_id=document.kb_id,
+                evidence_span_ids=[shared_span.id],
+                metadata={"kept": True},
+            )
+        )
+
+        storage._delete_stale_visual_chunks(document.id, document.version_id)
+
+        chunks = storage.list_chunks(document.id)
+        assert not any(chunk.id == stale_chunk.id for chunk in chunks)
+        assert storage.get_source_span(shared_span.id) is not None
+        assert any(shared_span.id in chunk.source_span_ids for chunk in chunks)
+        entity = storage.resolve_entity("SharedStaleVisual")
+        assert entity is not None
+        assert entity.source_span_ids == [shared_span.id]
+        relations = storage.list_relations(entity_id=entity_id)
+        assert relations[0].evidence_span_ids == [shared_span.id]
+        assert relations[0].metadata == {"kept": True}
     finally:
         storage.close()

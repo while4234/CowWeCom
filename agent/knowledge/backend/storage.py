@@ -243,19 +243,27 @@ class KnowledgeStorage:
         for row in ordinary_chunk_rows:
             ordinary_span_ids.extend(_loads(row["source_span_ids"]) or [])
         preserved_span_ids = self._source_span_ids_for_preserved_chunks(document.id, ordinary_chunk_ids)
+        incoming_span_ids = {span.id for span in source_spans if span.id}
+        protected_span_ids = preserved_span_ids | self._source_span_ids_for_other_documents(document.id, incoming_span_ids)
         chunks, source_spans, entities, relations = self._remap_incoming_source_span_conflicts(
             chunks,
             source_spans,
             entities,
             relations,
-            preserved_span_ids,
+            protected_span_ids,
         )
+        incoming_span_ids = {span.id for span in source_spans if span.id}
         if ordinary_span_ids:
             ordinary_span_ids = [
                 span_id
                 for span_id in dict.fromkeys(ordinary_span_ids)
                 if span_id and span_id not in preserved_span_ids
             ]
+        self._delete_current_document_conflicting_source_spans(
+            document.id,
+            incoming_span_ids,
+            preserved_span_ids,
+        )
         if ordinary_chunk_ids:
             placeholders = ",".join("?" for _ in ordinary_chunk_ids)
             self.conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", ordinary_chunk_ids)
@@ -359,18 +367,63 @@ class KnowledgeStorage:
             preserved.update(_loads(row["source_span_ids"]) or [])
         return preserved
 
+    def _source_span_ids_for_other_documents(self, document_id: str, span_ids: Iterable[str]) -> Set[str]:
+        ids = [span_id for span_id in dict.fromkeys(span_ids) if span_id]
+        if not ids:
+            return set()
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT id
+            FROM source_spans
+            WHERE id IN ({placeholders})
+              AND document_id != ?
+            """,
+            [*ids, document_id],
+        ).fetchall()
+        return {row["id"] for row in rows if row["id"]}
+
+    def _delete_current_document_conflicting_source_spans(
+        self,
+        document_id: str,
+        incoming_span_ids: Iterable[str],
+        protected_span_ids: Set[str],
+    ) -> None:
+        ids = [span_id for span_id in dict.fromkeys(incoming_span_ids) if span_id and span_id not in protected_span_ids]
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT id
+            FROM source_spans
+            WHERE document_id = ?
+              AND id IN ({placeholders})
+            """,
+            [document_id, *ids],
+        ).fetchall()
+        delete_ids = [row["id"] for row in rows if row["id"]]
+        if not delete_ids:
+            return
+        self.prune_source_span_references(delete_ids)
+        placeholders = ",".join("?" for _ in delete_ids)
+        self.conn.execute(
+            f"DELETE FROM source_spans WHERE document_id = ? AND id IN ({placeholders})",
+            [document_id, *delete_ids],
+        )
+
     def _remap_incoming_source_span_conflicts(
         self,
         chunks: List[KnowledgeChunk],
         source_spans: List[SourceSpan],
         entities: List[KnowledgeEntity],
         relations: List[KnowledgeRelation],
-        preserved_span_ids: Set[str],
+        protected_span_ids: Set[str],
     ) -> Tuple[List[KnowledgeChunk], List[SourceSpan], List[KnowledgeEntity], List[KnowledgeRelation]]:
-        if not preserved_span_ids or not source_spans:
+        if not protected_span_ids or not source_spans:
             return chunks, source_spans, entities, relations
         incoming_span_ids = {span.id for span in source_spans if span.id}
-        conflicts = incoming_span_ids & preserved_span_ids
+        conflicts = incoming_span_ids & protected_span_ids
         if not conflicts:
             return chunks, source_spans, entities, relations
 
@@ -651,6 +704,7 @@ class KnowledgeStorage:
         span_ids: List[str] = []
         for row in rows:
             span_ids.extend(_loads(row["source_span_ids"]) or [])
+        span_ids = _unique(span_ids)
         if chunk_ids:
             placeholders = ",".join("?" for _ in chunk_ids)
             self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE chunk_id IN ({placeholders})", chunk_ids)
@@ -658,8 +712,24 @@ class KnowledgeStorage:
             if self.fts5_available:
                 self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
         if span_ids:
-            placeholders = ",".join("?" for _ in span_ids)
-            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", span_ids)
+            referenced_span_ids = self._source_span_ids_referenced_by_chunks(span_ids)
+            unreferenced_span_ids = [span_id for span_id in span_ids if span_id not in referenced_span_ids]
+            if unreferenced_span_ids:
+                self.prune_source_span_references(unreferenced_span_ids)
+                placeholders = ",".join("?" for _ in unreferenced_span_ids)
+                self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", unreferenced_span_ids)
+
+    def _source_span_ids_referenced_by_chunks(self, span_ids: Iterable[str]) -> Set[str]:
+        candidate_ids = {span_id for span_id in span_ids if span_id}
+        if not candidate_ids:
+            return set()
+        rows = self.conn.execute("SELECT source_span_ids FROM chunks").fetchall()
+        referenced: Set[str] = set()
+        for row in rows:
+            for span_id in _loads(row["source_span_ids"]) or []:
+                if span_id in candidate_ids:
+                    referenced.add(span_id)
+        return referenced
 
     def update_visual_artifact_image(self, artifact_id: str, image_path: str, image_hash: str) -> None:
         self.conn.execute(
