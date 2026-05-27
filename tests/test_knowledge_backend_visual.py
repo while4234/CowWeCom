@@ -7,6 +7,7 @@ from agent.knowledge.backend import KnowledgeBackendConfig, KnowledgeBackendServ
 from agent.knowledge.backend.models import ExtractedDocument, DocumentPage, KnowledgeDocument, VisualAnalysisResult, VisualArtifactCandidate
 from agent.knowledge.backend.service import dispatch_admin_request
 from agent.knowledge.backend.storage import KnowledgeStorage
+from agent.knowledge.backend.visual_analyzer import VisualAnalyzer
 from agent.knowledge.backend.visual_extractors import PyMuPDFVisualArtifactExtractor, is_strict_caption_block
 
 
@@ -134,6 +135,38 @@ class QueueAnalyzer:
         return item(candidate) if callable(item) else item
 
 
+class QueueVisualAnalyzer(VisualAnalyzer):
+    def __init__(self, results, group_results=None):
+        self.results = list(results)
+        self.group_results = list(group_results or [])
+        self.calls = []
+        self.group_calls = []
+        self.backends = []
+
+    def analyze(self, candidate, config, document=None, analysis_backend=None):
+        self.calls.append(candidate.id)
+        self.backends.append(analysis_backend)
+        item = self.results.pop(0)
+        return item(candidate) if callable(item) else item
+
+    def analyze_group(self, group, members, config, document=None, analysis_backend=None):
+        self.group_calls.append(group["id"])
+        self.backends.append(analysis_backend)
+        assert self.group_results, "no queued group result"
+        item = self.group_results.pop(0)
+        return item(group, members) if callable(item) else item
+
+
+class CountingExtractor(FakeRangeExtractor):
+    def __init__(self, candidates):
+        super().__init__(candidates)
+        self.ensure_calls = []
+
+    def ensure_visual_artifact_image(self, candidate, config):
+        self.ensure_calls.append((candidate.id, candidate.crop_dpi, candidate.bbox))
+        return candidate
+
+
 def _high_result(text="visualfact", artifact_type="table"):
     return VisualAnalysisResult(
         artifact_type=artifact_type,
@@ -146,6 +179,25 @@ def _high_result(text="visualfact", artifact_type="table"):
         readability="good",
         confidence={"ocr": 0.9, "structure": 0.9, "semantic": 0.9, "overall": 0.9},
         should_index=True,
+    )
+
+
+def _table_result(text, page=1, confidence=0.9):
+    return VisualAnalysisResult(
+        artifact_type="table",
+        title="Signal List",
+        caption="Table 5-1. Signal List",
+        summary=f"Rows from page {page} include {text}.",
+        structured_markdown=f"| Signal | Direction | Description |\n| --- | --- | --- |\n| {text} | input | page {page} |",
+        key_facts=[{"fact": f"{text} appears on page {page}", "confidence": confidence}],
+        table={
+            "headers": ["Signal", "Direction", "Description"],
+            "rows": [{"Signal": text, "Direction": "input", "Description": f"page {page}"}],
+            "markdown": f"| Signal | Direction | Description |\n| --- | --- | --- |\n| {text} | input | page {page} |",
+        },
+        readability="good" if confidence >= 0.7 else "poor",
+        confidence={"ocr": confidence, "structure": confidence, "semantic": confidence, "overall": confidence},
+        should_index=confidence >= 0.7,
     )
 
 
@@ -181,10 +233,18 @@ def test_visual_schema_is_created(tmp_path):
     assert "visual_analysis_runs" in tables
     assert "visual_artifact_chunks" in tables
     assert "visual_prepare_states" in tables
+    assert "visual_artifact_groups" in tables
+    assert "visual_artifact_group_members" in tables
+    assert "visual_artifact_tiles" in tables
     with sqlite3.connect(str(tmp_path / "knowledge.sqlite3")) as conn:
         visual_columns = {row[1] for row in conn.execute("PRAGMA table_info(visual_artifacts)").fetchall()}
         prepare_columns = {row[1] for row in conn.execute("PRAGMA table_info(visual_prepare_states)").fetchall()}
     assert "pipeline_version" in visual_columns
+    assert "group_id" in visual_columns
+    assert "part_index" in visual_columns
+    assert "continuation_role" in visual_columns
+    assert "continuation_confidence" in visual_columns
+    assert "group_retrievable" in visual_columns
     assert "pipeline_version" in prepare_columns
 
 
@@ -537,6 +597,263 @@ def test_force_build_does_not_claim_same_artifact_twice_in_one_batch(tmp_path):
     retry = service.build_visual_knowledge(document_id=document_id, limit=2, force=True)
 
     assert retry["processed"] == 1
+
+
+def test_group_continued_table_pages(tmp_path):
+    service = _service(tmp_path, visual_analysis={"prepare_pages_per_request": 3})
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    storage.conn.execute(
+        "UPDATE documents SET metadata = ? WHERE id = ?",
+        (json.dumps({"page_count": 12}), document_id),
+    )
+    storage.conn.commit()
+    candidates = [
+        VisualArtifactCandidate(
+            **{
+                **_candidate(document_id, version_id, 10).to_dict(),
+                "caption": "Table 5-1. Signal List",
+                "label": "Table 5-1",
+                "page": 10,
+                "bbox": {"x0": 20, "y0": 100, "x1": 560, "y1": 780, "page_width": 600, "page_height": 800},
+            }
+        ),
+        VisualArtifactCandidate(
+            **{
+                **_candidate(document_id, version_id, 11).to_dict(),
+                "caption": "Table 5-1. Signal List (continued)",
+                "label": "Table 5-1",
+                "page": 11,
+                "bbox": {"x0": 20, "y0": 20, "x1": 560, "y1": 780, "page_width": 600, "page_height": 800},
+            }
+        ),
+        VisualArtifactCandidate(
+            **{
+                **_candidate(document_id, version_id, 12).to_dict(),
+                "caption": "Table 5-1. Signal List (continued)",
+                "label": "Table 5-1",
+                "page": 12,
+                "bbox": {"x0": 20, "y0": 20, "x1": 560, "y1": 720, "page_width": 600, "page_height": 800},
+            }
+        ),
+    ]
+    service._visual_extractor = FakeRangeSequenceExtractor([(3, candidates)])
+    group_result = {
+        "artifact_type": "table",
+        "title": "Signal List",
+        "caption": "Table 5-1. Signal List",
+        "is_multipage": True,
+        "source_pages": [10, 11, 12],
+        "summary": "Merged signal list covers SIG_A, SIG_B and SIG_C.",
+        "key_facts": [{"fact": "SIG_A/SIG_B/SIG_C are in the multipage signal list", "confidence": 0.9}],
+        "parts": [
+            {"page": 10, "artifact_id": candidates[0].id, "role": "first", "summary": "SIG_A rows", "confidence": 0.9},
+            {"page": 11, "artifact_id": candidates[1].id, "role": "middle", "summary": "SIG_B rows", "confidence": 0.9},
+            {"page": 12, "artifact_id": candidates[2].id, "role": "last", "summary": "SIG_C rows", "confidence": 0.9},
+        ],
+        "merged_table": {
+            "headers": ["Signal", "Direction", "Description"],
+            "rows": [
+                {"Signal": "SIG_A", "Direction": "input", "Description": "page 10"},
+                {"Signal": "SIG_B", "Direction": "input", "Description": "page 11"},
+                {"Signal": "SIG_C", "Direction": "input", "Description": "page 12"},
+            ],
+            "markdown": (
+                "| Signal | Direction | Description |\n"
+                "| --- | --- | --- |\n"
+                "| SIG_A | input | page 10 |\n"
+                "| SIG_B | input | page 11 |\n"
+                "| SIG_C | input | page 12 |"
+            ),
+            "html": "",
+            "row_page_map": [
+                {"row_index": 0, "page": 10},
+                {"row_index": 1, "page": 11},
+                {"row_index": 2, "page": 12},
+            ],
+        },
+        "continuation_evidence": ["Table 5-1 continued across pages"],
+        "uncertain_continuations": [],
+        "confidence": {"ocr": 0.9, "structure": 0.9, "semantic": 0.9, "continuation": 0.9, "overall": 0.9},
+        "should_index": True,
+    }
+    analyzer = QueueVisualAnalyzer(
+        [
+            _table_result("SIG_A", page=10),
+            _table_result("SIG_B", page=11),
+            _table_result("SIG_C", page=12),
+        ],
+        group_results=[group_result],
+    )
+    service._visual_analyzer = analyzer
+
+    first = service.build_visual_knowledge(document_id=document_id, limit=1)
+    second = service.build_visual_knowledge(document_id=document_id, limit=1)
+    third = service.build_visual_knowledge(document_id=document_id, limit=1)
+    fourth = service.build_visual_knowledge(document_id=document_id, limit=1)
+
+    assert first["processed"] == 1
+    assert third["processed"] == 1
+    assert third["group_succeeded"] == 1
+    groups = storage.list_visual_artifact_groups(document_id=document_id, version_id=version_id)
+    assert len(groups) == 1
+    assert analyzer.group_calls == [groups[0]["id"]]
+    assert groups[0]["source_pages"] == [10, 11, 12]
+    members = storage.get_visual_artifact_group_members(groups[0]["id"])
+    assert [member["part_index"] for member in members] == [1, 2, 3]
+    assert [member["role"] for member in members] == ["first", "middle", "last"]
+    artifacts = storage.list_visual_artifacts(document_id=document_id, version_id=version_id)
+    assert all(artifact["group_id"] == groups[0]["id"] for artifact in artifacts)
+    assert service.search("SIG_A", limit=5)
+    visual_chunks = [chunk for chunk in storage.list_chunks(document_id) if chunk.metadata.get("source") == "visual_analysis"]
+    assert any(chunk.metadata.get("visual_scope") == "group" for chunk in visual_chunks)
+    assert not any(chunk.metadata.get("visual_scope") == "page" and chunk.metadata.get("visual_artifact_id") in {item.id for item in candidates} for chunk in visual_chunks)
+
+
+def test_no_group_for_body_references(tmp_path):
+    storage = KnowledgeStorage(tmp_path / "knowledge.sqlite3")
+    try:
+        assert storage.list_visual_artifact_groups() == []
+        assert storage.visual_group_stats()["total"] == 0
+    finally:
+        storage.close()
+
+
+def test_group_low_confidence_not_indexed(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    storage.upsert_visual_artifact_group(
+        {
+            "id": "visual_group_other",
+            "document_id": document_id,
+            "version_id": version_id,
+            "kb_id": "kb_default",
+            "group_type": "table",
+            "title": "other group",
+            "caption": "Table 0. other group",
+            "source_pages": [3, 4],
+            "status": "pending",
+            "confidence": 0.9,
+            "result_json": {},
+        }
+    )
+    storage.upsert_visual_artifact_group(
+        {
+            "id": "visual_group_low",
+            "document_id": document_id,
+            "version_id": version_id,
+            "kb_id": "kb_default",
+            "group_type": "table",
+            "title": "low group",
+            "caption": "Table 1. low group",
+            "source_pages": [1, 2],
+            "status": "pending",
+            "confidence": 0.5,
+            "result_json": {},
+        }
+    )
+    for index in (1, 2):
+        candidate = _candidate(document_id, version_id, index)
+        candidate = VisualArtifactCandidate(**{**candidate.to_dict(), "pipeline_version": "visual-pipeline-v1"})
+        storage.upsert_visual_artifact(candidate)
+        storage.add_visual_artifact_group_member("visual_group_low", candidate.id, index, index, "first" if index == 1 else "last", 0.5)
+        storage.mark_visual_artifact_group_membership(candidate.id, "visual_group_low", index, "first" if index == 1 else "last", 0.5)
+        storage.complete_visual_artifact_success(candidate.id, _table_result(f"LOW_{index}", page=index).to_dict(), 0.9, retrievable=False)
+
+    service._visual_analyzer = QueueAnalyzer([])
+    result = service.analyze_visual_artifact_group("visual_group_low", analysis_backend="codex")
+
+    assert result["outcome"] == "low_confidence"
+    group = storage.get_visual_artifact_group("visual_group_low")
+    assert group["status"] == "low_confidence"
+    assert storage.get_visual_artifact_group("visual_group_other")["status"] == "pending"
+    assert service.search("LOW_1", limit=5) == []
+
+
+def test_rebuild_continues_group_after_interruption(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    storage.upsert_visual_artifact_group(
+        {
+            "id": "visual_group_resume",
+            "document_id": document_id,
+            "version_id": version_id,
+            "kb_id": "kb_default",
+            "group_type": "table",
+            "title": "resume group",
+            "caption": "Table 2. resume group",
+            "source_pages": [1, 2],
+            "status": "pending",
+            "confidence": 0.9,
+            "result_json": {},
+        }
+    )
+    for index in (1, 2):
+        candidate = _candidate(document_id, version_id, index)
+        candidate = VisualArtifactCandidate(**{**candidate.to_dict(), "pipeline_version": "visual-pipeline-v1"})
+        storage.upsert_visual_artifact(candidate)
+        storage.add_visual_artifact_group_member("visual_group_resume", candidate.id, index, index, "first" if index == 1 else "last", 0.9)
+        storage.mark_visual_artifact_group_membership(candidate.id, "visual_group_resume", index, "first" if index == 1 else "last", 0.9)
+        storage.complete_visual_artifact_success(candidate.id, _table_result(f"RESUME_{index}", page=index).to_dict(), 0.9, retrievable=False)
+    service._visual_analyzer = QueueAnalyzer([])
+
+    result = service.build_visual_knowledge(document_id=document_id, limit=1)
+
+    assert result["processed"] == 0
+    assert result["group_succeeded"] == 1
+    assert service._visual_analyzer.calls == []
+    assert service.search("RESUME_1", limit=5)
+
+
+def test_high_res_retry_for_unreadable_artifact(tmp_path):
+    service = _service(tmp_path, visual_analysis={"dense_text_retry_threshold": 0.72})
+    document_id, version_id = _ingest(service)
+    candidate = _candidate(document_id, version_id, 1)
+    extractor = CountingExtractor([candidate])
+    service._visual_extractor = extractor
+    service._visual_analyzer = QueueVisualAnalyzer([_low_result("tiny_text"), _high_result("highres_text")])
+
+    result = service.build_visual_knowledge(document_id=document_id, limit=1)
+
+    assert result["succeeded"] == 1
+    assert len(extractor.ensure_calls) == 2
+    assert extractor.ensure_calls[-1][1] == 260
+    artifact = service._backend._get_read_storage().list_visual_artifacts(document_id=document_id)[0]
+    assert artifact["result_json"]["processing"]["high_res_retry"] is True
+    assert service.search("highres_text", limit=5)
+
+
+def test_tile_large_single_page_table(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    candidate = VisualArtifactCandidate(
+        **{
+            **_candidate(document_id, version_id, 1).to_dict(),
+            "bbox": {"x0": 0, "y0": 0, "x1": 600, "y1": 700, "page_width": 600, "page_height": 800},
+        }
+    )
+    extractor = CountingExtractor([candidate])
+    service._visual_extractor = extractor
+    service._visual_analyzer = QueueVisualAnalyzer(
+        [
+            _table_result("TILE_A", page=1),
+            _table_result("TILE_B", page=1),
+            _table_result("TILE_C", page=1),
+        ]
+    )
+
+    result = service.build_visual_knowledge(document_id=document_id, limit=1)
+
+    assert result["succeeded"] == 1
+    assert result["tile_artifacts"] == 1
+    artifact = service._backend._get_read_storage().list_visual_artifacts(document_id=document_id)[0]
+    assert artifact["result_json"]["processing"]["tile_count"] >= 3
+    chunks = service._backend._get_read_storage().list_chunks(document_id)
+    visual_chunks = [chunk for chunk in chunks if chunk.metadata.get("source") == "visual_analysis"]
+    assert any("Signal" in chunk.text and "TILE_A" in chunk.text and "TILE_C" in chunk.text for chunk in visual_chunks)
+    assert any(chunk.metadata.get("visual_artifact_id") == candidate.id for chunk in visual_chunks)
 
 
 def test_visual_extractor_skips_toc_pages_but_keeps_strict_caption(tmp_path):

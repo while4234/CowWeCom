@@ -391,6 +391,8 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             "y0": round(float(clip.y0), 3),
             "x1": round(float(clip.x1), 3),
             "y1": round(float(clip.y1), 3),
+            "page_width": round(float(rect.parent.width), 3) if getattr(rect, "parent", None) else 0,
+            "page_height": round(float(rect.parent.height), 3) if getattr(rect, "parent", None) else 0,
             "unit": "pdf_points",
         }
         context_before, context_after = self._context_around_caption(

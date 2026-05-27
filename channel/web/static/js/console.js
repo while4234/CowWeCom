@@ -5077,6 +5077,7 @@ function renderKnowledgeBackendSummary(statusData, documents, visualData) {
     if (!summaryEl) return;
     const kbs = [...new Set(documents.map(doc => doc.kb_id || 'kb_default'))];
     const visual = visualData && visualData.ok ? visualData : {};
+    const visualGroups = visual.group_stats || {};
     summaryEl.innerHTML = `
         <div class="knowledge-backend-stat"><span>Backend</span><strong>${escapeHtml((statusData && statusData.backend) || 'unknown')}</strong></div>
         <div class="knowledge-backend-stat"><span>Documents</span><strong>${documents.length}</strong></div>
@@ -5084,6 +5085,8 @@ function renderKnowledgeBackendSummary(statusData, documents, visualData) {
         <div class="knowledge-backend-stat"><span>Visual pending</span><strong>${visual.pending || 0}</strong></div>
         <div class="knowledge-backend-stat"><span>Visual indexed</span><strong>${visual.succeeded || 0}</strong></div>
         <div class="knowledge-backend-stat"><span>Low confidence</span><strong>${visual.low_confidence || 0}</strong></div>
+        <div class="knowledge-backend-stat"><span>Multipage groups</span><strong>${visualGroups.total || 0}</strong></div>
+        <div class="knowledge-backend-stat"><span>Groups merged</span><strong>${visualGroups.succeeded || 0}</strong></div>
     `;
 }
 
@@ -5152,7 +5155,7 @@ async function startVisualBuildLoop(documentId, force, retryFailed) {
     _knowledgeBackendVisualRunning = true;
     let runId = '';
     const backend = getSelectedVisualAnalysisBackend();
-    let totals = { processed: 0, succeeded: 0, low_confidence: 0, failed: 0, pending: 0 };
+    let totals = { processed: 0, succeeded: 0, low_confidence: 0, failed: 0, pending: 0, group_succeeded: 0, group_low_confidence: 0 };
     let changed = false;
     let lastPreparedPages = 0;
     setVisualBuildProgressVisible(true);
@@ -5183,6 +5186,8 @@ async function startVisualBuildLoop(documentId, force, retryFailed) {
             totals.succeeded += data.succeeded || 0;
             totals.low_confidence += data.low_confidence || 0;
             totals.failed += data.failed || 0;
+            totals.group_succeeded += data.group_succeeded || 0;
+            totals.group_low_confidence += data.group_low_confidence || 0;
             totals.pending = data.pending || 0;
             changed = changed || ((data.processed || 0) > 0) || ((data.failed || 0) > 0) || ((data.low_confidence || 0) > 0);
             updateVisualBuildProgress(data, totals, sourceDoc, data.analysis_backend || backend);
@@ -5239,6 +5244,7 @@ async function startVisualBuildLoopQueue(documentIds) {
 
 function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
     const stats = (data && data.stats) || {};
+    const groupStats = (data && data.group_stats) || {};
     const prepare = (data && data.prepare) || {};
     const total = Number(stats.total || 0);
     const pending = Number(stats.pending || 0);
@@ -5248,6 +5254,11 @@ function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
     const failed = Number(stats.failed || 0);
     const done = succeeded + lowConfidence + failed;
     const remaining = Math.max(0, pending + running);
+    const totalGroups = Number(groupStats.total || 0);
+    const succeededGroups = Number(groupStats.succeeded || 0);
+    const lowConfidenceGroups = Number(groupStats.low_confidence || 0);
+    const highResRetries = Number((data && data.high_res_retries) || 0);
+    const tileArtifacts = Number((data && data.tile_artifacts) || 0);
     const totalPages = Number(prepare.total_pages || 0);
     const preparedPages = Number(prepare.prepared_pages || 0);
     const preparedArtifacts = Number(prepare.prepared_artifacts || 0);
@@ -5274,6 +5285,11 @@ function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
             `失败：${failed}`,
             `剩余：${remaining}`,
             prepareError ? `错误：${escapeHtml(prepareError)}` : '',
+            `Multipage groups: ${totalGroups}`,
+            `Groups merged: ${succeededGroups}`,
+            `Low-confidence groups: ${lowConfidenceGroups}`,
+            `High-res retries: ${highResRetries}`,
+            `Tiled artifacts: ${tileArtifacts}`,
         ].filter(Boolean).join('<br>');
     }
 }

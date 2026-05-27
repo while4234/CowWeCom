@@ -129,6 +129,8 @@ class KnowledgeStorage:
         source_spans: Iterable[SourceSpan] = (),
         entities: Iterable[KnowledgeEntity] = (),
         relations: Iterable[KnowledgeRelation] = (),
+        *,
+        commit: bool = True,
     ) -> None:
         chunks = list(chunks)
         source_spans = list(source_spans)
@@ -187,7 +189,13 @@ class KnowledgeStorage:
             SELECT id, source_span_ids
             FROM chunks
             WHERE document_id = ?
-              AND COALESCE(json_extract(metadata, '$.source'), '') != 'visual_analysis'
+              AND COALESCE(
+                    CASE
+                        WHEN json_valid(metadata) THEN json_extract(metadata, '$.source')
+                        ELSE ''
+                    END,
+                    ''
+                  ) != 'visual_analysis'
             """,
             (document.id,),
         ).fetchall()
@@ -271,7 +279,8 @@ class KnowledgeStorage:
             WHERE chunk_id NOT IN (SELECT id FROM chunks)
             """
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def get_document(self, document_id: str) -> Optional[KnowledgeDocument]:
         row = self.conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
@@ -363,10 +372,12 @@ class KnowledgeStorage:
                 id, document_id, version_id, kb_id, artifact_type, page, label, caption, bbox,
                 image_path, image_hash, context_hash, pipeline_version, parser, parser_confidence,
                 source_path, crop_dpi, crop_padding_px,
+                context_before, context_after, page_text,
+                group_id, part_index, continuation_role, continuation_confidence, group_retrievable,
                 analysis_status, analysis_confidence, retrievable, analysis_model, analysis_backend, prompt_version,
                 result_json, error, created_at, updated_at, analyzed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, 0, '', '', '', '{}', '', ?, ?, 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, 'single', 0, 0, 'pending', 0, 0, '', '', '', '{}', '', ?, ?, 0)
             ON CONFLICT(id) DO UPDATE SET
                 kb_id = excluded.kb_id,
                 label = excluded.label,
@@ -390,6 +401,9 @@ class KnowledgeStorage:
                 source_path = excluded.source_path,
                 crop_dpi = excluded.crop_dpi,
                 crop_padding_px = excluded.crop_padding_px,
+                context_before = excluded.context_before,
+                context_after = excluded.context_after,
+                page_text = excluded.page_text,
                 updated_at = excluded.updated_at,
                 analysis_status = CASE
                     WHEN visual_artifacts.analysis_status IN ('succeeded', 'low_confidence', 'failed')
@@ -418,6 +432,9 @@ class KnowledgeStorage:
                 candidate.source_path,
                 int(candidate.crop_dpi or 180),
                 int(candidate.crop_padding_px or 12),
+                candidate.context_before,
+                candidate.context_after,
+                candidate.page_text,
                 now,
                 now,
             ),
@@ -431,7 +448,13 @@ class KnowledgeStorage:
             FROM chunks
             WHERE document_id = ?
               AND version_id != ?
-              AND COALESCE(json_extract(metadata, '$.source'), '') = 'visual_analysis'
+              AND COALESCE(
+                    CASE
+                        WHEN json_valid(metadata) THEN json_extract(metadata, '$.source')
+                        ELSE ''
+                    END,
+                    ''
+                  ) = 'visual_analysis'
             """,
             (document_id, current_version_id),
         ).fetchall()
@@ -852,6 +875,353 @@ class KnowledgeStorage:
         )
         self.conn.commit()
 
+    def mark_visual_artifact_group_membership(
+        self,
+        artifact_id: str,
+        group_id: str,
+        part_index: int,
+        role: str,
+        confidence: float,
+        *,
+        group_retrievable: int = 0,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE visual_artifacts
+            SET group_id = ?,
+                part_index = ?,
+                continuation_role = ?,
+                continuation_confidence = ?,
+                group_retrievable = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                group_id or "",
+                max(0, int(part_index or 0)),
+                role or "unknown",
+                float(confidence or 0),
+                1 if group_retrievable else 0,
+                _now(),
+                artifact_id,
+            ),
+        )
+        self.conn.commit()
+
+    def upsert_visual_artifact_group(self, group: Dict[str, Any]) -> None:
+        now = _now()
+        result_json = group.get("result_json") if isinstance(group.get("result_json"), dict) else {}
+        self.conn.execute(
+            """
+            INSERT INTO visual_artifact_groups(
+                id, document_id, version_id, kb_id, group_type, title, caption, source_pages,
+                status, confidence, retrievable, analysis_model, analysis_backend, prompt_version,
+                result_json, error, created_at, updated_at, analyzed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            ON CONFLICT(id) DO UPDATE SET
+                kb_id = excluded.kb_id,
+                group_type = excluded.group_type,
+                title = excluded.title,
+                caption = excluded.caption,
+                source_pages = excluded.source_pages,
+                status = CASE
+                    WHEN visual_artifact_groups.status IN ('succeeded', 'low_confidence', 'failed')
+                    THEN visual_artifact_groups.status
+                    ELSE excluded.status
+                END,
+                confidence = MAX(visual_artifact_groups.confidence, excluded.confidence),
+                result_json = CASE
+                    WHEN visual_artifact_groups.result_json = '{}' THEN excluded.result_json
+                    ELSE visual_artifact_groups.result_json
+                END,
+                updated_at = excluded.updated_at
+            """,
+            (
+                group["id"],
+                group["document_id"],
+                group["version_id"],
+                group.get("kb_id") or "kb_default",
+                group.get("group_type") or "unknown",
+                group.get("title") or "",
+                group.get("caption") or "",
+                _json(group.get("source_pages") or []),
+                group.get("status") or "pending",
+                float(group.get("confidence") or 0),
+                1 if group.get("retrievable") else 0,
+                group.get("analysis_model") or "",
+                group.get("analysis_backend") or "",
+                group.get("prompt_version") or "",
+                _json(result_json),
+                group.get("error") or "",
+                now,
+                now,
+            ),
+        )
+        self.conn.commit()
+
+    def add_visual_artifact_group_member(
+        self,
+        group_id: str,
+        artifact_id: str,
+        part_index: int,
+        page: int,
+        role: str,
+        confidence: float,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO visual_artifact_group_members(group_id, artifact_id, part_index, page, role, confidence)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(group_id, artifact_id) DO UPDATE SET
+                part_index = excluded.part_index,
+                page = excluded.page,
+                role = excluded.role,
+                confidence = excluded.confidence
+            """,
+            (
+                group_id,
+                artifact_id,
+                max(1, int(part_index or 1)),
+                int(page or 0),
+                role or "unknown",
+                float(confidence or 0),
+            ),
+        )
+        self.conn.commit()
+
+    def list_visual_artifact_groups(
+        self,
+        document_id: Optional[str] = None,
+        version_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        clauses: List[str] = []
+        params: List[Any] = []
+        if document_id:
+            clauses.append("document_id = ?")
+            params.append(document_id)
+        if version_id:
+            clauses.append("version_id = ?")
+            params.append(version_id)
+        if kb_id:
+            clauses.append("kb_id = ?")
+            params.append(kb_id)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(
+            f"""
+            SELECT *
+            FROM visual_artifact_groups
+            {where}
+            ORDER BY document_id ASC, version_id ASC, updated_at ASC
+            LIMIT ?
+            """,
+            [*params, max(1, int(limit or 1000))],
+        ).fetchall()
+        return [_row_to_visual_artifact_group(row) for row in rows]
+
+    def get_visual_artifact_group(self, group_id: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute("SELECT * FROM visual_artifact_groups WHERE id = ?", (group_id,)).fetchone()
+        return _row_to_visual_artifact_group(row) if row else None
+
+    def get_visual_artifact_group_members(self, group_id: str) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT gm.*, va.artifact_type, va.caption, va.label, va.bbox, va.result_json,
+                   va.analysis_status, va.analysis_confidence, va.source_path, va.image_path,
+                   va.context_before, va.context_after, va.page_text
+            FROM visual_artifact_group_members gm
+            JOIN visual_artifacts va ON va.id = gm.artifact_id
+            WHERE gm.group_id = ?
+            ORDER BY gm.part_index ASC, gm.page ASC
+            """,
+            (group_id,),
+        ).fetchall()
+        return [_row_to_visual_group_member(row) for row in rows]
+
+    def complete_visual_artifact_group_success(
+        self,
+        group_id: str,
+        result_json: Dict[str, Any],
+        confidence: float,
+        model: str = "",
+        prompt_version: str = "",
+        analysis_backend: str = "",
+    ) -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE visual_artifact_groups
+            SET status = 'succeeded',
+                confidence = ?,
+                retrievable = 1,
+                analysis_model = COALESCE(NULLIF(?, ''), analysis_model),
+                analysis_backend = COALESCE(NULLIF(?, ''), analysis_backend),
+                prompt_version = COALESCE(NULLIF(?, ''), prompt_version),
+                result_json = ?,
+                error = '',
+                updated_at = ?,
+                analyzed_at = ?
+            WHERE id = ?
+            """,
+            (float(confidence or 0), model, analysis_backend, prompt_version, _json(result_json), now, now, group_id),
+        )
+        self.conn.execute(
+            """
+            UPDATE visual_artifacts
+            SET group_retrievable = 1,
+                retrievable = 0,
+                updated_at = ?
+            WHERE group_id = ?
+            """,
+            (now, group_id),
+        )
+        self.conn.commit()
+
+    def complete_visual_artifact_group_low_confidence(
+        self,
+        group_id: str,
+        result_json: Dict[str, Any],
+        confidence: float,
+        reason: str,
+        model: str = "",
+        prompt_version: str = "",
+        analysis_backend: str = "",
+    ) -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE visual_artifact_groups
+            SET status = 'low_confidence',
+                confidence = ?,
+                retrievable = 0,
+                analysis_model = COALESCE(NULLIF(?, ''), analysis_model),
+                analysis_backend = COALESCE(NULLIF(?, ''), analysis_backend),
+                prompt_version = COALESCE(NULLIF(?, ''), prompt_version),
+                result_json = ?,
+                error = ?,
+                updated_at = ?,
+                analyzed_at = ?
+            WHERE id = ?
+            """,
+            (
+                float(confidence or 0),
+                model,
+                analysis_backend,
+                prompt_version,
+                _json(result_json),
+                str(reason or ""),
+                now,
+                now,
+                group_id,
+            ),
+        )
+        self.conn.commit()
+
+    def complete_visual_artifact_group_failed(self, group_id: str, error: str, analysis_backend: str = "") -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE visual_artifact_groups
+            SET status = 'failed',
+                retrievable = 0,
+                analysis_backend = COALESCE(NULLIF(?, ''), analysis_backend),
+                error = ?,
+                updated_at = ?,
+                analyzed_at = ?
+            WHERE id = ?
+            """,
+            (analysis_backend, str(error or ""), now, now, group_id),
+        )
+        self.conn.commit()
+
+    def claim_next_visual_artifact_group(
+        self,
+        group_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        version_id: Optional[str] = None,
+        force: bool = False,
+        retry_failed: bool = False,
+        model: str = "",
+        prompt_version: str = "",
+        analysis_backend: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        now = _now()
+        stale_before = now - 30 * 60
+        clauses: List[str] = []
+        params: List[Any] = []
+        if group_id:
+            clauses.append("id = ?")
+            params.append(group_id)
+        if document_id:
+            clauses.append("document_id = ?")
+            params.append(document_id)
+        if kb_id:
+            clauses.append("kb_id = ?")
+            params.append(kb_id)
+        if version_id:
+            clauses.append("version_id = ?")
+            params.append(version_id)
+        if force:
+            status_clause = "status IN ('pending', 'failed', 'low_confidence', 'succeeded', 'running')"
+        else:
+            status_parts = ["status = 'pending'", "(status = 'running' AND updated_at < ?)"]
+            params = [stale_before, *params]
+            if retry_failed:
+                status_parts.append("status = 'failed'")
+            status_clause = " OR ".join(status_parts)
+        where = f"WHERE ({status_clause})"
+        if clauses:
+            where += " AND " + " AND ".join(clauses)
+        rows = self.conn.execute(
+            f"""
+            SELECT *
+            FROM visual_artifact_groups
+            {where}
+            ORDER BY CASE status
+                WHEN 'pending' THEN 0
+                WHEN 'running' THEN 1
+                WHEN 'failed' THEN 2
+                WHEN 'low_confidence' THEN 3
+                WHEN 'succeeded' THEN 4
+                ELSE 4
+            END, updated_at ASC
+            LIMIT 1
+            """,
+            params,
+        ).fetchall()
+        if not rows:
+            return None
+        group = rows[0]
+        if (
+            not force
+            and group["status"] == "succeeded"
+            and group["analysis_model"] == model
+            and group["prompt_version"] == prompt_version
+        ):
+            return None
+        self.conn.execute(
+            """
+            UPDATE visual_artifact_groups
+            SET status = 'running',
+                analysis_model = ?,
+                analysis_backend = ?,
+                prompt_version = ?,
+                error = '',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (model, analysis_backend, prompt_version, now, group["id"]),
+        )
+        self.conn.commit()
+        return self.get_visual_artifact_group(group["id"])
+
     def append_visual_chunks(
         self,
         document_id: str,
@@ -948,6 +1318,28 @@ class KnowledgeStorage:
         self.conn.commit()
         return [chunk.id for chunk in appended]
 
+    def append_visual_group_chunks(
+        self,
+        document_id: str,
+        version_id: str,
+        group_id: str,
+        artifact_ids: Iterable[str],
+        chunks: Iterable[KnowledgeChunk],
+        spans: Iterable[SourceSpan],
+    ) -> List[str]:
+        chunk_ids = self.append_visual_chunks(document_id, version_id, group_id, chunks, spans)
+        artifact_ids = [artifact_id for artifact_id in artifact_ids if artifact_id]
+        if chunk_ids and artifact_ids:
+            self.conn.executemany(
+                """
+                INSERT OR REPLACE INTO visual_artifact_chunks(artifact_id, chunk_id)
+                VALUES (?, ?)
+                """,
+                [(artifact_id, chunk_id) for artifact_id in artifact_ids for chunk_id in chunk_ids],
+            )
+            self.conn.commit()
+        return chunk_ids
+
     def delete_visual_chunks_for_artifact(self, artifact_id: str) -> None:
         rows = self.conn.execute(
             """
@@ -972,6 +1364,82 @@ class KnowledgeStorage:
             self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", span_ids)
         self.conn.execute("DELETE FROM visual_artifact_chunks WHERE artifact_id = ?", (artifact_id,))
         self.conn.commit()
+
+    def delete_visual_chunks_for_group(self, group_id: str) -> None:
+        rows = self.conn.execute(
+            """
+            SELECT c.id, c.source_span_ids
+            FROM visual_artifact_chunks vac
+            JOIN chunks c ON c.id = vac.chunk_id
+            WHERE vac.artifact_id = ?
+            """,
+            (group_id,),
+        ).fetchall()
+        chunk_ids = [row["id"] for row in rows]
+        span_ids: List[str] = []
+        for row in rows:
+            span_ids.extend(_loads(row["source_span_ids"]) or [])
+        if chunk_ids:
+            placeholders = ",".join("?" for _ in chunk_ids)
+            self.conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", chunk_ids)
+            self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE chunk_id IN ({placeholders})", chunk_ids)
+            if self.fts5_available:
+                self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
+        if span_ids:
+            span_ids = _unique(span_ids)
+            placeholders = ",".join("?" for _ in span_ids)
+            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", span_ids)
+        if not chunk_ids:
+            self.conn.execute("DELETE FROM visual_artifact_chunks WHERE artifact_id = ?", (group_id,))
+        self.conn.commit()
+
+    def upsert_visual_artifact_tile(self, tile: Dict[str, Any]) -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            INSERT INTO visual_artifact_tiles(
+                id, artifact_id, tile_index, bbox, image_path, image_hash, status,
+                confidence, result_json, error, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                bbox = excluded.bbox,
+                image_path = excluded.image_path,
+                image_hash = excluded.image_hash,
+                status = excluded.status,
+                confidence = excluded.confidence,
+                result_json = excluded.result_json,
+                error = excluded.error,
+                updated_at = excluded.updated_at
+            """,
+            (
+                tile["id"],
+                tile["artifact_id"],
+                int(tile.get("tile_index") or 0),
+                _json(tile.get("bbox") or {}),
+                tile.get("image_path") or "",
+                tile.get("image_hash") or "",
+                tile.get("status") or "pending",
+                float(tile.get("confidence") or 0),
+                _json(tile.get("result_json") or {}),
+                tile.get("error") or "",
+                now,
+                now,
+            ),
+        )
+        self.conn.commit()
+
+    def list_visual_artifact_tiles(self, artifact_id: str) -> List[Dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM visual_artifact_tiles
+            WHERE artifact_id = ?
+            ORDER BY tile_index ASC
+            """,
+            (artifact_id,),
+        ).fetchall()
+        return [_row_to_visual_artifact_tile(row) for row in rows]
 
 
     def reset_visual_cache(
@@ -1018,10 +1486,53 @@ class KnowledgeStorage:
                 self.conn.execute(f"DELETE FROM chunks WHERE id IN ({chunk_placeholders})", chunk_ids)
                 if self.fts5_available:
                     self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({chunk_placeholders})", chunk_ids)
-            if span_ids:
-                span_placeholders = ",".join("?" for _ in span_ids)
-                self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({span_placeholders})", span_ids)
+        if span_ids:
+            span_ids = _unique(span_ids)
+            span_placeholders = ",".join("?" for _ in span_ids)
+            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({span_placeholders})", span_ids)
             self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE artifact_id IN ({placeholders})", artifact_ids)
+
+        group_clauses: List[str] = []
+        group_params: List[Any] = []
+        if document_id:
+            group_clauses.append("document_id = ?")
+            group_params.append(document_id)
+        if kb_id:
+            group_clauses.append("kb_id = ?")
+            group_params.append(kb_id)
+        if version_id:
+            group_clauses.append("version_id = ?")
+            group_params.append(version_id)
+        group_where = f"WHERE {' AND '.join(group_clauses)}" if group_clauses else ""
+        group_rows = self.conn.execute(f"SELECT id FROM visual_artifact_groups {group_where}", group_params).fetchall()
+        group_ids = [row["id"] for row in group_rows]
+        if group_ids:
+            placeholders = ",".join("?" for _ in group_ids)
+            rows = self.conn.execute(
+                f"""
+                SELECT c.id, c.source_span_ids
+                FROM visual_artifact_chunks vac
+                JOIN chunks c ON c.id = vac.chunk_id
+                WHERE vac.artifact_id IN ({placeholders})
+                """,
+                group_ids,
+            ).fetchall()
+            for row in rows:
+                if row["id"] not in chunk_ids:
+                    chunk_ids.append(row["id"])
+                span_ids.extend(_loads(row["source_span_ids"]) or [])
+            if rows:
+                group_chunk_ids = [row["id"] for row in rows]
+                chunk_placeholders = ",".join("?" for _ in group_chunk_ids)
+                self.conn.execute(f"DELETE FROM chunks WHERE id IN ({chunk_placeholders})", group_chunk_ids)
+                if self.fts5_available:
+                    self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({chunk_placeholders})", group_chunk_ids)
+            self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE artifact_id IN ({placeholders})", group_ids)
+        deleted_groups = int(
+            self.conn.execute(f"SELECT COUNT(*) FROM visual_artifact_groups {group_where}", group_params).fetchone()[0]
+        )
+        self.conn.execute(f"DELETE FROM visual_artifact_group_members WHERE group_id IN ({','.join('?' for _ in group_ids)})", group_ids) if group_ids else None
+        self.conn.execute(f"DELETE FROM visual_artifact_groups {group_where}", group_params)
 
         deleted_artifacts = 0
         if where:
@@ -1047,11 +1558,23 @@ class KnowledgeStorage:
             self.conn.execute(f"SELECT COUNT(*) FROM visual_prepare_states {prepare_where}", prepare_params).fetchone()[0]
         )
         self.conn.execute(f"DELETE FROM visual_prepare_states {prepare_where}", prepare_params)
+        deleted_tiles = 0
+        if artifact_ids:
+            placeholders = ",".join("?" for _ in artifact_ids)
+            deleted_tiles = int(
+                self.conn.execute(
+                    f"SELECT COUNT(*) FROM visual_artifact_tiles WHERE artifact_id IN ({placeholders})",
+                    artifact_ids,
+                ).fetchone()[0]
+            )
+            self.conn.execute(f"DELETE FROM visual_artifact_tiles WHERE artifact_id IN ({placeholders})", artifact_ids)
         self.conn.commit()
         return {
             "artifacts": deleted_artifacts,
+            "groups": deleted_groups,
+            "tiles": deleted_tiles,
             "chunks": len(chunk_ids),
-            "source_spans": len(span_ids),
+            "source_spans": len(_unique(span_ids)),
             "prepare_states": deleted_prepare_states,
         }
 
@@ -1110,6 +1633,98 @@ class KnowledgeStorage:
                     params,
                 ).fetchone()[0]
             ),
+        }
+
+    def visual_group_stats(
+        self,
+        document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        version_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        params: List[Any] = []
+        clauses: List[str] = []
+        if document_id:
+            clauses.append("document_id = ?")
+            params.append(document_id)
+        if kb_id:
+            clauses.append("kb_id = ?")
+            params.append(kb_id)
+        if version_id:
+            clauses.append("version_id = ?")
+            params.append(version_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        try:
+            rows = self.conn.execute(
+                f"""
+                SELECT status, COUNT(*) AS count
+                FROM visual_artifact_groups
+                {where}
+                GROUP BY status
+                """,
+                params,
+            ).fetchall()
+        except sqlite3.DatabaseError:
+            rows = []
+        counts = {str(row["status"]): int(row["count"]) for row in rows}
+        total = sum(counts.values())
+        return {
+            "total": total,
+            "pending": counts.get("pending", 0),
+            "running": counts.get("running", 0),
+            "succeeded": counts.get("succeeded", 0),
+            "low_confidence": counts.get("low_confidence", 0),
+            "failed": counts.get("failed", 0),
+            "skipped": counts.get("skipped", 0),
+            "retrievable": int(
+                self.conn.execute(
+                    f"SELECT COUNT(*) FROM visual_artifact_groups {where} {'AND' if where else 'WHERE'} retrievable = 1",
+                    params,
+                ).fetchone()[0]
+            ),
+        }
+
+    def visual_tile_stats(
+        self,
+        document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        version_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        clauses = ["1 = 1"]
+        params: List[Any] = []
+        if document_id:
+            clauses.append("va.document_id = ?")
+            params.append(document_id)
+        if kb_id:
+            clauses.append("va.kb_id = ?")
+            params.append(kb_id)
+        if version_id:
+            clauses.append("va.version_id = ?")
+            params.append(version_id)
+        where = " AND ".join(clauses)
+        tile_row = self.conn.execute(
+            f"""
+            SELECT
+                COUNT(DISTINCT vt.artifact_id) AS tile_artifacts,
+                COUNT(*) AS total_tiles
+            FROM visual_artifact_tiles vt
+            JOIN visual_artifacts va ON va.id = vt.artifact_id
+            WHERE {where}
+            """,
+            params,
+        ).fetchone()
+        high_res_row = self.conn.execute(
+            f"""
+            SELECT COUNT(*) AS high_res_retries
+            FROM visual_artifacts va
+            WHERE {where}
+              AND COALESCE(json_extract(va.result_json, '$.processing.high_res_retry'), 0) != 0
+            """,
+            params,
+        ).fetchone()
+        return {
+            "tile_artifacts": int(tile_row["tile_artifacts"] or 0) if tile_row else 0,
+            "total_tiles": int(tile_row["total_tiles"] or 0) if tile_row else 0,
+            "high_res_retries": int(high_res_row["high_res_retries"] or 0) if high_res_row else 0,
         }
 
     def create_visual_run(
@@ -1518,6 +2133,14 @@ class KnowledgeStorage:
                 source_path TEXT NOT NULL DEFAULT '',
                 crop_dpi INTEGER NOT NULL DEFAULT 180,
                 crop_padding_px INTEGER NOT NULL DEFAULT 12,
+                context_before TEXT NOT NULL DEFAULT '',
+                context_after TEXT NOT NULL DEFAULT '',
+                page_text TEXT NOT NULL DEFAULT '',
+                group_id TEXT NOT NULL DEFAULT '',
+                part_index INTEGER NOT NULL DEFAULT 0,
+                continuation_role TEXT NOT NULL DEFAULT '',
+                continuation_confidence REAL NOT NULL DEFAULT 0,
+                group_retrievable INTEGER NOT NULL DEFAULT 0,
                 analysis_status TEXT NOT NULL DEFAULT 'pending',
                 analysis_confidence REAL NOT NULL DEFAULT 0,
                 retrievable INTEGER NOT NULL DEFAULT 0,
@@ -1538,10 +2161,104 @@ class KnowledgeStorage:
         self._ensure_column("visual_artifacts", "source_path", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("visual_artifacts", "crop_dpi", "INTEGER NOT NULL DEFAULT 180")
         self._ensure_column("visual_artifacts", "crop_padding_px", "INTEGER NOT NULL DEFAULT 12")
+        self._ensure_column("visual_artifacts", "context_before", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("visual_artifacts", "context_after", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("visual_artifacts", "page_text", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("visual_artifacts", "group_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("visual_artifacts", "part_index", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("visual_artifacts", "continuation_role", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("visual_artifacts", "continuation_confidence", "REAL NOT NULL DEFAULT 0")
+        self._ensure_column("visual_artifacts", "group_retrievable", "INTEGER NOT NULL DEFAULT 0")
         self.conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_visual_artifacts_doc
             ON visual_artifacts(document_id, version_id, analysis_status)
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_visual_artifacts_group
+            ON visual_artifacts(group_id, part_index)
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_artifact_groups (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                kb_id TEXT NOT NULL DEFAULT 'kb_default',
+                group_type TEXT NOT NULL DEFAULT 'unknown',
+                title TEXT NOT NULL DEFAULT '',
+                caption TEXT NOT NULL DEFAULT '',
+                source_pages TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'pending',
+                confidence REAL NOT NULL DEFAULT 0,
+                retrievable INTEGER NOT NULL DEFAULT 0,
+                analysis_model TEXT NOT NULL DEFAULT '',
+                analysis_backend TEXT NOT NULL DEFAULT '',
+                prompt_version TEXT NOT NULL DEFAULT '',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                analyzed_at INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_visual_artifact_groups_doc
+            ON visual_artifact_groups(document_id, version_id, status)
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_visual_artifact_groups_kb
+            ON visual_artifact_groups(kb_id, status, retrievable)
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_artifact_group_members (
+                group_id TEXT NOT NULL,
+                artifact_id TEXT NOT NULL,
+                part_index INTEGER NOT NULL,
+                page INTEGER NOT NULL,
+                role TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY(group_id, artifact_id)
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_visual_group_members_artifact
+            ON visual_artifact_group_members(artifact_id)
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_artifact_tiles (
+                id TEXT PRIMARY KEY,
+                artifact_id TEXT NOT NULL,
+                tile_index INTEGER NOT NULL,
+                bbox TEXT NOT NULL DEFAULT '{}',
+                image_path TEXT NOT NULL DEFAULT '',
+                image_hash TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                confidence REAL NOT NULL DEFAULT 0,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_visual_artifact_tiles_artifact
+            ON visual_artifact_tiles(artifact_id, tile_index, status)
             """
         )
         self.conn.execute(
@@ -1849,6 +2566,16 @@ def stable_visual_span_id(document_id: str, version_id: str, artifact_id: str, t
     return "span_visual_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
+def stable_visual_group_chunk_id(document_id: str, version_id: str, group_id: str, chunk_kind: str, text: str) -> str:
+    raw = f"{document_id}|{version_id}|{group_id}|{chunk_kind}|{text}"
+    return "chunk_visual_group_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def stable_visual_group_span_id(document_id: str, version_id: str, group_id: str, text: str) -> str:
+    raw = f"span_visual_group|{document_id}|{version_id}|{group_id}|{text}"
+    return "span_visual_group_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
 def compute_file_hash(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -1962,6 +2689,14 @@ def _row_to_visual_artifact(row: sqlite3.Row) -> Dict[str, Any]:
         "source_path": _row_value(row, "source_path", ""),
         "crop_dpi": int(_row_value(row, "crop_dpi", 180) or 180),
         "crop_padding_px": int(_row_value(row, "crop_padding_px", 12) or 12),
+        "context_before": _row_value(row, "context_before", ""),
+        "context_after": _row_value(row, "context_after", ""),
+        "page_text": _row_value(row, "page_text", ""),
+        "group_id": _row_value(row, "group_id", ""),
+        "part_index": int(_row_value(row, "part_index", 0) or 0),
+        "continuation_role": _row_value(row, "continuation_role", ""),
+        "continuation_confidence": float(_row_value(row, "continuation_confidence", 0) or 0),
+        "group_retrievable": bool(_row_value(row, "group_retrievable", 0)),
         "analysis_status": row["analysis_status"] or "pending",
         "analysis_confidence": float(row["analysis_confidence"] or 0),
         "retrievable": bool(row["retrievable"]),
@@ -1974,6 +2709,70 @@ def _row_to_visual_artifact(row: sqlite3.Row) -> Dict[str, Any]:
         "created_at": int(row["created_at"] or 0),
         "updated_at": int(row["updated_at"] or 0),
         "analyzed_at": int(row["analyzed_at"] or 0),
+    }
+
+
+def _row_to_visual_artifact_group(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "document_id": row["document_id"],
+        "version_id": row["version_id"],
+        "kb_id": row["kb_id"] or "kb_default",
+        "group_type": row["group_type"] or "unknown",
+        "title": row["title"] or "",
+        "caption": row["caption"] or "",
+        "source_pages": _loads(row["source_pages"]) or [],
+        "status": row["status"] or "pending",
+        "confidence": float(row["confidence"] or 0),
+        "retrievable": bool(row["retrievable"]),
+        "analysis_model": row["analysis_model"] or "",
+        "analysis_backend": row["analysis_backend"] or "",
+        "prompt_version": row["prompt_version"] or "",
+        "result_json": _loads(row["result_json"]) or {},
+        "error": row["error"] or "",
+        "created_at": int(row["created_at"] or 0),
+        "updated_at": int(row["updated_at"] or 0),
+        "analyzed_at": int(row["analyzed_at"] or 0),
+    }
+
+
+def _row_to_visual_group_member(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "group_id": row["group_id"],
+        "artifact_id": row["artifact_id"],
+        "part_index": int(row["part_index"] or 0),
+        "page": int(row["page"] or 0),
+        "role": row["role"] or "",
+        "confidence": float(row["confidence"] or 0),
+        "artifact_type": _row_value(row, "artifact_type", ""),
+        "caption": _row_value(row, "caption", ""),
+        "label": _row_value(row, "label", ""),
+        "bbox": _loads(_row_value(row, "bbox", "{}")) or {},
+        "result_json": _loads(_row_value(row, "result_json", "{}")) or {},
+        "analysis_status": _row_value(row, "analysis_status", ""),
+        "analysis_confidence": float(_row_value(row, "analysis_confidence", 0) or 0),
+        "source_path": _row_value(row, "source_path", ""),
+        "image_path": _row_value(row, "image_path", ""),
+        "context_before": _row_value(row, "context_before", ""),
+        "context_after": _row_value(row, "context_after", ""),
+        "page_text": _row_value(row, "page_text", ""),
+    }
+
+
+def _row_to_visual_artifact_tile(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "artifact_id": row["artifact_id"],
+        "tile_index": int(row["tile_index"] or 0),
+        "bbox": _loads(row["bbox"]) or {},
+        "image_path": row["image_path"] or "",
+        "image_hash": row["image_hash"] or "",
+        "status": row["status"] or "pending",
+        "confidence": float(row["confidence"] or 0),
+        "result_json": _loads(row["result_json"]) or {},
+        "error": row["error"] or "",
+        "created_at": int(row["created_at"] or 0),
+        "updated_at": int(row["updated_at"] or 0),
     }
 
 

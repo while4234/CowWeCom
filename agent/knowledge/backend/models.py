@@ -309,6 +309,7 @@ class VisualAnalysisResult:
     uncertain_fields: List[str] = field(default_factory=list)
     readability: str = "unknown"
     confidence: Dict[str, Any] = field(default_factory=dict)
+    processing: Dict[str, Any] = field(default_factory=dict)
     should_index: bool = False
     low_confidence_reason: str = ""
     caption: str = ""

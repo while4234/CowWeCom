@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import KnowledgeChunk, KnowledgeDocument, SourceSpan, VisualAnalysisResult, VisualArtifactCandidate
-from .storage import stable_visual_chunk_id, stable_visual_span_id
+from .storage import stable_visual_chunk_id, stable_visual_group_chunk_id, stable_visual_group_span_id, stable_visual_span_id
 
 
 SYSTEM_PROMPT = (
@@ -41,8 +41,39 @@ OUTPUT_SCHEMA = {
     "uncertain_fields": [],
     "readability": "good|medium|poor",
     "confidence": {"ocr": 0.0, "structure": 0.0, "semantic": 0.0, "overall": 0.0},
+    "is_partial": False,
+    "continuation": {
+        "role": "single|first|middle|last|unknown",
+        "belongs_to_same_artifact": False,
+        "evidence": [],
+        "confidence": 0.0,
+    },
     "should_index": True,
     "low_confidence_reason": "",
+}
+
+
+GROUP_OUTPUT_SCHEMA = {
+    "artifact_type": "table|figure|chart|timing_diagram|state_machine|waveform|bitfield|flowchart|image|unknown",
+    "title": "",
+    "caption": "",
+    "is_multipage": True,
+    "source_pages": [],
+    "summary": "",
+    "structured_markdown": "",
+    "key_facts": [{"fact": "", "confidence": 0.0}],
+    "parts": [{"page": 0, "artifact_id": "", "role": "", "summary": "", "confidence": 0.0}],
+    "merged_table": {"headers": [], "rows": [], "markdown": "", "html": "", "row_page_map": []},
+    "continuation_evidence": [],
+    "uncertain_continuations": [],
+    "confidence": {
+        "ocr": 0.0,
+        "structure": 0.0,
+        "semantic": 0.0,
+        "continuation": 0.0,
+        "overall": 0.0,
+    },
+    "should_index": True,
 }
 
 
@@ -60,6 +91,19 @@ class VisualAnalyzer:
         visual_config = getattr(config, "visual_analysis", {}) or {}
         content = self._call_model(candidate, config, document, analysis_backend=analysis_backend)
         return validate_visual_analysis_json(content, candidate, visual_config)
+
+    def analyze_group(
+        self,
+        group: Dict[str, Any],
+        members: List[Dict[str, Any]],
+        config: Any,
+        document: KnowledgeDocument | None = None,
+        *,
+        analysis_backend: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        visual_config = getattr(config, "visual_analysis", {}) or {}
+        content = self._call_group_model(group, members, config, document, analysis_backend=analysis_backend)
+        return validate_visual_group_analysis_json(content, group, members, visual_config)
 
     def _call_model(
         self,
@@ -100,6 +144,48 @@ class VisualAnalyzer:
         if not str(content).strip():
             raise RuntimeError("vision model response was empty")
         return str(content).strip()
+
+    def _call_group_model(
+        self,
+        group: Dict[str, Any],
+        members: List[Dict[str, Any]],
+        config: Any,
+        document: KnowledgeDocument | None,
+        *,
+        analysis_backend: Optional[str],
+    ) -> str:
+        from models.openai.open_ai_bot import OpenAIBot
+
+        visual_config = getattr(config, "visual_analysis", {}) or {}
+        model = str(visual_config.get("model") or "gpt-5.5")
+        reasoning_effort = str(visual_config.get("reasoning_effort") or "xhigh")
+        effective_backend = resolve_visual_analysis_backend(
+            analysis_backend if analysis_backend is not None else visual_config.get("analysis_backend")
+        )
+        if effective_backend == "codex":
+            from models.codex.codex_bot import CodexBot
+
+            bot: Any = CodexBot()
+        else:
+            bot = OpenAIBot(backend_override=effective_backend)
+        prompt = build_visual_group_prompt(group, members, document, visual_config)
+        response = bot.call_with_tools(
+            [{"role": "user", "content": f"{SYSTEM_PROMPT}\n\n{prompt}"}],
+            tools=None,
+            stream=False,
+            model=model,
+            max_tokens=int(visual_config.get("group_max_output_tokens", visual_config.get("max_output_tokens", 3000)) or 3000),
+            temperature=0,
+            reasoning_effort=reasoning_effort,
+            reasoning_effort_locked=True,
+            request_timeout=int(visual_config.get("group_timeout_seconds", visual_config.get("timeout_seconds", 300)) or 300),
+        )
+        if isinstance(response, dict) and response.get("error"):
+            raise RuntimeError(str(response.get("message") or "visual group model request failed"))
+        content = _chat_completion_content(response)
+        if not content.strip():
+            raise RuntimeError("visual group model response was empty")
+        return content.strip()
 
 
 def normalize_visual_analysis_backend(value: Any) -> str:
@@ -142,7 +228,43 @@ def build_visual_prompt(candidate: VisualArtifactCandidate, document: KnowledgeD
         "bbox": candidate.bbox,
         "output_schema": OUTPUT_SCHEMA,
     }
-    return "Analyze this document visual artifact. Return strict JSON only.\n\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+    instruction = (
+        "Analyze this document visual artifact. Return strict JSON only.\n"
+        "该视觉元素可能是跨页图表的一部分。不要假设当前图片包含完整图表。"
+        "若看到 continued、续表、缺少表头、页首续接、页尾未结束等迹象，请在 continuation 字段中说明。"
+        "If headers are missing, infer only when the supplied context supports it and list uncertainty in uncertain_fields.\n\n"
+    )
+    return instruction + json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def build_visual_group_prompt(
+    group: Dict[str, Any],
+    members: List[Dict[str, Any]],
+    document: KnowledgeDocument | None,
+    visual_config: Dict[str, Any],
+) -> str:
+    ordered = sorted(members, key=lambda item: int(item.get("part_index") or 0))
+    payload = {
+        "document_title": document.title if document else "",
+        "document_id": group.get("document_id") or "",
+        "version_id": group.get("version_id") or "",
+        "group_id": group.get("id") or "",
+        "group_type_candidate": group.get("group_type") or "unknown",
+        "title": group.get("title") or "",
+        "caption": group.get("caption") or "",
+        "source_pages": group.get("source_pages") or [],
+        "continuation_confidence_candidate": group.get("confidence") or 0,
+        "members": [_group_member_prompt_payload(member, visual_config) for member in ordered],
+        "output_schema": GROUP_OUTPUT_SCHEMA,
+    }
+    instruction = (
+        "你正在合并同一个多页图表/表格的多个部分。必须保持 page attribution。"
+        "不得补造缺失行列。若不同页的表头或结构不一致，降低 confidence。"
+        "输出应包含 source_pages、parts、continuation_evidence 和 uncertain_continuations。"
+        "If any page-level result is low confidence, cap the group confidence and explain it in uncertain_continuations. "
+        "Return strict JSON only.\n\n"
+    )
+    return instruction + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def validate_visual_analysis_json(
@@ -213,9 +335,147 @@ def validate_visual_analysis_json(
         uncertain_fields=data.get("uncertain_fields") if isinstance(data.get("uncertain_fields"), list) else [],
         readability=str(data.get("readability") or "unknown"),
         confidence=normalized_confidence,
+        processing=data.get("processing") if isinstance(data.get("processing"), dict) else {},
         should_index=should_index,
         low_confidence_reason=reason,
     )
+
+
+def validate_visual_group_analysis_json(
+    raw: Any,
+    group: Dict[str, Any],
+    members: List[Dict[str, Any]],
+    visual_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        data = dict(raw)
+    else:
+        text = str(raw or "").strip()
+        fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.DOTALL | re.IGNORECASE)
+        if fence:
+            text = fence.group(1).strip()
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"visual group analysis response is not valid JSON: {exc}") from exc
+
+    source_pages = [int(page) for page in (data.get("source_pages") or group.get("source_pages") or []) if page]
+    parts = data.get("parts") if isinstance(data.get("parts"), list) else []
+    confidence = data.get("confidence") if isinstance(data.get("confidence"), dict) else {}
+    normalized_confidence = {
+        "ocr": _clamp01(confidence.get("ocr", 0)),
+        "structure": _clamp01(confidence.get("structure", 0)),
+        "semantic": _clamp01(confidence.get("semantic", 0)),
+        "continuation": _clamp01(confidence.get("continuation", group.get("confidence", 0))),
+        "overall": _clamp01(confidence.get("overall", 0)),
+    }
+    data["confidence"] = normalized_confidence
+    data["is_multipage"] = bool(data.get("is_multipage", len(source_pages) >= 2))
+    data["source_pages"] = source_pages
+    data["parts"] = parts
+    merged_table = data.get("merged_table") if isinstance(data.get("merged_table"), dict) else {}
+    data["merged_table"] = merged_table
+    reasons: List[str] = []
+    if normalized_confidence["continuation"] < 0.70:
+        reasons.append("continuation confidence below 0.70")
+    if not source_pages:
+        reasons.append("source_pages is empty")
+    if data["is_multipage"] and len(parts) < 2:
+        reasons.append("multipage result has fewer than 2 parts")
+    if merged_table.get("rows") and not merged_table.get("headers"):
+        reasons.append("merged_table rows require headers")
+    critical_low = any(float(member.get("analysis_confidence") or member.get("confidence") or 0) < 0.70 for member in members)
+    if critical_low and normalized_confidence["overall"] > 0.75:
+        normalized_confidence["overall"] = 0.75
+        reasons.append("critical part low confidence caps overall confidence")
+    thresholds = {
+        "overall": float(visual_config.get("min_confidence", 0.78)),
+        "ocr": float(visual_config.get("min_ocr_confidence", 0.70)),
+        "structure": float(visual_config.get("min_structure_confidence", 0.75)),
+        "semantic": float(visual_config.get("min_semantic_confidence", 0.75)),
+    }
+    for key, threshold in thresholds.items():
+        if normalized_confidence[key] < threshold:
+            reasons.append(f"{key} confidence {normalized_confidence[key]:.2f} below {threshold:.2f}")
+    should_index = bool(data.get("should_index", False))
+    if reasons and not bool(visual_config.get("index_low_confidence", False)):
+        should_index = False
+    data["should_index"] = should_index
+    if reasons:
+        data["low_confidence_reason"] = data.get("low_confidence_reason") or "; ".join(reasons)
+    return data
+
+
+def merge_visual_group_from_member_results(group: Dict[str, Any], members: List[Dict[str, Any]]) -> Dict[str, Any]:
+    ordered = sorted(members, key=lambda item: int(item.get("part_index") or 0))
+    source_pages = [int(member.get("page") or 0) for member in ordered if member.get("page")]
+    summaries: List[str] = []
+    key_facts: List[Dict[str, Any]] = []
+    headers: List[Any] = []
+    rows: List[Any] = []
+    row_page_map: List[Dict[str, int]] = []
+    continuation_evidence = list((group.get("result_json") or {}).get("continuation_evidence") or [])
+    confidence_values: List[float] = []
+    parts: List[Dict[str, Any]] = []
+    artifact_type = group.get("group_type") or "unknown"
+    for member in ordered:
+        result = member.get("result_json") if isinstance(member.get("result_json"), dict) else {}
+        confidence = float((result.get("confidence") or {}).get("overall") or member.get("analysis_confidence") or 0)
+        confidence_values.append(confidence)
+        summary = str(result.get("summary") or "").strip()
+        if summary:
+            summaries.append(f"Page {member.get('page')}: {summary}")
+        parts.append(
+            {
+                "page": int(member.get("page") or 0),
+                "artifact_id": member.get("artifact_id") or "",
+                "role": member.get("role") or "",
+                "summary": summary,
+                "confidence": confidence,
+            }
+        )
+        for fact in result.get("key_facts") or []:
+            if isinstance(fact, dict):
+                key_facts.append(dict(fact))
+        table = result.get("table") if isinstance(result.get("table"), dict) else {}
+        if table.get("headers") and not headers:
+            headers = list(table.get("headers") or [])
+        for row in table.get("rows") or []:
+            row_page_map.append({"row_index": len(rows), "page": int(member.get("page") or 0)})
+            rows.append(row)
+        continuation = result.get("continuation") if isinstance(result.get("continuation"), dict) else {}
+        for item in continuation.get("evidence") or []:
+            continuation_evidence.append(str(item))
+        if result.get("artifact_type") and artifact_type in ("unknown", "figure"):
+            artifact_type = str(result.get("artifact_type"))
+
+    markdown = _markdown_table(headers, rows)
+    continuation_confidence = float(group.get("confidence") or 0)
+    overall = min(confidence_values) if confidence_values else 0.0
+    if continuation_confidence:
+        overall = min(overall or continuation_confidence, continuation_confidence)
+    return {
+        "artifact_type": artifact_type,
+        "title": group.get("title") or group.get("caption") or "",
+        "caption": group.get("caption") or "",
+        "is_multipage": len(source_pages) >= 2,
+        "source_pages": source_pages,
+        "summary": "\n".join(summaries).strip(),
+        "structured_markdown": markdown,
+        "key_facts": key_facts[:80],
+        "parts": parts,
+        "merged_table": {"headers": headers, "rows": rows, "markdown": markdown, "html": "", "row_page_map": row_page_map},
+        "continuation_evidence": _unique_nonempty_terms(continuation_evidence),
+        "uncertain_continuations": [],
+        "confidence": {
+            "ocr": min(confidence_values) if confidence_values else 0.0,
+            "structure": min(confidence_values) if confidence_values else 0.0,
+            "semantic": min(confidence_values) if confidence_values else 0.0,
+            "continuation": continuation_confidence,
+            "overall": overall,
+        },
+        "should_index": True,
+    }
 
 
 def visual_result_to_chunks(
@@ -235,6 +495,8 @@ def visual_result_to_chunks(
         "visual_artifact_id": candidate.id,
         "visual_artifact_type": result.artifact_type,
         "visual_confidence": result.confidence.get("overall", 0.0),
+        "visual_scope": "page",
+        "visual_group_id": getattr(candidate, "group_id", ""),
         "retrievable": True,
         "page": candidate.page,
         "bbox": candidate.bbox,
@@ -285,6 +547,90 @@ def visual_result_to_chunks(
                 clause_title=result.title or candidate.label or result.artifact_type,
                 source_span_ids=[span_id],
                 metadata=dict(metadata),
+            )
+        )
+    return chunks, spans
+
+
+def visual_group_result_to_chunks(
+    group: Dict[str, Any],
+    members: List[Dict[str, Any]],
+    result: Dict[str, Any],
+    document: KnowledgeDocument,
+    visual_config: Dict[str, Any],
+    *,
+    analysis_backend: str = "",
+    analysis_model: str = "",
+) -> Tuple[List[KnowledgeChunk], List[SourceSpan]]:
+    model = str(analysis_model or visual_config.get("model") or "gpt-5.5")
+    prompt_version = str(visual_config.get("group_prompt_version") or "visual-group-v1")
+    source_pages = [int(page) for page in (result.get("source_pages") or group.get("source_pages") or []) if page]
+    page_start = min(source_pages) if source_pages else 0
+    page_end = max(source_pages) if source_pages else 0
+    artifact_ids = [member.get("artifact_id") for member in members if member.get("artifact_id")]
+    bboxes = [
+        {"page": int(member.get("page") or 0), "bbox": member.get("bbox") or {}}
+        for member in members
+        if member.get("bbox")
+    ]
+    metadata = {
+        "source": "visual_analysis",
+        "visual_scope": "group",
+        "visual_group_id": group.get("id") or "",
+        "visual_artifact_ids": artifact_ids,
+        "visual_artifact_type": result.get("artifact_type") or group.get("group_type") or "unknown",
+        "visual_confidence": (result.get("confidence") or {}).get("overall", 0.0),
+        "visual_continuation_confidence": (result.get("confidence") or {}).get("continuation", 0.0),
+        "source_pages": source_pages,
+        "page_start": page_start,
+        "page_end": page_end,
+        "caption": result.get("caption") or group.get("caption") or "",
+        "analysis_model": model,
+        "analysis_backend": analysis_backend or normalize_visual_analysis_backend(visual_config.get("analysis_backend")),
+        "prompt_version": prompt_version,
+        "pipeline_version": str(visual_config.get("pipeline_version") or "visual-pipeline-v1"),
+    }
+    texts = _group_chunk_texts(group, members, result, document)
+    chunks: List[KnowledgeChunk] = []
+    spans: List[SourceSpan] = []
+    section_path = ""
+    bbox_payload = {"pages": bboxes}
+    for kind, text, extra_metadata in texts:
+        if not text.strip():
+            continue
+        span_id = stable_visual_group_span_id(document.id, document.version_id, group.get("id") or "", f"{kind}:{text[:500]}")
+        chunk_id = stable_visual_group_chunk_id(document.id, document.version_id, group.get("id") or "", kind, text)
+        span = SourceSpan(
+            id=span_id,
+            document_id=document.id,
+            version_id=document.version_id,
+            source_file=document.source_path,
+            page_start=page_start,
+            page_end=page_end,
+            section_path=section_path,
+            paragraph_index_start=0,
+            paragraph_index_end=0,
+            char_start=0,
+            char_end=min(len(text), 500),
+            bbox=bbox_payload,
+            text_hash="sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            text=text[:500],
+        )
+        spans.append(span)
+        chunks.append(
+            KnowledgeChunk(
+                id=chunk_id,
+                document_id=document.id,
+                ordinal=0,
+                page_start=page_start,
+                page_end=page_end,
+                text=text,
+                kb_id=document.kb_id or group.get("kb_id") or "kb_default",
+                version_id=document.version_id,
+                section_path=section_path,
+                clause_title=result.get("title") or group.get("title") or group.get("group_type") or "visual group",
+                source_span_ids=[span_id],
+                metadata={**metadata, **(extra_metadata or {})},
             )
         )
     return chunks, spans
@@ -358,6 +704,169 @@ def _chunk_texts(candidate: VisualArtifactCandidate, result: VisualAnalysisResul
     if details:
         texts.append(("detail", "\n".join(["[视觉图表详情]", f"Page: {candidate.page}", details]).strip()))
     return texts[:3]
+
+
+def _group_chunk_texts(
+    group: Dict[str, Any],
+    members: List[Dict[str, Any]],
+    result: Dict[str, Any],
+    document: KnowledgeDocument,
+) -> List[Tuple[str, str, Dict[str, Any]]]:
+    source_pages = [int(page) for page in (result.get("source_pages") or group.get("source_pages") or []) if page]
+    page_range = _page_range_text(source_pages)
+    confidence = result.get("confidence") if isinstance(result.get("confidence"), dict) else {}
+    facts = []
+    for fact in (result.get("key_facts") or [])[:30]:
+        if isinstance(fact, dict):
+            facts.append(f"- {fact.get('fact', '')} (confidence={fact.get('confidence', '')})".strip())
+        else:
+            facts.append(f"- {fact}")
+    evidence = [str(item) for item in (result.get("continuation_evidence") or [])[:20]]
+    summary = "\n".join(
+        [
+            "[视觉图表-多页]",
+            f"Document: {document.title}",
+            f"类型: {result.get('artifact_type') or group.get('group_type') or 'unknown'}",
+            f"页码范围: {page_range}",
+            f"source_pages: {', '.join(str(page) for page in source_pages)}",
+            f"caption/title: {result.get('caption') or result.get('title') or group.get('caption') or group.get('title') or ''}",
+            "Continuation evidence:",
+            *[f"- {item}" for item in evidence],
+            f"Summary: {result.get('summary') or ''}",
+            "Key facts:",
+            *facts,
+            f"confidence: {confidence.get('overall', 0.0)}",
+            f"continuation_confidence: {confidence.get('continuation', 0.0)}",
+        ]
+    )
+    texts: List[Tuple[str, str, Dict[str, Any]]] = [("summary", summary, {})]
+    merged_table = result.get("merged_table") if isinstance(result.get("merged_table"), dict) else {}
+    table_markdown = str(merged_table.get("markdown") or "")
+    if (result.get("artifact_type") == "table" or group.get("group_type") == "table") and table_markdown:
+        texts.extend(_split_group_table_chunks(table_markdown, merged_table, source_pages))
+    detail_lines = ["[视觉图表-多页详情]", f"Document: {document.title}", f"Pages: {page_range}"]
+    for part in result.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        detail_lines.append(
+            f"- Page {part.get('page')} / {part.get('role')}: {part.get('summary', '')} "
+            f"(confidence={part.get('confidence', 0.0)})"
+        )
+    if len(detail_lines) > 3:
+        texts.append(("detail", "\n".join(detail_lines), {}))
+    return texts[:8]
+
+
+def _split_group_table_chunks(
+    table_markdown: str,
+    merged_table: Dict[str, Any],
+    source_pages: List[int],
+) -> List[Tuple[str, str, Dict[str, Any]]]:
+    rows = merged_table.get("rows") or []
+    headers = merged_table.get("headers") or []
+    row_page_map = merged_table.get("row_page_map") or []
+    if not rows or len(table_markdown) <= 5000:
+        return [
+            (
+                "table",
+                "\n".join(["[视觉表格-多页]", f"Pages: {_page_range_text(source_pages)}", table_markdown]).strip(),
+                {"row_range": [0, max(0, len(rows) - 1)], "page_range": [min(source_pages or [0]), max(source_pages or [0])]},
+            )
+        ]
+    chunks: List[Tuple[str, str, Dict[str, Any]]] = []
+    chunk_size = 40
+    for start in range(0, len(rows), chunk_size):
+        end = min(len(rows), start + chunk_size)
+        chunk_rows = rows[start:end]
+        pages = [
+            int(item.get("page") or 0)
+            for item in row_page_map
+            if start <= int(item.get("row_index") or 0) < end and item.get("page")
+        ]
+        markdown = _markdown_table(headers, chunk_rows)
+        chunks.append(
+            (
+                f"table_rows_{start}_{end - 1}",
+                "\n".join(["[视觉表格-多页]", f"Rows: {start}-{end - 1}", f"Pages: {_page_range_text(pages or source_pages)}", markdown]).strip(),
+                {"row_range": [start, end - 1], "page_range": [min(pages or source_pages or [0]), max(pages or source_pages or [0])]},
+            )
+        )
+    return chunks
+
+
+def _group_member_prompt_payload(member: Dict[str, Any], visual_config: Dict[str, Any]) -> Dict[str, Any]:
+    result = member.get("result_json") if isinstance(member.get("result_json"), dict) else {}
+    context_limit = int(visual_config.get("group_member_context_chars", 1000) or 1000)
+    result_limit = int(visual_config.get("group_member_result_chars", 6000) or 6000)
+    return {
+        "artifact_id": member.get("artifact_id") or "",
+        "page": int(member.get("page") or 0),
+        "part_index": int(member.get("part_index") or 0),
+        "role": member.get("role") or "",
+        "caption": member.get("caption") or "",
+        "label": member.get("label") or "",
+        "bbox": member.get("bbox") or {},
+        "analysis_status": member.get("analysis_status") or "",
+        "analysis_confidence": member.get("analysis_confidence") or member.get("confidence") or 0,
+        "context_before": str(member.get("context_before") or "")[:context_limit],
+        "context_after": str(member.get("context_after") or "")[:context_limit],
+        "page_text": str(member.get("page_text") or "")[:context_limit],
+        "page_level_result": _truncate_prompt_value(result, result_limit),
+    }
+
+
+def _truncate_prompt_value(value: Any, limit: int) -> Any:
+    text = json.dumps(value, ensure_ascii=False)
+    if len(text) <= limit:
+        return value
+    return {"truncated_json": text[:limit], "truncated": True}
+
+
+def _chat_completion_content(response: Any) -> str:
+    if isinstance(response, dict):
+        choices = response.get("choices") or []
+        if choices and isinstance(choices[0], dict):
+            message = choices[0].get("message") or {}
+            if isinstance(message, dict):
+                content = message.get("content")
+                if content:
+                    return str(content)
+            delta = choices[0].get("delta") or {}
+            if isinstance(delta, dict) and delta.get("content"):
+                return str(delta.get("content"))
+        if response.get("content"):
+            return str(response.get("content"))
+    return str(response or "")
+
+
+def _markdown_table(headers: List[Any], rows: List[Any]) -> str:
+    if not headers or not rows:
+        return ""
+    header_text = [str(header) for header in headers]
+    lines = [
+        "| " + " | ".join(header_text) + " |",
+        "| " + " | ".join("---" for _ in header_text) + " |",
+    ]
+    for row in rows:
+        if isinstance(row, dict):
+            values = [str(row.get(header, "")) for header in header_text]
+        elif isinstance(row, list):
+            values = [str(value) for value in row]
+        else:
+            values = [str(row)]
+        if len(values) < len(header_text):
+            values.extend("" for _ in range(len(header_text) - len(values)))
+        lines.append("| " + " | ".join(values[: len(header_text)]) + " |")
+    return "\n".join(lines)
+
+
+def _page_range_text(source_pages: List[int]) -> str:
+    if not source_pages:
+        return ""
+    values = sorted(set(source_pages))
+    if len(values) == 1:
+        return f"Page {values[0]}"
+    return f"Page {values[0]}-{values[-1]}"
 
 
 def _detail_text(result: VisualAnalysisResult) -> str:
