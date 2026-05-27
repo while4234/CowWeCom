@@ -22,7 +22,16 @@ from .extractors import (
     extract_document,
 )
 from .builders import HeuristicKnowledgeBuilder
-from .models import Citation, KnowledgeBase, KnowledgeChunk, KnowledgeDocument, QueryResult
+from .models import (
+    Citation,
+    ExtractedDocument,
+    KnowledgeBase,
+    KnowledgeChunk,
+    KnowledgeDocument,
+    QueryResult,
+    VisualArtifactCandidate,
+    VisualAnalysisResult,
+)
 from .storage import (
     KnowledgeStorage,
     compute_file_hash,
@@ -30,11 +39,39 @@ from .storage import (
     stable_document_id,
     stable_version_id,
 )
+from .visual_analyzer import VisualAnalyzer, validate_visual_analysis_json, visual_result_to_chunks
+from .visual_extractors import PyMuPDFVisualArtifactExtractor
 
 
 DEFAULT_DB_NAME = "public_protocol_knowledge/indexes/kb.sqlite"
 FALSE_VALUES = {"", "0", "false", "off", "disabled", "no", "n"}
 TRUE_VALUES = {"1", "true", "on", "enabled", "yes", "y"}
+
+
+DEFAULT_VISUAL_ANALYSIS_CONFIG: Dict[str, Any] = {
+    "enabled": True,
+    "auto_build_after_upload": True,
+    "use_current_model": True,
+    "model": "gpt-5.5",
+    "reasoning_effort": "xhigh",
+    "prompt_version": "visual-v1",
+    "max_items_per_request": 1,
+    "min_confidence": 0.78,
+    "min_ocr_confidence": 0.70,
+    "min_structure_confidence": 0.75,
+    "min_semantic_confidence": 0.75,
+    "index_low_confidence": False,
+    "page_render_dpi": 180,
+    "crop_padding_px": 12,
+    "max_image_long_edge": 1800,
+    "candidate_min_area_ratio": 0.015,
+    "include_page_context": True,
+    "context_before_chars": 1200,
+    "context_after_chars": 1200,
+    "parser_provider": "pymupdf",
+    "mineru_api_url": "",
+    "unstructured_enabled": False,
+}
 
 
 class MissingProviderTokenError(RuntimeError):
@@ -71,6 +108,7 @@ class KnowledgeBackendConfig:
     ingest: IngestConfig = field(default_factory=IngestConfig)
     llm_builder: Dict[str, Any] = field(default_factory=dict)
     retrieval: Dict[str, Any] = field(default_factory=dict)
+    visual_analysis: Dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_VISUAL_ANALYSIS_CONFIG))
     security: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -129,6 +167,46 @@ class KnowledgeBackendConfig:
                 "deep_top_k": int(os.environ.get("KNOWLEDGE_BACKEND_DEEP_TOP_K") or 5),
                 "max_evidence_chars": int(os.environ.get("KNOWLEDGE_BACKEND_MAX_EVIDENCE_CHARS") or 12000),
             },
+            "visual_analysis": {
+                "enabled": parse_knowledge_backend_enabled(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_ENABLED", "true")),
+                "auto_build_after_upload": parse_knowledge_backend_enabled(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_AUTO_BUILD_AFTER_UPLOAD", "true")
+                ),
+                "use_current_model": parse_knowledge_backend_enabled(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_USE_CURRENT_MODEL", "true")
+                ),
+                "model": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MODEL") or "gpt-5.5",
+                "reasoning_effort": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_REASONING_EFFORT") or "xhigh",
+                "prompt_version": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PROMPT_VERSION") or "visual-v1",
+                "max_items_per_request": int(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MAX_ITEMS_PER_REQUEST") or 1),
+                "min_confidence": float(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MIN_CONFIDENCE") or 0.78),
+                "min_ocr_confidence": float(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MIN_OCR_CONFIDENCE") or 0.70),
+                "min_structure_confidence": float(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MIN_STRUCTURE_CONFIDENCE") or 0.75
+                ),
+                "min_semantic_confidence": float(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MIN_SEMANTIC_CONFIDENCE") or 0.75
+                ),
+                "index_low_confidence": parse_knowledge_backend_enabled(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_INDEX_LOW_CONFIDENCE")
+                ),
+                "page_render_dpi": int(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PAGE_RENDER_DPI") or 180),
+                "crop_padding_px": int(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_CROP_PADDING_PX") or 12),
+                "max_image_long_edge": int(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MAX_IMAGE_LONG_EDGE") or 1800),
+                "candidate_min_area_ratio": float(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_CANDIDATE_MIN_AREA_RATIO") or 0.015
+                ),
+                "include_page_context": parse_knowledge_backend_enabled(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_INCLUDE_PAGE_CONTEXT", "true")
+                ),
+                "context_before_chars": int(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_CONTEXT_BEFORE_CHARS") or 1200),
+                "context_after_chars": int(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_CONTEXT_AFTER_CHARS") or 1200),
+                "parser_provider": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PARSER_PROVIDER") or "pymupdf",
+                "mineru_api_url": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MINERU_API_URL") or "",
+                "unstructured_enabled": parse_knowledge_backend_enabled(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_UNSTRUCTURED_ENABLED")
+                ),
+            },
             "vector_store": {
                 "provider": os.environ.get("KNOWLEDGE_BACKEND_VECTOR_PROVIDER") or "sqlite",
                 "url": os.environ.get("KNOWLEDGE_BACKEND_QDRANT_URL") or "",
@@ -167,6 +245,7 @@ class KnowledgeBackendConfig:
         ingest_raw = _mapping(mapping.get("ingest", {}))
         llm_builder_raw = _mapping(mapping.get("llm_builder", {}))
         retrieval_raw = _mapping(mapping.get("retrieval", {}))
+        visual_raw = _mapping(mapping.get("visual_analysis", {}))
         security_raw = _mapping(mapping.get("security", {}))
         provider = str(
             mapping.get("vector_provider")
@@ -203,6 +282,7 @@ class KnowledgeBackendConfig:
             ),
             llm_builder=dict(llm_builder_raw),
             retrieval=dict(retrieval_raw),
+            visual_analysis=_normalize_visual_analysis_config(visual_raw),
             security=dict(security_raw),
         )
 
@@ -212,6 +292,7 @@ class BackendStatus:
     enabled: bool
     backend: str
     reason: str = ""
+    visual_analysis: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -275,9 +356,13 @@ class KnowledgeBackendService:
             enabled=config.enabled,
             default_kb_id=config.default_kb_id,
         )
+        self._visual_extractor = PyMuPDFVisualArtifactExtractor()
+        self._visual_analyzer = VisualAnalyzer()
 
     def status(self) -> BackendStatus:
-        return BackendStatus(enabled=self.config.enabled, backend=self.config.vector_store.provider)
+        visual = dict(self.config.visual_analysis or {})
+        visual.pop("mineru_api_url", None)
+        return BackendStatus(enabled=self.config.enabled, backend=self.config.vector_store.provider, visual_analysis=visual)
 
     def ingest_path(self, path: Path) -> IngestPathResult:
         if not self.config.enabled:
@@ -411,6 +496,219 @@ class KnowledgeBackendService:
             return []
         return [kb.to_dict() for kb in storage.list_knowledge_bases()]
 
+    def prepare_visual_artifacts(self, document_id: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
+        """Scan documents for visual artifact candidates without calling a model."""
+
+        if not self.config.enabled:
+            return {"ok": False, "status": "disabled", "message": "local knowledge backend is disabled"}
+        if not _visual_analysis_enabled(self.config):
+            return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false"}
+        storage = self._backend._get_storage(writable=True)
+        documents = storage.list_documents()
+        if document_id:
+            documents = [document for document in documents if document.id == document_id]
+        documents = [document for document in documents if (document.doc_type or "document") == "document"]
+        prepared = 0
+        errors: List[str] = []
+        for document in documents:
+            try:
+                source = _resolve_document_source_path(document, self.config)
+                extracted = extract_document(source)
+                extracted = ExtractedDocument(
+                    title=document.title or extracted.title,
+                    source_path=str(source),
+                    mime_type=extracted.mime_type,
+                    pages=extracted.pages,
+                    metadata=extracted.metadata,
+                )
+                candidates = self._visual_extractor.extract_candidates(document, extracted, storage, self.config)
+                for candidate in candidates:
+                    storage.upsert_visual_artifact(candidate)
+                    prepared += 1
+            except Exception as exc:
+                message = f"{document.id}: {exc}"
+                logger.warning("[KnowledgeBackend] visual artifact prepare failed: %s", message)
+                errors.append(message)
+        version_id = _current_document_version_id(storage, document_id) if document_id else None
+        stats = storage.visual_stats(document_id=document_id, version_id=version_id)
+        return {
+            "ok": True,
+            "status": "success",
+            "document_id": document_id or "",
+            "prepared": prepared,
+            "errors": errors,
+            **stats,
+        }
+
+    def build_visual_knowledge(
+        self,
+        document_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        force: bool = False,
+        run_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Analyze a small batch of visual artifacts and append high-confidence chunks."""
+
+        if not self.config.enabled:
+            return {"ok": False, "status": "disabled", "message": "local knowledge backend is disabled"}
+        if not _visual_analysis_enabled(self.config):
+            return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false"}
+        visual_config = self.config.visual_analysis or {}
+        model = str(visual_config.get("model") or "gpt-5.5")
+        prompt_version = str(visual_config.get("prompt_version") or "visual-v1")
+        storage = self._backend._get_storage(writable=True)
+        version_id = _current_document_version_id(storage, document_id) if document_id else None
+        stats = storage.visual_stats(document_id=document_id, version_id=version_id)
+        if stats["total"] == 0 or (not force and stats["pending"] == 0 and stats["failed"] == 0 and stats["running"] == 0):
+            self.prepare_visual_artifacts(document_id=document_id, force=force)
+            stats = storage.visual_stats(document_id=document_id, version_id=version_id)
+        batch_limit = max(1, int(limit or visual_config.get("max_items_per_request") or 1))
+        run_id = run_id or storage.create_visual_run(document_id=document_id, kb_id=self.config.default_kb_id)
+        processed = succeeded = low_confidence = failed = 0
+
+        for _ in range(batch_limit):
+            artifact = storage.claim_next_visual_artifact(
+                document_id=document_id,
+                version_id=version_id,
+                force=force,
+                model=model,
+                prompt_version=prompt_version,
+            )
+            if artifact is None:
+                break
+            processed += 1
+            outcome = self._process_visual_artifact(storage, artifact, force, model, prompt_version)
+            if outcome == "succeeded":
+                succeeded += 1
+            elif outcome == "low_confidence":
+                low_confidence += 1
+            else:
+                failed += 1
+        stats = storage.visual_stats(document_id=document_id, version_id=version_id)
+        run = storage.update_visual_run_stats(run_id)
+        return {
+            "ok": True,
+            "status": "success",
+            "document_id": document_id or "",
+            "processed": processed,
+            "succeeded": succeeded,
+            "low_confidence": low_confidence,
+            "failed": failed,
+            "pending": stats["pending"],
+            "has_more": bool(stats["pending"] or stats["failed"] or stats["running"]),
+            "run_id": run_id,
+            "run": run,
+            "stats": stats,
+        }
+
+    def list_visual_artifacts(self, document_id: Optional[str] = None, status: Optional[str] = None) -> Dict[str, Any]:
+        if not self.config.enabled:
+            return {"ok": False, "status": "disabled", "message": "local knowledge backend is disabled", "artifacts": []}
+        if not _visual_analysis_enabled(self.config):
+            return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false", "artifacts": []}
+        storage = self._backend._get_read_storage()
+        if storage is None:
+            return {"ok": True, "status": "success", "artifacts": [], "stats": {}}
+        version_id = _current_document_version_id(storage, document_id) if document_id else None
+        return {
+            "ok": True,
+            "status": "success",
+            "artifacts": storage.list_visual_artifacts(
+                document_id=document_id,
+                version_id=version_id,
+                status=status,
+                limit=1000,
+            ),
+            "stats": storage.visual_stats(
+                document_id=document_id,
+                version_id=version_id,
+            ),
+        }
+
+    def retry_visual_artifact(self, artifact_id: str) -> Dict[str, Any]:
+        if not self.config.enabled:
+            return {"ok": False, "status": "disabled", "message": "local knowledge backend is disabled"}
+        storage = self._backend._get_storage(writable=True)
+        artifact = storage.get_visual_artifact(artifact_id)
+        if artifact is None:
+            return {"ok": False, "status": "error", "message": "visual artifact not found"}
+        visual_config = self.config.visual_analysis or {}
+        model = str(visual_config.get("model") or "gpt-5.5")
+        prompt_version = str(visual_config.get("prompt_version") or "visual-v1")
+        outcome = self._process_visual_artifact(storage, artifact, True, model, prompt_version)
+        return {
+            "ok": outcome != "failed",
+            "status": "success" if outcome != "failed" else "failed",
+            "artifact_id": artifact_id,
+            "outcome": outcome,
+            "stats": storage.visual_stats(document_id=artifact["document_id"], version_id=artifact["version_id"]),
+        }
+
+    def get_visual_stats(self, document_id: Optional[str] = None) -> Dict[str, Any]:
+        if not self.config.enabled:
+            return {"ok": False, "status": "disabled", "message": "local knowledge backend is disabled"}
+        if not _visual_analysis_enabled(self.config):
+            return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false"}
+        storage = self._backend._get_read_storage()
+        stats = (
+            storage.visual_stats(
+                document_id=document_id,
+                version_id=_current_document_version_id(storage, document_id) if document_id else None,
+            )
+            if storage is not None
+            else {}
+        )
+        return {"ok": True, "status": "success", "document_id": document_id or "", **stats}
+
+    def _process_visual_artifact(
+        self,
+        storage: KnowledgeStorage,
+        artifact: Dict[str, Any],
+        force: bool,
+        model: str,
+        prompt_version: str,
+    ) -> str:
+        visual_config = self.config.visual_analysis or {}
+        try:
+            document = storage.get_document(artifact["document_id"])
+            if document is None:
+                raise RuntimeError("source document not found")
+            if force:
+                storage.delete_visual_chunks_for_artifact(artifact["id"])
+            candidate = _candidate_from_artifact_row(artifact, document, storage, self.config)
+            result = self._visual_analyzer.analyze(candidate, self.config, document)
+            if not isinstance(result, VisualAnalysisResult):
+                result = validate_visual_analysis_json(result, candidate, visual_config)
+            result_json = result.to_dict()
+            confidence = float(result.confidence.get("overall", 0.0) or 0.0)
+            if result.should_index:
+                chunks, spans = visual_result_to_chunks(candidate, result, document, visual_config)
+                storage.delete_visual_chunks_for_artifact(artifact["id"])
+                storage.append_visual_chunks(document.id, document.version_id, artifact["id"], chunks, spans)
+                storage.complete_visual_artifact_success(
+                    artifact["id"],
+                    result_json,
+                    confidence,
+                    retrievable=True,
+                    model=model,
+                    prompt_version=prompt_version,
+                )
+                return "succeeded"
+            storage.delete_visual_chunks_for_artifact(artifact["id"])
+            storage.complete_visual_artifact_low_confidence(
+                artifact["id"],
+                result_json,
+                confidence,
+                result.low_confidence_reason,
+                model=model,
+                prompt_version=prompt_version,
+            )
+            return "low_confidence"
+        except Exception as exc:
+            logger.warning("[KnowledgeBackend] visual artifact analysis failed: %s", exc)
+            storage.complete_visual_artifact_failed(artifact["id"], str(exc))
+            return "failed"
+
     def export_document_library(self, document_id: str = "") -> Dict[str, Any]:
         """Export indexed backend documents into the visible Markdown knowledge library."""
 
@@ -430,13 +728,19 @@ class KnowledgeBackendService:
         document_root = _document_library_root(self.config)
         for document in documents:
             chunks = storage.list_chunks(document.id)
-            rel_path = _write_protocol_document_page(document_root, document, chunks)
+            visual_artifacts = storage.list_visual_artifacts(
+                document_id=document.id,
+                version_id=document.version_id,
+                limit=1000,
+            )
+            rel_path = _write_protocol_document_page(document_root, document, chunks, visual_artifacts)
             item = {
                 "document_id": document.id,
                 "title": document.title,
                 "kb_id": document.kb_id,
                 "path": rel_path,
                 "chunks": len(chunks),
+                "visual_artifacts": len(visual_artifacts),
             }
             exported.append(item)
             by_kb.setdefault(document.kb_id or "kb_default", []).append(item)
@@ -944,13 +1248,21 @@ def _trim_for_prompt(value: str, max_chars: int) -> str:
     return text[: max(0, max_chars - 24)].rstrip() + "\n[...truncated...]"
 
 
-def _write_protocol_document_page(workspace_root: Path, document: KnowledgeDocument, chunks: List[KnowledgeChunk]) -> str:
+def _write_protocol_document_page(
+    workspace_root: Path,
+    document: KnowledgeDocument,
+    chunks: List[KnowledgeChunk],
+    visual_artifacts: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     rel_path = _protocol_document_rel_path(document)
     rel_dir = rel_path.parent
     target_dir = _workspace_path(workspace_root, rel_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = _workspace_path(workspace_root, rel_path)
-    target_path.write_text(_render_protocol_document_markdown(document, chunks), encoding="utf-8")
+    target_path.write_text(
+        _render_protocol_document_markdown(document, chunks, visual_artifacts or []),
+        encoding="utf-8",
+    )
     return rel_path.as_posix()
 
 
@@ -1014,7 +1326,11 @@ def _document_library_root(config: KnowledgeBackendConfig) -> Path:
     return Path("~/cow").expanduser()
 
 
-def _render_protocol_document_markdown(document: KnowledgeDocument, chunks: List[KnowledgeChunk]) -> str:
+def _render_protocol_document_markdown(
+    document: KnowledgeDocument,
+    chunks: List[KnowledgeChunk],
+    visual_artifacts: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     lines = [
         f"# {_escape_markdown(document.title)}",
         "",
@@ -1051,6 +1367,45 @@ def _render_protocol_document_markdown(document: KnowledgeDocument, chunks: List
         if entities:
             lines.append(f"- Entities: `{entities}`")
         lines.extend(["", _normalize_markdown_text(chunk.text), ""])
+    visual_artifacts = visual_artifacts or []
+    retrievable = [item for item in visual_artifacts if item.get("analysis_status") == "succeeded" and item.get("retrievable")]
+    low_confidence = [item for item in visual_artifacts if item.get("analysis_status") == "low_confidence"]
+    if retrievable:
+        lines.extend(["", "## 视觉图表补全", ""])
+        for item in retrievable:
+            result = item.get("result_json") or {}
+            caption = result.get("caption") or item.get("caption") or ""
+            title = result.get("title") or caption or item.get("label") or item.get("artifact_type")
+            lines.extend(
+                [
+                    f"### Page {item.get('page')} - {_escape_markdown(str(item.get('artifact_type') or 'visual'))} - {_escape_markdown(str(title or ''))}",
+                    "",
+                    f"- Confidence: `{item.get('analysis_confidence', 0)}`",
+                    f"- Caption: {_escape_markdown(str(caption or ''))}",
+                    f"- BBox: `{json.dumps(item.get('bbox') or {}, ensure_ascii=False)}`",
+                    f"- Summary: {_escape_markdown(str(result.get('summary') or ''))}",
+                    "",
+                ]
+            )
+            facts = result.get("key_facts") if isinstance(result.get("key_facts"), list) else []
+            if facts:
+                lines.extend(["- Key facts:", ""])
+                for fact in facts:
+                    fact_text = fact.get("fact") if isinstance(fact, dict) else str(fact)
+                    lines.append(f"  - {_escape_markdown(str(fact_text or ''))}")
+                lines.append("")
+            structured = result.get("structured_markdown") or (result.get("table") or {}).get("markdown") or ""
+            if structured:
+                lines.extend(["Structured content:", "", _normalize_markdown_text(str(structured)), ""])
+    if low_confidence:
+        lines.extend(["", "## 未入库低置信图表", ""])
+        for item in low_confidence:
+            reason = item.get("error") or (item.get("result_json") or {}).get("low_confidence_reason") or ""
+            lines.append(
+                f"- Page {item.get('page')} `{item.get('artifact_type')}`: "
+                f"{_escape_markdown(str(item.get('caption') or item.get('label') or ''))} "
+                f"(reason: {_escape_markdown(str(reason))})"
+            )
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1084,6 +1439,83 @@ def parse_knowledge_backend_enabled(raw: Any) -> bool:
     if value in FALSE_VALUES:
         return False
     return False
+
+
+def _normalize_visual_analysis_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    config = dict(DEFAULT_VISUAL_ANALYSIS_CONFIG)
+    config.update(dict(raw or {}))
+    for key in ("enabled", "auto_build_after_upload", "use_current_model", "index_low_confidence", "include_page_context", "unstructured_enabled"):
+        config[key] = parse_knowledge_backend_enabled(config.get(key))
+    for key in ("max_items_per_request", "page_render_dpi", "crop_padding_px", "max_image_long_edge", "context_before_chars", "context_after_chars"):
+        config[key] = int(config.get(key) or DEFAULT_VISUAL_ANALYSIS_CONFIG[key])
+    for key in ("min_confidence", "min_ocr_confidence", "min_structure_confidence", "min_semantic_confidence", "candidate_min_area_ratio"):
+        config[key] = float(config.get(key) or DEFAULT_VISUAL_ANALYSIS_CONFIG[key])
+    config["model"] = str(config.get("model") or "gpt-5.5")
+    config["reasoning_effort"] = str(config.get("reasoning_effort") or "xhigh")
+    config["prompt_version"] = str(config.get("prompt_version") or "visual-v1")
+    config["parser_provider"] = str(config.get("parser_provider") or "pymupdf")
+    config["mineru_api_url"] = str(config.get("mineru_api_url") or "")
+    return config
+
+
+def _visual_analysis_enabled(config: KnowledgeBackendConfig) -> bool:
+    return parse_knowledge_backend_enabled((config.visual_analysis or {}).get("enabled", True))
+
+
+def _resolve_document_source_path(document: KnowledgeDocument, config: KnowledgeBackendConfig) -> Path:
+    source = Path(document.source_path)
+    if source.is_absolute():
+        return source
+    return (Path(config.workspace_root).expanduser().resolve() / source).resolve()
+
+
+def _candidate_from_artifact_row(
+    artifact: Dict[str, Any],
+    document: KnowledgeDocument,
+    storage: KnowledgeStorage,
+    config: KnowledgeBackendConfig,
+) -> VisualArtifactCandidate:
+    chunks = storage.list_chunks(document.id)
+    page_chunks = [chunk for chunk in chunks if chunk.page_start <= int(artifact["page"]) <= chunk.page_end]
+    page_text = "\n\n".join(chunk.text for chunk in page_chunks)[:3000]
+    ordinal = min((chunk.ordinal for chunk in page_chunks), default=0)
+    before_chunks = [chunk for chunk in chunks if ordinal and max(0, ordinal - 2) <= chunk.ordinal < ordinal]
+    after_chunks = [chunk for chunk in chunks if ordinal and ordinal < chunk.ordinal <= ordinal + 2]
+    visual_config = config.visual_analysis or {}
+    before_chars = int(visual_config.get("context_before_chars", 1200) or 1200)
+    after_chars = int(visual_config.get("context_after_chars", 1200) or 1200)
+    section_path = []
+    for chunk in page_chunks:
+        if chunk.section_path:
+            section_path = [chunk.section_path]
+            break
+    return VisualArtifactCandidate(
+        id=artifact["id"],
+        document_id=artifact["document_id"],
+        version_id=artifact["version_id"],
+        kb_id=artifact.get("kb_id") or "kb_default",
+        artifact_type=artifact.get("artifact_type") or "unknown",
+        page=int(artifact.get("page") or 0),
+        label=artifact.get("label") or "",
+        caption=artifact.get("caption") or "",
+        bbox=artifact.get("bbox") or {},
+        image_path=artifact.get("image_path") or "",
+        image_hash=artifact.get("image_hash") or "",
+        context_hash=artifact.get("context_hash") or "",
+        parser=artifact.get("parser") or "",
+        parser_confidence=float(artifact.get("parser_confidence") or 0),
+        section_path=section_path,
+        context_before="\n\n".join(chunk.text for chunk in before_chunks)[-before_chars:],
+        context_after="\n\n".join(chunk.text for chunk in after_chunks)[:after_chars],
+        page_text=page_text,
+    )
+
+
+def _current_document_version_id(storage: KnowledgeStorage, document_id: Optional[str]) -> Optional[str]:
+    if not document_id:
+        return None
+    document = storage.get_document(document_id)
+    return document.version_id if document is not None else None
 
 
 def require_provider_token(provider: str, token: Optional[str], env_var: str) -> str:
@@ -1183,6 +1615,36 @@ def dispatch_admin_request(method: str, path: str, payload: Dict[str, Any]) -> D
                 max_chunks=int(max_chunks) if max_chunks else None,
             )
         )
+    if method == "POST" and path in ("visual/prepare", "visual-prepare"):
+        return _to_jsonable(
+            service.prepare_visual_artifacts(
+                document_id=str(payload.get("document_id") or "") or None,
+                force=parse_knowledge_backend_enabled(payload.get("force")),
+            )
+        )
+    if method == "POST" and path in ("visual/build", "visual-build"):
+        return _to_jsonable(
+            service.build_visual_knowledge(
+                document_id=str(payload.get("document_id") or "") or None,
+                limit=int(payload.get("limit") or 0) or None,
+                force=parse_knowledge_backend_enabled(payload.get("force")),
+                run_id=str(payload.get("run_id") or "") or None,
+            )
+        )
+    if method == "GET" and path in ("visual/status", "visual-stats"):
+        return _to_jsonable(service.get_visual_stats(document_id=str(payload.get("document_id") or "") or None))
+    if method == "GET" and path in ("visual/artifacts", "visual-artifacts"):
+        return _to_jsonable(
+            service.list_visual_artifacts(
+                document_id=str(payload.get("document_id") or "") or None,
+                status=str(payload.get("status") or "") or None,
+            )
+        )
+    if method == "POST" and path in ("visual/retry", "visual-retry"):
+        artifact_id = str(payload.get("artifact_id") or payload.get("id") or "")
+        if not artifact_id:
+            return {"status": "error", "message": "artifact_id is required"}
+        return _to_jsonable(service.retry_visual_artifact(artifact_id))
     if method == "POST" and path in ("upload", "docs/upload"):
         return _handle_upload_payload(service, payload)
     if method == "POST" and path in ("ingest", "rebuild", "docs/import-folder"):
@@ -1549,6 +2011,14 @@ def _build_deep_evidence_blocks(
             "truncated": truncated,
             "text": text,
         }
+        metadata = chunk.metadata if isinstance(chunk.metadata, dict) else {}
+        if metadata.get("source") == "visual_analysis":
+            block["visual_artifact_type"] = metadata.get("visual_artifact_type")
+            block["visual_confidence"] = metadata.get("visual_confidence")
+            block["caption"] = metadata.get("caption")
+            block["page"] = metadata.get("page")
+            block["bbox"] = metadata.get("bbox")
+            block["source_span"] = span_payloads[0] if span_payloads else None
         blocks.append(block)
         used_chars += len(text)
         if truncated:
@@ -1611,6 +2081,23 @@ def _deep_query_supplemental_terms(question: str) -> List[str]:
         terms.extend(["PHYRETRAIN", "retrain start req", "retrain start resp", "Table 4-10", "Table 4-11", "Table 4-12"])
     if "repairval" in lowered:
         terms.extend(["MBINIT.REPAIRVAL", "Step 1", "Step 4", "Step 7", "Step 10", "Step 12", "TVLD_L", "TRDVLD_L"])
+    visual_markers = [
+        "图",
+        "图表",
+        "表",
+        "表格",
+        "时序",
+        "状态机",
+        "位域",
+        "waveform",
+        "timing",
+        "diagram",
+        "figure",
+        "table",
+        "chart",
+    ]
+    if any(marker in lowered or marker in text for marker in visual_markers):
+        terms.extend(visual_markers)
     return _unique_strings(terms)
 
 
@@ -2282,6 +2769,8 @@ class LocalKnowledgeBackend:
                 }
             if action == "stats":
                 return {"action": action, "code": 200, "message": "success", "payload": self.stats()}
+            if action.startswith("visual"):
+                return {"action": action, "code": 400, "message": "visual actions require KnowledgeBackendService", "payload": None}
             return {"action": action, "code": 400, "message": f"unknown action: {action}", "payload": None}
         except Exception as exc:
             logger.error(f"[LocalKnowledgeBackend] dispatch error: action={action}, error={exc}", exc_info=True)

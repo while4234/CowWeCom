@@ -260,3 +260,55 @@ class VerificationResult:
         data = asdict(self)
         data["evidence"] = [span.to_dict() for span in self.evidence]
         return data
+
+
+@dataclass(frozen=True)
+class VisualArtifactCandidate:
+    """Visual artifact discovered from a source document."""
+
+    id: str
+    document_id: str
+    version_id: str
+    kb_id: str
+    artifact_type: str
+    page: int
+    label: str = ""
+    caption: str = ""
+    bbox: Dict[str, Any] = field(default_factory=dict)
+    image_path: str = ""
+    image_hash: str = ""
+    context_hash: str = ""
+    parser: str = ""
+    parser_confidence: float = 0.0
+    section_path: List[str] = field(default_factory=list)
+    context_before: str = ""
+    context_after: str = ""
+    page_text: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class VisualAnalysisResult:
+    """Validated model output for one visual artifact."""
+
+    artifact_type: str
+    title: str
+    summary: str
+    structured_markdown: str
+    key_facts: List[Dict[str, Any]]
+    table: Dict[str, Any] = field(default_factory=dict)
+    signals: List[Dict[str, Any]] = field(default_factory=list)
+    state_machine: Dict[str, Any] = field(default_factory=dict)
+    chart: Dict[str, Any] = field(default_factory=dict)
+    uncertain_fields: List[str] = field(default_factory=list)
+    readability: str = "unknown"
+    confidence: Dict[str, Any] = field(default_factory=dict)
+    should_index: bool = False
+    low_confidence_reason: str = ""
+    caption: str = ""
+    page: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)

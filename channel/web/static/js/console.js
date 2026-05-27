@@ -28,6 +28,10 @@ const I18N = {
         knowledge_backend_upload: '上传协议',
         knowledge_backend_llm: '生成学习文档',
         knowledge_backend_export: '刷新文档库',
+        knowledge_backend_visual_build: '补全图表知识',
+        knowledge_backend_visual_continue: '继续补全图表知识',
+        knowledge_backend_visual_low: '查看低置信图表',
+        knowledge_backend_visual_running: '正在补全图表知识...',
         knowledge_backend_empty: '暂无后端协议文档',
         knowledge_backend_uploading: '正在上传并构建知识库...',
         knowledge_backend_llm_running: '正在用 LLM 生成可追溯学习文档...',
@@ -154,6 +158,10 @@ const I18N = {
         knowledge_backend_upload: 'Upload protocol',
         knowledge_backend_llm: 'Generate study doc',
         knowledge_backend_export: 'Refresh docs',
+        knowledge_backend_visual_build: 'Build visual knowledge',
+        knowledge_backend_visual_continue: 'Continue visual build',
+        knowledge_backend_visual_low: 'Low-confidence visuals',
+        knowledge_backend_visual_running: 'Building visual knowledge...',
         knowledge_backend_empty: 'No backend protocol documents yet',
         knowledge_backend_uploading: 'Uploading and building knowledge base...',
         knowledge_backend_llm_running: 'Generating a source-grounded LLM study document...',
@@ -4878,6 +4886,7 @@ let _knowledgeRootFiles = [];
 let _knowledgeCurrentFile = null;
 let _knowledgeGraphLoaded = false;
 let _knowledgeBackendDocuments = [];
+let _knowledgeBackendVisualRunning = false;
 
 function loadKnowledgeBackendPanel() {
     const docsEl = document.getElementById('knowledge-backend-docs');
@@ -4893,7 +4902,8 @@ function loadKnowledgeBackendPanel() {
     Promise.all([
         fetch('/api/knowledge/admin/status').then(_knowledgeBackendJson),
         fetch('/api/knowledge/admin/documents').then(_knowledgeBackendJson),
-    ]).then(([statusData, docsData]) => {
+        fetch('/api/knowledge/admin/visual/status').then(_knowledgeBackendJson).catch(() => ({})),
+    ]).then(([statusData, docsData, visualData]) => {
         const enabled = statusData && statusData.enabled === true;
         statusEl.textContent = enabled ? t('knowledge_backend_ready') : t('knowledge_backend_disabled');
         statusEl.className = enabled
@@ -4907,7 +4917,7 @@ function loadKnowledgeBackendPanel() {
 
         _knowledgeBackendDocuments = (docsData && docsData.documents) || [];
         renderKnowledgeBackendDocuments(_knowledgeBackendDocuments);
-        renderKnowledgeBackendSummary(statusData, _knowledgeBackendDocuments);
+        renderKnowledgeBackendSummary(statusData, _knowledgeBackendDocuments, visualData);
     }).catch(err => {
         statusEl.textContent = t('knowledge_backend_disabled');
         docsEl.innerHTML = `<div class="text-xs text-red-500">${escapeHtml(err.message || 'Failed to load backend documents')}</div>`;
@@ -4951,14 +4961,18 @@ function renderKnowledgeBackendDocuments(documents) {
     }).join('');
 }
 
-function renderKnowledgeBackendSummary(statusData, documents) {
+function renderKnowledgeBackendSummary(statusData, documents, visualData) {
     const summaryEl = document.getElementById('knowledge-backend-summary');
     if (!summaryEl) return;
     const kbs = [...new Set(documents.map(doc => doc.kb_id || 'kb_default'))];
+    const visual = visualData && visualData.ok ? visualData : {};
     summaryEl.innerHTML = `
         <div class="knowledge-backend-stat"><span>Backend</span><strong>${escapeHtml((statusData && statusData.backend) || 'unknown')}</strong></div>
         <div class="knowledge-backend-stat"><span>Documents</span><strong>${documents.length}</strong></div>
         <div class="knowledge-backend-stat"><span>Knowledge bases</span><strong>${kbs.length}</strong></div>
+        <div class="knowledge-backend-stat"><span>Visual pending</span><strong>${visual.pending || 0}</strong></div>
+        <div class="knowledge-backend-stat"><span>Visual indexed</span><strong>${visual.succeeded || 0}</strong></div>
+        <div class="knowledge-backend-stat"><span>Low confidence</span><strong>${visual.low_confidence || 0}</strong></div>
     `;
 }
 
@@ -4977,10 +4991,107 @@ function uploadKnowledgeBackendFile(fileList) {
             if (input) input.value = '';
             loadKnowledgeBackendPanel();
             loadKnowledgeView();
+            const documentId = _knowledgeBackendUploadedDocumentId(data);
+            fetch('/api/knowledge/admin/status')
+                .then(_knowledgeBackendJson)
+                .then(statusData => {
+                    const visual = (statusData && statusData.visual_analysis) || {};
+                    if (documentId && visual.enabled === true && visual.auto_build_after_upload === true) {
+                        startVisualBuildLoop(documentId, false);
+                    }
+                })
+                .catch(() => {});
         })
         .catch(err => {
             if (messageEl) messageEl.textContent = err.message || 'Upload failed';
             if (input) input.value = '';
+        });
+}
+
+function _knowledgeBackendUploadedDocumentId(data) {
+    const uploads = (data && data.uploads) || [];
+    for (const upload of uploads) {
+        const document = upload && upload.document;
+        if (upload && upload.status === 'succeeded' && document && document.id) {
+            return document.id;
+        }
+    }
+    return '';
+}
+
+function _knowledgeBackendSourceDocument() {
+    return (_knowledgeBackendDocuments || []).find(doc => (doc.doc_type || 'document') !== 'llm_study') || null;
+}
+
+async function startVisualBuildLoop(documentId, force) {
+    if (_knowledgeBackendVisualRunning) return;
+    const messageEl = document.getElementById('knowledge-backend-message');
+    const sourceDoc = documentId ? { id: documentId } : _knowledgeBackendSourceDocument();
+    if (!sourceDoc || !sourceDoc.id) {
+        if (messageEl) messageEl.textContent = '请先上传协议';
+        return;
+    }
+    _knowledgeBackendVisualRunning = true;
+    let runId = '';
+    let totals = { processed: 0, succeeded: 0, low_confidence: 0, failed: 0, pending: 0 };
+    if (messageEl) messageEl.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>${t('knowledge_backend_visual_running')}`;
+    try {
+        while (true) {
+            const resp = await fetch('/api/knowledge/admin/visual/build', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ document_id: sourceDoc.id, limit: 1, force: !!force, run_id: runId })
+            });
+            const data = await _knowledgeBackendJson(resp);
+            if (data.status === 'disabled' || data.ok === false) {
+                if (messageEl) messageEl.textContent = data.message || 'Visual analysis is disabled';
+                break;
+            }
+            runId = data.run_id || runId;
+            totals.processed += data.processed || 0;
+            totals.succeeded += data.succeeded || 0;
+            totals.low_confidence += data.low_confidence || 0;
+            totals.failed += data.failed || 0;
+            totals.pending = data.pending || 0;
+            if (messageEl) {
+                messageEl.textContent = `图表补全：已处理 ${totals.processed}，高置信入库 ${totals.succeeded}，低置信跳过 ${totals.low_confidence}，失败 ${totals.failed}，剩余 ${totals.pending}`;
+            }
+            if (!data.has_more || (data.processed || 0) === 0 || (data.failed || 0) > 0) break;
+        }
+        loadKnowledgeBackendPanel();
+        loadKnowledgeView();
+    } catch (err) {
+        if (messageEl) messageEl.textContent = err.message || 'Visual build failed';
+    } finally {
+        _knowledgeBackendVisualRunning = false;
+    }
+}
+
+function showLowConfidenceVisualArtifacts() {
+    const messageEl = document.getElementById('knowledge-backend-message');
+    const sourceDoc = _knowledgeBackendSourceDocument();
+    if (!sourceDoc || !sourceDoc.id) {
+        if (messageEl) messageEl.textContent = '请先上传协议';
+        return;
+    }
+    const url = `/api/knowledge/admin/visual/artifacts?document_id=${encodeURIComponent(sourceDoc.id)}&status=low_confidence`;
+    fetch(url)
+        .then(_knowledgeBackendJson)
+        .then(data => {
+            const artifacts = data.artifacts || [];
+            if (!messageEl) return;
+            if (!artifacts.length) {
+                messageEl.textContent = '暂无低置信图表';
+                return;
+            }
+            const preview = artifacts.slice(0, 5).map(item => {
+                const reason = item.error || (item.result_json && item.result_json.low_confidence_reason) || '';
+                return `P${item.page} ${item.caption || item.label || item.artifact_type}: ${reason}`;
+            }).join('；');
+            messageEl.textContent = `低置信图表 ${artifacts.length} 个：${preview}`;
+        })
+        .catch(err => {
+            if (messageEl) messageEl.textContent = err.message || 'Failed to load visual artifacts';
         });
 }
 

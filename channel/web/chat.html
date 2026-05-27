@@ -836,6 +836,21 @@
                                             <i class="fas fa-wand-magic-sparkles text-[11px]"></i>
                                             <span data-i18n="knowledge_backend_llm">生成学习文档</span>
                                         </button>
+                                        <button type="button" onclick="startVisualBuildLoop(null, false)"
+                                                class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-sky-50 hover:bg-sky-100 dark:bg-sky-900/20 dark:hover:bg-sky-900/30 text-sky-700 dark:text-sky-300 text-xs font-medium cursor-pointer transition-colors duration-150">
+                                            <i class="fas fa-chart-simple text-[11px]"></i>
+                                            <span data-i18n="knowledge_backend_visual_build">补全图表知识</span>
+                                        </button>
+                                        <button type="button" onclick="startVisualBuildLoop(null, false)"
+                                                class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/30 text-amber-700 dark:text-amber-300 text-xs font-medium cursor-pointer transition-colors duration-150">
+                                            <i class="fas fa-rotate text-[11px]"></i>
+                                            <span data-i18n="knowledge_backend_visual_continue">继续补全图表知识</span>
+                                        </button>
+                                        <button type="button" onclick="showLowConfidenceVisualArtifacts()"
+                                                class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-white/10 dark:hover:bg-white/15 text-slate-700 dark:text-slate-200 text-xs font-medium cursor-pointer transition-colors duration-150">
+                                            <i class="fas fa-eye-low-vision text-[11px]"></i>
+                                            <span data-i18n="knowledge_backend_visual_low">查看低置信图表</span>
+                                        </button>
                                         <button type="button" onclick="exportKnowledgeBackendLibrary()"
                                                 class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-white/10 dark:hover:bg-white/15 text-slate-700 dark:text-slate-200 text-xs font-medium cursor-pointer transition-colors duration-150">
                                             <i class="fas fa-file-export text-[11px]"></i>

@@ -7,6 +7,8 @@ import json
 import re
 import sqlite3
 import time
+import uuid
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -19,6 +21,7 @@ from .models import (
     KnowledgeRelation,
     SearchHit,
     SourceSpan,
+    VisualArtifactCandidate,
 )
 
 
@@ -229,6 +232,12 @@ class KnowledgeStorage:
             self.upsert_relation(relation, source_doc_id=document.id)
         if self.fts5_available:
             self._rebuild_fts()
+        self.conn.execute(
+            """
+            DELETE FROM visual_artifact_chunks
+            WHERE chunk_id NOT IN (SELECT id FROM chunks)
+            """
+        )
         self.conn.commit()
 
     def get_document(self, document_id: str) -> Optional[KnowledgeDocument]:
@@ -312,6 +321,463 @@ class KnowledgeStorage:
             ids,
         ).fetchall()
         return [_row_to_span(row) for row in rows]
+
+    def upsert_visual_artifact(self, candidate: VisualArtifactCandidate) -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            INSERT INTO visual_artifacts(
+                id, document_id, version_id, kb_id, artifact_type, page, label, caption, bbox,
+                image_path, image_hash, context_hash, parser, parser_confidence,
+                analysis_status, analysis_confidence, retrievable, analysis_model, prompt_version,
+                result_json, error, created_at, updated_at, analyzed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, 0, '', '', '{}', '', ?, ?, 0)
+            ON CONFLICT(id) DO UPDATE SET
+                kb_id = excluded.kb_id,
+                label = excluded.label,
+                caption = excluded.caption,
+                bbox = excluded.bbox,
+                image_path = excluded.image_path,
+                image_hash = excluded.image_hash,
+                context_hash = excluded.context_hash,
+                parser = excluded.parser,
+                parser_confidence = excluded.parser_confidence,
+                updated_at = excluded.updated_at,
+                analysis_status = CASE
+                    WHEN visual_artifacts.analysis_status IN ('succeeded', 'low_confidence')
+                     AND visual_artifacts.image_hash = excluded.image_hash
+                     AND visual_artifacts.context_hash = excluded.context_hash
+                    THEN visual_artifacts.analysis_status
+                    ELSE 'pending'
+                END
+            """,
+            (
+                candidate.id,
+                candidate.document_id,
+                candidate.version_id,
+                candidate.kb_id or "kb_default",
+                candidate.artifact_type,
+                int(candidate.page),
+                candidate.label,
+                candidate.caption,
+                _json(candidate.bbox or {}),
+                candidate.image_path,
+                candidate.image_hash,
+                candidate.context_hash,
+                candidate.parser,
+                float(candidate.parser_confidence or 0),
+                now,
+                now,
+            ),
+        )
+        self.conn.commit()
+
+    def list_visual_artifacts(
+        self,
+        document_id: Optional[str] = None,
+        version_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        clauses: List[str] = []
+        params: List[Any] = []
+        if document_id:
+            clauses.append("document_id = ?")
+            params.append(document_id)
+        if version_id:
+            clauses.append("version_id = ?")
+            params.append(version_id)
+        if status:
+            clauses.append("analysis_status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.extend([max(1, int(limit or 100)), max(0, int(offset or 0))])
+        try:
+            rows = self.conn.execute(
+                f"""
+                SELECT *
+                FROM visual_artifacts
+                {where}
+                ORDER BY document_id ASC, version_id ASC, page ASC, created_at ASC
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            ).fetchall()
+        except sqlite3.DatabaseError:
+            return []
+        return [_row_to_visual_artifact(row) for row in rows]
+
+    def get_visual_artifact(self, artifact_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            row = self.conn.execute("SELECT * FROM visual_artifacts WHERE id = ?", (artifact_id,)).fetchone()
+        except sqlite3.DatabaseError:
+            return None
+        return _row_to_visual_artifact(row) if row else None
+
+    def claim_next_visual_artifact(
+        self,
+        document_id: Optional[str] = None,
+        version_id: Optional[str] = None,
+        force: bool = False,
+        model: str = "",
+        prompt_version: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        now = _now()
+        stale_before = now - 30 * 60
+        params: List[Any] = []
+        doc_clause = ""
+        if document_id:
+            doc_clause = "AND document_id = ?"
+            params.append(document_id)
+        version_clause = ""
+        if version_id:
+            version_clause = "AND version_id = ?"
+            params.append(version_id)
+        if force:
+            status_clause = "analysis_status IN ('pending', 'failed', 'low_confidence', 'succeeded', 'running')"
+        else:
+            status_clause = (
+                "analysis_status IN ('pending', 'failed') "
+                "OR (analysis_status = 'running' AND updated_at < ?) "
+                "OR (analysis_status IN ('succeeded', 'low_confidence') AND (analysis_model <> ? OR prompt_version <> ?))"
+            )
+            params = [stale_before, model, prompt_version, *params]
+        rows = self.conn.execute(
+            f"""
+            SELECT *
+            FROM visual_artifacts
+            WHERE ({status_clause}) {doc_clause} {version_clause}
+            ORDER BY CASE analysis_status
+                WHEN 'pending' THEN 0
+                WHEN 'failed' THEN 1
+                WHEN 'low_confidence' THEN 2
+                WHEN 'succeeded' THEN 3
+                ELSE 4
+            END, page ASC, updated_at ASC
+            LIMIT 1
+            """,
+            params,
+        ).fetchall()
+        if not rows:
+            return None
+        row = rows[0]
+        if (
+            not force
+            and row["analysis_status"] == "succeeded"
+            and row["analysis_model"] == model
+            and row["prompt_version"] == prompt_version
+        ):
+            return None
+        self.conn.execute(
+            """
+            UPDATE visual_artifacts
+            SET analysis_status = 'running',
+                analysis_model = ?,
+                prompt_version = ?,
+                error = '',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (model, prompt_version, now, row["id"]),
+        )
+        self.conn.commit()
+        return self.get_visual_artifact(row["id"])
+
+    def complete_visual_artifact_success(
+        self,
+        artifact_id: str,
+        result_json: Dict[str, Any],
+        confidence: float,
+        retrievable: bool,
+        model: str = "",
+        prompt_version: str = "",
+    ) -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE visual_artifacts
+            SET analysis_status = 'succeeded',
+                analysis_confidence = ?,
+                retrievable = ?,
+                analysis_model = COALESCE(NULLIF(?, ''), analysis_model),
+                prompt_version = COALESCE(NULLIF(?, ''), prompt_version),
+                result_json = ?,
+                error = '',
+                updated_at = ?,
+                analyzed_at = ?
+            WHERE id = ?
+            """,
+            (float(confidence or 0), 1 if retrievable else 0, model, prompt_version, _json(result_json), now, now, artifact_id),
+        )
+        self.conn.commit()
+
+    def complete_visual_artifact_low_confidence(
+        self,
+        artifact_id: str,
+        result_json: Dict[str, Any],
+        confidence: float,
+        reason: str,
+        model: str = "",
+        prompt_version: str = "",
+    ) -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE visual_artifacts
+            SET analysis_status = 'low_confidence',
+                analysis_confidence = ?,
+                retrievable = 0,
+                analysis_model = COALESCE(NULLIF(?, ''), analysis_model),
+                prompt_version = COALESCE(NULLIF(?, ''), prompt_version),
+                result_json = ?,
+                error = ?,
+                updated_at = ?,
+                analyzed_at = ?
+            WHERE id = ?
+            """,
+            (float(confidence or 0), model, prompt_version, _json(result_json), str(reason or ""), now, now, artifact_id),
+        )
+        self.conn.commit()
+
+    def complete_visual_artifact_failed(self, artifact_id: str, error: str) -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE visual_artifacts
+            SET analysis_status = 'failed',
+                retrievable = 0,
+                error = ?,
+                updated_at = ?,
+                analyzed_at = ?
+            WHERE id = ?
+            """,
+            (str(error or ""), now, now, artifact_id),
+        )
+        self.conn.commit()
+
+    def append_visual_chunks(
+        self,
+        document_id: str,
+        version_id: str,
+        artifact_id: str,
+        chunks: Iterable[KnowledgeChunk],
+        spans: Iterable[SourceSpan],
+    ) -> List[str]:
+        chunks = list(chunks)
+        spans = list(spans)
+        if not chunks:
+            return []
+        row = self.conn.execute("SELECT COALESCE(MAX(ordinal), 0) AS max_ordinal FROM chunks WHERE document_id = ?", (document_id,)).fetchone()
+        next_ordinal = int(row["max_ordinal"] or 0) + 1
+        appended: List[KnowledgeChunk] = []
+        for offset, chunk in enumerate(chunks):
+            appended.append(replace(chunk, ordinal=next_ordinal + offset, version_id=chunk.version_id or version_id))
+
+        self.conn.executemany(
+            """
+            INSERT OR REPLACE INTO source_spans(
+                id, document_id, version_id, source_file, page_start, page_end, section_path,
+                paragraph_index_start, paragraph_index_end, char_start, char_end, bbox, text_hash, text
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    span.id,
+                    span.document_id,
+                    span.version_id or version_id,
+                    span.source_file,
+                    span.page_start,
+                    span.page_end,
+                    span.section_path,
+                    span.paragraph_index_start,
+                    span.paragraph_index_end,
+                    span.char_start,
+                    span.char_end,
+                    _json(span.bbox or {}),
+                    span.text_hash,
+                    span.text,
+                )
+                for span in spans
+            ],
+        )
+        self.conn.executemany(
+            """
+            INSERT OR REPLACE INTO chunks(
+                id, document_id, ordinal, page_start, page_end, text,
+                kb_id, version_id, section_path, clause_title, source_span_ids, entities, metadata
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    chunk.id,
+                    chunk.document_id,
+                    chunk.ordinal,
+                    chunk.page_start,
+                    chunk.page_end,
+                    chunk.text,
+                    chunk.kb_id or "kb_default",
+                    chunk.version_id or version_id,
+                    chunk.section_path,
+                    chunk.clause_title,
+                    _json(chunk.source_span_ids),
+                    _json(chunk.entities),
+                    _json(chunk.metadata),
+                )
+                for chunk in appended
+            ],
+        )
+        self.conn.executemany(
+            """
+            INSERT OR REPLACE INTO visual_artifact_chunks(artifact_id, chunk_id)
+            VALUES (?, ?)
+            """,
+            [(artifact_id, chunk.id) for chunk in appended],
+        )
+        if self.fts5_available:
+            document = self.get_document(document_id)
+            title = document.title if document else ""
+            self.conn.executemany(
+                """
+                INSERT INTO chunks_fts(text, chunk_id, document_id, kb_id, title, section_path)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (chunk.text, chunk.id, chunk.document_id, chunk.kb_id or "kb_default", title, chunk.section_path)
+                    for chunk in appended
+                ],
+            )
+        self.conn.commit()
+        return [chunk.id for chunk in appended]
+
+    def delete_visual_chunks_for_artifact(self, artifact_id: str) -> None:
+        rows = self.conn.execute(
+            """
+            SELECT c.id, c.source_span_ids
+            FROM visual_artifact_chunks vac
+            JOIN chunks c ON c.id = vac.chunk_id
+            WHERE vac.artifact_id = ?
+            """,
+            (artifact_id,),
+        ).fetchall()
+        chunk_ids = [row["id"] for row in rows]
+        span_ids: List[str] = []
+        for row in rows:
+            span_ids.extend(_loads(row["source_span_ids"]) or [])
+        if chunk_ids:
+            placeholders = ",".join("?" for _ in chunk_ids)
+            self.conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", chunk_ids)
+            if self.fts5_available:
+                self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
+        if span_ids:
+            placeholders = ",".join("?" for _ in span_ids)
+            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", span_ids)
+        self.conn.execute("DELETE FROM visual_artifact_chunks WHERE artifact_id = ?", (artifact_id,))
+        self.conn.commit()
+
+    def visual_stats(self, document_id: Optional[str] = None, version_id: Optional[str] = None) -> Dict[str, Any]:
+        params: List[Any] = []
+        clauses: List[str] = []
+        if document_id:
+            clauses.append("document_id = ?")
+            params.append(document_id)
+        if version_id:
+            clauses.append("version_id = ?")
+            params.append(version_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        try:
+            rows = self.conn.execute(
+                f"""
+                SELECT analysis_status, COUNT(*) AS count
+                FROM visual_artifacts
+                {where}
+                GROUP BY analysis_status
+                """,
+                params,
+            ).fetchall()
+        except sqlite3.DatabaseError:
+            return {
+                "total": 0,
+                "pending": 0,
+                "running": 0,
+                "succeeded": 0,
+                "low_confidence": 0,
+                "failed": 0,
+                "skipped": 0,
+                "retrievable": 0,
+            }
+        counts = {str(row["analysis_status"]): int(row["count"]) for row in rows}
+        total = sum(counts.values())
+        return {
+            "total": total,
+            "pending": counts.get("pending", 0),
+            "running": counts.get("running", 0),
+            "succeeded": counts.get("succeeded", 0),
+            "low_confidence": counts.get("low_confidence", 0),
+            "failed": counts.get("failed", 0),
+            "skipped": counts.get("skipped", 0),
+            "retrievable": int(
+                self.conn.execute(
+                    f"SELECT COUNT(*) FROM visual_artifacts {where} {'AND' if where else 'WHERE'} retrievable = 1",
+                    params,
+                ).fetchone()[0]
+            ),
+        }
+
+    def create_visual_run(self, document_id: Optional[str] = None, kb_id: str = "kb_default") -> str:
+        run_id = f"visual_run_{uuid.uuid4().hex[:16]}"
+        now = _now()
+        self.conn.execute(
+            """
+            INSERT INTO visual_analysis_runs(id, document_id, kb_id, status, created_at, updated_at)
+            VALUES (?, ?, ?, 'running', ?, ?)
+            """,
+            (run_id, document_id or "", kb_id or "kb_default", now, now),
+        )
+        self.conn.commit()
+        self.update_visual_run_stats(run_id)
+        return run_id
+
+    def update_visual_run_stats(self, run_id: str) -> Dict[str, Any]:
+        row = self.conn.execute("SELECT * FROM visual_analysis_runs WHERE id = ?", (run_id,)).fetchone()
+        if not row:
+            return {}
+        document_id = row["document_id"] or None
+        stats = self.visual_stats(document_id=document_id)
+        status = "done" if stats["pending"] == 0 and stats["running"] == 0 else "running"
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE visual_analysis_runs
+            SET status = ?,
+                total = ?,
+                pending = ?,
+                running = ?,
+                succeeded = ?,
+                low_confidence = ?,
+                failed = ?,
+                skipped = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                stats["total"],
+                stats["pending"],
+                stats["running"],
+                stats["succeeded"],
+                stats["low_confidence"],
+                stats["failed"],
+                stats["skipped"],
+                now,
+                run_id,
+            ),
+        )
+        self.conn.commit()
+        return {"id": run_id, "status": status, **stats}
 
     def list_entities(self, terms: Optional[Iterable[str]] = None) -> List[KnowledgeEntity]:
         if terms is None:
@@ -642,6 +1108,79 @@ class KnowledgeStorage:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_source_spans_document ON source_spans(document_id, page_start)")
         self.conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS visual_artifacts (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                kb_id TEXT NOT NULL DEFAULT 'kb_default',
+                artifact_type TEXT NOT NULL,
+                page INTEGER NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                caption TEXT NOT NULL DEFAULT '',
+                bbox TEXT NOT NULL DEFAULT '{}',
+                image_path TEXT NOT NULL DEFAULT '',
+                image_hash TEXT NOT NULL DEFAULT '',
+                context_hash TEXT NOT NULL DEFAULT '',
+                parser TEXT NOT NULL DEFAULT '',
+                parser_confidence REAL NOT NULL DEFAULT 0,
+                analysis_status TEXT NOT NULL DEFAULT 'pending',
+                analysis_confidence REAL NOT NULL DEFAULT 0,
+                retrievable INTEGER NOT NULL DEFAULT 0,
+                analysis_model TEXT NOT NULL DEFAULT '',
+                prompt_version TEXT NOT NULL DEFAULT '',
+                result_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                analyzed_at INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(document_id, version_id, page, image_hash, artifact_type)
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_visual_artifacts_doc
+            ON visual_artifacts(document_id, version_id, analysis_status)
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_visual_artifacts_kb
+            ON visual_artifacts(kb_id, analysis_status, retrievable)
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_analysis_runs (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL DEFAULT '',
+                kb_id TEXT NOT NULL DEFAULT 'kb_default',
+                status TEXT NOT NULL,
+                total INTEGER NOT NULL DEFAULT 0,
+                pending INTEGER NOT NULL DEFAULT 0,
+                running INTEGER NOT NULL DEFAULT 0,
+                succeeded INTEGER NOT NULL DEFAULT 0,
+                low_confidence INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0,
+                skipped INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_artifact_chunks (
+                artifact_id TEXT NOT NULL,
+                chunk_id TEXT NOT NULL,
+                PRIMARY KEY(artifact_id, chunk_id)
+            )
+            """
+        )
+        self.conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS entities (
                 id TEXT PRIMARY KEY,
                 canonical_name TEXT NOT NULL,
@@ -857,6 +1396,29 @@ def stable_relation_id(subject_id: str, predicate: str, object_id: str, evidence
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
+def stable_visual_artifact_id(
+    document_id: str,
+    version_id: str,
+    page: int,
+    image_hash: str,
+    artifact_type: str,
+    bbox: Dict[str, Any],
+) -> str:
+    bbox_json = json.dumps(bbox or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    raw = f"{document_id}|{version_id}|{page}|{artifact_type}|{image_hash}|{bbox_json}"
+    return "visual_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def stable_visual_chunk_id(document_id: str, version_id: str, artifact_id: str, chunk_kind: str, text: str) -> str:
+    raw = f"{document_id}|{version_id}|{artifact_id}|{chunk_kind}|{text}"
+    return "chunk_visual_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def stable_visual_span_id(document_id: str, version_id: str, artifact_id: str, text: str) -> str:
+    raw = f"span_visual|{document_id}|{version_id}|{artifact_id}|{text}"
+    return "span_visual_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
 def compute_file_hash(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -948,6 +1510,35 @@ def _row_to_span(row: sqlite3.Row) -> SourceSpan:
         text_hash=row["text_hash"] or "",
         text=row["text"] or "",
     )
+
+
+def _row_to_visual_artifact(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "document_id": row["document_id"],
+        "version_id": row["version_id"],
+        "kb_id": row["kb_id"] or "kb_default",
+        "artifact_type": row["artifact_type"],
+        "page": int(row["page"]),
+        "label": row["label"] or "",
+        "caption": row["caption"] or "",
+        "bbox": _loads(row["bbox"]) or {},
+        "image_path": row["image_path"] or "",
+        "image_hash": row["image_hash"] or "",
+        "context_hash": row["context_hash"] or "",
+        "parser": row["parser"] or "",
+        "parser_confidence": float(row["parser_confidence"] or 0),
+        "analysis_status": row["analysis_status"] or "pending",
+        "analysis_confidence": float(row["analysis_confidence"] or 0),
+        "retrievable": bool(row["retrievable"]),
+        "analysis_model": row["analysis_model"] or "",
+        "prompt_version": row["prompt_version"] or "",
+        "result_json": _loads(row["result_json"]) or {},
+        "error": row["error"] or "",
+        "created_at": int(row["created_at"] or 0),
+        "updated_at": int(row["updated_at"] or 0),
+        "analyzed_at": int(row["analyzed_at"] or 0),
+    }
 
 
 def _row_to_relation(row: sqlite3.Row) -> KnowledgeRelation:
