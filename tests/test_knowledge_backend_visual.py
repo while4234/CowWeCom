@@ -350,6 +350,66 @@ def _count_rows(conn, table, column, values):
     return conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({placeholders})", values).fetchone()[0]
 
 
+def _upsert_visual_group(storage, document_id, version_id, group_id, source_pages=None, *, status="pending", retrievable=0):
+    pages = [1, 2] if source_pages is None else list(source_pages)
+    storage.upsert_visual_artifact_group(
+        {
+            "id": group_id,
+            "document_id": document_id,
+            "version_id": version_id,
+            "kb_id": "kb_default",
+            "group_type": "table",
+            "title": group_id,
+            "caption": group_id,
+            "source_pages": pages,
+            "status": status,
+            "confidence": 0.9,
+            "retrievable": retrievable,
+            "result_json": {},
+        }
+    )
+
+
+def _pollute_visual_group_source_pages(storage, group_id, source_pages):
+    storage.conn.execute(
+        """
+        UPDATE visual_artifact_groups
+        SET source_pages = ?,
+            status = 'succeeded',
+            retrievable = 1,
+            analyzed_at = 123,
+            error = 'legacy polluted source_pages'
+        WHERE id = ?
+        """,
+        (json.dumps(source_pages), group_id),
+    )
+    storage.conn.commit()
+
+
+def _insert_legacy_stale_group_member(storage, document_id, version_id, group_id, *, stale_page=99, other_group_id=None):
+    other_group_id = other_group_id or f"{group_id}_other"
+    _upsert_visual_group(storage, document_id, version_id, other_group_id, [stale_page], status="pending")
+    stale = VisualArtifactCandidate(
+        **{
+            **_candidate(document_id, version_id, stale_page).to_dict(),
+            "page": stale_page,
+            "caption": f"Figure {stale_page}. Legacy stale member",
+            "label": f"Figure {stale_page}",
+        }
+    )
+    storage.upsert_visual_artifact(stale)
+    storage.mark_visual_artifact_group_membership(stale.id, other_group_id, 1, "first", 0.9)
+    storage.conn.execute(
+        """
+        INSERT OR REPLACE INTO visual_artifact_group_members(group_id, artifact_id, part_index, page, role, confidence)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (group_id, stale.id, stale_page, stale_page, "stale", 0.9),
+    )
+    storage.conn.commit()
+    return stale
+
+
 def test_visual_schema_is_created(tmp_path):
     storage = KnowledgeStorage(tmp_path / "knowledge.sqlite3")
     try:
@@ -1494,6 +1554,117 @@ def test_cleanup_stale_visual_artifact_group_members_removes_multiple_rows(tmp_p
             "SELECT COUNT(*) FROM visual_artifact_group_members WHERE group_id = ? AND artifact_id = ?",
             ("visual_group_cleanup_current", current.id),
         ).fetchone()[0] == 1
+
+
+def test_cleanup_stale_visual_artifact_group_members_repairs_group_source_pages(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    group_id = "visual_group_cleanup_repair_pages"
+    storage = _seed_ready_group(service, document_id, version_id, group_id)
+    _insert_legacy_stale_group_member(storage, document_id, version_id, group_id, stale_page=99)
+    _pollute_visual_group_source_pages(storage, group_id, [1, 2, 99])
+
+    deleted = storage.cleanup_stale_visual_artifact_group_members()
+
+    assert deleted == 1
+    group = storage.get_visual_artifact_group(group_id)
+    assert group["source_pages"] == [1, 2]
+    assert group["status"] == "pending"
+    assert group["retrievable"] is False
+    assert [member["page"] for member in storage.get_visual_artifact_group_members(group_id)] == [1, 2]
+
+    service._visual_analyzer = QueueAnalyzer([])
+    result = service.analyze_visual_artifact_group(group_id, analysis_backend="codex")
+
+    assert result["outcome"] == "succeeded"
+    assert storage.get_visual_artifact_group(group_id)["status"] == "succeeded"
+
+
+def test_mark_visual_group_member_change_ignores_stale_group_member_pages(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    group_id = "visual_group_member_change_current_pages"
+    _upsert_visual_group(storage, document_id, version_id, group_id, [])
+    _insert_legacy_stale_group_member(storage, document_id, version_id, group_id, stale_page=99)
+
+    page1 = _candidate(document_id, version_id, 1)
+    storage.upsert_visual_artifact(page1)
+    storage.add_visual_artifact_group_member(group_id, page1.id, 1, 1, "first", 0.9)
+    storage.mark_visual_artifact_group_membership(page1.id, group_id, 1, "first", 0.9)
+
+    group = storage.get_visual_artifact_group(group_id)
+    assert 99 not in group["source_pages"]
+    assert group["source_pages"] == [1]
+
+    page2 = _candidate(document_id, version_id, 2)
+    storage.upsert_visual_artifact(page2)
+    storage.add_visual_artifact_group_member(group_id, page2.id, 2, 2, "last", 0.9)
+    storage.mark_visual_artifact_group_membership(page2.id, group_id, 2, "last", 0.9)
+
+    assert storage.get_visual_artifact_group(group_id)["source_pages"] == [1, 2]
+
+
+def test_update_groups_for_document_repairs_legacy_polluted_source_pages(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    group_id = "visual_group_update_legacy_repair"
+    _upsert_visual_group(storage, document_id, version_id, group_id, [1, 2])
+    for index, page in enumerate((1, 2), start=1):
+        candidate = VisualArtifactCandidate(
+            **{
+                **_candidate(document_id, version_id, page).to_dict(),
+                "page": page,
+                "caption": "Table 5-1. Legacy Repair" if page == 1 else "Table 5-1. Legacy Repair (continued)",
+                "label": "Table 5-1",
+                "page_text": "Signal | Direction | Description\nLEGACY | input | continued",
+            }
+        )
+        storage.upsert_visual_artifact(candidate)
+        role = "first" if index == 1 else "last"
+        storage.add_visual_artifact_group_member(group_id, candidate.id, index, page, role, 0.9)
+        storage.mark_visual_artifact_group_membership(candidate.id, group_id, index, role, 0.9)
+        storage.complete_visual_artifact_success(candidate.id, _table_result(f"LEGACY_{page}", page=page).to_dict(), 0.9, retrievable=False)
+    _insert_legacy_stale_group_member(storage, document_id, version_id, group_id, stale_page=99)
+    _pollute_visual_group_source_pages(storage, group_id, [1, 2, 99])
+
+    result = VisualArtifactGrouper(storage).update_groups_for_document(document_id, version_id)
+
+    assert result["groups"] == 1
+    group = storage.get_visual_artifact_group(group_id)
+    assert group["source_pages"] == [1, 2]
+    assert [member["page"] for member in storage.get_visual_artifact_group_members(group_id)] == [1, 2]
+
+    service._visual_analyzer = QueueAnalyzer([])
+    assert service.analyze_visual_artifact_group(group_id, analysis_backend="codex")["outcome"] == "succeeded"
+
+
+def test_cleanup_stale_visual_artifact_group_members_deletes_old_group_chunk_tables(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    group_id = "visual_group_cleanup_repair_chunks"
+    storage = _seed_ready_group(service, document_id, version_id, group_id)
+    service._visual_analyzer = QueueAnalyzer([])
+    assert service.analyze_visual_artifact_group(group_id, analysis_backend="codex")["outcome"] == "succeeded"
+    old_chunks, old_span_ids = _group_chunk_refs(storage, document_id, group_id)
+    old_chunk_ids = [chunk.id for chunk in old_chunks]
+    assert old_chunk_ids
+    assert old_span_ids
+    _insert_legacy_stale_group_member(storage, document_id, version_id, group_id, stale_page=99)
+    _pollute_visual_group_source_pages(storage, group_id, [1, 2, 99])
+
+    assert storage.cleanup_stale_visual_artifact_group_members() == 1
+
+    group = storage.get_visual_artifact_group(group_id)
+    assert group["source_pages"] == [1, 2]
+    assert group["status"] == "pending"
+    assert group["retrievable"] is False
+    with sqlite3.connect(str(service.config.sqlite_path)) as conn:
+        assert _count_rows(conn, "chunks", "id", old_chunk_ids) == 0
+        assert _count_rows(conn, "chunks_fts", "chunk_id", old_chunk_ids) == 0
+        assert _count_rows(conn, "source_spans", "id", old_span_ids) == 0
+        assert _count_rows(conn, "visual_artifact_chunks", "chunk_id", old_chunk_ids) == 0
 
 
 def test_group_success_sets_retrievable_only_for_current_real_members(tmp_path):

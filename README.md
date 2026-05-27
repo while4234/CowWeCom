@@ -492,6 +492,7 @@ CowWeCom/
 - Agent 同轮重复工具调用结果进一步压缩：相同参数的重复 read/bash/edit 等工具仍保留首次完整结果，重复结果改为短引用，减少上下文膨胀和缓存扰动。
 - KnowledgeStorage 视觉 chunk 的 source span 完整性继续收口：追加视觉结果时不再覆盖既有 span，视觉删除和 reset 只清理无人引用的 span，并同步维护图谱证据引用。
 - 本地文档视觉 group 回归继续加固：覆盖成员重试后的旧 chunk/mapping 清理、stale member 批量清理、真实成员 retrievable 边界，以及缺失 source_pages 的元数据回填提示。
+- 本地文档视觉 group 的 legacy stale member 清理会同步修复受污染的 `source_pages`、重置检索状态并清理旧 group/page chunk，避免后续 group 分析被历史 page 污染为低置信。
 
 ### 2026-05-27
 

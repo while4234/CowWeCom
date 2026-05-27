@@ -1429,6 +1429,21 @@ class KnowledgeStorage:
         return winner
 
     def cleanup_stale_visual_artifact_group_members(self) -> int:
+        """Prune stale member rows, then repair affected groups from current joins."""
+        affected_rows = self.conn.execute(
+            """
+            SELECT DISTINCT gm.group_id
+            FROM visual_artifact_group_members gm
+            WHERE gm.group_id != ''
+              AND NOT EXISTS (
+                SELECT 1
+                FROM visual_artifacts va
+                WHERE va.id = gm.artifact_id
+                  AND va.group_id = gm.group_id
+              )
+            """
+        ).fetchall()
+        affected_group_ids = [str(row["group_id"]) for row in affected_rows if row["group_id"]]
         cursor = self.conn.execute(
             """
             DELETE FROM visual_artifact_group_members
@@ -1441,7 +1456,10 @@ class KnowledgeStorage:
             """
         )
         self.conn.commit()
-        return int(cursor.rowcount or 0)
+        deleted = int(cursor.rowcount or 0)
+        for group_id in affected_group_ids:
+            self._repair_visual_group_after_member_change(group_id)
+        return deleted
 
     def list_visual_artifact_groups(
         self,
@@ -1997,15 +2015,17 @@ class KnowledgeStorage:
         self.delete_visual_page_chunks_for_group_members(group_id)
 
     def _mark_visual_group_member_change(self, group_id: str, page: int) -> None:
+        """Mark a group dirty from current joined rows plus the newly changed page."""
         group = self.get_visual_artifact_group(group_id)
         if not group:
             return
         member_rows = self.conn.execute(
             """
-            SELECT page
-            FROM visual_artifact_group_members
-            WHERE group_id = ?
-            ORDER BY page ASC
+            SELECT gm.page
+            FROM visual_artifact_group_members gm
+            JOIN visual_artifacts va ON va.id = gm.artifact_id AND va.group_id = gm.group_id
+            WHERE gm.group_id = ?
+            ORDER BY gm.page ASC
             """,
             (group_id,),
         ).fetchall()
@@ -2029,6 +2049,7 @@ class KnowledgeStorage:
         self._mark_visual_group_not_retrievable(group_id)
 
     def _repair_visual_group_after_member_change(self, group_id: str) -> None:
+        """Recompute group pages/status from current joined members and drop stale chunks."""
         group = self.get_visual_artifact_group(group_id)
         if not group:
             return
