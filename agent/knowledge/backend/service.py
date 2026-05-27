@@ -8,7 +8,7 @@ import hashlib
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
@@ -1054,6 +1054,7 @@ class KnowledgeBackendService:
         effective_backend = resolve_visual_analysis_backend(requested_backend)
         self._ensure_visual_backend_available(effective_backend)
         if force:
+            storage.delete_visual_page_chunks_for_group_members(group_id)
             storage.delete_visual_chunks_for_group(group_id)
             storage.upsert_visual_artifact_group({**group, "status": "pending", "retrievable": 0, "result_json": group.get("result_json") or {}})
         outcome = self._process_ready_visual_group(
@@ -1194,7 +1195,10 @@ class KnowledgeBackendService:
             if document is None:
                 raise RuntimeError("source document not found")
             if force:
-                storage.delete_visual_chunks_for_artifact(artifact["id"])
+                if artifact.get("group_id"):
+                    storage.delete_visual_page_chunks_for_artifact(artifact["id"])
+                else:
+                    storage.delete_visual_chunks_for_artifact(artifact["id"])
             candidate = _candidate_from_artifact_row(artifact, document, storage, self.config)
             if isinstance(self._visual_analyzer, VisualAnalyzer):
                 candidate = self._visual_extractor.ensure_visual_artifact_image(candidate, self.config)
@@ -1219,6 +1223,7 @@ class KnowledgeBackendService:
                     if not isinstance(result, VisualAnalysisResult):
                         result = validate_visual_analysis_json(result, candidate, visual_config)
                     if _should_retry_high_res(result, visual_config):
+                        high_res_long_edge = int(visual_config.get("max_image_long_edge_high_res") or 3200)
                         high_res_candidate = VisualArtifactCandidate(
                             **{
                                 **candidate.to_dict(),
@@ -1227,18 +1232,28 @@ class KnowledgeBackendService:
                         )
                         high_res_candidate = self._visual_extractor.ensure_visual_artifact_image(high_res_candidate, self.config)
                         storage.update_visual_artifact_image(high_res_candidate.id, high_res_candidate.image_path, high_res_candidate.image_hash)
+                        retry_visual_config = {
+                            **visual_config,
+                            "max_image_long_edge": high_res_long_edge,
+                        }
+                        retry_config = replace(self.config, visual_analysis=retry_visual_config)
                         retry_result = self._visual_analyzer.analyze(
                             high_res_candidate,
-                            self.config,
+                            retry_config,
                             document,
                             analysis_backend=analysis_backend,
                         )
                         if not isinstance(retry_result, VisualAnalysisResult):
-                            retry_result = validate_visual_analysis_json(retry_result, high_res_candidate, visual_config)
+                            retry_result = validate_visual_analysis_json(retry_result, high_res_candidate, retry_visual_config)
                         result = VisualAnalysisResult(
                             **{
                                 **retry_result.to_dict(),
-                                "processing": {**retry_result.processing, "high_res_retry": True},
+                                "processing": {
+                                    **retry_result.processing,
+                                    "high_res_retry": True,
+                                    "high_res_page_render_dpi": int(high_res_candidate.crop_dpi or 0),
+                                    "max_image_long_edge": high_res_long_edge,
+                                },
                             }
                         )
                         candidate = high_res_candidate
@@ -1254,6 +1269,8 @@ class KnowledgeBackendService:
             result_json = result.to_dict()
             confidence = float(result.confidence.get("overall", 0.0) or 0.0)
             belongs_to_group = bool(artifact.get("group_id"))
+            if belongs_to_group:
+                result_json = _merge_group_membership_continuation(result_json, artifact)
             if result.should_index and not belongs_to_group:
                 chunks, spans = visual_result_to_chunks(
                     candidate,
@@ -1276,17 +1293,7 @@ class KnowledgeBackendService:
                 )
                 return "succeeded"
             if result.should_index and belongs_to_group:
-                result_json.setdefault("is_partial", True)
-                result_json.setdefault(
-                    "continuation",
-                    {
-                        "role": artifact.get("continuation_role") or "unknown",
-                        "belongs_to_same_artifact": True,
-                        "evidence": ["assigned to visual_artifact_group"],
-                        "confidence": artifact.get("continuation_confidence") or 0,
-                    },
-                )
-                storage.delete_visual_chunks_for_artifact(artifact["id"])
+                storage.delete_visual_page_chunks_for_artifact(artifact["id"])
                 storage.complete_visual_artifact_success(
                     artifact["id"],
                     result_json,
@@ -1297,7 +1304,10 @@ class KnowledgeBackendService:
                     analysis_backend=analysis_backend,
                 )
                 return "succeeded"
-            storage.delete_visual_chunks_for_artifact(artifact["id"])
+            if belongs_to_group:
+                storage.delete_visual_page_chunks_for_artifact(artifact["id"])
+            else:
+                storage.delete_visual_chunks_for_artifact(artifact["id"])
             storage.complete_visual_artifact_low_confidence(
                 artifact["id"],
                 result_json,
@@ -1314,6 +1324,8 @@ class KnowledgeBackendService:
             return "failed"
 
     def _ensure_visual_backend_available(self, backend: str) -> None:
+        if getattr(self._visual_analyzer, "skip_backend_availability_check", False):
+            return
         if not self._using_default_visual_analyzer():
             return
         normalized = normalize_visual_analysis_backend(backend)
@@ -1361,6 +1373,8 @@ class KnowledgeBackendService:
                 "should_index": False,
                 "low_confidence_reason": "multipage group has fewer than 2 parts",
             }
+            storage.delete_visual_page_chunks_for_group_members(group["id"])
+            storage.delete_visual_chunks_for_group(group["id"])
             storage.complete_visual_artifact_group_low_confidence(
                 group["id"],
                 result,
@@ -1379,6 +1393,7 @@ class KnowledgeBackendService:
             if document is None:
                 raise RuntimeError("source document not found")
             if force:
+                storage.delete_visual_page_chunks_for_group_members(group["id"])
                 storage.delete_visual_chunks_for_group(group["id"])
             visual_config = self.config.visual_analysis or {}
             if _should_use_model_visual_group_merge(group, members, visual_config, self._visual_analyzer):
@@ -1404,6 +1419,7 @@ class KnowledgeBackendService:
                     analysis_model=model,
                 )
                 artifact_ids = [member.get("artifact_id") for member in members if member.get("artifact_id")]
+                storage.delete_visual_page_chunks_for_group_members(group["id"])
                 storage.delete_visual_chunks_for_group(group["id"])
                 storage.append_visual_group_chunks(document.id, document.version_id, group["id"], artifact_ids, chunks, spans)
                 storage.complete_visual_artifact_group_success(
@@ -1415,6 +1431,7 @@ class KnowledgeBackendService:
                     analysis_backend=analysis_backend,
                 )
                 return "succeeded"
+            storage.delete_visual_page_chunks_for_group_members(group["id"])
             storage.delete_visual_chunks_for_group(group["id"])
             storage.complete_visual_artifact_group_low_confidence(
                 group["id"],
@@ -1428,6 +1445,8 @@ class KnowledgeBackendService:
             return "low_confidence"
         except Exception as exc:
             logger.warning("[KnowledgeBackend] visual group analysis failed: %s", exc)
+            storage.delete_visual_page_chunks_for_group_members(group["id"])
+            storage.delete_visual_chunks_for_group(group["id"])
             storage.complete_visual_artifact_group_failed(group["id"], str(exc), analysis_backend=analysis_backend)
             return "failed"
 
@@ -1442,25 +1461,42 @@ class KnowledgeBackendService:
     ) -> VisualAnalysisResult:
         tiles = _split_visual_candidate_tiles(candidate, self.config.visual_analysis or {})
         tile_results: List[Dict[str, Any]] = []
+        existing_tiles = {str(tile["id"]): tile for tile in storage.list_visual_artifact_tiles(candidate.id)}
+        visual_config = self.config.visual_analysis or {}
         for tile in tiles:
-            tile_candidate = VisualArtifactCandidate(**{**candidate.to_dict(), **tile["candidate_overrides"]})
+            tile_id = f"{candidate.id}_tile_{tile['tile_index']}"
+            existing = existing_tiles.get(tile_id)
+            if _can_reuse_visual_tile(existing, model, prompt_version):
+                tile_results.append({**existing["result_json"], "tile_index": tile["tile_index"]})
+                continue
+            tile_candidate = VisualArtifactCandidate(
+                **{
+                    **candidate.to_dict(),
+                    **tile["candidate_overrides"],
+                    "context_before": _tile_context_before(candidate, tile),
+                }
+            )
             tile_candidate = self._visual_extractor.ensure_visual_artifact_image(tile_candidate, self.config)
+            tile_visual_config = {**visual_config, "prompt_mode": "tile"}
+            tile_config = replace(self.config, visual_analysis=tile_visual_config)
             result = self._visual_analyzer.analyze(
                 tile_candidate,
-                self.config,
+                tile_config,
                 document,
                 analysis_backend=analysis_backend,
             )
             if not isinstance(result, VisualAnalysisResult):
-                result = validate_visual_analysis_json(result, tile_candidate, self.config.visual_analysis or {})
+                result = validate_visual_analysis_json(result, tile_candidate, tile_visual_config)
             result_json = {
                 **result.to_dict(),
                 "tile_index": tile["tile_index"],
                 "visible_range": tile.get("visible_range") or "",
+                "analysis_model": model,
+                "prompt_version": prompt_version,
             }
             storage.upsert_visual_artifact_tile(
                 {
-                    "id": f"{candidate.id}_tile_{tile['tile_index']}",
+                    "id": tile_id,
                     "artifact_id": candidate.id,
                     "tile_index": tile["tile_index"],
                     "bbox": tile.get("bbox") or {},
@@ -1473,7 +1509,7 @@ class KnowledgeBackendService:
                 }
             )
             tile_results.append(result_json)
-        return _merge_tile_analysis_results(candidate, tile_results, self.config.visual_analysis or {})
+        return _merge_tile_analysis_results(candidate, tile_results, visual_config)
 
     def export_document_library(self, document_id: str = "") -> Dict[str, Any]:
         """Export indexed backend documents into the visible Markdown knowledge library."""
@@ -2466,6 +2502,73 @@ def _should_use_model_visual_group_merge(
         page_count = len({int(member.get("page") or 0) for member in members if member.get("page")})
     max_pages = int(visual_config.get("group_model_merge_max_pages") or 4)
     return page_count <= max_pages
+
+
+def _merge_group_membership_continuation(result_json: Dict[str, Any], artifact: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(result_json or {})
+    continuation = merged.get("continuation") if isinstance(merged.get("continuation"), dict) else {}
+    evidence = list(continuation.get("evidence") or [])
+    evidence.append("assigned to visual_artifact_group")
+    role = continuation.get("role") or artifact.get("continuation_role") or "unknown"
+    confidence = max(
+        float(continuation.get("confidence") or 0),
+        float(artifact.get("continuation_confidence") or 0),
+    )
+    merged["is_partial"] = True
+    merged["continuation"] = {
+        **continuation,
+        "role": role,
+        "belongs_to_same_artifact": True,
+        "evidence": _unique_strings(evidence),
+        "confidence": confidence,
+    }
+    return merged
+
+
+def _can_reuse_visual_tile(tile: Optional[Dict[str, Any]], model: str, prompt_version: str) -> bool:
+    if not tile or tile.get("status") != "succeeded":
+        return False
+    result_json = tile.get("result_json") if isinstance(tile.get("result_json"), dict) else {}
+    stored_model = str(result_json.get("analysis_model") or "")
+    stored_prompt_version = str(result_json.get("prompt_version") or "")
+    if stored_model and stored_model != model:
+        return False
+    if stored_prompt_version and stored_prompt_version != prompt_version:
+        return False
+    return bool(result_json)
+
+
+def _tile_context_before(candidate: VisualArtifactCandidate, tile: Dict[str, Any]) -> str:
+    instruction = (
+        "Tile analysis instruction: this image is a local tile of one large visual artifact. "
+        "Do not treat the tile as the complete table or figure. "
+        "Only parse visible content; keep tile_index and visible_range attribution. "
+        "If headers are missing, do not fabricate them without supplied context."
+    )
+    return "\n".join(
+        [
+            instruction,
+            f"tile_index: {tile.get('tile_index')}",
+            f"visible_range: {tile.get('visible_range') or ''}",
+            f"parent_caption: {candidate.caption}",
+            candidate.context_before or "",
+        ]
+    ).strip()
+
+
+def _unique_strings(values: Iterable[Any]) -> List[str]:
+    result: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
 
 
 def _should_retry_high_res(result: VisualAnalysisResult, visual_config: Dict[str, Any]) -> bool:

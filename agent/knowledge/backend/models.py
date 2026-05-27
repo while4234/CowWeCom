@@ -310,6 +310,8 @@ class VisualAnalysisResult:
     readability: str = "unknown"
     confidence: Dict[str, Any] = field(default_factory=dict)
     processing: Dict[str, Any] = field(default_factory=dict)
+    is_partial: bool = False
+    continuation: Dict[str, Any] = field(default_factory=dict)
     should_index: bool = False
     low_confidence_reason: str = ""
     caption: str = ""

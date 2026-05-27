@@ -10,7 +10,8 @@ from typing import Any, Iterable, Mapping, Optional
 
 
 CONTINUATION_RE = re.compile(
-    r"\b(?:continued|cont['’]?d|continued on next page|continued from previous page)\b|续表|续图|接上页|下页继续|上页续|续",
+    r"\b(?:continued\s+on\s+next\s+page|continued\s+from\s+previous\s+page|continued|cont['\u2019]?d)\b|"
+    r"\u7eed\u8868|\u7eed\u56fe|\u63a5\u4e0a\u9875|\u4e0b\u9875\u7ee7\u7eed|\u4e0a\u9875\u7eed|\u7eed",
     re.IGNORECASE,
 )
 CAPTION_RE = re.compile(
@@ -135,35 +136,37 @@ class VisualArtifactGrouper:
 
         proposals: list[GroupProposal] = []
         for (_caption_number, _title_key), items in by_caption.items():
-            pages = sorted({item.page for item in items})
-            if len(items) < 2 or not _has_adjacent_pages(pages):
-                continue
-            first = items[0]
-            parsed = parse_caption_identity(first.caption or first.label) or {}
-            confidence = 0.92 if any(has_continuation_marker(item.text) for item in items) else 0.84
-            evidence = ["same caption number/title"]
-            if any(has_continuation_marker(item.text) for item in items):
-                evidence.append("explicit continuation marker")
-            proposals.append(
-                GroupProposal(
-                    group_id=stable_visual_group_id_for_caption(
-                        first.document_id,
-                        first.version_id,
-                        str(parsed.get("number") or ""),
-                        str(parsed.get("title") or first.caption or first.label),
-                    ),
-                    document_id=first.document_id,
-                    version_id=first.version_id,
-                    kb_id=first.kb_id,
-                    group_type=_group_type(first.artifact_type),
-                    title=str(parsed.get("title") or first.caption or first.label),
-                    caption=first.caption,
-                    source_pages=pages,
-                    confidence=confidence,
-                    members=[item.member(confidence) for item in sorted(items, key=lambda value: value.page)],
-                    evidence=evidence,
+            for chain in _consecutive_artifact_chains(items):
+                pages = sorted({item.page for item in chain})
+                if len(chain) < 2 or not _has_adjacent_pages(pages):
+                    continue
+                ordered = sorted(chain, key=lambda value: (value.page, value.y0, value.artifact_id))
+                first = ordered[0]
+                parsed = parse_caption_identity(first.caption or first.label) or {}
+                confidence = 0.92 if any(has_continuation_marker(item.text) for item in ordered) else 0.84
+                evidence = ["same caption number/title"]
+                if any(has_continuation_marker(item.text) for item in ordered):
+                    evidence.append("explicit continuation marker")
+                proposals.append(
+                    GroupProposal(
+                        group_id=stable_visual_group_id_for_caption(
+                            first.document_id,
+                            first.version_id,
+                            str(parsed.get("number") or ""),
+                            str(parsed.get("title") or first.caption or first.label),
+                        ),
+                        document_id=first.document_id,
+                        version_id=first.version_id,
+                        kb_id=first.kb_id,
+                        group_type=_group_type(first.artifact_type),
+                        title=str(parsed.get("title") or first.caption or first.label),
+                        caption=first.caption,
+                        source_pages=pages,
+                        confidence=confidence,
+                        members=[item.member(confidence) for item in ordered],
+                        evidence=evidence,
+                    )
                 )
-            )
         return proposals
 
     def _inferred_adjacent_groups(self, artifacts: list["_ArtifactView"]) -> list[GroupProposal]:
@@ -275,13 +278,21 @@ class _ArtifactView:
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "_ArtifactView":
         result_json = row.get("result_json") if isinstance(row.get("result_json"), dict) else {}
+        continuation = result_json.get("continuation") if isinstance(result_json.get("continuation"), dict) else {}
+        continuation_evidence = continuation.get("evidence") if isinstance(continuation.get("evidence"), list) else []
+        uncertain_fields = result_json.get("uncertain_fields") if isinstance(result_json.get("uncertain_fields"), list) else []
         text_parts = [
             row.get("caption") or "",
             row.get("label") or "",
+            row.get("page_text") or "",
+            row.get("context_before") or "",
+            row.get("context_after") or "",
             str(result_json.get("caption") or ""),
             str(result_json.get("title") or ""),
             str(result_json.get("summary") or ""),
             str(result_json.get("structured_markdown") or ""),
+            *[str(item) for item in continuation_evidence],
+            *[str(item) for item in uncertain_fields],
         ]
         return cls(
             artifact_id=str(row.get("id") or ""),
@@ -350,6 +361,7 @@ def is_toc_or_list_page(page_text: str) -> bool:
             "list of figures",
             "list of tables",
             "revision history",
+            "\u76ee\u5f55",
         )
     )
 
@@ -373,6 +385,9 @@ def _continuation_score(previous: _ArtifactView, current: _ArtifactView) -> tupl
     if _header_similarity(previous.text, current.text) >= 0.5:
         score += 0.25
         evidence.append("similar table headers")
+    if _dense_table_like(previous.text) and _dense_table_like(current.text):
+        score += 0.20
+        evidence.append("dense table-like tokens")
     if _looks_like_body_continuation(previous, current):
         score += 0.24
         evidence.append("bottom-to-top visual block continuation")
@@ -424,6 +439,14 @@ def _header_tokens(text: str) -> set[str]:
     return tokens
 
 
+def _dense_table_like(text: str) -> bool:
+    value = str(text or "")[:2000].lower()
+    token_hits = len(_header_tokens(value))
+    pipe_lines = sum(1 for line in value.splitlines()[:30] if "|" in line or "\t" in line)
+    repeated_columns = len(re.findall(r"\b(?:signal|direction|description|name|type|field|bit|width|module|layer)\b", value))
+    return token_hits >= 2 or pipe_lines >= 2 or repeated_columns >= 4
+
+
 def _has_new_section_heading(text: str) -> bool:
     for line in str(text or "").splitlines()[:5]:
         if SECTION_HEADING_RE.match(line):
@@ -450,6 +473,23 @@ def _role_for_part(index: int, total_parts: int) -> str:
 def _has_adjacent_pages(pages: Iterable[int]) -> bool:
     values = sorted(set(int(page) for page in pages))
     return any(right - left == 1 for left, right in zip(values, values[1:]))
+
+
+def _consecutive_artifact_chains(items: Iterable[_ArtifactView]) -> list[list[_ArtifactView]]:
+    ordered = sorted(items, key=lambda value: (value.page, value.y0, value.artifact_id))
+    chains: list[list[_ArtifactView]] = []
+    current: list[_ArtifactView] = []
+    previous_page: Optional[int] = None
+    for item in ordered:
+        if previous_page is not None and item.page - previous_page > 1:
+            if current:
+                chains.append(current)
+            current = []
+        current.append(item)
+        previous_page = item.page
+    if current:
+        chains.append(current)
+    return chains
 
 
 def _group_type(artifact_type: str) -> str:

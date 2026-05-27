@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .models import (
     IngestionJob,
@@ -205,8 +205,15 @@ class KnowledgeStorage:
         ordinary_span_ids: List[str] = []
         for row in ordinary_chunk_rows:
             ordinary_span_ids.extend(_loads(row["source_span_ids"]) or [])
+        preserved_span_ids = self._source_span_ids_for_preserved_chunks(document.id, ordinary_chunk_ids)
+        chunks, source_spans, entities, relations = self._remap_incoming_source_span_conflicts(
+            chunks,
+            source_spans,
+            entities,
+            relations,
+            preserved_span_ids,
+        )
         if ordinary_span_ids:
-            preserved_span_ids = self._source_span_ids_for_preserved_chunks(document.id, ordinary_chunk_ids)
             ordinary_span_ids = [
                 span_id
                 for span_id in dict.fromkeys(ordinary_span_ids)
@@ -294,7 +301,7 @@ class KnowledgeStorage:
         if commit:
             self.conn.commit()
 
-    def _source_span_ids_for_preserved_chunks(self, document_id: str, deleted_chunk_ids: List[str]) -> set[str]:
+    def _source_span_ids_for_preserved_chunks(self, document_id: str, deleted_chunk_ids: List[str]) -> Set[str]:
         if not deleted_chunk_ids:
             rows = self.conn.execute(
                 "SELECT source_span_ids FROM chunks WHERE document_id = ?",
@@ -311,10 +318,70 @@ class KnowledgeStorage:
                 """,
                 [document_id, *deleted_chunk_ids],
             ).fetchall()
-        preserved: set[str] = set()
+        preserved: Set[str] = set()
         for row in rows:
             preserved.update(_loads(row["source_span_ids"]) or [])
         return preserved
+
+    def _remap_incoming_source_span_conflicts(
+        self,
+        chunks: List[KnowledgeChunk],
+        source_spans: List[SourceSpan],
+        entities: List[KnowledgeEntity],
+        relations: List[KnowledgeRelation],
+        preserved_span_ids: Set[str],
+    ) -> Tuple[List[KnowledgeChunk], List[SourceSpan], List[KnowledgeEntity], List[KnowledgeRelation]]:
+        if not preserved_span_ids or not source_spans:
+            return chunks, source_spans, entities, relations
+        incoming_span_ids = {span.id for span in source_spans if span.id}
+        conflicts = incoming_span_ids & preserved_span_ids
+        if not conflicts:
+            return chunks, source_spans, entities, relations
+
+        used_span_ids = self._all_source_span_ids() | incoming_span_ids
+        remap: Dict[str, str] = {}
+        for old_id in sorted(conflicts):
+            index = 1
+            while True:
+                candidate = f"{old_id}-repair-{index}"
+                if candidate not in used_span_ids:
+                    remap[old_id] = candidate
+                    used_span_ids.add(candidate)
+                    break
+                index += 1
+
+        def remap_ids(values: Iterable[str]) -> List[str]:
+            return [remap.get(value, value) for value in (values or [])]
+
+        remapped_spans = [replace(span, id=remap.get(span.id, span.id)) for span in source_spans]
+        remapped_chunks = [
+            replace(chunk, source_span_ids=remap_ids(chunk.source_span_ids))
+            for chunk in chunks
+        ]
+        remapped_entities = [
+            replace(entity, source_span_ids=remap_ids(entity.source_span_ids))
+            for entity in entities
+        ]
+        remapped_relations: List[KnowledgeRelation] = []
+        for relation in relations:
+            evidence_span_ids = remap_ids(relation.evidence_span_ids)
+            remapped_relations.append(
+                replace(
+                    relation,
+                    id=stable_relation_id(
+                        relation.subject_entity_id,
+                        relation.predicate,
+                        relation.object_entity_id,
+                        evidence_span_ids,
+                    ),
+                    evidence_span_ids=evidence_span_ids,
+                )
+            )
+        return remapped_chunks, remapped_spans, remapped_entities, remapped_relations
+
+    def _all_source_span_ids(self) -> Set[str]:
+        rows = self.conn.execute("SELECT id FROM source_spans").fetchall()
+        return {row["id"] for row in rows if row["id"]}
 
     def get_document(self, document_id: str) -> Optional[KnowledgeDocument]:
         row = self.conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
@@ -941,10 +1008,65 @@ class KnowledgeStorage:
             ),
         )
         self.conn.commit()
+        self.delete_visual_page_chunks_for_artifact(artifact_id)
 
     def upsert_visual_artifact_group(self, group: Dict[str, Any]) -> None:
         now = _now()
         result_json = group.get("result_json") if isinstance(group.get("result_json"), dict) else {}
+        existing = self.get_visual_artifact_group(group["id"])
+        if existing:
+            old_pages = _merge_int_pages(existing.get("source_pages") or [], [])
+            new_pages = _merge_int_pages(group.get("source_pages") or [], [])
+            merged_pages = _merge_int_pages(old_pages, new_pages)
+            dirty = _group_pages_changed(old_pages, merged_pages) or _group_identity_changed(existing, group)
+            merged_result_json = _merge_visual_group_result_json(existing.get("result_json") or {}, result_json, merged_pages)
+            incoming_status = group.get("status") or existing.get("status") or "pending"
+            status = "pending" if dirty else _preserved_visual_group_status(existing.get("status"), incoming_status)
+            retrievable = 0 if dirty else (1 if group.get("retrievable") else int(bool(existing.get("retrievable"))))
+            analyzed_at = 0 if dirty else int(existing.get("analyzed_at") or 0)
+            self.conn.execute(
+                """
+                UPDATE visual_artifact_groups
+                SET kb_id = ?,
+                    group_type = ?,
+                    title = ?,
+                    caption = ?,
+                    source_pages = ?,
+                    status = ?,
+                    confidence = ?,
+                    retrievable = ?,
+                    analysis_model = ?,
+                    analysis_backend = ?,
+                    prompt_version = ?,
+                    result_json = ?,
+                    error = ?,
+                    updated_at = ?,
+                    analyzed_at = ?
+                WHERE id = ?
+                """,
+                (
+                    group.get("kb_id") or existing.get("kb_id") or "kb_default",
+                    group.get("group_type") or existing.get("group_type") or "unknown",
+                    group.get("title") or existing.get("title") or "",
+                    group.get("caption") or existing.get("caption") or "",
+                    _json(merged_pages),
+                    status,
+                    max(float(existing.get("confidence") or 0), float(group.get("confidence") or 0)),
+                    retrievable,
+                    group.get("analysis_model") or existing.get("analysis_model") or "",
+                    group.get("analysis_backend") or existing.get("analysis_backend") or "",
+                    group.get("prompt_version") or existing.get("prompt_version") or "",
+                    _json(merged_result_json),
+                    "" if dirty else (group.get("error") or existing.get("error") or ""),
+                    now,
+                    analyzed_at,
+                    group["id"],
+                ),
+            )
+            self.conn.commit()
+            if dirty:
+                self.delete_visual_chunks_for_group(group["id"])
+            return
         self.conn.execute(
             """
             INSERT INTO visual_artifact_groups(
@@ -953,23 +1075,6 @@ class KnowledgeStorage:
                 result_json, error, created_at, updated_at, analyzed_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-            ON CONFLICT(id) DO UPDATE SET
-                kb_id = excluded.kb_id,
-                group_type = excluded.group_type,
-                title = excluded.title,
-                caption = excluded.caption,
-                source_pages = excluded.source_pages,
-                status = CASE
-                    WHEN visual_artifact_groups.status IN ('succeeded', 'low_confidence', 'failed')
-                    THEN visual_artifact_groups.status
-                    ELSE excluded.status
-                END,
-                confidence = MAX(visual_artifact_groups.confidence, excluded.confidence),
-                result_json = CASE
-                    WHEN visual_artifact_groups.result_json = '{}' THEN excluded.result_json
-                    ELSE visual_artifact_groups.result_json
-                END,
-                updated_at = excluded.updated_at
             """,
             (
                 group["id"],
@@ -1003,6 +1108,26 @@ class KnowledgeStorage:
         role: str,
         confidence: float,
     ) -> None:
+        existing = self.conn.execute(
+            """
+            SELECT *
+            FROM visual_artifact_group_members
+            WHERE group_id = ? AND artifact_id = ?
+            """,
+            (group_id, artifact_id),
+        ).fetchone()
+        normalized_part_index = max(1, int(part_index or 1))
+        normalized_page = int(page or 0)
+        normalized_role = role or "unknown"
+        normalized_confidence = float(confidence or 0)
+        changed = existing is None or any(
+            [
+                int(existing["part_index"] or 0) != normalized_part_index,
+                int(existing["page"] or 0) != normalized_page,
+                (existing["role"] or "") != normalized_role,
+                abs(float(existing["confidence"] or 0) - normalized_confidence) > 0.0001,
+            ]
+        )
         self.conn.execute(
             """
             INSERT INTO visual_artifact_group_members(group_id, artifact_id, part_index, page, role, confidence)
@@ -1016,13 +1141,15 @@ class KnowledgeStorage:
             (
                 group_id,
                 artifact_id,
-                max(1, int(part_index or 1)),
-                int(page or 0),
-                role or "unknown",
-                float(confidence or 0),
+                normalized_part_index,
+                normalized_page,
+                normalized_role,
+                normalized_confidence,
             ),
         )
         self.conn.commit()
+        if changed:
+            self._mark_visual_group_member_change(group_id, normalized_page)
 
     def list_visual_artifact_groups(
         self,
@@ -1399,6 +1526,53 @@ class KnowledgeStorage:
         self.conn.execute("DELETE FROM visual_artifact_chunks WHERE artifact_id = ?", (artifact_id,))
         self.conn.commit()
 
+    def delete_visual_page_chunks_for_artifact(self, artifact_id: str) -> None:
+        rows = self.conn.execute(
+            """
+            SELECT c.id, c.source_span_ids, c.metadata
+            FROM visual_artifact_chunks vac
+            JOIN chunks c ON c.id = vac.chunk_id
+            WHERE vac.artifact_id = ?
+            """,
+            (artifact_id,),
+        ).fetchall()
+        chunk_ids: List[str] = []
+        span_ids: List[str] = []
+        for row in rows:
+            metadata = _loads(row["metadata"])
+            if not _is_visual_page_chunk_metadata(metadata):
+                continue
+            chunk_ids.append(row["id"])
+            span_ids.extend(_loads(row["source_span_ids"]) or [])
+        self._delete_chunks_and_spans(chunk_ids, span_ids)
+
+    def delete_visual_page_chunks_for_group_members(self, group_id: str) -> None:
+        rows = self.conn.execute(
+            """
+            SELECT artifact_id
+            FROM visual_artifact_group_members
+            WHERE group_id = ?
+            """,
+            (group_id,),
+        ).fetchall()
+        artifact_ids = [row["artifact_id"] for row in rows if row["artifact_id"]]
+        for artifact_id in artifact_ids:
+            self.delete_visual_page_chunks_for_artifact(artifact_id)
+
+    def _delete_chunks_and_spans(self, chunk_ids: Iterable[str], span_ids: Iterable[str]) -> None:
+        chunk_ids = _unique([chunk_id for chunk_id in chunk_ids if chunk_id])
+        span_ids = _unique([span_id for span_id in span_ids if span_id])
+        if chunk_ids:
+            placeholders = ",".join("?" for _ in chunk_ids)
+            self.conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", chunk_ids)
+            self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE chunk_id IN ({placeholders})", chunk_ids)
+            if self.fts5_available:
+                self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
+        if span_ids:
+            placeholders = ",".join("?" for _ in span_ids)
+            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", span_ids)
+        self.conn.commit()
+
     def delete_visual_chunks_for_group(self, group_id: str) -> None:
         rows = self.conn.execute(
             """
@@ -1426,6 +1600,28 @@ class KnowledgeStorage:
         if not chunk_ids:
             self.conn.execute("DELETE FROM visual_artifact_chunks WHERE artifact_id = ?", (group_id,))
         self.conn.commit()
+
+    def _mark_visual_group_member_change(self, group_id: str, page: int) -> None:
+        group = self.get_visual_artifact_group(group_id)
+        if not group:
+            return
+        pages = _merge_int_pages(group.get("source_pages") or [], [page] if page else [])
+        now = _now()
+        self.conn.execute(
+            """
+            UPDATE visual_artifact_groups
+            SET source_pages = ?,
+                status = 'pending',
+                retrievable = 0,
+                analyzed_at = 0,
+                updated_at = ?,
+                error = ''
+            WHERE id = ?
+            """,
+            (_json(pages), now, group_id),
+        )
+        self.conn.commit()
+        self.delete_visual_chunks_for_group(group_id)
 
     def upsert_visual_artifact_tile(self, tile: Dict[str, Any]) -> None:
         now = _now()
@@ -2858,6 +3054,67 @@ def _loads(value: Any) -> Any:
         return json.loads(value)
     except Exception:
         return []
+
+
+def _merge_int_pages(old_pages: Iterable[Any], new_pages: Iterable[Any]) -> List[int]:
+    values: set[int] = set()
+    for page in [*(old_pages or []), *(new_pages or [])]:
+        try:
+            number = int(page)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            values.add(number)
+    return sorted(values)
+
+
+def _group_pages_changed(old_pages: Iterable[Any], new_pages: Iterable[Any]) -> bool:
+    return _merge_int_pages(old_pages, []) != _merge_int_pages(new_pages, [])
+
+
+def _group_identity_changed(existing: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
+    for key in ("group_type", "title", "caption"):
+        incoming_value = str(incoming.get(key) or "").strip()
+        if incoming_value and incoming_value != str(existing.get(key) or "").strip():
+            return True
+    return False
+
+
+def _preserved_visual_group_status(existing_status: Any, incoming_status: str) -> str:
+    existing = str(existing_status or "pending")
+    if existing in {"succeeded", "low_confidence", "failed"}:
+        return existing
+    return incoming_status or existing or "pending"
+
+
+def _merge_visual_group_result_json(
+    existing: Dict[str, Any],
+    incoming: Dict[str, Any],
+    source_pages: List[int],
+) -> Dict[str, Any]:
+    merged = dict(existing or {})
+    for key, value in (incoming or {}).items():
+        if key == "continuation_evidence":
+            continue
+        if value not in ("", None, [], {}):
+            merged[key] = value
+    evidence = []
+    for payload in (existing or {}, incoming or {}):
+        values = payload.get("continuation_evidence") if isinstance(payload, dict) else []
+        if isinstance(values, list):
+            evidence.extend(str(item) for item in values)
+    if evidence:
+        merged["continuation_evidence"] = _unique(evidence)
+    merged["source_pages"] = source_pages
+    return merged
+
+
+def _is_visual_page_chunk_metadata(metadata: Any) -> bool:
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("source") == "visual_analysis"
+        and metadata.get("visual_scope") == "page"
+    )
 
 
 def _row_value(row: sqlite3.Row, key: str, default: Any = "") -> Any:

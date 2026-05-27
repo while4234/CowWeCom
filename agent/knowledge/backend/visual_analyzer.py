@@ -234,6 +234,13 @@ def build_visual_prompt(candidate: VisualArtifactCandidate, document: KnowledgeD
         "若看到 continued、续表、缺少表头、页首续接、页尾未结束等迹象，请在 continuation 字段中说明。"
         "If headers are missing, infer only when the supplied context supports it and list uncertainty in uncertain_fields.\n\n"
     )
+    if visual_config.get("prompt_mode") == "tile":
+        instruction += (
+            "Tile mode: this image is a local tile of a large visual artifact. "
+            "Do not treat it as the complete table or figure. "
+            "Only parse visible content, preserve tile_index/visible_range attribution, "
+            "and do not fabricate missing headers without supplied context.\n\n"
+        )
     return instruction + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
@@ -320,6 +327,10 @@ def validate_visual_analysis_json(
     if not bool(visual_config.get("index_low_confidence", False)) and reasons:
         should_index = False
     reason = str(data.get("low_confidence_reason") or "; ".join(reasons))
+    continuation = _normalize_continuation(data.get("continuation"))
+    is_partial = bool(data.get("is_partial", False))
+    if continuation["role"] != "single" and continuation["confidence"] >= 0.50:
+        is_partial = True
     return VisualAnalysisResult(
         artifact_type=artifact_type,
         title=str(data.get("title") or ""),
@@ -336,6 +347,8 @@ def validate_visual_analysis_json(
         readability=str(data.get("readability") or "unknown"),
         confidence=normalized_confidence,
         processing=data.get("processing") if isinstance(data.get("processing"), dict) else {},
+        is_partial=is_partial,
+        continuation=continuation,
         should_index=should_index,
         low_confidence_reason=reason,
     )
@@ -408,7 +421,16 @@ def validate_visual_group_analysis_json(
 
 def merge_visual_group_from_member_results(group: Dict[str, Any], members: List[Dict[str, Any]]) -> Dict[str, Any]:
     ordered = sorted(members, key=lambda item: int(item.get("part_index") or 0))
-    source_pages = [int(member.get("page") or 0) for member in ordered if member.get("page")]
+    source_pages = sorted(
+        {
+            int(page)
+            for page in [
+                *(group.get("source_pages") or []),
+                *[member.get("page") for member in ordered if member.get("page")],
+            ]
+            if page
+        }
+    )
     summaries: List[str] = []
     key_facts: List[Dict[str, Any]] = []
     headers: List[Any] = []
@@ -491,7 +513,13 @@ def visual_result_to_chunks(
     prompt_version = str(visual_config.get("prompt_version") or "visual-v1")
     pipeline_version = str(candidate.pipeline_version or visual_config.get("pipeline_version") or "visual-pipeline-v1")
     section_path = "/".join(candidate.section_path) if candidate.section_path else ""
+    processing_metadata = {
+        key: result.processing.get(key)
+        for key in ("tiled", "tile_count", "high_res_retry", "high_res_page_render_dpi", "max_image_long_edge")
+        if key in (result.processing or {})
+    }
     metadata = {
+        **processing_metadata,
         "visual_artifact_id": candidate.id,
         "visual_artifact_type": result.artifact_type,
         "visual_confidence": result.confidence.get("overall", 0.0),
@@ -564,7 +592,18 @@ def visual_group_result_to_chunks(
 ) -> Tuple[List[KnowledgeChunk], List[SourceSpan]]:
     model = str(analysis_model or visual_config.get("model") or "gpt-5.5")
     prompt_version = str(visual_config.get("group_prompt_version") or "visual-group-v1")
-    source_pages = [int(page) for page in (result.get("source_pages") or group.get("source_pages") or []) if page]
+    source_pages = sorted(
+        {
+            int(page)
+            for page in [
+                *(result.get("source_pages") or []),
+                *(group.get("source_pages") or []),
+                *[member.get("page") for member in members if member.get("page")],
+            ]
+            if page
+        }
+    )
+    result = {**result, "source_pages": source_pages}
     page_start = min(source_pages) if source_pages else 0
     page_end = max(source_pages) if source_pages else 0
     artifact_ids = [member.get("artifact_id") for member in members if member.get("artifact_id")]
@@ -978,3 +1017,17 @@ def _clamp01(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, min(1.0, number))
+
+
+def _normalize_continuation(value: Any) -> Dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    role = str(payload.get("role") or "single").strip().lower()
+    if role not in {"single", "first", "middle", "last", "unknown"}:
+        role = "unknown"
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
+    return {
+        "role": role,
+        "belongs_to_same_artifact": bool(payload.get("belongs_to_same_artifact", False)),
+        "evidence": _unique_nonempty_terms([str(item) for item in evidence]),
+        "confidence": _clamp01(payload.get("confidence", 0)),
+    }

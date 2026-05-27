@@ -706,15 +706,10 @@ def resolve_data_dir(raw: str, config: Optional[KnowledgeBackendConfig], db_path
         return resolve_cli_path(raw, project_root)
     db_path_abs = absolute_path(db_path, project_root)
     inferred = infer_data_dir_from_db_path(db_path_abs)
-    config_sqlite = None
-    if config is not None and config.sqlite_path:
-        config_sqlite = absolute_path(Path(config.sqlite_path), project_root)
-    if inferred is not None and (config_sqlite is None or not same_path(config_sqlite, db_path_abs)):
+    if inferred is not None:
         return inferred
     if config is not None and config.data_dir:
         return absolute_path(Path(config.data_dir), project_root)
-    if inferred is not None:
-        return inferred
     return project_root / "public_protocol_knowledge"
 
 

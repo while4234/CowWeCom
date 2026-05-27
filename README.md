@@ -490,10 +490,10 @@ CowWeCom/
 ### 2026-05-27
 
 - 本地文档知识库从“协议资料”泛化为通用文档知识库，默认数据目录调整为 `public_document_knowledge/`，上传 PDF、DOCX、TXT、Markdown 后可导出到 `knowledge/documents/<kb_id>/`。
-- 图表/视觉知识补全改为页级增量准备和 artifact 级断点续跑，支持选择视觉分析后端、手动 reset、低置信结果隔离和 Web 进度展示。
-- 新增跨页图表 group-level 分析：跨页表格、大图、时序图等会合并成多页视觉 chunk，并保留 source pages、part/page attribution；低置信跨页关系不进入检索。
-- 新增高密度图表处理：小字图表可触发高分辨率重试，超大单页图表可 tile 分块分析后合并，避免压缩后丢失表格细节。
-- PDF 文本清洗、caption 识别和导出链路继续收紧：过滤图内噪声，避免正文引用误判为图表，导出和 deep query 不再重复展示视觉 chunk；旧索引可用 dry-run 优先的维护脚本按当前清洗规则修复普通文本 chunk，并保留已有视觉补全结果。
+- 图表/视觉知识补全改为页级增量准备和 artifact 级断点续跑，支持选择视觉分析后端、手动 reset、低置信结果隔离、Web 进度展示和 fake analyzer 单测注入。
+- 跨页图表进入 group-level 分析：跨页表格、大图、时序图等合并成多页视觉 chunk，保留 source pages、part/page attribution；group 成功、失败或低置信都会清理成员旧 page chunk，避免重复或误导检索。
+- 高密度图表处理继续加固：小字图表高分辨率重试会使用独立长边上限，超大单页图表支持 tile 分块、tile 断点复用和合并后 metadata 标记。
+- PDF 文本清洗、caption 识别和导出链路继续收紧：过滤图内噪声，避免正文引用误判为图表，导出和 deep query 不再重复展示视觉 chunk；旧索引维护脚本支持 dry-run 报告、严格按 `<data_dir>/indexes/kb.sqlite` 推断数据目录、保留视觉结果并重映射共享 source span 的普通文本 chunk 修复。
 - 修复每日记忆文件缺失误报、后台任务异常无提示、安全上传预检误拦源码目录等运行体验问题。
 
 ### 2026-05-26

@@ -8,11 +8,13 @@ from agent.knowledge.backend.models import (
     ExtractedDocument,
     KnowledgeChunk,
     KnowledgeDocument,
+    KnowledgeEntity,
+    KnowledgeRelation,
     SourceSpan,
     VisualAnalysisResult,
     VisualArtifactCandidate,
 )
-from agent.knowledge.backend.storage import KnowledgeStorage
+from agent.knowledge.backend.storage import KnowledgeStorage, stable_relation_id
 from scripts import repair_knowledge_text_chunks as repair_script
 
 
@@ -410,6 +412,47 @@ def test_report_data_dir_prefers_db_layout_over_mismatched_config(monkeypatch, t
     assert Path(report["report_path"]).parent == protocol_dir.resolve() / "reports"
 
 
+def test_report_data_dir_prefers_db_layout_even_when_config_sqlite_matches_but_data_dir_wrong(monkeypatch, tmp_path):
+    protocol_dir = tmp_path / "public_protocol_knowledge"
+    db_path = protocol_dir / "indexes" / "kb.sqlite"
+    document = _document("doc-config-mismatch-data-dir", _pdf(tmp_path, "config-mismatch-data-dir.pdf"))
+    db_path.parent.mkdir(parents=True)
+    _seed_document(db_path, document, with_visual=False)
+    _patch_extract_and_sanitize(monkeypatch)
+    monkeypatch.setattr(
+        repair_script,
+        "load_project_backend_config",
+        lambda: KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(db_path),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "wrong_data_dir"),
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        ),
+    )
+
+    options = repair_script.repair_options_from_args(
+        repair_script.parse_args(
+            [
+                "--db",
+                str(db_path),
+                "--document-id",
+                document.id,
+                "--dry-run",
+                "--workspace-root",
+                str(tmp_path),
+            ]
+        ),
+        tmp_path,
+    )
+    report = repair_script.run_repair(options)
+
+    assert report["data_dir"] == str(protocol_dir.resolve())
+    assert Path(report["report_path"]).parent == protocol_dir.resolve() / "reports"
+
+
 def test_explicit_data_dir_wins_over_db_layout(monkeypatch, tmp_path):
     protocol_dir = tmp_path / "public_protocol_knowledge"
     explicit_dir = tmp_path / "explicit-data"
@@ -564,6 +607,110 @@ def test_save_document_preserves_span_referenced_by_visual_chunk(tmp_path):
         assert storage.get_source_span(shared_span.id) is not None
         visual_chunks = [chunk for chunk in storage.list_chunks(document.id) if chunk.metadata.get("source") == "visual_analysis"]
         assert visual_chunks[0].source_span_ids == [shared_span.id]
+    finally:
+        storage.close()
+
+
+def test_save_document_remaps_new_span_when_preserved_visual_uses_same_span_id(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-shared-span-remap", _pdf(tmp_path, "shared-span-remap.pdf"))
+    shared_span = SourceSpan(
+        id="span-shared",
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=1,
+        page_end=1,
+        text="old shared span text",
+    )
+    ordinary = KnowledgeChunk(
+        id="chunk-shared-ordinary",
+        document_id=document.id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text=POLLUTION,
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[shared_span.id],
+    )
+    visual = KnowledgeChunk(
+        id="chunk-shared-visual",
+        document_id=document.id,
+        ordinal=2,
+        page_start=1,
+        page_end=1,
+        text="visual text",
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[shared_span.id],
+        metadata={"source": "visual_analysis"},
+    )
+    replacement_span = SourceSpan(
+        id=shared_span.id,
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=1,
+        page_end=1,
+        text="new ordinary repaired span text",
+    )
+    replacement = KnowledgeChunk(
+        id="chunk-shared-replacement",
+        document_id=document.id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text=CLEAN_TEXT,
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[shared_span.id],
+    )
+    entity = KnowledgeEntity(
+        id="entity-shared",
+        canonical_name="SharedSignal",
+        entity_type="signal",
+        source_span_ids=[shared_span.id],
+    )
+    relation = KnowledgeRelation(
+        id=stable_relation_id("entity-shared", "mentions", "entity-target", [shared_span.id]),
+        subject_entity_id="entity-shared",
+        predicate="mentions",
+        object_entity_id="entity-target",
+        subject="SharedSignal",
+        object="Target",
+        source_kb_id=document.kb_id,
+        evidence_span_ids=[shared_span.id],
+    )
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document, [ordinary], source_spans=[shared_span])
+        storage.append_visual_chunks(document.id, document.version_id, "artifact-shared", [visual], [])
+
+        storage.save_document(
+            document,
+            [replacement],
+            source_spans=[replacement_span],
+            entities=[entity],
+            relations=[relation],
+        )
+
+        chunks = storage.list_chunks(document.id)
+        visual_chunks = [chunk for chunk in chunks if chunk.metadata.get("source") == "visual_analysis"]
+        ordinary_chunks = [chunk for chunk in chunks if chunk.metadata.get("source") != "visual_analysis"]
+        remapped_span_id = ordinary_chunks[0].source_span_ids[0]
+
+        assert visual_chunks[0].source_span_ids == [shared_span.id]
+        assert storage.get_source_span(shared_span.id) is not None
+        assert storage.get_source_span(shared_span.id).text == "old shared span text"
+        assert remapped_span_id != shared_span.id
+        assert storage.get_source_span(remapped_span_id) is not None
+        assert storage.get_source_span(remapped_span_id).text == "new ordinary repaired span text"
+        entity_rows = storage.list_entities(["SharedSignal"])
+        assert entity_rows[0].source_span_ids == [remapped_span_id]
+        relations = storage.list_relations(entity_id="entity-shared")
+        assert relations[0].evidence_span_ids == [remapped_span_id]
+        assert relations[0].id == stable_relation_id("entity-shared", "mentions", "entity-target", [remapped_span_id])
     finally:
         storage.close()
 
