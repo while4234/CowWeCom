@@ -717,14 +717,14 @@ class KnowledgeBackendService:
         storage = self._backend._get_read_storage()
         if storage is None:
             return {"status": "success", "documents_exported": 0, "files": []}
-        documents = storage.list_documents()
+        all_documents = storage.list_documents()
+        documents = all_documents
         if document_id:
             documents = [document for document in documents if document.id == document_id]
         if not documents:
             return {"status": "success", "documents_exported": 0, "files": []}
 
         exported: List[Dict[str, Any]] = []
-        by_kb: Dict[str, List[Dict[str, Any]]] = {}
         document_root = _document_library_root(self.config)
         for document in documents:
             chunks = storage.list_chunks(document.id)
@@ -743,12 +743,12 @@ class KnowledgeBackendService:
                 "visual_artifacts": len(visual_artifacts),
             }
             exported.append(item)
-            by_kb.setdefault(document.kb_id or "kb_default", []).append(item)
 
+        index_by_kb = _protocol_index_documents_by_kb(document_root, all_documents)
         kb_index_files = []
-        for kb_id, items in sorted(by_kb.items()):
+        for kb_id, items in sorted(index_by_kb.items()):
             kb_index_files.append(_write_protocol_kb_index(document_root, kb_id, items))
-        root_index = _write_protocol_root_index(document_root, by_kb)
+        root_index = _write_protocol_root_index(document_root, index_by_kb)
         files = [item["path"] for item in exported] + kb_index_files + [root_index]
         return {
             "status": "success",
@@ -1285,6 +1285,27 @@ def _write_protocol_kb_index(workspace_root: Path, kb_id: str, documents: List[D
     lines.append("")
     _workspace_path(workspace_root, rel_path).write_text("\n".join(lines), encoding="utf-8")
     return rel_path.as_posix()
+
+
+def _protocol_index_documents_by_kb(workspace_root: Path, documents: List[KnowledgeDocument]) -> Dict[str, List[Dict[str, Any]]]:
+    documents_by_kb: Dict[str, List[Dict[str, Any]]] = {}
+    for document in documents:
+        rel_path = _protocol_index_document_path(workspace_root, document)
+        item = {
+            "document_id": document.id,
+            "title": document.title,
+            "kb_id": document.kb_id,
+            "path": rel_path,
+        }
+        documents_by_kb.setdefault(document.kb_id or "kb_default", []).append(item)
+    return documents_by_kb
+
+
+def _protocol_index_document_path(workspace_root: Path, document: KnowledgeDocument) -> str:
+    metadata_path = _document_library_path(document)
+    if metadata_path and _workspace_path(workspace_root, Path(metadata_path)).is_file():
+        return metadata_path
+    return _protocol_document_rel_path(document).as_posix()
 
 
 def _write_protocol_root_index(workspace_root: Path, documents_by_kb: Dict[str, List[Dict[str, Any]]]) -> str:

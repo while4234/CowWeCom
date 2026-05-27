@@ -1,4 +1,5 @@
 import re
+from dataclasses import replace
 from pathlib import Path
 
 from agent.knowledge.backend import KnowledgeBackendConfig, KnowledgeBackendService
@@ -122,6 +123,51 @@ def test_backend_exports_indexed_document_to_visible_markdown_library(tmp_path):
     assert "TVALID and TREADY" in exported_text
     assert "Source span IDs" in exported_text
     assert (tmp_path / "knowledge" / "protocols" / "axi4_stream" / "index.md").is_file()
+
+
+def test_single_document_export_keeps_all_protocol_indexes(tmp_path):
+    config = KnowledgeBackendConfig.from_mapping(
+        {
+            "enabled": True,
+            "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+            "workspace_root": str(tmp_path),
+            "data_dir": str(tmp_path / "backend-data"),
+            "default_kb_id": "axi4_stream",
+            "ingest": {"allowed_extensions": [".md"], "document_library_root": str(tmp_path)},
+            "vector_store": {"provider": "sqlite", "required": False},
+        }
+    )
+    service = KnowledgeBackendService(config)
+
+    axi_result = service.ingest_upload_bytes(
+        "axi-stream.md",
+        b"# AXI4-Stream\n\nTVALID and TREADY define the transfer handshake.",
+        title="AMBA AXI4-Stream Test",
+    )
+    axi_document_id = axi_result["document"]["id"]
+    service.export_document_library(document_id=axi_document_id)
+    service.close()
+
+    ucie_service = KnowledgeBackendService(replace(config, default_kb_id="ucie_1_1"))
+    ucie_result = ucie_service.ingest_upload_bytes(
+        "ucie.md",
+        b"# UCIe\n\nFLIT transfer uses protocol-layer flow control.",
+        title="UCIe Test",
+    )
+    ucie_document_id = ucie_result["document"]["id"]
+
+    export = ucie_service.export_document_library(document_id=ucie_document_id)
+    ucie_service.close()
+
+    assert export["documents_exported"] == 1
+    root_index = (tmp_path / "knowledge" / "protocols" / "index.md").read_text(encoding="utf-8")
+    assert "[axi4_stream](axi4_stream/index.md) - 1 document(s)" in root_index
+    assert "[ucie_1_1](ucie_1_1/index.md) - 1 document(s)" in root_index
+
+    axi_index = (tmp_path / "knowledge" / "protocols" / "axi4_stream" / "index.md").read_text(encoding="utf-8")
+    ucie_index = (tmp_path / "knowledge" / "protocols" / "ucie_1_1" / "index.md").read_text(encoding="utf-8")
+    assert "AMBA AXI4-Stream Test" in axi_index
+    assert "UCIe Test" in ucie_index
 
 
 def test_backend_generates_validated_llm_study_document(tmp_path, monkeypatch):
