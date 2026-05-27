@@ -1388,6 +1388,11 @@ class KnowledgeStorage:
         member_artifact_ids: Iterable[str],
         preferred_group_id: str,
     ) -> str:
+        """Resolve overlapping groups using only current artifact->group links.
+
+        Legacy membership rows whose artifact has moved to another group are ignored
+        by the join and can be removed later by cleanup_stale_visual_artifact_group_members().
+        """
         artifact_ids = _unique([artifact_id for artifact_id in member_artifact_ids if artifact_id])
         if not artifact_ids:
             return preferred_group_id
@@ -1910,6 +1915,11 @@ class KnowledgeStorage:
         self.conn.commit()
 
     def _mark_visual_group_not_retrievable(self, group_id: str) -> None:
+        """Clear group/member retrieval flags and delete current group/page chunks.
+
+        Member page chunk cleanup is scoped through current artifact/group joins so stale
+        membership rows do not make old groups delete chunks for artifacts that moved.
+        """
         now = _now()
         self.conn.execute(
             "UPDATE visual_artifact_groups SET retrievable = 0, updated_at = ? WHERE id = ?",
@@ -1935,6 +1945,11 @@ class KnowledgeStorage:
         artifact_id: str = "",
         reason: str = "",
     ) -> None:
+        """Invalidate a group after a current member changes analysis state.
+
+        Stale membership rows are pruned before recomputing pages, then group chunks and
+        current member page chunks are removed so retry/force cannot leave retrievable residue.
+        """
         if not group_id or not self.get_visual_artifact_group(group_id):
             return
         self.cleanup_stale_visual_artifact_group_members()

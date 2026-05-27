@@ -331,6 +331,25 @@ def _seed_ready_group(service, document_id, version_id, group_id="visual_group_r
     return storage
 
 
+def _group_chunk_refs(storage, document_id, group_id):
+    chunks = [
+        chunk
+        for chunk in storage.list_chunks(document_id)
+        if chunk.metadata.get("visual_scope") == "group"
+        and chunk.metadata.get("visual_group_id") == group_id
+    ]
+    span_ids = sorted({span_id for chunk in chunks for span_id in chunk.source_span_ids})
+    return chunks, span_ids
+
+
+def _count_rows(conn, table, column, values):
+    values = [value for value in values if value]
+    if not values:
+        return 0
+    placeholders = ",".join("?" for _ in values)
+    return conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({placeholders})", values).fetchone()[0]
+
+
 def test_visual_schema_is_created(tmp_path):
     storage = KnowledgeStorage(tmp_path / "knowledge.sqlite3")
     try:
@@ -1144,6 +1163,35 @@ def test_group_explicit_empty_source_pages_is_hard_failure(tmp_path):
     assert "source_pages is empty" in result["low_confidence_reason"]
 
 
+def test_group_missing_source_pages_fills_from_group_metadata_with_reason(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    members = [
+        {"artifact_id": "a1", "page": 1, "analysis_status": "succeeded", "analysis_confidence": 0.9},
+        {"artifact_id": "a2", "page": 2, "analysis_status": "succeeded", "analysis_confidence": 0.9},
+    ]
+
+    result = validate_visual_group_analysis_json(
+        {
+            "artifact_type": "table",
+            "is_multipage": True,
+            "summary": "missing source pages fact",
+            "key_facts": [{"fact": "missing source pages fact", "confidence": 0.9}],
+            "parts": [{"page": 1, "artifact_id": "a1"}, {"page": 2, "artifact_id": "a2"}],
+            "merged_table": {"headers": ["Signal"], "rows": [{"Signal": "A"}]},
+            "confidence": {"ocr": 0.95, "structure": 0.95, "semantic": 0.95, "continuation": 0.9, "overall": 0.95},
+            "should_index": True,
+        },
+        {"id": "visual_group_missing_pages", "document_id": document_id, "version_id": version_id, "source_pages": [1, 2]},
+        members,
+        service.config.visual_analysis,
+    )
+
+    assert result["should_index"] is True
+    assert result["source_pages"] == [1, 2]
+    assert "source_pages missing in model output; filled from group metadata" in result["low_confidence_reason"]
+
+
 def test_group_low_confidence_true_config_does_not_index_chunks(tmp_path):
     service = _service(tmp_path, visual_analysis={"index_low_confidence": True, "tile_large_artifacts": False})
     document_id, version_id = _ingest(service)
@@ -1401,6 +1449,88 @@ def test_resolve_visual_group_id_ignores_legacy_stale_membership_rows(tmp_path):
 
     assert winner == new_group
     assert storage.cleanup_stale_visual_artifact_group_members() == 1
+
+
+def test_cleanup_stale_visual_artifact_group_members_removes_multiple_rows(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    group_ids = ["visual_group_cleanup_current", "visual_group_cleanup_old_a", "visual_group_cleanup_old_b", "visual_group_cleanup_other"]
+    for group_id in group_ids:
+        storage.upsert_visual_artifact_group(
+            {
+                "id": group_id,
+                "document_id": document_id,
+                "version_id": version_id,
+                "kb_id": "kb_default",
+                "group_type": "table",
+                "title": group_id,
+                "caption": group_id,
+                "source_pages": [1, 2],
+                "status": "pending",
+                "confidence": 0.9,
+                "result_json": {},
+            }
+        )
+    current = _candidate(document_id, version_id, 1)
+    stale_a = _candidate(document_id, version_id, 2)
+    stale_b = _candidate(document_id, version_id, 3)
+    for candidate, group_id in (
+        (current, "visual_group_cleanup_current"),
+        (stale_a, "visual_group_cleanup_other"),
+        (stale_b, "visual_group_cleanup_other"),
+    ):
+        storage.upsert_visual_artifact(candidate)
+        storage.mark_visual_artifact_group_membership(candidate.id, group_id, candidate.page, "first", 0.9)
+    storage.add_visual_artifact_group_member("visual_group_cleanup_current", current.id, 1, 1, "first", 0.9)
+    storage.add_visual_artifact_group_member("visual_group_cleanup_old_a", stale_a.id, 1, 2, "first", 0.9)
+    storage.add_visual_artifact_group_member("visual_group_cleanup_old_b", stale_b.id, 1, 3, "first", 0.9)
+
+    assert storage.cleanup_stale_visual_artifact_group_members() == 2
+
+    with sqlite3.connect(str(service.config.sqlite_path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM visual_artifact_group_members").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM visual_artifact_group_members WHERE group_id = ? AND artifact_id = ?",
+            ("visual_group_cleanup_current", current.id),
+        ).fetchone()[0] == 1
+
+
+def test_group_success_sets_retrievable_only_for_current_real_members(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    group_id = "visual_group_success_current_members"
+    other_group_id = "visual_group_success_other_members"
+    for gid in (group_id, other_group_id):
+        storage.upsert_visual_artifact_group(
+            {
+                "id": gid,
+                "document_id": document_id,
+                "version_id": version_id,
+                "kb_id": "kb_default",
+                "group_type": "table",
+                "title": gid,
+                "caption": gid,
+                "source_pages": [1, 2],
+                "status": "pending",
+                "confidence": 0.9,
+                "result_json": {},
+            }
+        )
+    current = _candidate(document_id, version_id, 1)
+    stale = _candidate(document_id, version_id, 2)
+    storage.upsert_visual_artifact(current)
+    storage.upsert_visual_artifact(stale)
+    storage.mark_visual_artifact_group_membership(current.id, group_id, 1, "first", 0.9)
+    storage.mark_visual_artifact_group_membership(stale.id, other_group_id, 2, "last", 0.9)
+    storage.add_visual_artifact_group_member(group_id, current.id, 1, 1, "first", 0.9)
+    storage.add_visual_artifact_group_member(group_id, stale.id, 2, 2, "last", 0.9)
+
+    storage.complete_visual_artifact_group_success(group_id, {"summary": "current only"}, 0.9)
+
+    assert storage.get_visual_artifact(current.id)["group_retrievable"] is True
+    assert storage.get_visual_artifact(stale.id)["group_retrievable"] is False
 
 
 def test_group_low_confidence_not_indexed(tmp_path):
@@ -1751,6 +1881,29 @@ def test_group_member_retry_low_confidence_invalidates_existing_group_chunks(tmp
     assert service.search("LOW_NEW", limit=5) == []
 
 
+def test_group_member_retry_low_confidence_removes_old_group_chunk_tables(tmp_path):
+    service = _service(tmp_path, visual_analysis={"index_low_confidence": True})
+    document_id, version_id = _ingest(service)
+    group_id = "visual_group_retry_low_tables"
+    storage = _seed_ready_group(service, document_id, version_id, group_id)
+    service._visual_analyzer = QueueAnalyzer([])
+    assert service.analyze_visual_artifact_group(group_id, analysis_backend="codex")["outcome"] == "succeeded"
+    old_chunks, old_span_ids = _group_chunk_refs(storage, document_id, group_id)
+    old_chunk_ids = [chunk.id for chunk in old_chunks]
+    assert old_chunk_ids
+    assert old_span_ids
+
+    service._visual_analyzer = QueueAnalyzer([_raw_low_table_result("LOW_TABLES_NEW", page=1, should_index=True)])
+    retry = service.retry_visual_artifact("visual_test_1")
+
+    assert retry["outcome"] == "low_confidence"
+    with sqlite3.connect(str(service.config.sqlite_path)) as conn:
+        assert _count_rows(conn, "chunks", "id", old_chunk_ids) == 0
+        assert _count_rows(conn, "chunks_fts", "chunk_id", old_chunk_ids) == 0
+        assert _count_rows(conn, "source_spans", "id", old_span_ids) == 0
+        assert _count_rows(conn, "visual_artifact_chunks", "chunk_id", old_chunk_ids) == 0
+
+
 def test_group_member_retry_success_invalidates_old_group_fact_until_remerge(tmp_path):
     service = _service(tmp_path)
     document_id, version_id = _ingest(service)
@@ -1776,6 +1929,25 @@ def test_group_member_retry_success_invalidates_old_group_fact_until_remerge(tmp
     assert rebuilt["outcome"] == "succeeded"
     assert service.search("FRESH_1", limit=5)
     assert service.search("READY_1", limit=5) == []
+
+
+def test_group_member_retry_success_deletes_old_group_chunk_mapping(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    group_id = "visual_group_retry_success_mapping"
+    storage = _seed_ready_group(service, document_id, version_id, group_id)
+    service._visual_analyzer = QueueAnalyzer([])
+    assert service.analyze_visual_artifact_group(group_id, analysis_backend="codex")["outcome"] == "succeeded"
+    old_chunks, _old_span_ids = _group_chunk_refs(storage, document_id, group_id)
+    old_chunk_ids = [chunk.id for chunk in old_chunks]
+    assert old_chunk_ids
+
+    service._visual_analyzer = QueueAnalyzer([_table_result("FRESH_MAPPING_1", page=1)])
+    retry = service.retry_visual_artifact("visual_test_1")
+
+    assert retry["outcome"] == "succeeded"
+    with sqlite3.connect(str(service.config.sqlite_path)) as conn:
+        assert _count_rows(conn, "visual_artifact_chunks", "chunk_id", old_chunk_ids) == 0
 
 
 def test_force_reanalysis_context_excludes_existing_visual_chunks(tmp_path):
