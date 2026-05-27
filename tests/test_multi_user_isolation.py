@@ -280,6 +280,47 @@ class TestMultiUserIsolation(unittest.TestCase):
             self.assertIn("own memory", own_result.result)
             self.assertEqual(other_result.status, "error")
 
+    def test_memory_get_missing_daily_memory_returns_empty_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = MemoryGetTool(
+                FakeMemoryManager(workspace=tmp),
+                user_id="admin",
+                allow_shared_memory=True,
+            )
+
+            result = tool.execute({"path": "memory/2026-05-26.md"})
+
+            self.assertEqual(result.status, "success")
+            self.assertIn("File: memory/2026-05-26.md", result.result)
+            self.assertIn("treat it as empty memory", result.result)
+
+    def test_memory_get_missing_private_daily_memory_returns_empty_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = MemoryGetTool(
+                FakeMemoryManager(workspace=tmp),
+                user_id="user_a",
+                allow_shared_memory=False,
+            )
+
+            result = tool.execute({"path": "2026-05-26.md"})
+
+            self.assertEqual(result.status, "success")
+            self.assertIn("File: memory/users/user_a/2026-05-26.md", result.result)
+            self.assertIn("treat it as empty memory", result.result)
+
+    def test_memory_get_missing_non_daily_file_still_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = MemoryGetTool(
+                FakeMemoryManager(workspace=tmp),
+                user_id="admin",
+                allow_shared_memory=True,
+            )
+
+            result = tool.execute({"path": "memory/notes.md"})
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("File not found", result.result)
+
     def test_guarded_tool_denies_project_path_for_normal_user(self):
         with tempfile.TemporaryDirectory() as tmp:
             profile = make_profile(root=tmp)

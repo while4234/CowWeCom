@@ -889,6 +889,7 @@ class ChatChannel(Channel):
                 worker_exception = worker.exception()
                 if worker_exception:
                     self._fail_callback(session_id, exception=worker_exception, **kwargs)
+                    self._send_worker_failure_notice(kwargs.get("context"), worker_exception)
                 else:
                     self._success_callback(session_id, **kwargs)
             except CancelledError as e:
@@ -901,6 +902,31 @@ class ChatChannel(Channel):
                     runtime.semaphore.release()
 
         return func
+
+    def _send_worker_failure_notice(self, context: Context, exception: Exception):
+        runtime = context.get("_session_runtime") if context else None
+        if not runtime or not hasattr(runtime, "failure_notice_text"):
+            return
+        try:
+            self._send_plain_text(
+                context,
+                runtime.failure_notice_text(self._classify_worker_failure(exception)),
+                True,
+                "failure_notice",
+            )
+        except Exception as e:
+            logger.warning("[chat_channel] failed to send worker failure notice: %s", str(e)[:200])
+
+    @staticmethod
+    def _classify_worker_failure(exception: Exception) -> str:
+        message = str(exception or "").lower()
+        if "context" in message and ("length" in message or "overflow" in message or "window" in message):
+            return "context_overflow"
+        if "rate limit" in message or "too many requests" in message or "429" in message:
+            return "rate_limit"
+        if "model" in message or "llm" in message or "openai" in message:
+            return "model_error"
+        return "error"
 
     @staticmethod
     def _long_task_expectation_enabled() -> bool:

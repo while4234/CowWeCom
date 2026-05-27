@@ -1,3 +1,4 @@
+from concurrent.futures import Future
 import threading
 import unittest
 from unittest.mock import patch
@@ -478,6 +479,30 @@ class TestFastLaneProgress(unittest.TestCase):
         self.assertNotIn("Agent error", reply.content)
         self.assertNotIn("bridge-secret", reply.content)
         self.assertNotIn("C:\\secret", reply.content)
+
+    def test_worker_exception_sends_failure_notice_and_releases_session(self):
+        channel = make_channel_without_thread()
+        runtime = SessionRuntime()
+        runtime.start_task(r"long task touching C:\secret\plan.txt", max_turns=10)
+        runtime.update_progress("error", {"error": r"worker crashed with token=worker-secret"})
+        self.assertTrue(runtime.semaphore.acquire(blocking=False))
+        context = make_text_context("long task")
+        context["_session_runtime"] = runtime
+        channel.sessions["wechat-session"] = runtime
+        sent = []
+        channel._send_plain_text = (
+            lambda context, text, track_visible=True, visible_source="send": sent.append((text, visible_source)) or True
+        )
+        future = Future()
+        future.set_exception(RuntimeError(r"worker crashed with token=worker-secret"))
+
+        channel._thread_pool_callback("wechat-session", context=context)(future)
+
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][1], "failure_notice")
+        self.assertNotIn("C:\\secret", sent[0][0])
+        self.assertNotIn("worker-secret", sent[0][0])
+        self.assertTrue(runtime.semaphore.acquire(blocking=False))
 
     def test_cancel_marks_progress_without_clearing_pending(self):
         runtime = SessionRuntime()

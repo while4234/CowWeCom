@@ -100,6 +100,9 @@ class MemoryGetTool(BaseTool):
             if not self._is_relative_to(file_path, workspace_resolved):
                 return ToolResult.fail(f"Error: Access denied: path outside workspace")
             
+            if not file_path.exists() and self._is_optional_daily_memory_path(path):
+                return ToolResult.success(self._empty_daily_memory_result(path, start_line))
+
             if not file_path.exists():
                 return ToolResult.fail(f"Error: File not found: {path}")
             
@@ -180,3 +183,30 @@ class MemoryGetTool(BaseTool):
             return True
         except ValueError:
             return False
+
+    @staticmethod
+    def _is_optional_daily_memory_path(path: str) -> bool:
+        normalized = str(path or "").replace("\\", "/")
+        parts = normalized.split("/")
+        filename = parts[-1] if parts else ""
+        if not filename.endswith(".md"):
+            return False
+        stem = filename[:-3]
+        if len(stem) != 10 or stem[4] != "-" or stem[7] != "-":
+            return False
+        year, month, day = stem[:4], stem[5:7], stem[8:10]
+        if not (year.isdigit() and month.isdigit() and day.isdigit()):
+            return False
+        if normalized.startswith("memory/users/"):
+            return len(parts) == 4 and parts[3] == filename
+        return normalized.startswith("memory/") and len(parts) == 2
+
+    @staticmethod
+    def _empty_daily_memory_result(path: str, start_line: int) -> str:
+        safe_start = start_line if isinstance(start_line, int) and start_line > 0 else 1
+        return "\n".join([
+            f"File: {path}",
+            f"Lines: {safe_start}-{safe_start - 1} (total: 0)",
+            "Status: daily memory file has not been created yet; treat it as empty memory.",
+            "",
+        ])

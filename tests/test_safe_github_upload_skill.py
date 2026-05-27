@@ -45,7 +45,7 @@ class SafeGithubUploadSkillTest(unittest.TestCase):
                 ".weixin_cow_credentials.json",
                 ".codex/",
                 ".playwright-mcp/",
-                "memory/",
+                "/memory/",
                 "data/project-optimizer/",
                 "",
             ]
@@ -94,6 +94,19 @@ class SafeGithubUploadSkillTest(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["status"], "ok")
         self.assertIn("feature.py", payload["staged_files"])
+
+    def test_preflight_allows_source_directory_named_memory(self):
+        source_dir = self.root / "agent" / "tools" / "memory"
+        source_dir.mkdir(parents=True)
+        (source_dir / "memory_get.py").write_text("print('source')\n", encoding="utf-8")
+        run_git(self.root, "add", "agent/tools/memory/memory_get.py")
+
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "ok")
+        self.assertIn("agent/tools/memory/memory_get.py", payload["staged_files"])
 
     def test_preflight_allows_staged_deletion_of_protected_runtime_file(self):
         index_dir = self.root / "knowledge_backend" / "indexes"
