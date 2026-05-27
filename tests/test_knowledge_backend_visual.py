@@ -1,9 +1,13 @@
 import sqlite3
+import json
+
+import pytest
 
 from agent.knowledge.backend import KnowledgeBackendConfig, KnowledgeBackendService
-from agent.knowledge.backend.models import VisualAnalysisResult, VisualArtifactCandidate
+from agent.knowledge.backend.models import ExtractedDocument, DocumentPage, KnowledgeDocument, VisualAnalysisResult, VisualArtifactCandidate
 from agent.knowledge.backend.service import dispatch_admin_request
 from agent.knowledge.backend.storage import KnowledgeStorage
+from agent.knowledge.backend.visual_extractors import PyMuPDFVisualArtifactExtractor
 
 
 def _config(tmp_path, **overrides):
@@ -84,6 +88,22 @@ class FakeExtractor:
         return list(self.candidates)
 
 
+class FakeRangeExtractor(FakeExtractor):
+    def __init__(self, candidates, pages_per_call=1):
+        super().__init__(candidates)
+        self.calls = []
+        self.pages_per_call = pages_per_call
+
+    def extract_candidates_for_page_range(self, document, extracted_document, storage, config, start_page, max_pages):
+        self.calls.append((start_page, max_pages))
+        end_page = start_page + max_pages - 1
+        candidates = [candidate for candidate in self.candidates if start_page <= candidate.page <= end_page]
+        return list(candidates), {"pages_scanned": self.pages_per_call, "candidates": len(candidates)}
+
+    def ensure_visual_artifact_image(self, candidate, config):
+        return candidate
+
+
 class QueueAnalyzer:
     def __init__(self, results):
         self.results = list(results)
@@ -143,6 +163,7 @@ def test_visual_schema_is_created(tmp_path):
     assert "visual_artifacts" in tables
     assert "visual_analysis_runs" in tables
     assert "visual_artifact_chunks" in tables
+    assert "visual_prepare_states" in tables
 
 
 def test_visual_build_is_artifact_level_resumable(tmp_path):
@@ -342,3 +363,93 @@ def test_visual_build_progress_fields_and_failed_not_has_more(tmp_path):
     assert result["stats"]["total"] == 1
     assert result["stats"]["pending"] == 0
     assert result["stats"]["failed"] == 1
+
+
+def test_visual_build_prepares_pages_incrementally(tmp_path):
+    service = _service(tmp_path, visual_analysis={"prepare_pages_per_request": 1})
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    storage.conn.execute(
+        "UPDATE documents SET metadata = ? WHERE id = ?",
+        (json.dumps({"page_count": 2}), document_id),
+    )
+    storage.conn.commit()
+    extractor = FakeRangeExtractor(
+        [
+            _candidate(document_id, version_id, 1),
+            _candidate(document_id, version_id, 2),
+        ]
+    )
+    service._visual_extractor = extractor
+    service._visual_analyzer = QueueAnalyzer([_high_result("page1_visualfact"), _high_result("page2_visualfact")])
+
+    first = service.build_visual_knowledge(document_id=document_id, limit=1)
+    second = service.build_visual_knowledge(document_id=document_id, limit=1)
+
+    assert extractor.calls[:2] == [(1, 1), (2, 1)]
+    assert first["prepare"]["prepared_pages"] == 1
+    assert first["prepare"]["prepared_artifacts"] == 1
+    assert second["prepare"]["prepared_pages"] >= 2
+    assert first["processed"] == 1
+    assert second["processed"] == 1
+
+
+def test_force_build_does_not_claim_same_artifact_twice_in_one_batch(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    service._visual_extractor = FakeExtractor([_candidate(document_id, version_id, 1)])
+    service._visual_analyzer = QueueAnalyzer([_high_result("first_forcefact"), _high_result("second_forcefact")])
+
+    assert service.build_visual_knowledge(document_id=document_id, limit=1)["succeeded"] == 1
+    retry = service.build_visual_knowledge(document_id=document_id, limit=2, force=True)
+
+    assert retry["processed"] == 1
+
+
+def test_visual_extractor_skips_toc_pages_but_keeps_strict_caption(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "figures.pdf"
+    pdf = fitz.open()
+    toc_page = pdf.new_page(width=600, height=800)
+    toc_page.insert_text((72, 72), "Table of Contents")
+    toc_page.insert_text((72, 110), "Figure 1-1. Intro diagram ................ 5")
+    toc_page.insert_text((72, 135), "List of Figures")
+    figure_page = pdf.new_page(width=600, height=800)
+    figure_page.draw_rect(fitz.Rect(80, 120, 520, 420), color=(0, 0, 0))
+    figure_page.insert_text((72, 455), "Figure 5-34. Standard Package x16 interface: Signal exit order")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    config = _config(tmp_path, ingest={"allowed_extensions": [".pdf"]})
+    document = KnowledgeDocument(
+        id="doc",
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        size=pdf_path.stat().st_size,
+        content_hash="hash",
+        status="ready",
+        version_id="v1",
+    )
+    extracted = ExtractedDocument(
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[
+            DocumentPage(1, "Table of Contents\nFigure 1-1. Intro diagram ................ 5\nList of Figures"),
+            DocumentPage(2, "Figure 5-34. Standard Package x16 interface: Signal exit order"),
+        ],
+    )
+
+    candidates, report = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        config,
+        start_page=1,
+        max_pages=2,
+    )
+
+    assert report["skipped_toc_pages"] == 1
+    assert all(candidate.page != 1 for candidate in candidates)
+    assert any(candidate.page == 2 and "Figure 5-34" in candidate.caption for candidate in candidates)

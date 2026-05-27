@@ -244,6 +244,7 @@
       "reasoning_effort": "xhigh",
       "prompt_version": "visual-v1",
       "max_items_per_request": 1,
+      "prepare_pages_per_request": 3,
       "min_confidence": 0.78,
       "min_ocr_confidence": 0.70,
       "min_structure_confidence": 0.75,

@@ -168,8 +168,27 @@ class KnowledgeStorage:
             """,
             (version_id, document.id, version_id, document.content_hash, document.source_path, version_id, _now()),
         )
-        self.conn.execute("DELETE FROM chunks WHERE document_id = ?", (document.id,))
-        self.conn.execute("DELETE FROM source_spans WHERE document_id = ?", (document.id,))
+        ordinary_chunk_rows = self.conn.execute(
+            """
+            SELECT id, source_span_ids
+            FROM chunks
+            WHERE document_id = ?
+              AND COALESCE(json_extract(metadata, '$.source'), '') != 'visual_analysis'
+            """,
+            (document.id,),
+        ).fetchall()
+        ordinary_chunk_ids = [row["id"] for row in ordinary_chunk_rows]
+        ordinary_span_ids: List[str] = []
+        for row in ordinary_chunk_rows:
+            ordinary_span_ids.extend(_loads(row["source_span_ids"]) or [])
+        if ordinary_chunk_ids:
+            placeholders = ",".join("?" for _ in ordinary_chunk_ids)
+            self.conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", ordinary_chunk_ids)
+            if self.fts5_available:
+                self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", ordinary_chunk_ids)
+        if ordinary_span_ids:
+            placeholders = ",".join("?" for _ in ordinary_span_ids)
+            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", ordinary_span_ids)
         self.conn.executemany(
             """
             INSERT INTO chunks(
@@ -329,24 +348,35 @@ class KnowledgeStorage:
             INSERT INTO visual_artifacts(
                 id, document_id, version_id, kb_id, artifact_type, page, label, caption, bbox,
                 image_path, image_hash, context_hash, parser, parser_confidence,
+                source_path, crop_dpi, crop_padding_px,
                 analysis_status, analysis_confidence, retrievable, analysis_model, prompt_version,
                 result_json, error, created_at, updated_at, analyzed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, 0, '', '', '{}', '', ?, ?, 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, 0, '', '', '{}', '', ?, ?, 0)
             ON CONFLICT(id) DO UPDATE SET
                 kb_id = excluded.kb_id,
                 label = excluded.label,
                 caption = excluded.caption,
                 bbox = excluded.bbox,
-                image_path = excluded.image_path,
-                image_hash = excluded.image_hash,
+                image_path = CASE
+                    WHEN excluded.image_path != '' THEN excluded.image_path
+                    ELSE visual_artifacts.image_path
+                END,
+                image_hash = CASE
+                    WHEN visual_artifacts.image_path != ''
+                     AND visual_artifacts.context_hash = excluded.context_hash
+                    THEN visual_artifacts.image_hash
+                    ELSE excluded.image_hash
+                END,
                 context_hash = excluded.context_hash,
                 parser = excluded.parser,
                 parser_confidence = excluded.parser_confidence,
+                source_path = excluded.source_path,
+                crop_dpi = excluded.crop_dpi,
+                crop_padding_px = excluded.crop_padding_px,
                 updated_at = excluded.updated_at,
                 analysis_status = CASE
                     WHEN visual_artifacts.analysis_status IN ('succeeded', 'low_confidence', 'failed')
-                     AND visual_artifacts.image_hash = excluded.image_hash
                      AND visual_artifacts.context_hash = excluded.context_hash
                     THEN visual_artifacts.analysis_status
                     ELSE 'pending'
@@ -367,9 +397,25 @@ class KnowledgeStorage:
                 candidate.context_hash,
                 candidate.parser,
                 float(candidate.parser_confidence or 0),
+                candidate.source_path,
+                int(candidate.crop_dpi or 180),
+                int(candidate.crop_padding_px or 12),
                 now,
                 now,
             ),
+        )
+        self.conn.commit()
+
+    def update_visual_artifact_image(self, artifact_id: str, image_path: str, image_hash: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE visual_artifacts
+            SET image_path = ?,
+                image_hash = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (image_path or "", image_hash or "", _now(), artifact_id),
         )
         self.conn.commit()
 
@@ -430,6 +476,7 @@ class KnowledgeStorage:
         model: str = "",
         prompt_version: str = "",
         analysis_backend: str = "",
+        exclude_ids: Optional[Iterable[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         now = _now()
         stale_before = now - 30 * 60
@@ -446,6 +493,12 @@ class KnowledgeStorage:
         if version_id:
             version_clause = "AND version_id = ?"
             params.append(version_id)
+        excluded = [artifact_id for artifact_id in (exclude_ids or []) if artifact_id]
+        exclude_clause = ""
+        if excluded:
+            placeholders = ",".join("?" for _ in excluded)
+            exclude_clause = f"AND id NOT IN ({placeholders})"
+            params.extend(excluded)
         if force:
             status_clause = "analysis_status IN ('pending', 'failed', 'low_confidence', 'succeeded', 'running')"
         else:
@@ -461,7 +514,7 @@ class KnowledgeStorage:
             f"""
             SELECT *
             FROM visual_artifacts
-            WHERE ({status_clause}) {doc_clause} {kb_clause} {version_clause}
+            WHERE ({status_clause}) {doc_clause} {kb_clause} {version_clause} {exclude_clause}
             ORDER BY CASE analysis_status
                 WHEN 'pending' THEN 0
                 WHEN 'running' THEN 1
@@ -499,6 +552,141 @@ class KnowledgeStorage:
         )
         self.conn.commit()
         return self.get_visual_artifact(row["id"])
+
+    def get_visual_prepare_state(self, document_id: str, version_id: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT * FROM visual_prepare_states WHERE document_id = ? AND version_id = ?",
+            (document_id, version_id),
+        ).fetchone()
+        return _row_to_visual_prepare_state(row) if row else None
+
+    def upsert_visual_prepare_state(
+        self,
+        *,
+        document_id: str,
+        version_id: str,
+        kb_id: str,
+        source_path: str,
+        total_pages: int,
+        next_page: int = 1,
+        prepared_pages: int = 0,
+        prepared_artifacts: int = 0,
+        status: str = "pending",
+        error: str = "",
+    ) -> Dict[str, Any]:
+        now = _now()
+        self.conn.execute(
+            """
+            INSERT INTO visual_prepare_states(
+                document_id, version_id, kb_id, source_path, total_pages, next_page,
+                prepared_pages, prepared_artifacts, status, error, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(document_id, version_id) DO UPDATE SET
+                kb_id = excluded.kb_id,
+                source_path = excluded.source_path,
+                total_pages = excluded.total_pages,
+                next_page = excluded.next_page,
+                prepared_pages = excluded.prepared_pages,
+                prepared_artifacts = excluded.prepared_artifacts,
+                status = excluded.status,
+                error = excluded.error,
+                updated_at = excluded.updated_at
+            """,
+            (
+                document_id,
+                version_id,
+                kb_id or "kb_default",
+                source_path or "",
+                int(total_pages or 0),
+                max(1, int(next_page or 1)),
+                max(0, int(prepared_pages or 0)),
+                max(0, int(prepared_artifacts or 0)),
+                status or "pending",
+                error or "",
+                now,
+                now,
+            ),
+        )
+        self.conn.commit()
+        return self.get_visual_prepare_state(document_id, version_id) or {}
+
+    def update_visual_prepare_state(self, document_id: str, version_id: str, **updates: Any) -> Dict[str, Any]:
+        allowed = {
+            "kb_id",
+            "source_path",
+            "total_pages",
+            "next_page",
+            "prepared_pages",
+            "prepared_artifacts",
+            "status",
+            "error",
+        }
+        fields = [key for key in updates if key in allowed]
+        if not fields:
+            return self.get_visual_prepare_state(document_id, version_id) or {}
+        assignments = ", ".join(f"{field} = ?" for field in fields)
+        values = [updates[field] for field in fields]
+        values.extend([_now(), document_id, version_id])
+        self.conn.execute(
+            f"""
+            UPDATE visual_prepare_states
+            SET {assignments},
+                updated_at = ?
+            WHERE document_id = ? AND version_id = ?
+            """,
+            values,
+        )
+        self.conn.commit()
+        return self.get_visual_prepare_state(document_id, version_id) or {}
+
+    def visual_prepare_stats(
+        self,
+        document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        version_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        clauses: List[str] = []
+        params: List[Any] = []
+        if document_id:
+            clauses.append("document_id = ?")
+            params.append(document_id)
+        if kb_id:
+            clauses.append("kb_id = ?")
+            params.append(kb_id)
+        if version_id:
+            clauses.append("version_id = ?")
+            params.append(version_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.conn.execute(
+            f"""
+            SELECT *
+            FROM visual_prepare_states
+            {where}
+            ORDER BY updated_at DESC
+            """,
+            params,
+        ).fetchall()
+        states = [_row_to_visual_prepare_state(row) for row in rows]
+        total_pages = sum(int(state.get("total_pages") or 0) for state in states)
+        prepared_pages = sum(int(state.get("prepared_pages") or 0) for state in states)
+        prepared_artifacts = sum(int(state.get("prepared_artifacts") or 0) for state in states)
+        status = "pending"
+        if states:
+            if any(state.get("status") == "failed" for state in states):
+                status = "failed"
+            elif all(state.get("status") == "done" for state in states):
+                status = "done"
+            elif any(state.get("status") == "running" for state in states):
+                status = "running"
+        return {
+            "status": status,
+            "total_pages": total_pages,
+            "prepared_pages": prepared_pages,
+            "prepared_artifacts": prepared_artifacts,
+            "next_page": min((int(state.get("next_page") or 1) for state in states), default=1),
+            "states": states,
+        }
 
     def complete_visual_artifact_success(
         self,
@@ -1177,6 +1365,9 @@ class KnowledgeStorage:
                 context_hash TEXT NOT NULL DEFAULT '',
                 parser TEXT NOT NULL DEFAULT '',
                 parser_confidence REAL NOT NULL DEFAULT 0,
+                source_path TEXT NOT NULL DEFAULT '',
+                crop_dpi INTEGER NOT NULL DEFAULT 180,
+                crop_padding_px INTEGER NOT NULL DEFAULT 12,
                 analysis_status TEXT NOT NULL DEFAULT 'pending',
                 analysis_confidence REAL NOT NULL DEFAULT 0,
                 retrievable INTEGER NOT NULL DEFAULT 0,
@@ -1193,6 +1384,9 @@ class KnowledgeStorage:
             """
         )
         self._ensure_column("visual_artifacts", "analysis_backend", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("visual_artifacts", "source_path", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("visual_artifacts", "crop_dpi", "INTEGER NOT NULL DEFAULT 180")
+        self._ensure_column("visual_artifacts", "crop_padding_px", "INTEGER NOT NULL DEFAULT 12")
         self.conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_visual_artifacts_doc
@@ -1228,6 +1422,31 @@ class KnowledgeStorage:
             """
         )
         self._ensure_column("visual_analysis_runs", "analysis_backend", "TEXT NOT NULL DEFAULT ''")
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_prepare_states (
+                document_id TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                kb_id TEXT NOT NULL DEFAULT 'kb_default',
+                source_path TEXT NOT NULL DEFAULT '',
+                total_pages INTEGER NOT NULL DEFAULT 0,
+                next_page INTEGER NOT NULL DEFAULT 1,
+                prepared_pages INTEGER NOT NULL DEFAULT 0,
+                prepared_artifacts INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(document_id, version_id)
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_visual_prepare_states_kb
+            ON visual_prepare_states(kb_id, status)
+            """
+        )
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS visual_artifact_chunks (
@@ -1586,6 +1805,9 @@ def _row_to_visual_artifact(row: sqlite3.Row) -> Dict[str, Any]:
         "context_hash": row["context_hash"] or "",
         "parser": row["parser"] or "",
         "parser_confidence": float(row["parser_confidence"] or 0),
+        "source_path": _row_value(row, "source_path", ""),
+        "crop_dpi": int(_row_value(row, "crop_dpi", 180) or 180),
+        "crop_padding_px": int(_row_value(row, "crop_padding_px", 12) or 12),
         "analysis_status": row["analysis_status"] or "pending",
         "analysis_confidence": float(row["analysis_confidence"] or 0),
         "retrievable": bool(row["retrievable"]),
@@ -1597,6 +1819,23 @@ def _row_to_visual_artifact(row: sqlite3.Row) -> Dict[str, Any]:
         "created_at": int(row["created_at"] or 0),
         "updated_at": int(row["updated_at"] or 0),
         "analyzed_at": int(row["analyzed_at"] or 0),
+    }
+
+
+def _row_to_visual_prepare_state(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "document_id": row["document_id"],
+        "version_id": row["version_id"],
+        "kb_id": row["kb_id"] or "kb_default",
+        "source_path": row["source_path"] or "",
+        "total_pages": int(row["total_pages"] or 0),
+        "next_page": int(row["next_page"] or 1),
+        "prepared_pages": int(row["prepared_pages"] or 0),
+        "prepared_artifacts": int(row["prepared_artifacts"] or 0),
+        "status": row["status"] or "pending",
+        "error": row["error"] or "",
+        "created_at": int(row["created_at"] or 0),
+        "updated_at": int(row["updated_at"] or 0),
     }
 
 

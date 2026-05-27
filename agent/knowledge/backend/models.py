@@ -284,6 +284,9 @@ class VisualArtifactCandidate:
     context_before: str = ""
     context_after: str = ""
     page_text: str = ""
+    source_path: str = ""
+    crop_dpi: int = 180
+    crop_padding_px: int = 12
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

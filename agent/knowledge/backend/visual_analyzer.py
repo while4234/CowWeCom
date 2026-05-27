@@ -330,14 +330,19 @@ def _chunk_texts(candidate: VisualArtifactCandidate, result: VisualAnalysisResul
     caption = result.caption or candidate.caption
     title = result.title or caption or candidate.label
     overall = result.confidence.get("overall", 0.0)
+    search_terms = _visual_search_terms(candidate, result)
     summary = "\n".join(
         [
             "[视觉图表]",
             f"Document: {document.title}",
             f"Page: {candidate.page}",
+            f"Section path: {' / '.join(candidate.section_path)}",
             f"Type: {result.artifact_type}",
+            f"Artifact type aliases: {_artifact_aliases(result.artifact_type)}",
             f"Title/Caption: {title}",
+            f"Label: {candidate.label}",
             f"Summary: {result.summary}",
+            f"Search terms: {', '.join(search_terms)}",
             "Key facts:",
             *facts,
             f"Confidence: {overall}",
@@ -361,6 +366,19 @@ def _detail_text(result: VisualAnalysisResult) -> str:
         lines.append("Signals:")
         for signal in result.signals[:50]:
             lines.append(json.dumps(signal, ensure_ascii=False))
+    headers = (result.table or {}).get("headers") or []
+    if headers:
+        lines.append("Table headers:")
+        lines.append(", ".join(str(header) for header in headers))
+    rows = (result.table or {}).get("rows") or []
+    if rows:
+        lines.append("Table rows excerpt:")
+        for row in rows[:20]:
+            lines.append(json.dumps(row, ensure_ascii=False))
+    states = (result.state_machine or {}).get("states") or []
+    if states:
+        lines.append("State names:")
+        lines.append(", ".join(str(state) for state in states[:80]))
     transitions = (result.state_machine or {}).get("transitions") or []
     if transitions:
         lines.append("State machine transitions:")
@@ -372,6 +390,75 @@ def _detail_text(result: VisualAnalysisResult) -> str:
         for observation in observations[:50]:
             lines.append(json.dumps(observation, ensure_ascii=False))
     return "\n".join(lines).strip()
+
+
+def _artifact_aliases(artifact_type: str) -> str:
+    base = {
+        "table": ["table", "表格", "grid", "matrix"],
+        "figure": ["figure", "fig", "diagram", "图", "图表"],
+        "chart": ["chart", "plot", "curve", "图表"],
+        "timing_diagram": ["timing", "timing diagram", "waveform", "时序", "时序图"],
+        "waveform": ["waveform", "timing", "时序", "波形"],
+        "state_machine": ["state machine", "fsm", "state transition", "状态机", "状态转换"],
+        "bitfield": ["bit field", "bitfield", "register field", "位域", "字段"],
+        "flowchart": ["flowchart", "flow diagram", "流程图"],
+        "image": ["image", "figure", "diagram", "图片"],
+    }
+    aliases = base.get(str(artifact_type or "").lower(), ["figure", "diagram", "图表"])
+    return ", ".join(aliases)
+
+
+def _visual_search_terms(candidate: VisualArtifactCandidate, result: VisualAnalysisResult) -> List[str]:
+    values: List[str] = [
+        result.artifact_type,
+        _artifact_aliases(result.artifact_type),
+        result.title,
+        result.caption or candidate.caption,
+        candidate.label,
+        str(candidate.page),
+        " / ".join(candidate.section_path),
+    ]
+    for fact in result.key_facts[:50]:
+        if isinstance(fact, dict):
+            values.append(str(fact.get("fact") or ""))
+        else:
+            values.append(str(fact))
+    for signal in result.signals[:80]:
+        if isinstance(signal, dict):
+            values.extend(str(signal.get(key) or "") for key in ("name", "direction", "width", "meaning"))
+    table = result.table or {}
+    for header in table.get("headers") or []:
+        values.append(str(header))
+    for row in table.get("rows") or []:
+        if isinstance(row, dict):
+            values.extend(str(value) for value in row.values())
+        elif isinstance(row, list):
+            values.extend(str(value) for value in row)
+    state_machine = result.state_machine or {}
+    values.extend(str(state) for state in state_machine.get("states") or [])
+    for transition in state_machine.get("transitions") or []:
+        if isinstance(transition, dict):
+            values.extend(str(transition.get(key) or "") for key in ("from", "to", "condition", "action"))
+    chart = result.chart or {}
+    for key in ("axes", "series", "observations"):
+        for item in chart.get(key) or []:
+            values.append(json.dumps(item, ensure_ascii=False) if isinstance(item, (dict, list)) else str(item))
+    return _unique_nonempty_terms(values)
+
+
+def _unique_nonempty_terms(values: List[str]) -> List[str]:
+    result: List[str] = []
+    seen = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result[:160]
 
 
 def _clamp01(value: Any) -> float:

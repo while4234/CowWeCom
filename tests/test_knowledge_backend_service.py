@@ -4,8 +4,10 @@ from pathlib import Path
 
 from agent.knowledge.backend import KnowledgeBackendConfig, KnowledgeBackendService
 from agent.knowledge.backend.models import KnowledgeChunk, KnowledgeDocument
+from agent.knowledge.backend.models import SourceSpan, VisualAnalysisResult, VisualArtifactCandidate
 import agent.knowledge.backend.service as backend_service
 from agent.knowledge.backend.service import _render_protocol_document_markdown
+from agent.knowledge.backend.storage import stable_chunk_id, stable_span_id
 
 
 def _field(value, name, default=None):
@@ -226,6 +228,118 @@ def test_protocol_markdown_source_chunks_skip_visual_analysis_chunks():
     assert "Ordinary source prose." in source_section
     assert "[视觉图表]" not in source_section
     assert "High-confidence visual summary." in markdown
+
+
+def test_reingest_preserves_visual_chunks_and_fts(tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "backend-data"),
+                "ingest": {"allowed_extensions": [".md"]},
+                "visual_analysis": {"enabled": True},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    result = service.ingest_upload_bytes(
+        "visual-source.md",
+        b"# Visual Source\n\nOriginal ordinary text.",
+        title="Visual Source",
+    )
+    document_id = result["document"]["id"]
+    version_id = result["document"]["version_id"]
+    storage = service._backend._get_storage(writable=True)
+    artifact = VisualArtifactCandidate(
+        id="visual_preserve_1",
+        document_id=document_id,
+        version_id=version_id,
+        kb_id="kb_default",
+        artifact_type="figure",
+        page=1,
+        label="Figure 1",
+        caption="Figure 1. Preserved visual",
+        bbox={"x0": 1, "y0": 2, "x1": 3, "y1": 4},
+        image_path="",
+        image_hash="prehash",
+        context_hash="ctx",
+        parser="fake",
+        parser_confidence=0.9,
+    )
+    storage.upsert_visual_artifact(artifact)
+    visual_chunk = KnowledgeChunk(
+        id="visual_chunk_preserve_1",
+        document_id=document_id,
+        ordinal=99,
+        page_start=1,
+        page_end=1,
+        text="[视觉图表]\nPreserved visual key fact: fts_visual_preserve_fact",
+        kb_id="kb_default",
+        version_id=version_id,
+        source_span_ids=["visual_span_preserve_1"],
+        metadata={"source": "visual_analysis"},
+    )
+    visual_span = SourceSpan(
+        id="visual_span_preserve_1",
+        document_id=document_id,
+        version_id=version_id,
+        source_file="visual-source.md",
+        page_start=1,
+        page_end=1,
+        text="fts_visual_preserve_fact",
+    )
+    storage.append_visual_chunks(document_id, version_id, artifact.id, [visual_chunk], [visual_span])
+    storage.complete_visual_artifact_success(
+        artifact.id,
+        VisualAnalysisResult(
+            artifact_type="figure",
+            title="Preserved",
+            summary="fts_visual_preserve_fact",
+            structured_markdown="",
+            key_facts=[{"fact": "fts_visual_preserve_fact", "confidence": 0.9}],
+            confidence={"overall": 0.9, "ocr": 0.9, "structure": 0.9, "semantic": 0.9},
+            should_index=True,
+        ).to_dict(),
+        0.9,
+        retrievable=True,
+    )
+
+    replacement_chunk = KnowledgeChunk(
+        id=stable_chunk_id(document_id, 1, "Replacement ordinary text."),
+        document_id=document_id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text="Replacement ordinary text.",
+        kb_id="kb_default",
+        version_id=version_id,
+        source_span_ids=[stable_span_id(document_id, 1, "Replacement ordinary text.")],
+    )
+    replacement_span = SourceSpan(
+        id=replacement_chunk.source_span_ids[0],
+        document_id=document_id,
+        version_id=version_id,
+        source_file="visual-source.md",
+        page_start=1,
+        page_end=1,
+        text="Replacement ordinary text.",
+    )
+    document = storage.get_document(document_id)
+    storage.save_document(
+        replace(document, metadata={**document.metadata, "page_count": 1}),
+        [replacement_chunk],
+        source_spans=[replacement_span],
+    )
+
+    chunks = storage.list_chunks(document_id)
+    assert any(chunk.metadata.get("source") == "visual_analysis" for chunk in chunks)
+    assert not any("Original ordinary text" in chunk.text for chunk in chunks if chunk.metadata.get("source") != "visual_analysis")
+    assert any("Replacement ordinary text" in chunk.text for chunk in chunks)
+    assert storage.list_visual_artifacts(document_id=document_id)[0]["analysis_status"] == "succeeded"
+    assert storage.conn.execute("SELECT COUNT(*) FROM visual_artifact_chunks").fetchone()[0] >= 1
+    assert service.search("fts_visual_preserve_fact", limit=5)
 
 
 def test_backend_generates_validated_llm_study_document(tmp_path, monkeypatch):

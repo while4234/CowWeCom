@@ -13,11 +13,15 @@ from .models import ExtractedDocument, KnowledgeDocument, VisualArtifactCandidat
 from .storage import stable_visual_artifact_id
 
 
-CAPTION_RE = re.compile(
-    r"\b(?:Figure|Fig\.?|Table)\s+\d+(?:[-.]\d+)*\b|图\s*\d+|表\s*\d+|"
-    r"时序|状态机|流程图|位域|bit\s*field|timing|state\s*machine|diagram|waveform|chart",
+STRICT_CAPTION_RE = re.compile(
+    r"(?im)^\s*(?:Figure|Fig\.?|Table)\s+\d+(?:[-.]\d+)*\s*[.:：-]?\s+\S+|"
+    r"^\s*[图表]\s*\d+(?:[-.]\d+)*\s*[.:：-]?\s+\S+"
+)
+VISUAL_KEYWORD_RE = re.compile(
+    r"\b(?:timing|waveform|state\s*machine|bit\s*field|diagram|chart)\b|时序|状态机|流程图|位域",
     re.IGNORECASE,
 )
+CAPTION_RE = STRICT_CAPTION_RE
 
 
 class VisualArtifactExtractor:
@@ -45,14 +49,44 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         storage: Any,
         config: Any,
     ) -> List[VisualArtifactCandidate]:
+        page_count = len(extracted_document.pages) or 10**9
+        candidates, _ = self.extract_candidates_for_page_range(
+            document,
+            extracted_document,
+            storage,
+            config,
+            start_page=1,
+            max_pages=page_count,
+        )
+        return candidates
+
+    def extract_candidates_for_page_range(
+        self,
+        document: KnowledgeDocument,
+        extracted_document: ExtractedDocument,
+        storage: Any,
+        config: Any,
+        start_page: int,
+        max_pages: int,
+    ) -> Tuple[List[VisualArtifactCandidate], Dict[str, Any]]:
         source = self._source_path(document, extracted_document, config)
+        start_page = max(1, int(start_page or 1))
+        max_pages = max(1, int(max_pages or 1))
+        end_page = start_page + max_pages - 1
+        report: Dict[str, Any] = {
+            "start_page": start_page,
+            "end_page": end_page,
+            "pages_scanned": 0,
+            "candidates": 0,
+            "skipped_toc_pages": 0,
+        }
         if source.suffix.lower() != ".pdf" or not source.is_file():
-            return []
+            return [], report
         try:
             import fitz
         except ImportError:
             logger.warning("[KnowledgeBackend] PyMuPDF is not installed; visual artifact extraction skipped")
-            return []
+            return [], report
 
         visual_config = getattr(config, "visual_analysis", {}) or {}
         dpi = int(visual_config.get("page_render_dpi", 180))
@@ -60,32 +94,36 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         min_area_ratio = float(visual_config.get("candidate_min_area_ratio", 0.015))
         candidates: List[VisualArtifactCandidate] = []
         page_texts = {page.page: page.text for page in extracted_document.pages}
-        output_root = Path(config.data_dir) / "visual_artifacts" / document.id / document.version_id
-        output_root.mkdir(parents=True, exist_ok=True)
 
         with fitz.open(str(source)) as pdf:
             for page_index, page in enumerate(pdf, start=1):
+                if page_index < start_page:
+                    continue
+                if page_index > end_page:
+                    break
+                report["pages_scanned"] += 1
                 page_rect = page.rect
                 page_area = max(1.0, float(page_rect.width * page_rect.height))
                 text_blocks = self._text_blocks(page)
                 page_text = page_texts.get(page_index) or page.get_text("text") or ""
+                if _is_toc_or_list_page(page_text):
+                    report["skipped_toc_pages"] += 1
+                    continue
 
                 for rect in self._image_rects(page):
                     if self._area_ratio(rect, page_area) < min_area_ratio:
                         continue
                     candidates.append(
                         self._candidate_from_rect(
-                            page,
                             rect,
                             document,
                             extracted_document,
-                            output_root,
                             "image",
                             page_index,
                             page_text,
-                            text_blocks,
                             dpi,
                             padding,
+                            source_path=str(source),
                             parser_confidence=0.70,
                         )
                     )
@@ -96,41 +134,39 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                         continue
                     candidates.append(
                         self._candidate_from_rect(
-                            page,
                             rect,
                             document,
                             extracted_document,
-                            output_root,
                             artifact_type,
                             page_index,
                             page_text,
-                            text_blocks,
                             dpi,
                             padding,
+                            source_path=str(source),
                             caption=caption,
                             parser_confidence=0.85,
                         )
                     )
 
-                if CAPTION_RE.search(page_text) and not caption_candidates:
+                if self._should_add_page_fallback(page_text, caption_candidates, candidates, page_index):
                     candidates.append(
                         self._candidate_from_rect(
-                            page,
                             page_rect,
                             document,
                             extracted_document,
-                            output_root,
                             "figure",
                             page_index,
                             page_text,
-                            text_blocks,
                             dpi,
                             padding,
+                            source_path=str(source),
                             caption="",
                             parser_confidence=0.55,
                         )
                     )
-        return self._dedupe(candidates)
+        deduped = self._dedupe(candidates)
+        report["candidates"] = len(deduped)
+        return deduped, report
 
     def _source_path(self, document: KnowledgeDocument, extracted_document: ExtractedDocument, config: Any) -> Path:
         source_path = document.source_path or extracted_document.source_path
@@ -165,7 +201,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         candidates = []
         for block in blocks:
             text = block["text"]
-            if not CAPTION_RE.search(text):
+            if _looks_like_toc_entry(text) or not STRICT_CAPTION_RE.search(text):
                 continue
             x0, y0, x1, y1 = block["bbox"]
             caption_rect = fitz.Rect(x0, y0, x1, y1)
@@ -178,18 +214,16 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
 
     def _candidate_from_rect(
         self,
-        page: Any,
         rect: Any,
         document: KnowledgeDocument,
         extracted_document: ExtractedDocument,
-        output_root: Path,
         artifact_type: str,
         page_number: int,
         page_text: str,
-        text_blocks: List[Dict[str, Any]],
         dpi: int,
         padding: int,
         *,
+        source_path: str,
         caption: str = "",
         parser_confidence: float,
     ) -> VisualArtifactCandidate:
@@ -200,13 +234,6 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         scale = dpi / 72.0
         clip = fitz.Rect(rect)
         pad_points = padding / max(scale, 0.1)
-        clip.x0 = max(page.rect.x0, clip.x0 - pad_points)
-        clip.y0 = max(page.rect.y0, clip.y0 - pad_points)
-        clip.x1 = min(page.rect.x1, clip.x1 + pad_points)
-        clip.y1 = min(page.rect.y1, clip.y1 + pad_points)
-        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False)
-        image_bytes = pix.tobytes("png")
-        image_hash = hashlib.sha256(image_bytes).hexdigest()
         bbox = {
             "x0": round(float(clip.x0), 3),
             "y0": round(float(clip.y0), 3),
@@ -214,17 +241,6 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             "y1": round(float(clip.y1), 3),
             "unit": "pdf_points",
         }
-        artifact_id = stable_visual_artifact_id(
-            document.id,
-            document.version_id,
-            page_number,
-            image_hash,
-            artifact_type,
-            bbox,
-        )
-        image_path = output_root / f"{artifact_id}.png"
-        if not image_path.exists():
-            image_path.write_bytes(image_bytes)
         context_before, context_after = self._context_around_caption(
             extracted_document,
             page_number,
@@ -234,6 +250,23 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         context_hash = hashlib.sha256(
             "\n".join([caption, context_before, context_after, page_text[:2000]]).encode("utf-8")
         ).hexdigest()
+        image_hash = self._lazy_image_prehash(
+            document.id,
+            document.version_id,
+            page_number,
+            artifact_type,
+            bbox,
+            caption,
+            context_hash,
+        )
+        artifact_id = stable_visual_artifact_id(
+            document.id,
+            document.version_id,
+            page_number,
+            image_hash,
+            artifact_type,
+            bbox,
+        )
         return VisualArtifactCandidate(
             id=artifact_id,
             document_id=document.id,
@@ -244,7 +277,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             label=self._label(caption),
             caption=caption,
             bbox=bbox,
-            image_path=str(image_path),
+            image_path="",
             image_hash=image_hash,
             context_hash=context_hash,
             parser=self.parser_name,
@@ -253,7 +286,91 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             context_before=context_before,
             context_after=context_after,
             page_text=page_text[:3000],
+            source_path=source_path,
+            crop_dpi=dpi,
+            crop_padding_px=padding,
         )
+
+    def ensure_visual_artifact_image(
+        self,
+        candidate: VisualArtifactCandidate,
+        config: Any,
+    ) -> VisualArtifactCandidate:
+        source = Path(candidate.source_path or "")
+        if not source.is_file():
+            document = KnowledgeDocument(
+                id=candidate.document_id,
+                title="",
+                source_path=candidate.source_path,
+                mime_type="application/pdf",
+                size=0,
+                content_hash="",
+                status="ready",
+                version_id=candidate.version_id,
+            )
+            source = self._source_path(document, ExtractedDocument("", candidate.source_path, "", []), config)
+        try:
+            import fitz
+        except ImportError as exc:
+            raise RuntimeError("PyMuPDF is required for visual artifact crop rendering") from exc
+        output_root = Path(config.data_dir) / "visual_artifacts" / candidate.document_id / candidate.version_id
+        output_root.mkdir(parents=True, exist_ok=True)
+        with fitz.open(str(source)) as pdf:
+            page = pdf[int(candidate.page) - 1]
+            scale = int(candidate.crop_dpi or 180) / 72.0
+            padding = int(candidate.crop_padding_px or 12)
+            bbox = candidate.bbox or {}
+            clip = fitz.Rect(
+                float(bbox.get("x0", page.rect.x0)),
+                float(bbox.get("y0", page.rect.y0)),
+                float(bbox.get("x1", page.rect.x1)),
+                float(bbox.get("y1", page.rect.y1)),
+            )
+            pad_points = padding / max(scale, 0.1)
+            clip.x0 = max(page.rect.x0, clip.x0 - pad_points)
+            clip.y0 = max(page.rect.y0, clip.y0 - pad_points)
+            clip.x1 = min(page.rect.x1, clip.x1 + pad_points)
+            clip.y1 = min(page.rect.y1, clip.y1 + pad_points)
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False)
+            image_bytes = pix.tobytes("png")
+        image_hash = hashlib.sha256(image_bytes).hexdigest()
+        image_path = output_root / f"{candidate.id}.png"
+        image_path.write_bytes(image_bytes)
+        return VisualArtifactCandidate(
+            **{
+                **candidate.to_dict(),
+                "image_path": str(image_path),
+                "image_hash": image_hash,
+            }
+        )
+
+    def _lazy_image_prehash(
+        self,
+        document_id: str,
+        version_id: str,
+        page: int,
+        artifact_type: str,
+        bbox: Dict[str, Any],
+        caption: str,
+        context_hash: str,
+    ) -> str:
+        bbox_json = str(sorted((bbox or {}).items()))
+        raw = f"{document_id}|{version_id}|{page}|{artifact_type}|{bbox_json}|{caption}|{context_hash}"
+        return "prehash_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _should_add_page_fallback(
+        self,
+        page_text: str,
+        caption_candidates: List[Tuple[Any, str, str]],
+        candidates: List[VisualArtifactCandidate],
+        page_index: int,
+    ) -> bool:
+        if caption_candidates or any(candidate.page == page_index for candidate in candidates):
+            return False
+        text = page_text or ""
+        if _is_toc_or_list_page(text):
+            return False
+        return bool(STRICT_CAPTION_RE.search(text) and VISUAL_KEYWORD_RE.search(text))
 
     def _context_around_caption(
         self,
@@ -332,3 +449,23 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         area_b = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
         union = area_a + area_b - intersection
         return intersection / union if union else 0.0
+
+
+def _is_toc_or_list_page(page_text: str) -> bool:
+    lowered = (page_text or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "table of contents",
+            "list of figures",
+            "list of tables",
+            "revision history",
+        )
+    )
+
+
+def _looks_like_toc_entry(text: str) -> bool:
+    value = str(text or "")
+    dotted = bool(re.search(r"\.{5,}\s*\d+\s*$", value))
+    many_sections = len(re.findall(r"\b\d+(?:\.\d+)*\b", value)) >= 5 and value.count("\n") >= 3
+    return dotted or value.count("....") >= 1 or many_sections

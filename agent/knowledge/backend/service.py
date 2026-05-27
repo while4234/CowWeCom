@@ -24,6 +24,7 @@ from .extractors import (
 from .builders import HeuristicKnowledgeBuilder
 from .models import (
     Citation,
+    DocumentPage,
     ExtractedDocument,
     KnowledgeBase,
     KnowledgeChunk,
@@ -63,6 +64,7 @@ DEFAULT_VISUAL_ANALYSIS_CONFIG: Dict[str, Any] = {
     "reasoning_effort": "xhigh",
     "prompt_version": "visual-v1",
     "max_items_per_request": 1,
+    "prepare_pages_per_request": 3,
     "min_confidence": 0.78,
     "min_ocr_confidence": 0.70,
     "min_structure_confidence": 0.75,
@@ -393,6 +395,13 @@ class KnowledgeBackendService:
     def status(self) -> BackendStatus:
         visual = dict(self.config.visual_analysis or {})
         visual.pop("mineru_api_url", None)
+        if self.config.enabled and _visual_analysis_enabled(self.config):
+            try:
+                storage = self._backend._get_read_storage()
+                if storage is not None:
+                    visual["prepare"] = storage.visual_prepare_stats()
+            except Exception:
+                pass
         return BackendStatus(enabled=self.config.enabled, backend=self.config.vector_store.provider, visual_analysis=visual)
 
     def ingest_path(self, path: Path) -> IngestPathResult:
@@ -532,8 +541,9 @@ class KnowledgeBackendService:
         document_id: Optional[str] = None,
         kb_id: Optional[str] = None,
         force: bool = False,
+        max_pages: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Scan documents for visual artifact candidates without calling a model."""
+        """Incrementally scan a small page range for visual artifact candidates."""
 
         if not self.config.enabled:
             return {"ok": False, "status": "disabled", "message": "local knowledge backend is disabled"}
@@ -548,27 +558,89 @@ class KnowledgeBackendService:
         documents = [document for document in documents if (document.doc_type or "document") == "document"]
         prepared = 0
         errors: List[str] = []
+        visual_config = self.config.visual_analysis or {}
+        pages_per_request = max(1, int(max_pages or visual_config.get("prepare_pages_per_request") or 3))
         for document in documents:
             try:
                 source = _resolve_document_source_path(document, self.config)
-                extracted = extract_document(source)
-                extracted = ExtractedDocument(
-                    title=document.title or extracted.title,
-                    source_path=str(source),
-                    mime_type=extracted.mime_type,
-                    pages=extracted.pages,
-                    metadata=extracted.metadata,
+                total_pages = _document_total_pages(document, source)
+                state = storage.get_visual_prepare_state(document.id, document.version_id)
+                extracted = _extracted_document_for_visual_prepare(
+                    storage,
+                    document,
+                    source,
+                    start_page=1 if state is None else int(state.get("next_page") or 1),
+                    max_pages=pages_per_request,
+                    total_pages=total_pages,
                 )
-                candidates = self._visual_extractor.extract_candidates(document, extracted, storage, self.config)
+                state = storage.get_visual_prepare_state(document.id, document.version_id)
+                if force or state is None:
+                    state = storage.upsert_visual_prepare_state(
+                        document_id=document.id,
+                        version_id=document.version_id,
+                        kb_id=document.kb_id or "kb_default",
+                        source_path=str(source),
+                        total_pages=total_pages,
+                        next_page=1,
+                        prepared_pages=0,
+                        prepared_artifacts=0,
+                        status="pending",
+                        error="",
+                    )
+                if state.get("status") == "done" and not force:
+                    continue
+                start_page = max(1, int(state.get("next_page") or 1))
+                if start_page > max(1, total_pages):
+                    storage.update_visual_prepare_state(
+                        document.id,
+                        document.version_id,
+                        status="done",
+                        total_pages=total_pages,
+                        next_page=total_pages + 1,
+                    )
+                    continue
+                storage.update_visual_prepare_state(document.id, document.version_id, status="running", error="")
+                if hasattr(self._visual_extractor, "extract_candidates_for_page_range"):
+                    candidates, prepare_report = self._visual_extractor.extract_candidates_for_page_range(
+                        document,
+                        extracted,
+                        storage,
+                        self.config,
+                        start_page=start_page,
+                        max_pages=pages_per_request,
+                    )
+                else:
+                    candidates = self._visual_extractor.extract_candidates(document, extracted, storage, self.config)
+                    prepare_report = {"pages_scanned": total_pages}
                 for candidate in candidates:
                     storage.upsert_visual_artifact(candidate)
                     prepared += 1
+                scanned_pages = max(0, int(prepare_report.get("pages_scanned") or 0))
+                next_page = start_page + scanned_pages
+                prepared_pages = min(total_pages, int(state.get("prepared_pages") or 0) + scanned_pages)
+                prepared_artifacts = int(state.get("prepared_artifacts") or 0) + len(candidates)
+                done = next_page > total_pages or scanned_pages <= 0
+                storage.update_visual_prepare_state(
+                    document.id,
+                    document.version_id,
+                    total_pages=total_pages,
+                    next_page=min(total_pages + 1, max(1, next_page)),
+                    prepared_pages=prepared_pages,
+                    prepared_artifacts=prepared_artifacts,
+                    status="done" if done else "pending",
+                    error="",
+                )
             except Exception as exc:
                 message = f"{document.id}: {exc}"
                 logger.warning("[KnowledgeBackend] visual artifact prepare failed: %s", message)
+                try:
+                    storage.update_visual_prepare_state(document.id, document.version_id, status="failed", error=str(exc))
+                except Exception:
+                    pass
                 errors.append(message)
         version_id = _current_document_version_id(storage, document_id) if document_id else None
         stats = storage.visual_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
+        prepare_stats = storage.visual_prepare_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
         return {
             "ok": True,
             "status": "success",
@@ -576,6 +648,7 @@ class KnowledgeBackendService:
             "kb_id": kb_id or "",
             "prepared": prepared,
             "errors": errors,
+            "prepare": prepare_stats,
             **stats,
         }
 
@@ -616,9 +689,7 @@ class KnowledgeBackendService:
         storage = self._backend._get_storage(writable=True)
         version_id = _current_document_version_id(storage, document_id) if document_id else None
         stats = storage.visual_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
-        if stats["total"] == 0:
-            self.prepare_visual_artifacts(document_id=document_id, kb_id=kb_id, force=force)
-            stats = storage.visual_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
+        prepare = storage.visual_prepare_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
         batch_limit = max(1, int(limit or visual_config.get("max_items_per_request") or 1))
         run_id = run_id or storage.create_visual_run(
             document_id=document_id,
@@ -626,6 +697,8 @@ class KnowledgeBackendService:
             analysis_backend=effective_backend,
         )
         processed = succeeded = low_confidence = failed = 0
+        prepared = 0
+        processed_artifact_ids: set[str] = set()
 
         for _ in range(batch_limit):
             artifact = storage.claim_next_visual_artifact(
@@ -637,9 +710,27 @@ class KnowledgeBackendService:
                 model=model,
                 prompt_version=prompt_version,
                 analysis_backend=effective_backend,
+                exclude_ids=processed_artifact_ids,
             )
+            if artifact is None and (prepare.get("status") != "done" or stats["total"] == 0):
+                prepare_result = self.prepare_visual_artifacts(document_id=document_id, kb_id=kb_id, force=False)
+                prepared += int(prepare_result.get("prepared") or 0)
+                stats = storage.visual_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
+                prepare = storage.visual_prepare_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
+                artifact = storage.claim_next_visual_artifact(
+                    document_id=document_id,
+                    kb_id=None if document_id else kb_id,
+                    version_id=version_id,
+                    force=force,
+                    retry_failed=retry_failed,
+                    model=model,
+                    prompt_version=prompt_version,
+                    analysis_backend=effective_backend,
+                    exclude_ids=processed_artifact_ids,
+                )
             if artifact is None:
                 break
+            processed_artifact_ids.add(artifact["id"])
             processed += 1
             outcome = self._process_visual_artifact(storage, artifact, force, model, prompt_version, effective_backend)
             if outcome == "succeeded":
@@ -649,23 +740,27 @@ class KnowledgeBackendService:
             else:
                 failed += 1
         stats = storage.visual_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
+        prepare = storage.visual_prepare_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
         run = storage.update_visual_run_stats(run_id)
+        prepare_has_more = bool(prepare.get("status") not in ("done", "failed"))
         return {
             "ok": True,
             "status": "success",
             "document_id": document_id or "",
             "kb_id": kb_id or "",
             "analysis_backend": effective_backend,
+            "prepared": prepared,
             "processed": processed,
             "succeeded": succeeded,
             "low_confidence": low_confidence,
             "failed": failed,
             "pending": stats["pending"],
-            "has_more": bool(stats["pending"] > 0),
+            "has_more": bool(stats["pending"] > 0 or prepare_has_more),
             "has_retryable_failed": bool(stats["failed"] > 0),
             "run_id": run_id,
             "run": run,
             "stats": stats,
+            "prepare": prepare,
         }
 
     def list_visual_artifacts(
@@ -733,6 +828,15 @@ class KnowledgeBackendService:
             routed = llm_backend_router.get_effective_openai_api_config(backend)
             return str(routed.get("model") or "")
 
+        def capi_available(backend: str) -> bool:
+            from config import conf
+
+            if backend == "capi_monthly" and llm_backend_router.has_capi_monthly_credentials():
+                return True
+            if backend == "capi" and llm_backend_router.has_capi_credentials("capi"):
+                return True
+            return _openai_backend_effective_available(backend, llm_backend_router, conf)
+
         def codex_available() -> bool:
             try:
                 provider = llm_backend_router.get_codex_provider_config()
@@ -753,13 +857,13 @@ class KnowledgeBackendService:
             {
                 "id": "capi",
                 "label": "CAPI",
-                "available": bool(llm_backend_router.has_capi_credentials("capi")),
+                "available": capi_available("capi"),
                 "model": capi_model("capi"),
             },
             {
                 "id": "capi_monthly",
                 "label": "CAPI 月卡",
-                "available": bool(llm_backend_router.has_capi_monthly_credentials()),
+                "available": capi_available("capi_monthly"),
                 "model": capi_model("capi_monthly"),
             },
             {
@@ -783,16 +887,26 @@ class KnowledgeBackendService:
         if not _visual_analysis_enabled(self.config):
             return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false"}
         storage = self._backend._get_read_storage()
+        version_id = _current_document_version_id(storage, document_id) if storage is not None and document_id else None
         stats = (
             storage.visual_stats(
                 document_id=document_id,
                 kb_id=None if document_id else kb_id,
-                version_id=_current_document_version_id(storage, document_id) if document_id else None,
+                version_id=version_id,
             )
             if storage is not None
             else {}
         )
-        return {"ok": True, "status": "success", "document_id": document_id or "", "kb_id": kb_id or "", **stats}
+        prepare = (
+            storage.visual_prepare_stats(
+                document_id=document_id,
+                kb_id=None if document_id else kb_id,
+                version_id=version_id,
+            )
+            if storage is not None
+            else {}
+        )
+        return {"ok": True, "status": "success", "document_id": document_id or "", "kb_id": kb_id or "", "prepare": prepare, **stats}
 
     def _process_visual_artifact(
         self,
@@ -811,6 +925,9 @@ class KnowledgeBackendService:
             if force:
                 storage.delete_visual_chunks_for_artifact(artifact["id"])
             candidate = _candidate_from_artifact_row(artifact, document, storage, self.config)
+            if isinstance(self._visual_analyzer, VisualAnalyzer):
+                candidate = self._visual_extractor.ensure_visual_artifact_image(candidate, self.config)
+                storage.update_visual_artifact_image(candidate.id, candidate.image_path, candidate.image_hash)
             result = self._visual_analyzer.analyze(
                 candidate,
                 self.config,
@@ -862,6 +979,7 @@ class KnowledgeBackendService:
         if not isinstance(self._visual_analyzer, VisualAnalyzer):
             return
         from common import llm_backend_router
+        from config import conf
 
         normalized = normalize_visual_analysis_backend(backend)
         if normalized == "codex":
@@ -874,11 +992,11 @@ class KnowledgeBackendService:
             except Exception as exc:
                 raise RuntimeError(f"selected visual analysis backend is unavailable: codex ({exc})") from exc
         if normalized == "capi_monthly":
-            if llm_backend_router.has_capi_monthly_credentials():
+            if llm_backend_router.has_capi_monthly_credentials() or _openai_backend_effective_available("capi_monthly", llm_backend_router, conf):
                 return
             raise RuntimeError("selected visual analysis backend is unavailable: capi_monthly")
         if normalized == "capi":
-            if llm_backend_router.has_capi_credentials("capi"):
+            if llm_backend_router.has_capi_credentials("capi") or _openai_backend_effective_available("capi", llm_backend_router, conf):
                 return
             raise RuntimeError("selected visual analysis backend is unavailable: capi")
         raise RuntimeError(f"selected visual analysis backend is unavailable: {normalized}")
@@ -1643,7 +1761,7 @@ def _normalize_visual_analysis_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
     config.update(dict(raw or {}))
     for key in ("enabled", "auto_build_after_upload", "use_current_model", "index_low_confidence", "include_page_context", "unstructured_enabled"):
         config[key] = parse_knowledge_backend_enabled(config.get(key))
-    for key in ("max_items_per_request", "page_render_dpi", "crop_padding_px", "max_image_long_edge", "context_before_chars", "context_after_chars"):
+    for key in ("max_items_per_request", "prepare_pages_per_request", "page_render_dpi", "crop_padding_px", "max_image_long_edge", "context_before_chars", "context_after_chars"):
         config[key] = int(config.get(key) or DEFAULT_VISUAL_ANALYSIS_CONFIG[key])
     for key in ("min_confidence", "min_ocr_confidence", "min_structure_confidence", "min_semantic_confidence", "candidate_min_area_ratio"):
         config[key] = float(config.get(key) or DEFAULT_VISUAL_ANALYSIS_CONFIG[key])
@@ -1665,6 +1783,53 @@ def _resolve_document_source_path(document: KnowledgeDocument, config: Knowledge
     if source.is_absolute():
         return source
     return (Path(config.workspace_root).expanduser().resolve() / source).resolve()
+
+
+def _document_total_pages(document: KnowledgeDocument, source: Path) -> int:
+    metadata = document.metadata if isinstance(document.metadata, dict) else {}
+    page_count = int(metadata.get("page_count") or 0)
+    if page_count > 0:
+        return page_count
+    if Path(source).suffix.lower() == ".pdf":
+        try:
+            import fitz
+
+            with fitz.open(str(source)) as pdf:
+                return int(pdf.page_count)
+        except Exception:
+            pass
+    return 1
+
+
+def _extracted_document_for_visual_prepare(
+    storage: KnowledgeStorage,
+    document: KnowledgeDocument,
+    source: Path,
+    *,
+    start_page: int,
+    max_pages: int,
+    total_pages: int,
+) -> ExtractedDocument:
+    start_page = max(1, int(start_page or 1))
+    end_page = min(max(1, total_pages), start_page + max(1, int(max_pages or 1)) - 1)
+    chunks = storage.list_chunks(document.id)
+    pages = []
+    for page_number in range(start_page, end_page + 1):
+        page_chunks = [
+            chunk
+            for chunk in chunks
+            if chunk.page_start <= page_number <= chunk.page_end
+            and (chunk.metadata or {}).get("source") != "visual_analysis"
+        ]
+        page_text = "\n\n".join(chunk.text for chunk in sorted(page_chunks, key=lambda item: item.ordinal))
+        pages.append(DocumentPage(page=page_number, text=page_text))
+    return ExtractedDocument(
+        title=document.title,
+        source_path=str(source),
+        mime_type=document.mime_type,
+        pages=pages,
+        metadata={"suffix": source.suffix.lower(), "page_count": total_pages},
+    )
 
 
 def _candidate_from_artifact_row(
@@ -1706,6 +1871,9 @@ def _candidate_from_artifact_row(
         context_before="\n\n".join(chunk.text for chunk in before_chunks)[-before_chars:],
         context_after="\n\n".join(chunk.text for chunk in after_chunks)[:after_chars],
         page_text=page_text,
+        source_path=artifact.get("source_path") or document.source_path,
+        crop_dpi=int(artifact.get("crop_dpi") or visual_config.get("page_render_dpi") or 180),
+        crop_padding_px=int(artifact.get("crop_padding_px") or visual_config.get("crop_padding_px") or 12),
     )
 
 
@@ -1714,6 +1882,20 @@ def _current_document_version_id(storage: KnowledgeStorage, document_id: Optiona
         return None
     document = storage.get_document(document_id)
     return document.version_id if document is not None else None
+
+
+def _openai_backend_effective_available(backend: str, router: Any, conf_func: Any) -> bool:
+    try:
+        routed = router.get_effective_openai_api_config(backend)
+    except Exception:
+        routed = {}
+    try:
+        app_config = conf_func() or {}
+    except Exception:
+        app_config = {}
+    api_key = (routed or {}).get("api_key") or app_config.get("open_ai_api_key")
+    model = (routed or {}).get("model") or app_config.get("model")
+    return bool(api_key and model)
 
 
 def require_provider_token(provider: str, token: Optional[str], env_var: str) -> str:
@@ -2547,6 +2729,7 @@ class LocalKnowledgeBackend:
             version_id = stable_version_id(document_id, content_hash)
             chunks = self._build_chunks(document_id, sanitized_pages, kb_id=self.default_kb_id, version_id=version_id)
             metadata = dict(extracted.metadata or {})
+            metadata["page_count"] = max(int(metadata.get("page_count") or 0), len(extracted.pages), len(sanitized_pages))
             metadata["text_sanitizer"] = sanitizer_report
             document = KnowledgeDocument(
                 id=document_id,

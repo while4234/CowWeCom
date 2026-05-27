@@ -4887,6 +4887,7 @@ let _knowledgeCurrentFile = null;
 let _knowledgeGraphLoaded = false;
 let _knowledgeBackendDocuments = [];
 let _knowledgeBackendVisualRunning = false;
+let _knowledgeBackendVisualQueue = Promise.resolve();
 let _knowledgeBackendVisualBackends = null;
 
 function loadKnowledgeBackendPanel() {
@@ -4947,10 +4948,26 @@ function renderVisualAnalysisBackendSelector(data) {
     if (!select) return;
     const backends = Array.isArray(data && data.backends) ? data.backends : [];
     if (!backends.length) {
-        select.innerHTML = '<option value="current">current</option>';
+        select.innerHTML = '<option value="">无可用视觉后端</option>';
+        select.disabled = true;
         return;
     }
-    const defaultId = (data && data.default_analysis_backend) || 'current';
+    const configuredDefault = (data && data.default_analysis_backend) || 'current';
+    const available = backends.filter(item => item.available !== false);
+    let defaultId = '';
+    if (available.some(item => item.id === configuredDefault)) {
+        defaultId = configuredDefault;
+    } else if (available.some(item => item.id === 'current')) {
+        defaultId = 'current';
+    } else if (available[0]) {
+        defaultId = available[0].id || 'current';
+    }
+    if (!defaultId) {
+        select.innerHTML = '<option value="">无可用视觉后端</option>';
+        select.disabled = true;
+        return;
+    }
+    select.disabled = false;
     select.innerHTML = backends.map(item => {
         const id = item.id || 'current';
         const label = `${item.label || id}${item.model ? ` / ${item.model}` : ''}`;
@@ -5081,13 +5098,13 @@ function uploadKnowledgeBackendFile(fileList) {
             if (input) input.value = '';
             loadKnowledgeBackendPanel();
             loadKnowledgeView();
-            const documentId = _knowledgeBackendUploadedDocumentId(data);
+            const documentIds = _knowledgeBackendUploadedDocumentIds(data);
             fetch('/api/knowledge/admin/status')
                 .then(_knowledgeBackendJson)
                 .then(statusData => {
                     const visual = (statusData && statusData.visual_analysis) || {};
-                    if (documentId && visual.enabled === true && visual.auto_build_after_upload === true) {
-                        startVisualBuildLoop(documentId, false);
+                    if (documentIds.length && visual.enabled === true && visual.auto_build_after_upload === true) {
+                        startVisualBuildLoopQueue(documentIds);
                     }
                 })
                 .catch(() => {});
@@ -5098,15 +5115,16 @@ function uploadKnowledgeBackendFile(fileList) {
         });
 }
 
-function _knowledgeBackendUploadedDocumentId(data) {
+function _knowledgeBackendUploadedDocumentIds(data) {
     const uploads = (data && data.uploads) || [];
+    const documentIds = [];
     for (const upload of uploads) {
         const document = upload && upload.document;
         if (upload && upload.status === 'succeeded' && document && document.id) {
-            return document.id;
+            documentIds.push(document.id);
         }
     }
-    return '';
+    return [...new Set(documentIds)];
 }
 
 function _knowledgeBackendSourceDocument() {
@@ -5165,7 +5183,8 @@ async function startVisualBuildLoop(documentId, force, retryFailed) {
             if (messageEl) {
                 messageEl.textContent = `图表补全：已处理 ${totals.processed}，高置信入库 ${totals.succeeded}，低置信跳过 ${totals.low_confidence}，失败 ${totals.failed}，剩余 ${totals.pending}`;
             }
-            if (!data.has_more || (data.processed || 0) === 0) break;
+            if (!data.has_more) break;
+            if ((data.processed || 0) === 0 && (data.prepared || 0) === 0) break;
         }
         if (changed) {
             await fetch('/api/knowledge/admin/export', {
@@ -5183,8 +5202,23 @@ async function startVisualBuildLoop(documentId, force, retryFailed) {
     }
 }
 
+async function startVisualBuildLoopQueue(documentIds) {
+    const ids = [...new Set((documentIds || []).filter(Boolean))];
+    if (!ids.length) return;
+    _knowledgeBackendVisualQueue = _knowledgeBackendVisualQueue.then(async () => {
+        for (const documentId of ids) {
+            await startVisualBuildLoop(documentId, false, false);
+        }
+    }).catch(err => {
+        const messageEl = document.getElementById('knowledge-backend-message');
+        if (messageEl) messageEl.textContent = err.message || 'Visual build queue failed';
+    });
+    return _knowledgeBackendVisualQueue;
+}
+
 function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
     const stats = (data && data.stats) || {};
+    const prepare = (data && data.prepare) || {};
     const total = Number(stats.total || 0);
     const pending = Number(stats.pending || 0);
     const running = Number(stats.running || 0);
@@ -5193,7 +5227,12 @@ function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
     const failed = Number(stats.failed || 0);
     const done = succeeded + lowConfidence + failed;
     const remaining = Math.max(0, pending + running);
-    const percent = total > 0 ? Math.round(done * 100 / total) : 0;
+    const totalPages = Number(prepare.total_pages || 0);
+    const preparedPages = Number(prepare.prepared_pages || 0);
+    const preparedArtifacts = Number(prepare.prepared_artifacts || 0);
+    const preparePercent = totalPages > 0 ? Math.round(preparedPages * 100 / totalPages) : 0;
+    const analysisPercent = total > 0 ? Math.round(done * 100 / total) : 0;
+    const percent = total > 0 ? analysisPercent : preparePercent;
     const labelEl = document.getElementById('knowledge-backend-visual-progress-label');
     const percentEl = document.getElementById('knowledge-backend-visual-progress-percent');
     const barEl = document.getElementById('knowledge-backend-visual-progress-bar');
@@ -5204,8 +5243,10 @@ function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
     if (detailEl) {
         detailEl.innerHTML = [
             `后端：${escapeHtml(backend || getSelectedVisualAnalysisBackend())}`,
+            `准备页面：${preparedPages} / ${totalPages}`,
+            `已发现图表候选：${preparedArtifacts}`,
             `总数：${total}`,
-            `已处理：${done}`,
+            `已分析：${done}`,
             `高置信入库：${succeeded}`,
             `低置信跳过：${lowConfidence}`,
             `失败：${failed}`,
