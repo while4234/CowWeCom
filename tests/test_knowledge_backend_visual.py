@@ -181,6 +181,11 @@ def test_visual_schema_is_created(tmp_path):
     assert "visual_analysis_runs" in tables
     assert "visual_artifact_chunks" in tables
     assert "visual_prepare_states" in tables
+    with sqlite3.connect(str(tmp_path / "knowledge.sqlite3")) as conn:
+        visual_columns = {row[1] for row in conn.execute("PRAGMA table_info(visual_artifacts)").fetchall()}
+        prepare_columns = {row[1] for row in conn.execute("PRAGMA table_info(visual_prepare_states)").fetchall()}
+    assert "pipeline_version" in visual_columns
+    assert "pipeline_version" in prepare_columns
 
 
 def test_visual_build_is_artifact_level_resumable(tmp_path):
@@ -271,6 +276,70 @@ def test_visual_admin_dispatch_and_disabled_state(monkeypatch, tmp_path):
     disabled = dispatch_admin_request("POST", "visual/build", {})
     assert disabled["status"] == "disabled"
     assert "visual_analysis.enabled" in disabled["message"]
+
+
+def test_visual_reset_api_clears_artifacts_chunks_and_prepare_state(monkeypatch, tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    service._visual_extractor = FakeExtractor([_candidate(document_id, version_id, 1)])
+    service._visual_analyzer = QueueAnalyzer([_high_result("reset_visualfact")])
+    monkeypatch.setattr(KnowledgeBackendConfig, "from_project_config", classmethod(lambda cls: service.config))
+    monkeypatch.setattr("agent.knowledge.backend.service.build_knowledge_backend", lambda _: service)
+
+    assert dispatch_admin_request("POST", "visual/build", {"document_id": document_id, "limit": 1})["succeeded"] == 1
+    assert service.search("reset_visualfact", limit=5)
+
+    response = dispatch_admin_request("POST", "visual/reset", {"document_id": document_id})
+
+    assert response["ok"] is True
+    assert response["reset"]["artifacts"] == 1
+    assert response["reset"]["chunks"] >= 1
+    assert response["reset"]["prepare_states"] == 1
+    assert service.search("reset_visualfact", limit=5) == []
+    assert service.get_visual_stats(document_id)["total"] == 0
+
+
+def test_visual_pipeline_version_change_resets_stale_cache(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    service._visual_extractor = FakeExtractor([_candidate(document_id, version_id, 1)])
+    service._visual_analyzer = QueueAnalyzer([_high_result("old_pipeline_visualfact")])
+
+    assert service.build_visual_knowledge(document_id=document_id, limit=1)["succeeded"] == 1
+    assert service.search("old_pipeline_visualfact", limit=5)
+
+    service._visual_analyzer = QueueAnalyzer([_high_result("new_pipeline_visualfact")])
+    service.config.visual_analysis["pipeline_version"] = "visual-pipeline-v2"
+    service._visual_extractor = FakeExtractor([_candidate(document_id, version_id, 1)])
+    rebuilt = service.build_visual_knowledge(document_id=document_id, limit=1)
+
+    assert rebuilt["succeeded"] == 1
+    assert service.search("old_pipeline_visualfact", limit=5) == []
+    assert service.search("new_pipeline_visualfact", limit=5)
+    artifact = service._backend._get_read_storage().list_visual_artifacts(document_id=document_id)[0]
+    assert artifact["pipeline_version"] == "visual-pipeline-v2"
+
+
+def test_visual_pipeline_reset_checks_beyond_first_artifact_page(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    for index in range(1, 1003):
+        candidate = _candidate(document_id, version_id, index)
+        pipeline_version = "visual-pipeline-v1" if index <= 1001 else "visual-pipeline-v0"
+        storage.upsert_visual_artifact(
+            VisualArtifactCandidate(**{**candidate.to_dict(), "pipeline_version": pipeline_version})
+        )
+
+    service.config.visual_analysis["pipeline_version"] = "visual-pipeline-v1"
+    reset = service._reset_stale_visual_pipeline(
+        storage,
+        document_id=document_id,
+        pipeline_version="visual-pipeline-v1",
+    )
+
+    assert reset["artifacts"] == 1002
+    assert storage.visual_stats(document_id=document_id, version_id=version_id)["total"] == 0
 
 
 def test_visual_model_json_validation_failures_do_not_index(tmp_path):
@@ -517,6 +586,9 @@ def test_visual_extractor_skips_toc_pages_but_keeps_strict_caption(tmp_path):
     assert report["skipped_toc_pages"] == 1
     assert all(candidate.page != 1 for candidate in candidates)
     assert any(candidate.page == 2 and "Figure 5-34" in candidate.caption for candidate in candidates)
+    caption_candidate = next(candidate for candidate in candidates if candidate.page == 2 and "Figure 5-34" in candidate.caption)
+    assert caption_candidate.bbox["y0"] <= 130
+    assert caption_candidate.bbox["y1"] >= 420
 
 
 def test_visual_extractor_rejects_body_figure_references(tmp_path):

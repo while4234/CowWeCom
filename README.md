@@ -173,7 +173,7 @@ http://127.0.0.1:9899
 | `agent_user_profiles` | 用户角色、展示名、记忆 ID 等覆盖配置；扫码选择的管理员/普通用户身份会写入这里 |
 | `external_reply_inject_to_agent_context` | 是否把 CowCli 等非 Agent 快答的可见问答同步进后续 Agent 会话上下文，默认开启，便于“把这个转述给她”这类跟进指令引用最新回复 |
 | `knowledge` | 是否启用本地知识库 |
-| `knowledge_backend` | 协议/规范公共知识库后端配置 |
+| `knowledge_backend` | 本地文档知识库与公共协议/规范知识后端配置 |
 | `agent_knowledge_max_steps` | 需要查询公共/个人知识库、上传文档、协议原文或 `knowledge_query/deep_query` 的问答步数预算；默认 40，并锁定高质量推理 |
 | `skill` | Skills 的运行时配置，例如图像生成 Codex auth |
 | `llm_backend` | Codex/CAPI 等后端路由与自动切换配置 |
@@ -363,17 +363,19 @@ Web 控制台默认随服务启动，提供以下管理能力：
 }
 ```
 
-### 协议/规范公共知识后端
+### 本地文档知识后端
 
-本项目维护了面向协议、规范、设计文档的公共知识后端。它支持上传 PDF、DOCX、TXT、Markdown，构建 SQLite 索引，生成可追溯的学习文档，并在回答中进行检索。协议/规范类问答默认优先使用本地脚本生成 deep evidence bundle：先命中检索片段，再展开相邻 chunk、source span、页码和 section，标记覆盖词与证据不足，尽量在本地完成证据整理而不额外调用 LLM。
+本项目维护了面向协议、规范、设计文档、教材、代码规范和验证方法资料的本地文档知识后端。它支持上传 PDF、DOCX、TXT、Markdown，构建 SQLite 索引，生成可追溯的学习文档，并在回答中进行检索。协议/规范类问答默认优先使用本地脚本生成 deep evidence bundle：先命中检索片段，再展开相邻 chunk、source span、页码和 section，标记覆盖词与证据不足，尽量在本地完成证据整理而不额外调用 LLM。
 
-默认公共数据目录：
+默认本地文档知识库数据目录：
 
 ```text
-public_protocol_knowledge/
+public_document_knowledge/
 ```
 
-可提交到仓库的公共知识数据仅限：
+视觉图表补全会记录 `pipeline_version`，当视觉提取、裁剪或提示词版本变化时，当前文档的旧视觉 artifact、视觉 chunk、source span 和 prepare state 会自动清理后重建。管理员也可以通过 `visual/reset` 按 `document_id` 或 `kb_id` 手动清空旧视觉缓存。
+
+可提交到仓库的公共协议/规范知识数据仍仅限：
 
 - `public_protocol_knowledge/originals/`
 - `public_protocol_knowledge/derived/`
@@ -473,6 +475,7 @@ CowWeCom/
 ├─ docs/                       项目文档与图片资源
 ├─ models/                     模型后端适配
 ├─ plugins/                    传统插件系统
+├─ public_document_knowledge/  默认本地文档知识库数据目录
 ├─ public_protocol_knowledge/  可提交的公共协议知识库
 ├─ skills/                     项目内置 Skills
 ├─ tests/                      单元测试和回归测试
@@ -486,7 +489,7 @@ CowWeCom/
 
 | 日期 | 更新 |
 | --- | --- |
-| 2026-05-27 | 本地文档知识库新增“图表/视觉结构化补全”增量链路：本地 PDF、DOCX、TXT、Markdown 上传后默认导出到 `knowledge/documents/<kb_id>/`，Web 文案从“协议后端知识库/上传协议”泛化为“本地文档知识库/上传文档”，适配 SystemVerilog 书籍、代码规范、验证方法文档和 PDF 教材等非协议资料；PDF 可通过 PyMuPDF 扫描嵌入图片、严格图/表 caption 区域和有限 fallback 候选，写入 `visual_artifacts` 并按 artifact 级别断点续跑；visual prepare 已改为页级增量扫描并 lazy crop，单次 `visual/build` 只准备少量页面、发现候选后只渲染并分析当前 artifact，且返回本次扫描页数/新增候选 delta，前端遇到无候选页面也会继续推进准备进度，避免新上传大 PDF 时一次请求扫描/渲染整份 PDF或前几页无候选就提前停止；新上传 PDF 的普通正文 chunk 先经过 `text_sanitizer`，会过滤图形/矢量图区域内的拆字 Layer、短标签、粘连信号名等图内噪声，同时保留 caption、章节标题和自然语言正文，多行 caption label/title 会完整保留；严格 caption 识别只检查 block 前几行，不再把 `Figure 1-1 demonstrates...`、`Table 1-3 gives...`、`Figure 3-6 to Figure 3-11...` 这类正文引用误判为图表候选，并继续跳过目录、List of Figures/List of Tables/Revision History 页；caption candidate 覆盖的空 caption image candidate 会被去重，未带 caption 的真实嵌入图片仍按每页上限保留；视觉分析提示词改为“技术文档视觉元素解析器”，支持协议图、表格、时序图、状态机、位域图、流程图、截图、代码图和架构图，默认使用 `gpt-5.5` 与 `xhigh` 推理，OpenAI-compatible 视觉调用超时改为配置化 30-600 秒，服务端严格校验 JSON、readability 与 OCR/结构/语义/整体置信度阈值，高置信结果才 append 写入 `chunks`、`source_spans` 和 FTS，低置信只保存在 artifact 状态中不参与检索；Web 控制台新增“补全图表/视觉知识 / 继续补全图表/视觉知识 / 查看低置信视觉内容”，并可选择某一个旧文档、选择视觉分析后端 `current/capi/capi_monthly/codex`、查看准备页数/候选数/已分析/高置信/低置信/失败/剩余进度，多文件上传后会逐个顺序自动补全，文档行只保留“低置信”快捷查看和打开导出文档入口，补全动作统一通过顶部文档选择器触发，补全结束后自动按当前文档重新导出 Markdown；`current` 视觉后端可用性会按解析后的实际后端检查，CAPI/CAPI 月卡兼容旧 `open_ai_api_key` 配置；重复上传同一内容时只替换普通文本 chunk 并保留已有 `visual_analysis` chunk、FTS 和 artifact 映射，同一路径文档内容变化导致 version 变化时会删除旧版本视觉 chunk、FTS/source span 映射并把旧 artifact 置为不可检索；deep_query evidence 与导出 Markdown 会展示高置信视觉 metadata、页码、caption、bbox、confidence，并单列未入库低置信图表，`Source Chunks` 不再重复展示 `visual_analysis` chunk；LLM 学习文档 prompt 改为通用技术文档结构，包含文档定位、核心概念、关键规则/机制、表格与图示要点、接口/信号/代码示例、实现/验证/调试关注点、高频问答和 Source Map，不再强制协议专属章节；修复单文档导出会覆盖根入口/子索引的问题，后续上传或刷新某一个文档时会用全部已索引文档重建根入口和各知识库子索引；配置模板新增 `document_library_category`、`knowledge_backend.visual_analysis`、`prepare_pages_per_request`、`max_image_candidates_per_page` 与 PDF 文本清洗开关，知识库依赖新增 PyMuPDF/Pillow，聚焦知识库测试覆盖 schema、断点续跑、高低置信入库、force retry、admin dispatch、JSON 校验、单文档导出索引保全、默认 documents 导出、PDF 噪声清洗、多行 caption 保留、正文引用拒绝、caption/image 去重、单文档视觉补全、后端选择、进度字段、页级 prepare、TOC/List 跳过、重复上传保留视觉 chunk、新版本清理旧视觉 chunk 和 SQLite FTS 召回增强；修复 `memory_get` 读取尚未生成的每日记忆文件时误报 error 的问题，`memory/YYYY-MM-DD.md` 与用户私有日记忆缺失会返回空记忆成功结果；线程池后台任务异常会发送一次脱敏失败提示并释放会话队列，避免长任务无声结束后用户只看到挂起；安全上传预检和 `.gitignore` 继续保护仓库根 `memory/` 运行时目录，但不再误拦 `agent/tools/memory/` 这类源码目录；更新后请在本机确认 `CAPI_API_KEY`、`CAPI_MONTHLY_API_KEY`，或 ignored `config.json` 中的 `llm_backend.providers.capi.api_key`、`llm_backend.providers.capi_monthly.api_key` 已配置，真实 key 不要写入模板或提交到 Git |
+| 2026-05-27 | 本地文档知识库新增“图表/视觉结构化补全”增量链路：本地 PDF、DOCX、TXT、Markdown 上传后默认导出到 `knowledge/documents/<kb_id>/`，默认 SQLite/数据目录改为 `public_document_knowledge/indexes/kb.sqlite` 和 `public_document_knowledge/`，Web 文案从“协议后端知识库/上传协议”泛化为“本地文档知识库/上传文档”，适配 SystemVerilog 书籍、代码规范、验证方法文档和 PDF 教材等非协议资料；PDF 可通过 PyMuPDF 扫描嵌入图片、严格图/表 caption 区域和有限 fallback 候选，写入 `visual_artifacts` 并按 artifact 级别断点续跑；visual prepare 已改为页级增量扫描并 lazy crop，单次 `visual/build` 只准备少量页面、发现候选后只渲染并分析当前 artifact，且返回本次扫描页数/新增候选 delta，前端遇到无候选页面也会继续推进准备进度，避免新上传大 PDF 时一次请求扫描/渲染整份 PDF或前几页无候选就提前停止；新上传 PDF 的普通正文 chunk 先经过 `text_sanitizer`，会过滤图形/矢量图区域内的拆字 Layer、短标签、粘连信号名等图内噪声，同时保留 caption、章节标题和自然语言正文，多行 caption label/title 会完整保留；严格 caption 识别只检查 block 前几行，不再把 `Figure 1-1 demonstrates...`、`Table 1-3 gives...`、`Figure 3-6 to Figure 3-11...` 这类正文引用误判为图表候选，并继续跳过目录、List of Figures/List of Tables/Revision History 页；caption candidate 根据 caption 所在页面位置扩大裁剪区域以覆盖大图/大表格，且 caption 覆盖的空 caption image candidate 会被去重，未带 caption 的真实嵌入图片仍按每页上限保留；视觉分析提示词改为“技术文档视觉元素解析器”，支持协议图、表格、时序图、状态机、位域图、流程图、截图、代码图和架构图，默认使用 `gpt-5.5` 与 `xhigh` 推理，OpenAI-compatible 视觉调用超时改为配置化 30-600 秒，服务端严格校验 JSON、readability 与 OCR/结构/语义/整体置信度阈值，高置信结果才 append 写入 `chunks`、`source_spans` 和 FTS，低置信只保存在 artifact 状态中不参与检索；视觉 schema、prepare state 和视觉 chunk metadata 新增 `pipeline_version`，当视觉提取/裁剪/prompt pipeline 版本变化时会清理当前文档旧视觉缓存并重新 prepare/build，同时新增管理员 `visual/reset` API 可按 `document_id` 或 `kb_id` 清空视觉 artifact、视觉 chunk、source span 和 prepare state；Web 控制台新增“补全图表/视觉知识 / 继续补全图表/视觉知识 / 查看低置信视觉内容”，并可选择某一个旧文档、选择视觉分析后端 `current/capi/capi_monthly/codex`、查看准备页数/候选数/已分析/高置信/低置信/失败/剩余进度，多文件上传后会逐个顺序自动补全，只有单文档时才自动选中，多文档必须显式选择文档后才能手动补全，文档行只保留“低置信”快捷查看和打开导出文档入口，补全动作统一通过顶部文档选择器触发，补全结束后自动按当前文档重新导出 Markdown；`current` 视觉后端可用性会按解析后的实际后端检查，CAPI/CAPI 月卡兼容旧 `open_ai_api_key` 配置；重复上传同一内容时只替换普通文本 chunk 并保留已有 `visual_analysis` chunk、FTS 和 artifact 映射，同一路径文档内容变化导致 version 变化时会删除旧版本视觉 chunk、FTS/source span 映射并把旧 artifact 置为不可检索；deep_query evidence 与导出 Markdown 会展示高置信视觉 metadata、页码、caption、bbox、confidence，并单列未入库低置信图表，`Source Chunks` 不再重复展示 `visual_analysis` chunk，deep query policy 也从协议化表述调整为通用 logical/functional behavior；LLM 学习文档 prompt 改为通用技术文档结构，包含文档定位、核心概念、关键规则/机制、表格与图示要点、接口/信号/代码示例、实现/验证/调试关注点、高频问答和 Source Map，不再强制协议专属章节；修复单文档导出会覆盖根入口/子索引的问题，后续上传或刷新某一个文档时会用全部已索引文档重建根入口和各知识库子索引；配置模板新增 `document_library_category`、`knowledge_backend.visual_analysis`、`pipeline_version`、`prepare_pages_per_request`、`max_image_candidates_per_page` 与 PDF 文本清洗开关，知识库依赖新增 PyMuPDF/Pillow，聚焦知识库测试覆盖 schema、断点续跑、高低置信入库、force retry、admin dispatch、JSON 校验、单文档导出索引保全、默认 documents 导出、PDF 噪声清洗、多行 caption 保留、正文引用拒绝、caption/image 去重、单文档视觉补全、后端选择、进度字段、页级 prepare、TOC/List 跳过、pipeline 版本变化重建、visual/reset 清理、重复上传保留视觉 chunk、新版本清理旧视觉 chunk 和 SQLite FTS 召回增强；修复 `memory_get` 读取尚未生成的每日记忆文件时误报 error 的问题，`memory/YYYY-MM-DD.md` 与用户私有日记忆缺失会返回空记忆成功结果；线程池后台任务异常会发送一次脱敏失败提示并释放会话队列，避免长任务无声结束后用户只看到挂起；安全上传预检和 `.gitignore` 继续保护仓库根 `memory/` 运行时目录，但不再误拦 `agent/tools/memory/` 这类源码目录；更新后请在本机确认 `CAPI_API_KEY`、`CAPI_MONTHLY_API_KEY`，或 ignored `config.json` 中的 `llm_backend.providers.capi.api_key`、`llm_backend.providers.capi_monthly.api_key` 已配置，真实 key 不要写入模板或提交到 Git |
 | 2026-05-26 | 协议/规范公共知识库问答新增本地 deep evidence bundle，优先由脚本展开相邻 chunk、source span、页码和 section，并继续增强为二阶段本地补证、`table_blocks` 表格/encoding/field 证据、coverage checklist 和缺证 `insufficient` 状态；新增 AMBA AXI v2.0 公共协议知识库，已纳入原始 PDF、Codex 手工分析文档、SQLite 索引、manifest、publish/validation 报告，并通过 PDF 质量、分析审计和检索 smoke 验证；需要查询公共/个人知识库、上传文档、协议原文或 `knowledge_query/deep_query` 的问答统一使用 `agent_knowledge_max_steps=40` 并锁定 `xhigh` 推理，普通闲聊、账单、天气和后端状态仍走默认 20 步；个人知识库写入按来源分层，保留用户分享资料、联网搜索公开事实和公开实体的 `knowledge-wiki` 自动沉淀，但协议/规范/状态机/表格/encoding/跨章节等 AI 推导结论默认只读，只有用户明确“保存到个人知识库/记入知识库/整理沉淀”且证据充分才允许写入；合并 README 当天更新记录并固化“同一天只保留一条总结”的项目规则；同时完成聊天内 CowCli 权限分级与角色化 `/help`、Web 扫码接入管理员/普通用户选择与单管理员限制、企业微信智能机器人首个单聊用户自动成为独立 `wecom_bot` 管理员且不受微信管理员占位影响、接入通道面板仅展示已验证的微信与企微智能机器人入口、本地账本按当前 `memory_user_id` 查询，且 `今日账单/本月账单/本周消费` 等短句也会进入 CowCli 本地账本快路径，避免 Agent 使用示例 `local-user` 查出空账本、`china-expense-ledger` 本地记账/截图澄清/汇总缓存优化、日期语义交给当前视觉/多模态模型解析而 `ledger.py` 只校验 ISO/`YYYY-MM-DD` 或默认今天、账单文字补充与撤销限制在同用户同会话短期上下文内且排除后端 token/额度查询误触发、疑似同金额/同日期/同分类/同商户或同 App 订单会先询问再新增/撤销/修改、已撤销一次错误的本地 token 查询误记账记录、`work-progress-reporter`、`project-restart`、`cowagent-workflow-auditor` 与 `cowwechat-project-optimizer` Skills、本地 `.venv` 验证环境统一、项目优化每日 0 点按 300 次增量模型调用触发、LLM 后端额度状态和 CAPI 月卡日重置展示修复、Codex 额度查询改为官方 `codex app-server` 直连并移除 OpenClaw `dist`/Node 依赖，远端只需配置 `CODEX_AUTH_FILE` 或 `llm_backend.providers.codex.auth_file` 且安装可用 Codex app/CLI，`codex-quota-query` 也作为 Agent 可见 Skill 覆盖“平均用量是否超预算/后续策略如何分配”等分析场景并要求先跑 decision/JSON snapshot，以及 CowCli 快答与 Agent 跨用户转述上下文修复：明确“告诉/转述/发给/推送给某人或群里”等社交发送意图交给 Agent，由 Agent 解析具体收件人，CowCli 只做快答退让；快答的功能说明/今日更新会同步进后续 Agent 上下文，社交桥授权说明也区分发送用户自己的内容或公开摘要与读取对方私密记忆；带“分析/策略/平均用量/后续分配”的 Codex 额度问题不再被本地快查截胡，会进入 Agent 推理路径；本地 `token-usage-tracker` 的 `today/month` 统计固定按北京时间自然日/自然月计算，CowCli 新增 `/tokens` 本机 token 快查并使用当前运行 Python 与 `agent_workspace`，避免聊天运行目录缺少相对 `.venv` 时误报 |
 | 2026-05-25 | 重写并规范 CowWeCom README，新增代码/运行行为变更必须同步 README 的项目规则；增强旅行规划的“规划前确认”、复杂规划预算、过夜住宿与 FlyAI wrapper 路径；改善企业微信长任务分段回复、完成回执、远程图链处理和订阅 ACK 超时重连；加固 CAPI/Codex 后端接力、额度卡/月卡路由、自然语言后端切换、自我进化缓存策略，以及按目标对象总结当天更新的体验 |
 | 2026-05-24 | 修复图像生成后台任务在服务重启后的恢复、失败通知和图片发送结果处理；启动时自动恢复定时任务服务并支持错过运行、失败通知、`run_now`、`skip_pending` 等调度动作；强化企业微信群聊按 `chatid` 隔离记忆并记录群成员上下文；增强 LLM 后端路由、Codex/CAPI 额度查询、自动切换、推理强度策略和审计数据 |

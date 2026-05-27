@@ -15,7 +15,7 @@ from .storage import stable_visual_chunk_id, stable_visual_span_id
 
 
 SYSTEM_PROMPT = (
-    "你是技术文档视觉元素解析器。你的任务是把技术文档中的协议图、表格、时序图、状态机、"
+    "你是技术文档视觉元素解析器。你的任务是把技术文档中的技术图、表格、时序图、状态机、"
     "位域图、流程图、截图、代码图、架构图和嵌入图片解析为可用于 RAG 检索的高质量结构化内容。"
     "必须严格基于给定图片和上下文，不得猜测。无法确认的内容写入 uncertain_fields。"
     "图片模糊、文字不可辨、结构不清时降低 confidence，并把 should_index 设为 false。"
@@ -229,6 +229,7 @@ def visual_result_to_chunks(
 ) -> Tuple[List[KnowledgeChunk], List[SourceSpan]]:
     model = str(analysis_model or visual_config.get("model") or "gpt-5.5")
     prompt_version = str(visual_config.get("prompt_version") or "visual-v1")
+    pipeline_version = str(candidate.pipeline_version or visual_config.get("pipeline_version") or "visual-pipeline-v1")
     section_path = "/".join(candidate.section_path) if candidate.section_path else ""
     metadata = {
         "visual_artifact_id": candidate.id,
@@ -239,6 +240,7 @@ def visual_result_to_chunks(
         "bbox": candidate.bbox,
         "caption": result.caption or candidate.caption,
         "prompt_version": prompt_version,
+        "pipeline_version": pipeline_version,
         "analysis_model": model,
         "analysis_backend": analysis_backend or normalize_visual_analysis_backend(visual_config.get("analysis_backend")),
         "source": "visual_analysis",

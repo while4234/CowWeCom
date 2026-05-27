@@ -51,7 +51,7 @@ from .visual_analyzer import (
 from .visual_extractors import PyMuPDFVisualArtifactExtractor
 
 
-DEFAULT_DB_NAME = "public_protocol_knowledge/indexes/kb.sqlite"
+DEFAULT_DB_NAME = "public_document_knowledge/indexes/kb.sqlite"
 FALSE_VALUES = {"", "0", "false", "off", "disabled", "no", "n"}
 TRUE_VALUES = {"1", "true", "on", "enabled", "yes", "y"}
 
@@ -63,6 +63,7 @@ DEFAULT_VISUAL_ANALYSIS_CONFIG: Dict[str, Any] = {
     "model": "gpt-5.5",
     "reasoning_effort": "xhigh",
     "prompt_version": "visual-v1",
+    "pipeline_version": "visual-pipeline-v1",
     "max_items_per_request": 1,
     "prepare_pages_per_request": 3,
     "min_confidence": 0.78,
@@ -116,7 +117,7 @@ class KnowledgeBackendConfig:
     provider_api_enabled: bool = False
     sqlite_path: Path = Path(DEFAULT_DB_NAME)
     workspace_root: Path = Path(".")
-    data_dir: Path = Path("public_protocol_knowledge")
+    data_dir: Path = Path("public_document_knowledge")
     default_kb_id: str = "kb_default"
     fail_open: bool = True
     vector_store: VectorStoreConfig = field(default_factory=VectorStoreConfig)
@@ -149,7 +150,7 @@ class KnowledgeBackendConfig:
                 os.environ.get("KNOWLEDGE_BACKEND_PROVIDER_API_ENABLED")
             ),
             "fail_open": parse_knowledge_backend_enabled(os.environ.get("KNOWLEDGE_BACKEND_FAIL_OPEN", "true")),
-            "data_dir": os.environ.get("KNOWLEDGE_BACKEND_DATA_DIR") or "public_protocol_knowledge",
+            "data_dir": os.environ.get("KNOWLEDGE_BACKEND_DATA_DIR") or "public_document_knowledge",
             "sqlite_path": os.environ.get("KNOWLEDGE_BACKEND_SQLITE_PATH") or DEFAULT_DB_NAME,
             "ingest": {
                 "allowed_extensions": _csv(os.environ.get("KNOWLEDGE_BACKEND_ALLOWED_EXTENSIONS"))
@@ -203,6 +204,7 @@ class KnowledgeBackendConfig:
                 "model": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MODEL") or "gpt-5.5",
                 "reasoning_effort": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_REASONING_EFFORT") or "xhigh",
                 "prompt_version": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PROMPT_VERSION") or "visual-v1",
+                "pipeline_version": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PIPELINE_VERSION") or "visual-pipeline-v1",
                 "max_items_per_request": int(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MAX_ITEMS_PER_REQUEST") or 1),
                 "min_confidence": float(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MIN_CONFIDENCE") or 0.78),
                 "min_ocr_confidence": float(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MIN_OCR_CONFIDENCE") or 0.70),
@@ -281,7 +283,7 @@ class KnowledgeBackendConfig:
         ).lower()
         sqlite_path = Path(str(mapping.get("sqlite_path") or mapping.get("path") or DEFAULT_DB_NAME)).expanduser()
         workspace_root = Path(str(mapping.get("workspace_root") or ".")).expanduser()
-        data_dir = Path(str(mapping.get("data_dir") or workspace_root / "public_protocol_knowledge")).expanduser()
+        data_dir = Path(str(mapping.get("data_dir") or workspace_root / "public_document_knowledge")).expanduser()
         allowed = ingest_raw.get("allowed_extensions") or [".pdf", ".docx", ".txt", ".md"]
         allowed_import_roots = ingest_raw.get("allowed_import_roots") or []
         document_library_root = ingest_raw.get("document_library_root") or ingest_raw.get("docs_root") or ""
@@ -543,6 +545,42 @@ class KnowledgeBackendService:
             return []
         return [kb.to_dict() for kb in storage.list_knowledge_bases()]
 
+    def _reset_stale_visual_pipeline(
+        self,
+        storage: KnowledgeStorage,
+        *,
+        document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        pipeline_version: str = "",
+        force: bool = False,
+    ) -> Dict[str, int]:
+        """Clear stale visual caches when extractor/prompt pipeline version changes."""
+
+        target_pipeline = str(pipeline_version or "visual-pipeline-v1")
+        documents = storage.list_documents()
+        if document_id:
+            documents = [document for document in documents if document.id == document_id]
+        elif kb_id:
+            documents = [document for document in documents if document.kb_id == kb_id]
+        documents = [document for document in documents if (document.doc_type or "document") == "document"]
+        totals = {"artifacts": 0, "chunks": 0, "source_spans": 0, "prepare_states": 0}
+        for document in documents:
+            should_reset = bool(force)
+            state = storage.get_visual_prepare_state(document.id, document.version_id)
+            if state is not None and str(state.get("pipeline_version") or "") != target_pipeline:
+                should_reset = True
+            if not should_reset:
+                should_reset = storage.has_visual_artifacts_with_pipeline_version(
+                    document_id=document.id,
+                    version_id=document.version_id,
+                    pipeline_version=target_pipeline,
+                )
+            if should_reset:
+                counts = storage.reset_visual_cache(document_id=document.id, version_id=document.version_id)
+                for key in totals:
+                    totals[key] += int(counts.get(key) or 0)
+        return totals
+
     def prepare_visual_artifacts(
         self,
         document_id: Optional[str] = None,
@@ -569,11 +607,18 @@ class KnowledgeBackendService:
         scanned_pages_delta = 0
         errors: List[str] = []
         visual_config = self.config.visual_analysis or {}
+        pipeline_version = str(visual_config.get("pipeline_version") or "visual-pipeline-v1")
         pages_per_request = max(1, int(max_pages or visual_config.get("prepare_pages_per_request") or 3))
         for document in documents:
             try:
                 source = _resolve_document_source_path(document, self.config)
                 total_pages = _document_total_pages(document, source)
+                self._reset_stale_visual_pipeline(
+                    storage,
+                    document_id=document.id,
+                    pipeline_version=pipeline_version,
+                    force=force,
+                )
                 state = storage.get_visual_prepare_state(document.id, document.version_id)
                 extracted = _extracted_document_for_visual_prepare(
                     storage,
@@ -596,6 +641,7 @@ class KnowledgeBackendService:
                         prepared_artifacts=0,
                         status="pending",
                         error="",
+                        pipeline_version=pipeline_version,
                     )
                 if state.get("status") == "done" and not force:
                     continue
@@ -623,6 +669,8 @@ class KnowledgeBackendService:
                     candidates = self._visual_extractor.extract_candidates(document, extracted, storage, self.config)
                     prepare_report = {"pages_scanned": total_pages}
                 for candidate in candidates:
+                    if not getattr(candidate, "pipeline_version", ""):
+                        candidate = VisualArtifactCandidate(**{**candidate.to_dict(), "pipeline_version": pipeline_version})
                     storage.upsert_visual_artifact(candidate)
                     prepared += 1
                 scanned_pages = max(0, int(prepare_report.get("pages_scanned") or 0))
@@ -642,6 +690,7 @@ class KnowledgeBackendService:
                     prepared_artifacts=prepared_artifacts,
                     status="done" if done else "pending",
                     error="",
+                    pipeline_version=pipeline_version,
                 )
             except Exception as exc:
                 message = f"{document.id}: {exc}"
@@ -687,6 +736,7 @@ class KnowledgeBackendService:
         visual_config = self.config.visual_analysis or {}
         model = str(visual_config.get("model") or "gpt-5.5")
         prompt_version = str(visual_config.get("prompt_version") or "visual-v1")
+        pipeline_version = str(visual_config.get("pipeline_version") or "visual-pipeline-v1")
         requested_backend = normalize_visual_analysis_backend(
             analysis_backend if analysis_backend is not None else visual_config.get("analysis_backend")
         )
@@ -704,6 +754,13 @@ class KnowledgeBackendService:
             }
         storage = self._backend._get_storage(writable=True)
         version_id = _current_document_version_id(storage, document_id) if document_id else None
+        self._reset_stale_visual_pipeline(
+            storage,
+            document_id=document_id,
+            kb_id=None if document_id else kb_id,
+            pipeline_version=pipeline_version,
+            force=False,
+        )
         stats = storage.visual_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
         prepare = storage.visual_prepare_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
         batch_limit = max(1, int(limit or visual_config.get("max_items_per_request") or 1))
@@ -817,6 +874,44 @@ class KnowledgeBackendService:
                 kb_id=None if document_id else kb_id,
                 version_id=version_id,
             ),
+        }
+
+    def reset_visual_knowledge(
+        self,
+        document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self.config.enabled:
+            return {"ok": False, "status": "disabled", "message": "local knowledge backend is disabled"}
+        if not _visual_analysis_enabled(self.config):
+            return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false"}
+        if not document_id and not kb_id:
+            return {"ok": False, "status": "error", "message": "document_id or kb_id is required"}
+        storage = self._backend._get_storage(writable=True)
+        version_id = _current_document_version_id(storage, document_id) if document_id else None
+        counts = storage.reset_visual_cache(
+            document_id=document_id,
+            kb_id=None if document_id else kb_id,
+            version_id=version_id,
+        )
+        stats = storage.visual_stats(
+            document_id=document_id,
+            kb_id=None if document_id else kb_id,
+            version_id=version_id,
+        )
+        prepare = storage.visual_prepare_stats(
+            document_id=document_id,
+            kb_id=None if document_id else kb_id,
+            version_id=version_id,
+        )
+        return {
+            "ok": True,
+            "status": "success",
+            "document_id": document_id or "",
+            "kb_id": kb_id or "",
+            "reset": counts,
+            "prepare": prepare,
+            **stats,
         }
 
     def retry_visual_artifact(self, artifact_id: str) -> Dict[str, Any]:
@@ -1810,6 +1905,7 @@ def _normalize_visual_analysis_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
     config["model"] = str(config.get("model") or "gpt-5.5")
     config["reasoning_effort"] = str(config.get("reasoning_effort") or "xhigh")
     config["prompt_version"] = str(config.get("prompt_version") or "visual-v1")
+    config["pipeline_version"] = str(config.get("pipeline_version") or "visual-pipeline-v1")
     config["analysis_backend"] = normalize_visual_analysis_backend(config.get("analysis_backend") or "current")
     config["parser_provider"] = str(config.get("parser_provider") or "pymupdf")
     config["mineru_api_url"] = str(config.get("mineru_api_url") or "")
@@ -1907,6 +2003,7 @@ def _candidate_from_artifact_row(
         image_path=artifact.get("image_path") or "",
         image_hash=artifact.get("image_hash") or "",
         context_hash=artifact.get("context_hash") or "",
+        pipeline_version=artifact.get("pipeline_version") or str(visual_config.get("pipeline_version") or "visual-pipeline-v1"),
         parser=artifact.get("parser") or "",
         parser_confidence=float(artifact.get("parser_confidence") or 0),
         section_path=section_path,
@@ -2082,6 +2179,13 @@ def dispatch_admin_request(method: str, path: str, payload: Dict[str, Any]) -> D
         )
     if method == "GET" and path in ("visual/backends", "visual-backends"):
         return _to_jsonable(service.get_visual_analysis_backends())
+    if method == "POST" and path in ("visual/reset", "visual-reset"):
+        return _to_jsonable(
+            service.reset_visual_knowledge(
+                document_id=str(payload.get("document_id") or "") or None,
+                kb_id=str(payload.get("kb_id") or "") or None,
+            )
+        )
     if method == "GET" and path in ("visual/status", "visual-stats"):
         return _to_jsonable(
             service.get_visual_stats(
@@ -2406,7 +2510,7 @@ def _deep_query_answer_policy() -> str:
     return (
         "Use evidence_blocks as source evidence only. Distinguish directly supported facts, "
         "inferences from those facts, and insufficient evidence. For layered technical concepts, "
-        "separate protocol/logical behavior, physical mapping, implementation or monitor view, "
+        "separate logical or functional behavior, physical mapping, implementation or monitor view, "
         "and state/step boundaries."
     )
 

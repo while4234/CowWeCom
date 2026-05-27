@@ -208,8 +208,8 @@
     "fail_open": true,
     "admin_api_enabled": true,
     "provider_api_enabled": false,
-    "data_dir": "./public_protocol_knowledge",
-    "sqlite_path": "./public_protocol_knowledge/indexes/kb.sqlite",
+    "data_dir": "./public_document_knowledge",
+    "sqlite_path": "./public_document_knowledge/indexes/kb.sqlite",
     "workspace_root": ".",
     "default_kb_id": "kb_default",
     "ingest": {
@@ -244,6 +244,7 @@
       "model": "gpt-5.5",
       "reasoning_effort": "xhigh",
       "prompt_version": "visual-v1",
+      "pipeline_version": "visual-pipeline-v1",
       "max_items_per_request": 1,
       "prepare_pages_per_request": 3,
       "min_confidence": 0.78,

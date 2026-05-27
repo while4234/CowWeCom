@@ -278,6 +278,7 @@ class VisualArtifactCandidate:
     image_path: str = ""
     image_hash: str = ""
     context_hash: str = ""
+    pipeline_version: str = ""
     parser: str = ""
     parser_confidence: float = 0.0
     section_path: List[str] = field(default_factory=list)

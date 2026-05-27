@@ -4993,22 +4993,27 @@ function renderKnowledgeBackendDocumentSelector(documents) {
     }
     select.disabled = false;
     const previous = select.value;
-    select.innerHTML = sourceDocs.map(doc => {
+    const needsExplicitChoice = sourceDocs.length > 1;
+    const options = sourceDocs.map(doc => {
         const id = doc.id || '';
         const title = doc.title || id || 'document';
         const label = `${title} / ${doc.kb_id || 'kb_default'} / ${doc.doc_type || 'document'} / ${id.slice(0, 8)}`;
         return `<option value="${escapeAttr(id)}">${escapeHtml(label)}</option>`;
-    }).join('');
+    });
+    select.innerHTML = (needsExplicitChoice ? '<option value="">请选择文档</option>' : '') + options.join('');
     if (previous && sourceDocs.some(doc => doc.id === previous)) {
         select.value = previous;
+    } else if (sourceDocs.length === 1) {
+        select.value = sourceDocs[0].id || '';
+    } else {
+        select.value = '';
     }
 }
 
 function getSelectedKnowledgeBackendDocumentId() {
     const select = document.getElementById('knowledge-backend-document-select');
     if (select && select.value) return select.value;
-    const doc = _knowledgeBackendSourceDocument();
-    return doc ? doc.id : '';
+    return '';
 }
 
 function selectKnowledgeBackendDocument(documentId) {
@@ -5138,7 +5143,7 @@ async function startVisualBuildLoop(documentId, force, retryFailed) {
     if (_knowledgeBackendVisualRunning) return;
     const messageEl = document.getElementById('knowledge-backend-message');
     const selectedId = documentId || getSelectedKnowledgeBackendDocumentId();
-    const sourceDoc = selectedId ? (_knowledgeBackendDocumentById(selectedId) || { id: selectedId }) : _knowledgeBackendSourceDocument();
+    const sourceDoc = selectedId ? (_knowledgeBackendDocumentById(selectedId) || { id: selectedId }) : null;
     if (!sourceDoc || !sourceDoc.id) {
         if (messageEl) messageEl.textContent = '请先上传或选择文档';
         return;
@@ -5293,7 +5298,7 @@ function setVisualBuildProgressVisible(visible) {
 function showLowConfidenceVisualArtifacts(documentId) {
     const messageEl = document.getElementById('knowledge-backend-message');
     const selectedId = documentId || getSelectedKnowledgeBackendDocumentId();
-    const sourceDoc = selectedId ? (_knowledgeBackendDocumentById(selectedId) || { id: selectedId }) : _knowledgeBackendSourceDocument();
+    const sourceDoc = selectedId ? (_knowledgeBackendDocumentById(selectedId) || { id: selectedId }) : null;
     if (!sourceDoc || !sourceDoc.id) {
         if (messageEl) messageEl.textContent = '请先上传或选择文档';
         return;
