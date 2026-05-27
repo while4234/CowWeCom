@@ -704,20 +704,7 @@ class KnowledgeStorage:
         span_ids: List[str] = []
         for row in rows:
             span_ids.extend(_loads(row["source_span_ids"]) or [])
-        span_ids = _unique(span_ids)
-        if chunk_ids:
-            placeholders = ",".join("?" for _ in chunk_ids)
-            self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE chunk_id IN ({placeholders})", chunk_ids)
-            self.conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", chunk_ids)
-            if self.fts5_available:
-                self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
-        if span_ids:
-            referenced_span_ids = self._source_span_ids_referenced_by_chunks(span_ids)
-            unreferenced_span_ids = [span_id for span_id in span_ids if span_id not in referenced_span_ids]
-            if unreferenced_span_ids:
-                self.prune_source_span_references(unreferenced_span_ids)
-                placeholders = ",".join("?" for _ in unreferenced_span_ids)
-                self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", unreferenced_span_ids)
+        self._delete_chunks_and_unreferenced_source_spans(chunk_ids, span_ids, commit=False)
 
     def _source_span_ids_referenced_by_chunks(self, span_ids: Iterable[str]) -> Set[str]:
         candidate_ids = {span_id for span_id in span_ids if span_id}
@@ -730,6 +717,65 @@ class KnowledgeStorage:
                 if span_id in candidate_ids:
                     referenced.add(span_id)
         return referenced
+
+    def _existing_source_span_ids(self, span_ids: Iterable[str]) -> Set[str]:
+        ids = [span_id for span_id in dict.fromkeys(span_ids) if span_id]
+        if not ids:
+            return set()
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.conn.execute(
+            f"SELECT id FROM source_spans WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        return {row["id"] for row in rows if row["id"]}
+
+    def _delete_chunks_and_unreferenced_source_spans(
+        self,
+        chunk_ids: Iterable[str],
+        span_ids: Iterable[str],
+        *,
+        commit: bool = True,
+    ) -> Dict[str, int]:
+        chunk_ids = _unique([chunk_id for chunk_id in chunk_ids if chunk_id])
+        span_ids = _unique([span_id for span_id in span_ids if span_id])
+        deleted_chunks = 0
+        if chunk_ids:
+            placeholders = ",".join("?" for _ in chunk_ids)
+            deleted_chunks = int(
+                self.conn.execute(
+                    f"SELECT COUNT(*) FROM chunks WHERE id IN ({placeholders})",
+                    chunk_ids,
+                ).fetchone()[0]
+            )
+            self.conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", chunk_ids)
+            self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE chunk_id IN ({placeholders})", chunk_ids)
+            if self.fts5_available:
+                self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
+
+        referenced_span_ids = self._source_span_ids_referenced_by_chunks(span_ids)
+        unreferenced_span_ids = [span_id for span_id in span_ids if span_id not in referenced_span_ids]
+        deleted_source_spans = 0
+        pruned_counts = {"entities": 0, "relations": 0}
+        if unreferenced_span_ids:
+            pruned_counts = self.prune_source_span_references(unreferenced_span_ids)
+            placeholders = ",".join("?" for _ in unreferenced_span_ids)
+            deleted_source_spans = int(
+                self.conn.execute(
+                    f"SELECT COUNT(*) FROM source_spans WHERE id IN ({placeholders})",
+                    unreferenced_span_ids,
+                ).fetchone()[0]
+            )
+            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", unreferenced_span_ids)
+
+        if commit:
+            self.conn.commit()
+        return {
+            "deleted_chunks": deleted_chunks,
+            "deleted_source_spans": deleted_source_spans,
+            "preserved_source_spans": len(referenced_span_ids),
+            "pruned_entities": int(pruned_counts.get("entities", 0)),
+            "pruned_relations": int(pruned_counts.get("relations", 0)),
+        }
 
     def update_visual_artifact_image(self, artifact_id: str, image_path: str, image_hash: str) -> None:
         self.conn.execute(
@@ -1680,9 +1726,19 @@ class KnowledgeStorage:
         for offset, chunk in enumerate(chunks):
             appended.append(replace(chunk, ordinal=next_ordinal + offset, version_id=chunk.version_id or version_id))
 
+        existing_span_ids = self._existing_source_span_ids(span.id for span in spans)
+        if existing_span_ids:
+            appended, spans, _, _ = self._remap_incoming_source_span_conflicts(
+                appended,
+                spans,
+                [],
+                [],
+                existing_span_ids,
+            )
+
         self.conn.executemany(
             """
-            INSERT OR REPLACE INTO source_spans(
+            INSERT INTO source_spans(
                 id, document_id, version_id, source_file, page_start, page_end, section_path,
                 paragraph_index_start, paragraph_index_end, char_start, char_end, bbox, text_hash, text
             )
@@ -1794,14 +1850,7 @@ class KnowledgeStorage:
         span_ids: List[str] = []
         for row in rows:
             span_ids.extend(_loads(row["source_span_ids"]) or [])
-        if chunk_ids:
-            placeholders = ",".join("?" for _ in chunk_ids)
-            self.conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", chunk_ids)
-            if self.fts5_available:
-                self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
-        if span_ids:
-            placeholders = ",".join("?" for _ in span_ids)
-            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", span_ids)
+        self._delete_chunks_and_unreferenced_source_spans(chunk_ids, span_ids, commit=False)
         self.conn.execute("DELETE FROM visual_artifact_chunks WHERE artifact_id = ?", (artifact_id,))
         self.conn.commit()
 
@@ -1839,19 +1888,8 @@ class KnowledgeStorage:
         for artifact_id in artifact_ids:
             self.delete_visual_page_chunks_for_artifact(artifact_id)
 
-    def _delete_chunks_and_spans(self, chunk_ids: Iterable[str], span_ids: Iterable[str]) -> None:
-        chunk_ids = _unique([chunk_id for chunk_id in chunk_ids if chunk_id])
-        span_ids = _unique([span_id for span_id in span_ids if span_id])
-        if chunk_ids:
-            placeholders = ",".join("?" for _ in chunk_ids)
-            self.conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", chunk_ids)
-            self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE chunk_id IN ({placeholders})", chunk_ids)
-            if self.fts5_available:
-                self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
-        if span_ids:
-            placeholders = ",".join("?" for _ in span_ids)
-            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", span_ids)
-        self.conn.commit()
+    def _delete_chunks_and_spans(self, chunk_ids: Iterable[str], span_ids: Iterable[str]) -> Dict[str, int]:
+        return self._delete_chunks_and_unreferenced_source_spans(chunk_ids, span_ids)
 
     def delete_visual_chunks_for_group(self, group_id: str) -> None:
         rows = self.conn.execute(
@@ -1867,18 +1905,8 @@ class KnowledgeStorage:
         span_ids: List[str] = []
         for row in rows:
             span_ids.extend(_loads(row["source_span_ids"]) or [])
-        if chunk_ids:
-            placeholders = ",".join("?" for _ in chunk_ids)
-            self.conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", chunk_ids)
-            self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE chunk_id IN ({placeholders})", chunk_ids)
-            if self.fts5_available:
-                self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
-        if span_ids:
-            span_ids = _unique(span_ids)
-            placeholders = ",".join("?" for _ in span_ids)
-            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", span_ids)
-        if not chunk_ids:
-            self.conn.execute("DELETE FROM visual_artifact_chunks WHERE artifact_id = ?", (group_id,))
+        self._delete_chunks_and_unreferenced_source_spans(chunk_ids, span_ids, commit=False)
+        self.conn.execute("DELETE FROM visual_artifact_chunks WHERE artifact_id = ?", (group_id,))
         self.conn.commit()
 
     def _mark_visual_group_not_retrievable(self, group_id: str) -> None:
@@ -2094,24 +2122,6 @@ class KnowledgeStorage:
 
         artifact_rows = self.conn.execute(f"SELECT id FROM visual_artifacts {where}", params).fetchall()
         artifact_ids = [row["id"] for row in artifact_rows]
-        chunk_ids: List[str] = []
-        span_ids: List[str] = []
-        if artifact_ids:
-            placeholders = ",".join("?" for _ in artifact_ids)
-            rows = self.conn.execute(
-                f"""
-                SELECT c.id, c.source_span_ids
-                FROM visual_artifact_chunks vac
-                JOIN chunks c ON c.id = vac.chunk_id
-                WHERE vac.artifact_id IN ({placeholders})
-                """,
-                artifact_ids,
-            ).fetchall()
-            for row in rows:
-                chunk_ids.append(row["id"])
-                span_ids.extend(_loads(row["source_span_ids"]) or [])
-            self._delete_chunks_and_spans(chunk_ids, span_ids)
-            self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE artifact_id IN ({placeholders})", artifact_ids)
 
         group_clauses: List[str] = []
         group_params: List[Any] = []
@@ -2127,28 +2137,36 @@ class KnowledgeStorage:
         group_where = f"WHERE {' AND '.join(group_clauses)}" if group_clauses else ""
         group_rows = self.conn.execute(f"SELECT id FROM visual_artifact_groups {group_where}", group_params).fetchall()
         group_ids = [row["id"] for row in group_rows]
-        if group_ids:
-            placeholders = ",".join("?" for _ in group_ids)
+
+        chunk_ids: List[str] = []
+        span_ids: List[str] = []
+        delete_stats = {
+            "deleted_chunks": 0,
+            "deleted_source_spans": 0,
+            "preserved_source_spans": 0,
+            "pruned_entities": 0,
+            "pruned_relations": 0,
+        }
+        visual_mapping_owner_ids = _unique([*artifact_ids, *group_ids])
+        if visual_mapping_owner_ids:
+            placeholders = ",".join("?" for _ in visual_mapping_owner_ids)
             rows = self.conn.execute(
                 f"""
-                SELECT c.id, c.source_span_ids
+                SELECT DISTINCT c.id, c.source_span_ids
                 FROM visual_artifact_chunks vac
                 JOIN chunks c ON c.id = vac.chunk_id
                 WHERE vac.artifact_id IN ({placeholders})
                 """,
-                group_ids,
+                visual_mapping_owner_ids,
             ).fetchall()
             for row in rows:
-                if row["id"] not in chunk_ids:
-                    chunk_ids.append(row["id"])
+                chunk_ids.append(row["id"])
                 span_ids.extend(_loads(row["source_span_ids"]) or [])
-            if rows:
-                group_chunk_ids = [row["id"] for row in rows]
-                group_span_ids: List[str] = []
-                for row in rows:
-                    group_span_ids.extend(_loads(row["source_span_ids"]) or [])
-                self._delete_chunks_and_spans(group_chunk_ids, group_span_ids)
-            self.conn.execute(f"DELETE FROM visual_artifact_chunks WHERE artifact_id IN ({placeholders})", group_ids)
+            delete_stats = self._delete_chunks_and_unreferenced_source_spans(chunk_ids, span_ids, commit=False)
+            self.conn.execute(
+                f"DELETE FROM visual_artifact_chunks WHERE artifact_id IN ({placeholders})",
+                visual_mapping_owner_ids,
+            )
         deleted_groups = int(
             self.conn.execute(f"SELECT COUNT(*) FROM visual_artifact_groups {group_where}", group_params).fetchone()[0]
         )
@@ -2194,8 +2212,8 @@ class KnowledgeStorage:
             "artifacts": deleted_artifacts,
             "groups": deleted_groups,
             "tiles": deleted_tiles,
-            "chunks": len(chunk_ids),
-            "source_spans": len(_unique(span_ids)),
+            "chunks": delete_stats["deleted_chunks"],
+            "source_spans": delete_stats["deleted_source_spans"],
             "prepare_states": deleted_prepare_states,
         }
 

@@ -490,6 +490,7 @@ CowWeCom/
 ### 2026-05-28
 
 - Agent 同轮重复工具调用结果进一步压缩：相同参数的重复 read/bash/edit 等工具仍保留首次完整结果，重复结果改为短引用，减少上下文膨胀和缓存扰动。
+- KnowledgeStorage 视觉 chunk 的 source span 完整性继续收口：追加视觉结果时不再覆盖既有 span，视觉删除和 reset 只清理无人引用的 span，并同步维护图谱证据引用。
 
 ### 2026-05-27
 
