@@ -135,6 +135,25 @@ def run_repair(options: RepairOptions) -> Dict[str, Any]:
     started_at = int(time.time())
     report = new_report(options, started_at)
 
+    try:
+        selection_storage = KnowledgeStorage(options.db_path, read_only=True, immutable_read=False)
+        try:
+            selected_documents = select_documents(selection_storage.list_documents(), options)
+        finally:
+            selection_storage.close()
+        report["summary"]["selected_documents"] = len(selected_documents)
+        if not selected_documents:
+            handle_empty_selection(report, options)
+            report["finished_at"] = int(time.time())
+            report["report_path"] = str(write_report(options, report, started_at))
+            return report
+    except Exception as exc:
+        report["ok"] = False
+        report["error"] = str(exc)
+        report["finished_at"] = int(time.time())
+        report["report_path"] = str(write_report(options, report, started_at))
+        return report
+
     if options.apply:
         try:
             backup = create_sqlite_backup(options.db_path, options.backup_path)
@@ -148,9 +167,11 @@ def run_repair(options: RepairOptions) -> Dict[str, Any]:
 
     storage: Optional[KnowledgeStorage] = None
     try:
-        storage = KnowledgeStorage(options.db_path, read_only=not options.apply)
-        selected_documents = select_documents(storage.list_documents(), options)
-        report["summary"]["selected_documents"] = len(selected_documents)
+        storage = KnowledgeStorage(
+            options.db_path,
+            read_only=not options.apply,
+            immutable_read=False if not options.apply else True,
+        )
         for document in selected_documents:
             try:
                 document_report = repair_one_document(storage, document, options, apply=options.apply)
@@ -335,7 +356,8 @@ def delete_unreferenced_source_spans_for_document(storage: KnowledgeStorage, doc
     for chunk in chunks:
         referenced.update(chunk.source_span_ids or [])
     if not referenced:
-        return 0
+        cursor = storage.conn.execute("DELETE FROM source_spans WHERE document_id = ?", (document_id,))
+        return cursor.rowcount or 0
 
     placeholders = ",".join("?" for _ in referenced)
     cursor = storage.conn.execute(
@@ -589,10 +611,13 @@ def new_report(options: RepairOptions, started_at: int) -> Dict[str, Any]:
         "mode": "apply" if options.apply else "dry-run",
         "db_path": str(options.db_path),
         "backup_path": "",
+        "report_path": "",
         "workspace_root": str(options.workspace_root),
         "data_dir": str(options.data_dir),
         "started_at": started_at,
         "finished_at": 0,
+        "message": "",
+        "error": "",
         "summary": {
             "selected_documents": 0,
             "processed": 0,
@@ -626,8 +651,21 @@ def summarize_report(report: Dict[str, Any]) -> None:
         summary[key] = sum(int(item.get(key) or 0) for item in documents if not item.get("skipped"))
 
 
+def handle_empty_selection(report: Dict[str, Any], options: RepairOptions) -> None:
+    if options.document_id:
+        report["ok"] = False
+        report["error"] = f"document not found: {options.document_id}"
+        return
+    if options.kb_id:
+        report["ok"] = False
+        report["error"] = f"no documents found for kb_id: {options.kb_id}"
+        return
+    report["message"] = "no documents selected"
+
+
 def write_report(options: RepairOptions, report: Dict[str, Any], started_at: int) -> Path:
     report_path = default_report_path(options, started_at)
+    report["report_path"] = str(report_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(jsonable(report), ensure_ascii=False, indent=2), encoding="utf-8")
     return report_path
@@ -666,11 +704,25 @@ def resolve_workspace_root(raw: str, config: Optional[KnowledgeBackendConfig], p
 def resolve_data_dir(raw: str, config: Optional[KnowledgeBackendConfig], db_path: Path, project_root: Path) -> Path:
     if raw:
         return resolve_cli_path(raw, project_root)
+    db_path_abs = absolute_path(db_path, project_root)
+    inferred = infer_data_dir_from_db_path(db_path_abs)
+    config_sqlite = None
+    if config is not None and config.sqlite_path:
+        config_sqlite = absolute_path(Path(config.sqlite_path), project_root)
+    if inferred is not None and (config_sqlite is None or not same_path(config_sqlite, db_path_abs)):
+        return inferred
     if config is not None and config.data_dir:
         return absolute_path(Path(config.data_dir), project_root)
-    if same_path(db_path, project_root / DEFAULT_PUBLIC_PROTOCOL_DB):
-        return db_path.parent.parent
+    if inferred is not None:
+        return inferred
     return project_root / "public_protocol_knowledge"
+
+
+def infer_data_dir_from_db_path(db_path: Path) -> Optional[Path]:
+    db_path = Path(db_path).expanduser().resolve()
+    if db_path.name == "kb.sqlite" and db_path.parent.name == "indexes":
+        return db_path.parent.parent
+    return None
 
 
 def resolve_cli_path(raw: str, project_root: Path) -> Path:
@@ -697,10 +749,13 @@ def load_project_config_for_script() -> None:
         from config import load_config
 
         previous_level = logger.level
+        previous_disabled = logger.disabled
+        logger.disabled = True
         logger.setLevel(logging.WARNING)
         try:
             load_config()
         finally:
+            logger.disabled = previous_disabled
             logger.setLevel(previous_level)
     except Exception:
         pass

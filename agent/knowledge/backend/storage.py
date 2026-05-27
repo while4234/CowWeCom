@@ -28,9 +28,10 @@ from .models import (
 class KnowledgeStorage:
     """SQLite-backed document metadata and chunk search."""
 
-    def __init__(self, db_path: Path, read_only: bool = False):
+    def __init__(self, db_path: Path, read_only: bool = False, immutable_read: bool = True):
         self.db_path = Path(db_path)
         self.read_only = bool(read_only)
+        self.immutable_read = bool(immutable_read)
         self.conn = self._connect()
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout=5000")
@@ -44,9 +45,10 @@ class KnowledgeStorage:
     def _connect(self) -> sqlite3.Connection:
         if self.read_only:
             uri_path = self.db_path.resolve().as_posix()
-            # Published indexes are queried as static artifacts; immutable avoids WAL/SHM sidecars.
+            # Published indexes are usually static artifacts; repair dry-runs need WAL visibility.
+            immutable_suffix = "&immutable=1" if self.immutable_read else ""
             return sqlite3.connect(
-                f"file:{uri_path}?mode=ro&immutable=1",
+                f"file:{uri_path}?mode=ro{immutable_suffix}",
                 uri=True,
                 check_same_thread=False,
             )
@@ -203,6 +205,13 @@ class KnowledgeStorage:
         ordinary_span_ids: List[str] = []
         for row in ordinary_chunk_rows:
             ordinary_span_ids.extend(_loads(row["source_span_ids"]) or [])
+        if ordinary_span_ids:
+            preserved_span_ids = self._source_span_ids_for_preserved_chunks(document.id, ordinary_chunk_ids)
+            ordinary_span_ids = [
+                span_id
+                for span_id in dict.fromkeys(ordinary_span_ids)
+                if span_id and span_id not in preserved_span_ids
+            ]
         if ordinary_chunk_ids:
             placeholders = ",".join("?" for _ in ordinary_chunk_ids)
             self.conn.execute(f"DELETE FROM chunks WHERE id IN ({placeholders})", ordinary_chunk_ids)
@@ -210,7 +219,10 @@ class KnowledgeStorage:
                 self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", ordinary_chunk_ids)
         if ordinary_span_ids:
             placeholders = ",".join("?" for _ in ordinary_span_ids)
-            self.conn.execute(f"DELETE FROM source_spans WHERE id IN ({placeholders})", ordinary_span_ids)
+            self.conn.execute(
+                f"DELETE FROM source_spans WHERE document_id = ? AND id IN ({placeholders})",
+                [document.id, *ordinary_span_ids],
+            )
         self.conn.executemany(
             """
             INSERT INTO chunks(
@@ -281,6 +293,28 @@ class KnowledgeStorage:
         )
         if commit:
             self.conn.commit()
+
+    def _source_span_ids_for_preserved_chunks(self, document_id: str, deleted_chunk_ids: List[str]) -> set[str]:
+        if not deleted_chunk_ids:
+            rows = self.conn.execute(
+                "SELECT source_span_ids FROM chunks WHERE document_id = ?",
+                (document_id,),
+            ).fetchall()
+        else:
+            placeholders = ",".join("?" for _ in deleted_chunk_ids)
+            rows = self.conn.execute(
+                f"""
+                SELECT source_span_ids
+                FROM chunks
+                WHERE document_id = ?
+                  AND id NOT IN ({placeholders})
+                """,
+                [document_id, *deleted_chunk_ids],
+            ).fetchall()
+        preserved: set[str] = set()
+        for row in rows:
+            preserved.update(_loads(row["source_span_ids"]) or [])
+        return preserved
 
     def get_document(self, document_id: str) -> Optional[KnowledgeDocument]:
         row = self.conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()

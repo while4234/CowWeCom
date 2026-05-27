@@ -509,6 +509,36 @@ def test_visual_backends_current_availability_reflects_resolved_backend(monkeypa
     assert current["available"] is False
 
 
+def test_injected_visual_analyzer_skips_real_backend_credentials(monkeypatch, tmp_path):
+    monkeypatch.setattr("agent.knowledge.backend.service._visual_backend_available", lambda backend: False)
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    analyzer = QueueVisualAnalyzer([_high_result("fake_backend_result")])
+    service._visual_extractor = FakeRangeExtractor([_candidate(document_id, version_id, 1)])
+    service._visual_analyzer = analyzer
+
+    result = service.build_visual_knowledge(document_id=document_id, limit=1, analysis_backend="codex")
+
+    assert result["ok"] is True
+    assert result["succeeded"] == 1
+    assert analyzer.backends == ["codex"]
+    assert service.search("fake_backend_result", limit=5)
+
+
+def test_default_visual_analyzer_still_requires_available_backend(monkeypatch, tmp_path):
+    monkeypatch.setattr("agent.knowledge.backend.service._visual_backend_available", lambda backend: False)
+    service = _service(tmp_path)
+
+    result = service.build_visual_knowledge(document_id="missing-doc", limit=1, analysis_backend="codex")
+
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert "selected visual analysis backend is unavailable" in result["message"]
+    assert result["processed"] == 0
+    assert result["succeeded"] == 0
+    assert result["stats"]["pending"] == 0
+
+
 def test_visual_build_progress_fields_and_failed_not_has_more(tmp_path):
     service = _service(tmp_path)
     document_id, version_id = _ingest(service)

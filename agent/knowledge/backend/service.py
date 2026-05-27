@@ -789,6 +789,25 @@ class KnowledgeBackendService:
                 "document_id": document_id or "",
                 "kb_id": kb_id or "",
                 "analysis_backend": requested_backend,
+                "prepared": 0,
+                "prepared_pages_delta": 0,
+                "prepared_artifacts_delta": 0,
+                "scanned_pages_delta": 0,
+                "processed": 0,
+                "succeeded": 0,
+                "low_confidence": 0,
+                "failed": 0,
+                "group_processed": 0,
+                "group_succeeded": 0,
+                "group_low_confidence": 0,
+                "group_failed": 0,
+                "pending": 0,
+                "has_more": False,
+                "has_retryable_failed": False,
+                "stats": _empty_visual_stats(),
+                "group_stats": _empty_visual_group_stats(),
+                **_empty_visual_tile_stats(),
+                "prepare": _empty_visual_prepare_stats(),
             }
         storage = self._backend._get_storage(writable=True)
         version_id = _current_document_version_id(storage, document_id) if document_id else None
@@ -1295,12 +1314,15 @@ class KnowledgeBackendService:
             return "failed"
 
     def _ensure_visual_backend_available(self, backend: str) -> None:
-        if not isinstance(self._visual_analyzer, VisualAnalyzer):
+        if not self._using_default_visual_analyzer():
             return
         normalized = normalize_visual_analysis_backend(backend)
         if _visual_backend_available(normalized):
             return
         raise RuntimeError(f"selected visual analysis backend is unavailable: {normalized}")
+
+    def _using_default_visual_analyzer(self) -> bool:
+        return type(self._visual_analyzer) is VisualAnalyzer
 
     def _process_ready_visual_group(
         self,
@@ -2282,6 +2304,42 @@ def _normalize_visual_analysis_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
 
 def _visual_analysis_enabled(config: KnowledgeBackendConfig) -> bool:
     return parse_knowledge_backend_enabled((config.visual_analysis or {}).get("enabled", True))
+
+
+def _empty_visual_stats() -> Dict[str, Any]:
+    return {
+        "total": 0,
+        "pending": 0,
+        "running": 0,
+        "succeeded": 0,
+        "low_confidence": 0,
+        "failed": 0,
+        "skipped": 0,
+        "retrievable": 0,
+    }
+
+
+def _empty_visual_group_stats() -> Dict[str, Any]:
+    return dict(_empty_visual_stats())
+
+
+def _empty_visual_tile_stats() -> Dict[str, Any]:
+    return {
+        "tile_artifacts": 0,
+        "total_tiles": 0,
+        "high_res_retries": 0,
+    }
+
+
+def _empty_visual_prepare_stats() -> Dict[str, Any]:
+    return {
+        "status": "pending",
+        "total_pages": 0,
+        "prepared_pages": 0,
+        "prepared_artifacts": 0,
+        "next_page": 1,
+        "states": [],
+    }
 
 
 def _resolve_document_source_path(document: KnowledgeDocument, config: KnowledgeBackendConfig) -> Path:

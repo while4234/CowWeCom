@@ -373,7 +373,7 @@ Web 控制台默认随服务启动，提供以下管理能力：
 public_document_knowledge/
 ```
 
-视觉图表补全会记录 `pipeline_version`，视觉提取、裁剪或提示词版本变化时会自动清理旧视觉缓存，管理员也可通过 `visual/reset` 按文档或知识库手动重建。视觉管线同时保留 page-level artifact 与 group-level artifact：跨页表格、大图、时序图会优先生成多页视觉 chunk，低置信结果只留分析记录不参与检索；高密度单页图表会按需高分辨率重试或 tile 分块合并，Web 进度会显示 artifact、group 和 tile 状态。
+视觉图表补全会记录 `pipeline_version`，视觉提取、裁剪或提示词版本变化时会自动清理旧视觉缓存，管理员也可通过 `visual/reset` 按文档或知识库手动重建。视觉管线同时保留 page-level artifact 与 group-level artifact：跨页表格、大图、时序图会优先生成多页视觉 chunk，低置信结果只留分析记录不参与检索；高密度单页图表会按需高分辨率重试或 tile 分块合并，Web 进度会显示 artifact、group 和 tile 状态。旧公共协议 SQLite 如果已经有 PDF 图内乱码普通文本 chunk，可用 `scripts/repair_knowledge_text_chunks.py` 先 dry-run 检查，再用 `--apply` 备份并替换普通文本 chunk；脚本会保留高置信 `visual_analysis` chunk、视觉 artifact 表与映射，并重建 FTS。
 
 可提交到仓库的公共协议/规范知识数据仍仅限：
 
@@ -493,7 +493,7 @@ CowWeCom/
 - 图表/视觉知识补全改为页级增量准备和 artifact 级断点续跑，支持选择视觉分析后端、手动 reset、低置信结果隔离和 Web 进度展示。
 - 新增跨页图表 group-level 分析：跨页表格、大图、时序图等会合并成多页视觉 chunk，并保留 source pages、part/page attribution；低置信跨页关系不进入检索。
 - 新增高密度图表处理：小字图表可触发高分辨率重试，超大单页图表可 tile 分块分析后合并，避免压缩后丢失表格细节。
-- PDF 文本清洗、caption 识别和导出链路继续收紧：过滤图内噪声，避免正文引用误判为图表，导出和 deep query 不再重复展示视觉 chunk；旧索引可用维护脚本按当前清洗规则修复普通文本 chunk。
+- PDF 文本清洗、caption 识别和导出链路继续收紧：过滤图内噪声，避免正文引用误判为图表，导出和 deep query 不再重复展示视觉 chunk；旧索引可用 dry-run 优先的维护脚本按当前清洗规则修复普通文本 chunk，并保留已有视觉补全结果。
 - 修复每日记忆文件缺失误报、后台任务异常无提示、安全上传预检误拦源码目录等运行体验问题。
 
 ### 2026-05-26

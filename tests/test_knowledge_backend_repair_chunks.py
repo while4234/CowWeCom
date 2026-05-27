@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 from agent.knowledge.backend import KnowledgeBackendConfig
@@ -365,3 +366,219 @@ def test_apply_creates_backup_and_report(monkeypatch, tmp_path):
     assert report_path.is_file()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["backup_path"] == str(backup_path)
+    assert payload["report_path"] == str(report_path)
+
+
+def test_report_data_dir_prefers_db_layout_over_mismatched_config(monkeypatch, tmp_path):
+    protocol_dir = tmp_path / "public_protocol_knowledge"
+    db_path = protocol_dir / "indexes" / "kb.sqlite"
+    document = _document("doc-report-dir", _pdf(tmp_path, "report-dir.pdf"))
+    db_path.parent.mkdir(parents=True)
+    _seed_document(db_path, document, with_visual=False)
+    _patch_extract_and_sanitize(monkeypatch)
+    monkeypatch.setattr(
+        repair_script,
+        "load_project_backend_config",
+        lambda: KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "public_document_knowledge" / "indexes" / "kb.sqlite"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "public_document_knowledge"),
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        ),
+    )
+
+    options = repair_script.repair_options_from_args(
+        repair_script.parse_args(
+            [
+                "--db",
+                str(db_path),
+                "--document-id",
+                document.id,
+                "--dry-run",
+                "--workspace-root",
+                str(tmp_path),
+            ]
+        ),
+        tmp_path,
+    )
+    report = repair_script.run_repair(options)
+
+    assert report["data_dir"] == str(protocol_dir.resolve())
+    assert Path(report["report_path"]).parent == protocol_dir.resolve() / "reports"
+
+
+def test_explicit_data_dir_wins_over_db_layout(monkeypatch, tmp_path):
+    protocol_dir = tmp_path / "public_protocol_knowledge"
+    explicit_dir = tmp_path / "explicit-data"
+    db_path = protocol_dir / "indexes" / "kb.sqlite"
+    document = _document("doc-explicit-dir", _pdf(tmp_path, "explicit-dir.pdf"))
+    db_path.parent.mkdir(parents=True)
+    _seed_document(db_path, document, with_visual=False)
+    _patch_extract_and_sanitize(monkeypatch)
+
+    options = repair_script.repair_options_from_args(
+        repair_script.parse_args(
+            [
+                "--db",
+                str(db_path),
+                "--document-id",
+                document.id,
+                "--dry-run",
+                "--workspace-root",
+                str(tmp_path),
+                "--data-dir",
+                str(explicit_dir),
+            ]
+        ),
+        tmp_path,
+    )
+    report = repair_script.run_repair(options)
+
+    assert report["data_dir"] == str(explicit_dir.resolve())
+    assert Path(report["report_path"]).parent == explicit_dir.resolve() / "reports"
+
+
+def test_missing_document_id_fails_before_backup(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-present", _pdf(tmp_path, "present.pdf"))
+    _seed_document(db_path, document, with_visual=False)
+
+    report = repair_script.run_repair(
+        _options(tmp_path, db_path, document_id="missing-doc", apply=True)
+    )
+
+    assert report["ok"] is False
+    assert "document not found" in report["error"]
+    assert report["backup_path"] == ""
+    assert not list(tmp_path.glob("kb.sqlite.backup-*"))
+
+
+def test_missing_kb_id_fails_before_backup(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-present-kb", _pdf(tmp_path, "present-kb.pdf"), kb_id="ucie")
+    _seed_document(db_path, document, with_visual=False)
+
+    report = repair_script.run_repair(
+        _options(tmp_path, db_path, kb_id="missing-kb", apply=True)
+    )
+
+    assert report["ok"] is False
+    assert "no documents found for kb_id" in report["error"]
+    assert report["backup_path"] == ""
+    assert not list(tmp_path.glob("kb.sqlite.backup-*"))
+
+
+def test_dry_run_reads_committed_wal_changes(monkeypatch, tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    first = _document("doc-first", _pdf(tmp_path, "first.pdf"))
+    _seed_document(db_path, first, with_visual=False)
+    writer = sqlite3.connect(str(db_path))
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        second_pdf = _pdf(tmp_path, "wal.pdf")
+        writer.execute(
+            """
+            INSERT INTO documents(
+                id, title, source_path, mime_type, size, content_hash, status, error,
+                kb_id, doc_type, version_id, metadata, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'ready', '', 'ucie', 'document', ?, '{}', 1)
+            """,
+            (
+                "doc-wal",
+                "WAL Doc",
+                str(second_pdf),
+                "application/pdf",
+                second_pdf.stat().st_size,
+                "hash-doc-wal",
+                "version-doc-wal",
+            ),
+        )
+        writer.commit()
+    finally:
+        writer.close()
+    _patch_extract_and_sanitize(monkeypatch)
+
+    report = repair_script.run_repair(_options(tmp_path, db_path, document_id="doc-wal"))
+
+    assert report["ok"] is True
+    assert report["summary"]["selected_documents"] == 1
+    assert report["documents"][0]["document_id"] == "doc-wal"
+
+
+def test_save_document_preserves_span_referenced_by_visual_chunk(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-shared-span", _pdf(tmp_path, "shared-span.pdf"))
+    shared_span = SourceSpan(
+        id="span-shared",
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=1,
+        page_end=1,
+        text="shared span text",
+    )
+    ordinary = KnowledgeChunk(
+        id="chunk-shared-ordinary",
+        document_id=document.id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text=POLLUTION,
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[shared_span.id],
+    )
+    visual = KnowledgeChunk(
+        id="chunk-shared-visual",
+        document_id=document.id,
+        ordinal=2,
+        page_start=1,
+        page_end=1,
+        text="visual text",
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[shared_span.id],
+        metadata={"source": "visual_analysis"},
+    )
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document, [ordinary], source_spans=[shared_span])
+        storage.append_visual_chunks(document.id, document.version_id, "artifact-shared", [visual], [])
+        replacement = KnowledgeChunk(
+            id="chunk-shared-replacement",
+            document_id=document.id,
+            ordinal=1,
+            page_start=1,
+            page_end=1,
+            text=CLEAN_TEXT,
+            kb_id=document.kb_id,
+            version_id=document.version_id,
+            source_span_ids=[],
+        )
+        storage.save_document(document, [replacement], source_spans=[])
+
+        assert storage.get_source_span(shared_span.id) is not None
+        visual_chunks = [chunk for chunk in storage.list_chunks(document.id) if chunk.metadata.get("source") == "visual_analysis"]
+        assert visual_chunks[0].source_span_ids == [shared_span.id]
+    finally:
+        storage.close()
+
+
+def test_delete_unreferenced_source_spans_deletes_all_when_no_chunks(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-no-chunks", _pdf(tmp_path, "no-chunks.pdf"))
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document, [], source_spans=[_ordinary_span(document)])
+        assert storage.get_source_span(f"span-{document.id}-ordinary") is not None
+
+        deleted = repair_script.delete_unreferenced_source_spans_for_document(storage, document.id)
+
+        assert deleted == 1
+        assert storage.get_source_span(f"span-{document.id}-ordinary") is None
+    finally:
+        storage.close()
