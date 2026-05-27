@@ -5025,12 +5025,7 @@ function renderKnowledgeBackendDocuments(documents) {
             : '';
         const safeDocId = escapeAttr(escapeJs(doc.id || ''));
         const visualBtns = (doc.doc_type || 'document') !== 'llm_study'
-            ? `<button type="button" onclick="selectKnowledgeBackendDocument('${safeDocId}'); startVisualBuildLoop('${safeDocId}', false, false)"
-                       class="knowledge-backend-doc-action knowledge-backend-doc-action-text"
-                       title="只补全此文档的视觉图表知识">
-                   <i class="fas fa-chart-simple text-[10px]"></i><span>补全此文档</span>
-               </button>
-               <button type="button" onclick="selectKnowledgeBackendDocument('${safeDocId}'); showLowConfidenceVisualArtifacts('${safeDocId}')"
+            ? `<button type="button" onclick="selectKnowledgeBackendDocument('${safeDocId}'); showLowConfidenceVisualArtifacts('${safeDocId}')"
                        class="knowledge-backend-doc-action knowledge-backend-doc-action-text"
                        title="查看此文档未入库的低置信图表">
                    <i class="fas fa-eye-low-vision text-[10px]"></i><span>低置信</span>
