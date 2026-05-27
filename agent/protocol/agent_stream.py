@@ -495,9 +495,21 @@ class AgentStreamExecutor:
         original_call = original["tool_call"]
         original_result = original["result"]
         result = dict(original_result)
+        original_text = self._tool_result_text(original_result.get("result"))
+        result_hash = stable_metadata_hash(original_text)
+        result_chars = len(original_text)
+        original_id = original_call.get("id")
+        result["result"] = (
+            "[Duplicate same-turn tool result omitted for cache efficiency: "
+            f"original_tool_use_id={original_id}, "
+            f"hash={result_hash}, chars={result_chars}. "
+            "Use the original tool result from this same tool-result batch.]"
+        )
         result["execution_time"] = 0
         result["duplicate_skipped"] = True
-        result["duplicate_of_tool_call_id"] = original_call.get("id")
+        result["duplicate_of_tool_call_id"] = original_id
+        result["duplicate_result_hash"] = result_hash
+        result["duplicate_result_chars"] = result_chars
 
         tool_name = duplicate_call["name"]
         tool_id = duplicate_call["id"]
@@ -520,7 +532,7 @@ class AgentStreamExecutor:
             "tool_name": tool_name,
             "arguments": arguments,
             "duplicate_skipped": True,
-            "duplicate_of_tool_call_id": original_call.get("id"),
+            "duplicate_of_tool_call_id": original_id,
         })
         self._emit_event("tool_execution_end", {
             "tool_call_id": tool_id,

@@ -83,6 +83,46 @@ class GuardedBashTool(BaseTool):
         )
 
 
+class BashTool(BaseTool):
+    name = "bash"
+    description = "bash"
+    params = {
+        "type": "object",
+        "properties": {"command": {"type": "string"}},
+    }
+
+    def __init__(self, result="command output"):
+        super().__init__()
+        self.calls = 0
+        self.result = result
+
+    def execute(self, params):
+        self.calls += 1
+        return ToolResult.success(self.result)
+
+
+class EditTool(BaseTool):
+    name = "edit"
+    description = "edit"
+    params = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "oldText": {"type": "string"},
+            "newText": {"type": "string"},
+        },
+    }
+
+    def __init__(self, result="edit applied"):
+        super().__init__()
+        self.calls = 0
+        self.result = result
+
+    def execute(self, params):
+        self.calls += 1
+        return ToolResult.success(self.result)
+
+
 class RepeatedReadModel(LLMModel):
     def __init__(self):
         super().__init__(model="test-model")
@@ -203,7 +243,110 @@ class OneBashThenDoneModel(LLMModel):
         yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
 
 
+class DuplicateSameTurnModel(LLMModel):
+    def __init__(self, tool_name, arguments_json):
+        super().__init__(model="test-model")
+        self.calls = 0
+        self.tool_name = tool_name
+        self.arguments_json = arguments_json
+
+    def call_stream(self, request):
+        self.calls += 1
+        if self.calls == 1:
+            yield {
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_original",
+                                "type": "function",
+                                "function": {
+                                    "name": self.tool_name,
+                                    "arguments": self.arguments_json,
+                                },
+                            },
+                            {
+                                "index": 1,
+                                "id": "call_duplicate",
+                                "type": "function",
+                                "function": {
+                                    "name": self.tool_name,
+                                    "arguments": self.arguments_json,
+                                },
+                            },
+                        ]
+                    }
+                }]
+            }
+            yield {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+            return
+
+        yield {"choices": [{"delta": {"content": "done"}}]}
+        yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+
 class TestAgentStreamToolAttemptMemory(unittest.TestCase):
+    def _run_same_turn_duplicate(self, tool, tool_name, arguments_json):
+        executor = AgentStreamExecutor(
+            agent=FakeAgent(),
+            model=DuplicateSameTurnModel(tool_name, arguments_json),
+            system_prompt="system",
+            tools=[tool],
+            messages=[],
+        )
+
+        response = executor.run_stream("call duplicate tool")
+
+        self.assertEqual(response, "done")
+        self.assertEqual(tool.calls, 1)
+        self.assertEqual(executor._tool_duplicate_success_count, 1)
+        result_blocks = [
+            block
+            for message in executor.messages
+            for block in (message.get("content") or [])
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        ]
+        self.assertEqual(len(result_blocks), 2)
+        return result_blocks
+
+    def test_same_turn_duplicate_read_result_is_compacted(self):
+        full_result = "unique read result that should appear only once"
+        blocks = self._run_same_turn_duplicate(
+            ReadTool(result=full_result),
+            "read",
+            '{"path":"doc.md"}',
+        )
+
+        self.assertIn(full_result, blocks[0]["content"])
+        self.assertIn("Duplicate same-turn tool result omitted", blocks[1]["content"])
+        self.assertIn("original_tool_use_id=call_original", blocks[1]["content"])
+        self.assertNotIn(full_result, blocks[1]["content"])
+
+    def test_same_turn_duplicate_bash_result_is_compacted(self):
+        full_result = "unique bash output that should appear only once"
+        blocks = self._run_same_turn_duplicate(
+            BashTool(result=full_result),
+            "bash",
+            '{"command":"python -c \\"print(1)\\""}',
+        )
+
+        self.assertIn(full_result, blocks[0]["content"])
+        self.assertIn("Duplicate same-turn tool result omitted", blocks[1]["content"])
+        self.assertNotIn(full_result, blocks[1]["content"])
+
+    def test_same_turn_duplicate_edit_result_is_compacted(self):
+        full_result = "unique edit output that should appear only once"
+        blocks = self._run_same_turn_duplicate(
+            EditTool(result=full_result),
+            "edit",
+            '{"path":"doc.md","oldText":"a","newText":"b"}',
+        )
+
+        self.assertIn(full_result, blocks[0]["content"])
+        self.assertIn("Duplicate same-turn tool result omitted", blocks[1]["content"])
+        self.assertNotIn(full_result, blocks[1]["content"])
+
     def test_reuses_readonly_tool_result_only_within_same_request(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tool = ReadTool(result="source text")

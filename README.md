@@ -487,6 +487,10 @@ CowWeCom/
 
 这里记录本仓库当前维护方向的核心变化。详细提交、验证命令和回滚线索请看 `GIT_NOTES.md`；README 只保留面向使用者和部署者的摘要。
 
+### 2026-05-28
+
+- Agent 同轮重复工具调用结果进一步压缩：相同参数的重复 read/bash/edit 等工具仍保留首次完整结果，重复结果改为短引用，减少上下文膨胀和缓存扰动。
+
 ### 2026-05-27
 
 - 本地文档知识库从“协议资料”泛化为通用文档知识库，默认数据目录调整为 `public_document_knowledge/`，上传 PDF、DOCX、TXT、Markdown 后可导出到 `knowledge/documents/<kb_id>/`。
