@@ -1,5 +1,5 @@
 from models.bot_factory import create_bot
-from bridge.context import Context
+from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
 from common import const
 from common.log import logger
@@ -119,6 +119,11 @@ class Bridge(object):
 
         task_backend = get_current_backend()
         try:
+            if context and context.type == ContextType.IMAGE_CREATE:
+                from models.grok.grok_image import generate_reply, is_grok_image_provider
+
+                if is_grok_image_provider():
+                    return generate_reply(query, context)
             if not (context and context.get("is_scheduled_task")):
                 note_user_visible_model_call(task_backend, request_kind="chat_reply")
             reply = self.get_bot("chat").reply(query, context)

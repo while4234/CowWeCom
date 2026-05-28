@@ -214,6 +214,11 @@ available_setting = {
     "group_welcome_msg": "",  # 配置新人进群固定欢迎语，不配置则使用随机风格欢迎
     "trigger_by_self": False,  # 是否允许机器人触发
     "text_to_image": "dall-e-2",  # 图片生成模型，可选 dall-e-2, dall-e-3
+    "grok_image_model": "grok-imagine-image",
+    "grok_image_resolution": "1k",
+    "grok_image_aspect_ratio": "square",
+    "grok_image_timeout_seconds": 120,
+    "grok_image_download_timeout_seconds": 60,
     # Azure OpenAI dall-e-3 配置
     "dalle3_image_style": "vivid", # 图片生成dalle3的风格，可选有 vivid, natural
     "dalle3_image_quality": "hd", # 图片生成dalle3的质量，可选有 standard, hd

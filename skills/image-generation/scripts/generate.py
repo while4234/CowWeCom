@@ -30,6 +30,7 @@ import time
 import uuid
 import re
 import shlex
+import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -62,6 +63,46 @@ _CODEX_AUTH_RUNTIMES = {
     "codex-session",
     "codex_login",
     "codex-login",
+}
+
+_GROK_RUNTIMES = {
+    "grok",
+    "xai",
+    "x.ai",
+    "grok_auth",
+    "grok-auth",
+    "xai_oauth",
+    "xai-oauth",
+}
+
+_GROK_SPEED_MODEL = "grok-imagine-image"
+_GROK_QUALITY_MODEL = "grok-imagine-image-quality"
+_GROK_SPEED_QUALITY_HINTS = {
+    "speed",
+    "fast",
+    "quick",
+    "draft",
+    "low",
+    "standard",
+    "快速",
+    "快",
+    "速度",
+    "草稿",
+}
+_GROK_HIGH_QUALITY_HINTS = {
+    "quality",
+    "high quality",
+    "high",
+    "hd",
+    "best",
+    "detailed",
+    "detail",
+    "premium",
+    "高质量",
+    "高清",
+    "精细",
+    "细节",
+    "质量",
 }
 
 _DATA_IMAGE_RE = re.compile(r"^data:image/[^;]+;base64,(.+)$", re.DOTALL)
@@ -293,6 +334,10 @@ def _is_codex_auth_runtime(runtime: str) -> bool:
     return runtime in _CODEX_AUTH_RUNTIMES
 
 
+def _is_grok_runtime(runtime: str) -> bool:
+    return runtime in _GROK_RUNTIMES
+
+
 def _requests_codex_session_auth(args: dict) -> bool:
     auth_source = _normalized_token(args.get("auth_source") or args.get("auth"))
     provider = _normalized_token(args.get("provider"))
@@ -364,6 +409,115 @@ class ImageProvider(ABC):
         Providers that need pixel sizes should call `resolve_size(size, aspect_ratio)`.
         """
         ...
+
+
+# ---------------------------------------------------------------------------
+# Grok / xAI account provider
+# ---------------------------------------------------------------------------
+
+def _ensure_project_root_on_path() -> None:
+    candidates = [
+        os.environ.get("COWWECHAT_ROOT"),
+        str(Path(__file__).resolve().parents[3]) if len(Path(__file__).resolve().parents) > 3 else "",
+        os.getcwd(),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        root = Path(candidate).expanduser().resolve()
+        if (root / "integrations" / "hermes_xai" / "image_gen.py").exists():
+            root_str = str(root)
+            if root_str not in sys.path:
+                sys.path.insert(0, root_str)
+            return
+
+
+def _resolve_grok_model(prompt: str, quality: str | None = None, model: str | None = None) -> str:
+    explicit_model = (model or "").strip()
+    if explicit_model in {_GROK_SPEED_MODEL, _GROK_QUALITY_MODEL}:
+        return explicit_model
+
+    quality_hint = str(quality or "").strip().lower()
+    if quality_hint in _GROK_HIGH_QUALITY_HINTS:
+        return _GROK_QUALITY_MODEL
+    if quality_hint in _GROK_SPEED_QUALITY_HINTS:
+        return _GROK_SPEED_MODEL
+
+    haystack = str(prompt or "").lower()
+    if _has_grok_quality_phrase(haystack):
+        return _GROK_QUALITY_MODEL
+    return explicit_model or _GROK_SPEED_MODEL
+
+
+def _has_grok_quality_phrase(text: str) -> bool:
+    chinese_phrases = ("高质量", "高清", "精细", "细节丰富", "质量优先", "质量模式")
+    if any(phrase in text for phrase in chinese_phrases):
+        return True
+    return bool(
+        re.search(
+            r"\b(high[- ]?quality|quality\s+mode|best\s+quality|hd|high\s+detail|detailed|premium)\b",
+            text,
+        )
+    )
+
+
+def _resolve_grok_resolution(size: str | None) -> str | None:
+    value = str(size or "").strip().lower()
+    if not value or value == "auto":
+        return None
+    if "2k" in value or "2048" in value:
+        return "2k"
+    if "1k" in value or "1024" in value:
+        return "1k"
+    return None
+
+
+class GrokXAIProvider(ImageProvider):
+    """Thin skill adapter around the Hermes-derived xAI image provider."""
+
+    def __init__(self, model: str = ""):
+        self.model = model or ""
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        image_url: str | list | None = None,
+        quality: str | None = None,
+        size: str | None = None,
+        aspect_ratio: str | None = None,
+        output_dir: str = ".",
+    ) -> list[str]:
+        if image_url:
+            raise RuntimeError(
+                "Grok/xAI image generation currently supports text-to-image only in this skill. "
+                "Use the default Codex image-generation runtime for image editing or image fusion."
+            )
+
+        _ensure_project_root_on_path()
+        from integrations.hermes_xai.image_gen import XAIImageGenProvider
+
+        selected_model = _resolve_grok_model(prompt, quality=quality, model=self.model)
+        self.model = selected_model
+        generated_path = Path(
+            XAIImageGenProvider().generate(
+                prompt,
+                aspect_ratio=aspect_ratio,
+                resolution=_resolve_grok_resolution(size),
+                model=selected_model,
+            )
+        ).expanduser().resolve()
+        if not generated_path.exists() or generated_path.stat().st_size <= 0:
+            raise RuntimeError("Grok/xAI image generation returned an empty local file.")
+
+        output = Path(output_dir).expanduser().resolve()
+        output.mkdir(parents=True, exist_ok=True)
+        suffix = generated_path.suffix or ".png"
+        dest = output / f"grok-image-{uuid.uuid4().hex[:8]}{suffix}"
+        shutil.copyfile(generated_path, dest)
+        if dest.stat().st_size <= 0:
+            raise RuntimeError("Grok/xAI image generation copied an empty output file.")
+        return [str(dest)]
 
 
 # ---------------------------------------------------------------------------
@@ -1679,6 +1833,7 @@ class MinimaxProvider(ImageProvider):
 # When the requested model matches a prefix, that provider is promoted to the
 # front of the queue. All other configured providers still run as fallbacks.
 _MODEL_PREFERRED_PROVIDER: list[tuple[tuple[str, ...], str]] = [
+    (("grok-imagine", "grok", "xai"), "GrokXAI"),
     (("codex", "codex-auth", "codex_auth"), "CodexAuth"),
     (("broker", "external-broker", "local-broker"), "Broker"),
     (("gpt-image",), "OpenAI"),
@@ -1720,6 +1875,8 @@ def _build_providers(
          its own DEFAULT_MODEL.
     """
     broker_command = _broker_command_from_env()
+    if _is_grok_runtime(runtime):
+        return [("GrokXAI", GrokXAIProvider(model=model))]
     if _is_codex_auth_runtime(runtime):
         return [("CodexAuth", CodexAuthProvider(model=model))]
     if broker_only:
@@ -1921,6 +2078,13 @@ def main():
                      "CowWechat did not try API providers. Verify that the "
                      "Codex image broker is running in the logged-in Codex "
                      "environment and that its command is configured correctly."
+        }, ensure_ascii=True))
+    elif _is_grok_runtime(runtime):
+        print(json.dumps({
+            "error": f"Grok/xAI image generation failed: {hint}. "
+                     "Confirm that the Grok account is logged in through CowWeCom "
+                     "OAuth and retry. CowWechat did not fall back to Codex because "
+                     "Grok/xAI was explicitly requested."
         }, ensure_ascii=True))
     else:
         print(json.dumps({

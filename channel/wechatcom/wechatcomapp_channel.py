@@ -152,20 +152,36 @@ class WechatComAppChannel(ChatChannel):
             logger.info("[wechatcom] sendImage url={}, receiver={}".format(img_url, receiver))
         elif reply.type == ReplyType.IMAGE:  # 从文件读取图片
             image_storage = reply.content
-            sz = fsize(image_storage)
-            if sz >= 10 * 1024 * 1024:
-                logger.info("[wechatcom] image too large, ready to compress, sz={}".format(sz))
-                image_storage = compress_imgfile(image_storage, 10 * 1024 * 1024 - 1)
-                logger.info("[wechatcom] image compressed, sz={}".format(fsize(image_storage)))
-            image_storage.seek(0)
+            close_after_upload = False
+            if isinstance(image_storage, str):
+                if not os.path.exists(image_storage):
+                    logger.error("[wechatcom] image file not found: {}".format(image_storage))
+                    return False
+                image_storage = open(image_storage, "rb")
+                close_after_upload = True
             try:
-                response = self.client.media.upload("image", image_storage)
-                logger.debug("[wechatcom] upload image response: {}".format(response))
-            except WeChatClientException as e:
-                logger.error("[wechatcom] upload image failed: {}".format(e))
-                return
-            self.client.message.send_image(self.agent_id, receiver, response["media_id"])
-            logger.info("[wechatcom] sendImage, receiver={}".format(receiver))
+                sz = fsize(image_storage)
+                if sz >= 10 * 1024 * 1024:
+                    logger.info("[wechatcom] image too large, ready to compress, sz={}".format(sz))
+                    image_storage = compress_imgfile(image_storage, 10 * 1024 * 1024 - 1)
+                    logger.info("[wechatcom] image compressed, sz={}".format(fsize(image_storage)))
+                    close_after_upload = False
+                image_storage.seek(0)
+                try:
+                    response = self.client.media.upload("image", image_storage)
+                    logger.debug("[wechatcom] upload image response: {}".format(response))
+                except WeChatClientException as e:
+                    logger.error("[wechatcom] upload image failed: {}".format(e))
+                    return False
+                self.client.message.send_image(self.agent_id, receiver, response["media_id"])
+                logger.info("[wechatcom] sendImage, receiver={}".format(receiver))
+                return True
+            finally:
+                if close_after_upload:
+                    try:
+                        image_storage.close()
+                    except Exception:
+                        pass
 
 
 class Query:

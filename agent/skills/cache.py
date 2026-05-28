@@ -79,6 +79,7 @@ _SKILL_CHINESE_SUMMARIES: Dict[str, Tuple[str, str]] = {
     "frontend-design": ("前端界面设计", "设计和实现现代化网页、工具界面、仪表盘和交互体验。"),
     "fund-invest-advisor": ("基金投资顾问", "分析基金、定投、组合和市场配置建议。"),
     "github": ("GitHub 仓库管理", "处理 GitHub 仓库、接口、议题、拉取请求、发布和推送相关任务。"),
+    "grok-image-generation": ("Grok/xAI 生图", "仅在用户明确要求使用 Grok 或 xAI 生图时调用登录账号生成图片，普通生图仍默认走 Codex。"),
     "image-generation": ("图片生成与编辑", "根据文字或参考图生成、修改图片、插画、头像、素材和视觉方案。"),
     "knowledge-wiki": ("个人知识库管理", "整理文章、文档、对话沉淀和知识库条目。"),
     "markdown-converter": ("Markdown 格式转换", "把 PDF、Word、PPT、Excel、网页、CSV 等文件转换为 Markdown。"),

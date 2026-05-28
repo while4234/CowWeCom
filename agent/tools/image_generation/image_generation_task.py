@@ -33,7 +33,18 @@ class ImageGenerationTaskTool(BaseTool):
             },
             "quality": {
                 "type": "string",
-                "description": "Optional quality hint: low, medium, high, or auto.",
+                "description": (
+                    "Optional quality hint: low, medium, high, speed, quality, or auto. "
+                    "This never selects Grok/xAI by itself; it only tunes the selected runtime."
+                ),
+            },
+            "runtime": {
+                "type": "string",
+                "description": (
+                    "Optional provider runtime. Leave omitted for the default Codex image runtime. "
+                    "Pass grok only when the user explicitly asks for Grok, xAI, X.ai, or Grok account image generation. "
+                    "Do not pass grok just because the user asks for quality, speed, high quality, or a quick draft."
+                ),
             },
             "image_url": {
                 "oneOf": [

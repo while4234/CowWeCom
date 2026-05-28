@@ -305,6 +305,7 @@ class ImageGenerationJobManager:
 
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
+        env.setdefault("COWWECHAT_ROOT", str(Path(__file__).resolve().parents[3]))
         self._ensure_codex_auth_env(env)
         self._ensure_default_broker_env(env, job.args.get("runtime"))
         completed = subprocess.run(

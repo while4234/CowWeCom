@@ -21,6 +21,11 @@ class TestGrokConfigTemplate(unittest.TestCase):
     def test_template_exposes_grok_tts_and_voice_mode_defaults(self):
         expected = {
             "text_to_voice": "openai",
+            "grok_image_model": "grok-imagine-image",
+            "grok_image_resolution": "1k",
+            "grok_image_aspect_ratio": "square",
+            "grok_image_timeout_seconds": 120,
+            "grok_image_download_timeout_seconds": 60,
             "grok_tts_voice_id": "eve",
             "grok_tts_language": "zh",
             "grok_tts_sample_rate": 24000,

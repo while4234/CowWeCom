@@ -157,7 +157,7 @@ def _save_config_patch(patch: dict) -> None:
 
 @singleton
 class WecomBotChannel(ChatChannel):
-    NOT_SUPPORT_REPLYTYPE = [ReplyType.IMAGE]
+    NOT_SUPPORT_REPLYTYPE = []
 
     def __init__(self):
         super().__init__()

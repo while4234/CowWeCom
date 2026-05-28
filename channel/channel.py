@@ -3,7 +3,7 @@ Message sending channel abstract class
 """
 
 from bridge.bridge import Bridge
-from bridge.context import Context
+from bridge.context import Context, ContextType
 from bridge.reply import *
 from common.log import logger
 from config import conf
@@ -72,6 +72,12 @@ class Channel(object):
         """
         Build reply content, using agent if enabled in config
         """
+        if context and context.type == ContextType.IMAGE_CREATE:
+            from models.grok.grok_image import is_grok_image_provider
+
+            if is_grok_image_provider():
+                return Bridge().fetch_reply_content(query, context)
+
         # Check if agent mode is enabled
         use_agent = conf().get("agent", True)
 

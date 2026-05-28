@@ -55,7 +55,7 @@ CowWeCom 的目标不是做一个“所有平台都写在 README 里的通用机
 | 长期记忆 | 按用户和会话隔离的记忆文件、每日深度整理、记忆检索和管理 |
 | 知识库 | 本地知识库、协议/规范公共知识后端、上传构建索引、LLM 学习文档生成、可追溯检索 |
 | Skills | 项目内置 Skills 启动同步到运行工作区，可按需启用、禁用、校验和扩展 |
-| 图像生成 | 使用本项目 `image-generation` Skill，经 Codex auth 调用图像生成工具，支持后台任务和结果回传 |
+| 图像生成 | 使用本项目 `image-generation` Skill，经 Codex auth 调用图像生成工具，支持后台任务和结果回传；用户明确说 Grok/xAI 时可切到 `grok-image-generation` 使用已登录 Grok 账号生图 |
 | 后端路由 | Codex、OpenAI-compatible/CAPI 等后端路由，支持额度查询、自动切换和推理强度策略 |
 | 安全隔离 | 管理员/普通用户角色、普通用户文件访问边界、敏感路径保护、Web 管理接口认证 |
 
@@ -184,7 +184,7 @@ http://127.0.0.1:9899
 
 CAPI 额度卡/月卡查询依赖 `llm_backend.providers.capi` 和 `llm_backend.providers.capi_monthly` 下的专用 key。更新部署后请检查本机 `CAPI_API_KEY`、`CAPI_MONTHLY_API_KEY`，或在 ignored 的 `config.json` 中配置 `llm_backend.providers.capi.api_key`、`llm_backend.providers.capi_monthly.api_key`；不要把真实 key 写入 `config-template.json` 或提交到 Git。
 
-Grok/xAI 目前作为灰度能力接入：管理员可访问 `/grok` 完成原生账号 OAuth 登录，但普通配置页默认不展示 Grok，也不会因为登录 token 改变当前真实聊天后端。需要启用 Grok Chat 时，在 `config.json` 设置 `bot_type=grok` 或 `bot_type=xai`，并用 `grok_model` 控制 xAI 模型，例如 `{"bot_type": "grok", "grok_model": "grok-4.3"}`；通用 `model` 可继续保留给其他后端，Agent 主链路不会用它覆盖 `grok_model`。如需在普通模型配置面板展示 Grok，可显式开启 `grok_gray_enabled=true`。OAuth token 默认写入 CowWeCom 的 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。手动粘贴登录默认要求完整 callback URL 或同时包含 `code` 和 `state` 的查询字符串；裸授权码兼容需显式开启 `grok_oauth_accept_bare_code=true`，且必须存在当前 PKCE 登录会话。Web 状态/测试接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token、authorization code 或 code_verifier。
+Grok/xAI 目前作为灰度能力接入：管理员可访问 `/grok` 完成原生账号 OAuth 登录，但普通配置页默认不展示 Grok，也不会因为登录 token 改变当前真实聊天后端。需要启用 Grok Chat 时，在 `config.json` 设置 `bot_type=grok` 或 `bot_type=xai`，并用 `grok_model` 控制 xAI 模型，例如 `{"bot_type": "grok", "grok_model": "grok-4.3"}`；通用 `model` 可继续保留给其他后端，Agent 主链路不会用它覆盖 `grok_model`。如需在普通模型配置面板展示 Grok，可显式开启 `grok_gray_enabled=true`。Grok 图片生成复用同一 OAuth 凭据，只有用户明确说使用 Grok、xAI、X.ai、Grok 账号或 Grok 网页生图时才会通过 `grok-image-generation` 切到 xAI；普通生图、仅说质量或速度偏好时仍默认走 Codex 生图。Grok 生图支持 `grok-imagine-image` 速度模型和 `grok-imagine-image-quality` 质量模型；只有用户明确说 Grok 高质量、quality mode、高清、高质量、精细等类似要求时才使用质量模型，否则 Grok 默认使用快速模型，并把 xAI 返回的 URL 或 b64 图片先落成本地文件再发送。OAuth token 默认写入 CowWeCom 的 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。手动粘贴登录默认要求完整 callback URL 或同时包含 `code` 和 `state` 的查询字符串；裸授权码兼容需显式开启 `grok_oauth_accept_bare_code=true`，且必须存在当前 PKCE 登录会话。Web 状态/测试接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token、authorization code 或 code_verifier。
 
 企业微信原生语音气泡仍受平台 AMR 窄带格式限制。为改善听感，默认会减少 Grok 流式 TTS 的切段频率（`grok_voice_max_segment_chars=180`、`grok_voice_flush_idle_ms=1500`），并在转换企业微信语音前启用响度归一化与最高 AMR-NB 码率（`wecom_voice_normalize_enabled=true`、`wecom_voice_normalize_target_dbfs=-18.0`、`wecom_voice_normalize_headroom_db=1.0`、`wecom_voice_amr_bitrate=12.2k`）。这些设置会保留原生语音气泡，但不会突破企业微信 AMR 本身的电话音质上限。
 
@@ -405,7 +405,7 @@ public_document_knowledge/
 
 | 类型 | 示例 |
 | --- | --- |
-| 图像生成 | `image-generation`，通过 Codex auth 后台生成并回传图片 |
+| 图像生成 | `image-generation` 默认通过 Codex auth 后台生成并回传图片；`grok-image-generation` 仅在用户明确点名 Grok/xAI 时使用已登录 Grok 账号生图 |
 | 企业微信能力 | `wecom-cli`，用于企业微信相关资料和操作辅助 |
 | Git 与发布安全 | `github`、`safe-github-upload`、`code-update` |
 | 项目运维 | `project-restart`，管理员说“重启/重启项目/重启服务”时默认触发，安全重启当前 CowWechat 服务 |
@@ -495,6 +495,7 @@ CowWeCom/
 
 ### 2026-05-28
 
+- Grok/xAI 图片生成接入 PR 3：复用 Grok OAuth 凭据和 Hermes 原生图片 provider，支持 b64/URL 返回落成本地图片后发送；新增 `grok-image-generation` Skill，普通生图默认仍走 Codex，只有用户明确点名 Grok/xAI 才切到 Grok，并且只有明确要求 Grok 高质量/quality/高清时才用质量模型，否则默认快速模式。
 - Grok/xAI 企业微信语音回复改为“双模式”规则：独立语音会话模式由 `grok_voice_conversation_mode_enabled` 单独启用，语音输入且渠道允许时强制流式语音回复；非语音会话模式仍由 `grok_voice_reply_enabled`/`grok_voice_mode_enabled` 控制，并且只允许本地 `low_*` 低思考命中转语音。文字输入和非企业微信渠道永远不会被 `text_to_voice=xai/grok` 旧配置转成语音；语音会话低延迟可通过 `grok_voice_low_latency_backend`/`grok_voice_low_latency_model` 做单次请求级后端/模型覆盖，不修改全局后端。
 - Grok/xAI OAuth 灰度登录改为收到本机 loopback callback 后自动轮询完成，手动提交不完整 callback 时也会优先复用后端已收到的回调；本地 Grok OAuth 凭据目录纳入 Git 忽略；`pydub` 纳入基础部署依赖，并明确企业微信 TTS 语音还需要系统 `ffmpeg`。
 - 新增 Grok/xAI 原生账号 OAuth 登录、文字对话和 TTS 语音回复灰度接入：管理员可通过隐藏 `/grok` 页面登录账号并检查凭据；启用 `text_to_voice=xai`/`grok` 与企业微信 Grok 语音模式后，只有用户原始输入为语音且本地思考深度命中低档短任务时才会分段合成并发送 AMR 语音，复杂语音任务和所有文字输入仍按文本回复。

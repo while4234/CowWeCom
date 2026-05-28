@@ -75,6 +75,10 @@ class GrokBot(Bot, OpenAICompatibleBot):
         return (api_base or "https://api.x.ai/v1").rstrip("/")
 
     def reply(self, query, context=None):
+        if context.type == ContextType.IMAGE_CREATE:
+            from models.grok.grok_image import generate_reply
+
+            return generate_reply(query, context)
         if context.type != ContextType.TEXT:
             return Reply(ReplyType.ERROR, "Grok 仅支持文字对话，图片、语音和视频会在后续版本接入。")
 
