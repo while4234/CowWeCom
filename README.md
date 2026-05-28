@@ -55,7 +55,7 @@ CowWeCom 的目标不是做一个“所有平台都写在 README 里的通用机
 | 长期记忆 | 按用户和会话隔离的记忆文件、每日深度整理、记忆检索和管理 |
 | 知识库 | 本地知识库、协议/规范公共知识后端、上传构建索引、LLM 学习文档生成、可追溯检索 |
 | Skills | 项目内置 Skills 启动同步到运行工作区，可按需启用、禁用、校验和扩展 |
-| 图像/视频生成 | 使用本项目 `image-generation` Skill，经 Codex auth 调用图像生成工具，支持后台任务和结果回传；用户明确说 Grok/xAI 时可切到 `grok-image-generation` 使用已登录 Grok 账号生图；视频生成走 `grok-video-generation`，支持文生视频、单图生视频和最多 7 张参考图的视频生成 |
+| 图像/视频生成 | 使用本项目 `image-generation` Skill，经 Codex auth 调用图像生成工具，支持后台任务和结果回传；内置 YouMind 全量提示词库会在后台为 GPT/Codex 与 Grok 隐式润色提示词；用户明确说 Grok/xAI 时可切到 `grok-image-generation` 使用已登录 Grok 账号生图；视频生成走 `grok-video-generation`，支持文生视频、单图生视频和最多 7 张参考图的视频生成 |
 | 后端路由 | Codex、OpenAI-compatible/CAPI 等后端路由，支持额度查询、自动切换和推理强度策略 |
 | 安全隔离 | 管理员/普通用户角色、普通用户文件访问边界、敏感路径保护、Web 管理接口认证 |
 
@@ -184,7 +184,7 @@ http://127.0.0.1:9899
 
 CAPI 额度卡/月卡查询依赖 `llm_backend.providers.capi` 和 `llm_backend.providers.capi_monthly` 下的专用 key。更新部署后请检查本机 `CAPI_API_KEY`、`CAPI_MONTHLY_API_KEY`，或在 ignored 的 `config.json` 中配置 `llm_backend.providers.capi.api_key`、`llm_backend.providers.capi_monthly.api_key`；不要把真实 key 写入 `config-template.json` 或提交到 Git。
 
-Grok/xAI 目前作为灰度能力接入：管理员可访问 `/grok` 完成原生账号 OAuth 登录，但普通配置页默认不展示 Grok，也不会因为登录 token 改变当前真实聊天后端。需要启用 Grok Chat 时，在 `config.json` 设置 `bot_type=grok` 或 `bot_type=xai`，并用 `grok_model` 控制 xAI 模型，例如 `{"bot_type": "grok", "grok_model": "grok-4.3"}`；通用 `model` 可继续保留给其他后端，Agent 主链路不会用它覆盖 `grok_model`。如需在普通模型配置面板展示 Grok，可显式开启 `grok_gray_enabled=true`。Grok 图片生成复用同一 OAuth 凭据，只有用户明确说使用 Grok、xAI、X.ai、Grok 账号或 Grok 网页生图时才会通过 `grok-image-generation` 切到 xAI；普通生图、仅说质量或速度偏好时仍默认走 Codex 生图。Grok 生图支持 `grok-imagine-image` 速度模型和 `grok-imagine-image-quality` 质量模型；只有用户明确说 Grok 高质量、quality mode、高清、高质量、精细等类似要求时才使用质量模型，否则 Grok 默认使用快速模型，并把 xAI 返回的 URL 或 b64 图片先落成本地文件再发送。Grok 视频生成使用同一 OAuth 凭据和 `grok-imagine-video`，配置项为 `video_generation_provider=xai`、`video_create_prefix`、`grok_video_model`、`grok_video_duration`、`grok_video_aspect_ratio`、`grok_video_resolution`、`grok_video_timeout_seconds`、`grok_video_poll_interval_seconds` 和 `grok_video_download_timeout_seconds`；微信/企业微信里可直接说“生成视频 ...”，也可以先发或引用一张图片后说“参考上面发的图片生成 ... 视频”，多图场景可说“参考上面发的 3 张图片生成 ... 视频”。生成结果总是先下载为本地 MP4，再用 `ReplyType.VIDEO` 发送，不直接把 xAI 远端 URL 发给用户。OAuth token 默认写入 CowWeCom 的 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_import_hermes_auth=true` 时可在 CowWeCom auth store 缺失时只读导入 Hermes 的 `providers.xai-oauth`，不会写回 Hermes auth store；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。手动粘贴登录默认要求完整 callback URL 或同时包含 `code` 和 `state` 的查询字符串；裸授权码兼容需显式开启 `grok_oauth_accept_bare_code=true`，且必须存在当前 PKCE 登录会话。Web 状态/测试接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token、authorization code 或 code_verifier。完整配置和排障见 [docs/grok.md](docs/grok.md)。
+Grok/xAI 目前作为灰度能力接入：管理员可访问 `/grok` 完成原生账号 OAuth 登录，但普通配置页默认不展示 Grok，也不会因为登录 token 改变当前真实聊天后端。需要启用 Grok Chat 时，在 `config.json` 设置 `bot_type=grok` 或 `bot_type=xai`，并用 `grok_model` 控制 xAI 模型，例如 `{"bot_type": "grok", "grok_model": "grok-4.3"}`；通用 `model` 可继续保留给其他后端，Agent 主链路不会用它覆盖 `grok_model`。如需在普通模型配置面板展示 Grok，可显式开启 `grok_gray_enabled=true`。Grok 图片生成复用同一 OAuth 凭据，只有用户明确说使用 Grok、xAI、X.ai、Grok 账号或 Grok 网页生图时才会通过 `grok-image-generation` 切到 xAI；普通生图、仅说质量或速度偏好时仍默认走 Codex 生图。Grok 生图支持 `grok-imagine-image` 速度模型和 `grok-imagine-image-quality` 质量模型；只有用户明确说 Grok 高质量、quality mode、高清、高质量、精细等类似要求时才使用质量模型，否则 Grok 默认使用快速模型，并把 xAI 返回的 URL 或 b64 图片先落成本地文件再发送。图片生成会在模型调用前隐式检索 `skills/image-generation/references/nano-banana-pro/` 中的 YouMind 全量提示词库：GPT/Codex 作为全能生图路线按用途适配，Grok 默认偏向人物写真与高审美人像；隐藏提示词只写入用户工作区历史，普通前台消息不展示。Grok 视频生成使用同一 OAuth 凭据和 `grok-imagine-video`，配置项为 `video_generation_provider=xai`、`video_create_prefix`、`grok_video_model`、`grok_video_duration`、`grok_video_aspect_ratio`、`grok_video_resolution`、`grok_video_timeout_seconds`、`grok_video_poll_interval_seconds` 和 `grok_video_download_timeout_seconds`；微信/企业微信里可直接说“生成视频 ...”，也可以先发或引用一张图片后说“参考上面发的图片生成 ... 视频”，多图场景可说“参考上面发的 3 张图片生成 ... 视频”。生成结果总是先下载为本地 MP4，再用 `ReplyType.VIDEO` 发送，不直接把 xAI 远端 URL 发给用户。OAuth token 默认写入 CowWeCom 的 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_import_hermes_auth=true` 时可在 CowWeCom auth store 缺失时只读导入 Hermes 的 `providers.xai-oauth`，不会写回 Hermes auth store；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。手动粘贴登录默认要求完整 callback URL 或同时包含 `code` 和 `state` 的查询字符串；裸授权码兼容需显式开启 `grok_oauth_accept_bare_code=true`，且必须存在当前 PKCE 登录会话。Web 状态/测试接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token、authorization code 或 code_verifier。完整配置和排障见 [docs/grok.md](docs/grok.md)。
 
 企业微信原生语音气泡仍受平台 AMR 窄带格式限制。为改善听感，默认会减少 Grok 流式 TTS 的切段频率（`grok_voice_max_segment_chars=180`、`grok_voice_flush_idle_ms=1500`），并在转换企业微信语音前启用响度归一化与最高 AMR-NB 码率（`wecom_voice_normalize_enabled=true`、`wecom_voice_normalize_target_dbfs=-18.0`、`wecom_voice_normalize_headroom_db=1.0`、`wecom_voice_amr_bitrate=12.2k`）。这些设置会保留原生语音气泡，但不会突破企业微信 AMR 本身的电话音质上限。
 
@@ -405,7 +405,7 @@ public_document_knowledge/
 
 | 类型 | 示例 |
 | --- | --- |
-| 图像/视频生成 | `image-generation` 默认通过 Codex auth 后台生成并回传图片；`grok-image-generation` 仅在用户明确点名 Grok/xAI 时使用已登录 Grok 账号生图；`grok-video-generation` 通过已登录 Grok 账号后台生成 MP4 并回传视频 |
+| 图像/视频生成 | `image-generation` 默认通过 Codex auth 后台生成并回传图片，并在后台用 YouMind 全量提示词库做 GPT/Codex 全能润色；`grok-image-generation` 仅在用户明确点名 Grok/xAI 时使用已登录 Grok 账号生图，并偏向人物写真提示词适配；`grok-video-generation` 通过已登录 Grok 账号后台生成 MP4 并回传视频 |
 | 企业微信能力 | `wecom-cli`，用于企业微信相关资料和操作辅助 |
 | Git 与发布安全 | `github`、`safe-github-upload`、`code-update` |
 | 项目运维 | `project-restart`，管理员说“重启/重启项目/重启服务”时默认触发，安全重启当前 CowWechat 服务 |
@@ -497,6 +497,7 @@ CowWeCom/
 
 - Grok/xAI 原生账号能力继续扩展：OAuth 灰度登录、文字对话、TTS、图片生成和视频生成复用同一登录态；PR 5 补齐 [docs/grok.md](docs/grok.md)、Hermes auth 只读导入、Web 状态脱敏和核心回归测试。
 - Grok/xAI 图片/视频生成加固：xAI 返回 URL 只允许公开 HTTPS 下载，逐跳校验 redirect、DNS、Content-Type 和大小上限，生成文件统一落到 `tmp/grok_media/`，发送成功、失败或 fallback 后清理本次生成文件。
+- 图像生成新增隐藏式提示词增强：内置 YouMind 全量 Nano Banana Pro 提示词库，GPT/Codex 按海报、人物、产品、流程图等用途检索润色，Grok 默认偏向高审美人物写真；普通回复不展示隐藏提示词，用户明确要求时可查看最近一次生成提示词。
 - Grok/xAI 视频生成接入 PR 4：新增文生视频、单图生视频、多图参考视频、`VIDEO_CREATE` 前缀和 `grok-video-generation` 后台 Skill；WeCom Bot 现在优先识别 `video_create_prefix`，不再被图片前缀吞掉。
 - Grok/xAI 企业微信语音回复改为“双模式”规则：低延迟 low 模式与语音会话模式分开说明；语音会话模式允许企业微信应用/WeCom Bot 中语音输入优先语音回复，文字输入和个人微信仍不新增语音发送。
 - Agent 和本地工具体验继续收口：同轮重复工具调用结果改成短引用，本机 token 用量查询支持用户别名合并，语音模式支持 `/voice on|off` 热切换，账单截图识别优先保留截图中的精确金额，账单补充说明不再误走本地查询/额度查询快路径。

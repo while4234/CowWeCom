@@ -108,6 +108,78 @@ _GROK_HIGH_QUALITY_HINTS = {
 }
 
 _DATA_IMAGE_RE = re.compile(r"^data:image/[^;]+;base64,(.+)$", re.DOTALL)
+_OPENAI_IMAGE_MODEL_ALIASES = {
+    "gpt-imagine": "gpt-image-2",
+    "gpt-imagine2": "gpt-image-2",
+    "gpt-imagine-2": "gpt-image-2",
+    "gpt_image_2": "gpt-image-2",
+    "gpt_image2": "gpt-image-2",
+}
+_HIDDEN_PROMPT_MARKER = "[CowWeCom hidden image prompt enhancement]"
+
+
+def _redact_hidden_prompt_text(value) -> str:
+    text = str(value or "")
+    if _HIDDEN_PROMPT_MARKER not in text:
+        return text
+    prefix = text.split(_HIDDEN_PROMPT_MARKER, 1)[0].rstrip(" \t\r\n:-")
+    omitted = "[hidden enhanced image prompt omitted]"
+    return f"{prefix}: {omitted}" if prefix else omitted
+
+
+def _ensure_cowwecom_root_on_path() -> None:
+    candidates = [
+        os.environ.get("COWWECHAT_ROOT"),
+        str(Path(__file__).resolve().parents[3]) if len(Path(__file__).resolve().parents) > 3 else "",
+        os.getcwd(),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        root = Path(candidate).expanduser().resolve()
+        if (root / "common" / "image_prompt_enhancer.py").exists():
+            root_text = str(root)
+            if root_text not in sys.path:
+                sys.path.insert(0, root_text)
+            return
+
+
+def _normalize_openai_image_model(model: str) -> str:
+    value = str(model or "").strip()
+    return _OPENAI_IMAGE_MODEL_ALIASES.get(value.lower(), value)
+
+
+def _enhance_prompt_for_provider(
+    prompt: str,
+    *,
+    target: str,
+    output_dir: str | None = None,
+    model: str = "",
+    runtime: str = "",
+    image_url=None,
+    quality: str | None = None,
+    size: str | None = None,
+    aspect_ratio: str | None = None,
+) -> str:
+    try:
+        _ensure_cowwecom_root_on_path()
+        from common.image_prompt_enhancer import enhance_image_prompt, write_prompt_metadata
+
+        metadata = enhance_image_prompt(
+            prompt,
+            target=target,
+            model=model,
+            runtime=runtime,
+            image_url=image_url,
+            quality=quality,
+            size=size,
+            aspect_ratio=aspect_ratio,
+        )
+        write_prompt_metadata(output_dir, metadata)
+        return str(metadata.get("enhanced_prompt") or prompt)
+    except Exception as exc:
+        print(f"[image-generation] prompt enhancement skipped: {exc}", file=sys.stderr)
+        return prompt
 
 
 # ---------------------------------------------------------------------------
@@ -515,9 +587,19 @@ class GrokXAIProvider(ImageProvider):
         _route_cowwecom_console_logs_to_stderr()
         selected_model = _resolve_grok_model(prompt, quality=quality, model=self.model)
         self.model = selected_model
+        enhanced_prompt = _enhance_prompt_for_provider(
+            prompt,
+            target="grok",
+            output_dir=output_dir,
+            model=selected_model,
+            runtime="grok",
+            quality=quality,
+            size=size,
+            aspect_ratio=aspect_ratio,
+        )
         generated_path = Path(
             XAIImageGenProvider().generate(
-                prompt,
+                enhanced_prompt,
                 aspect_ratio=aspect_ratio,
                 resolution=_resolve_grok_resolution(size),
                 model=selected_model,
@@ -550,7 +632,7 @@ class OpenAIProvider(ImageProvider):
     def __init__(self, api_key: str, api_base: str, model: str):
         self.api_key = api_key
         self.api_base = api_base.rstrip("/")
-        self.model = model or self.DEFAULT_MODEL
+        self.model = _normalize_openai_image_model(model) or self.DEFAULT_MODEL
 
     def _headers(self) -> dict:
         return {
@@ -653,17 +735,28 @@ class OpenAIProvider(ImageProvider):
     ) -> list[str]:
         # OpenAI Images API expects pixel size like 1024x1024.
         resolved = resolve_size(size, aspect_ratio) if (size or aspect_ratio) else None
+        enhanced_prompt = _enhance_prompt_for_provider(
+            prompt,
+            target="gpt",
+            output_dir=output_dir,
+            model=self.model,
+            runtime="openai",
+            image_url=image_url,
+            quality=quality,
+            size=size,
+            aspect_ratio=aspect_ratio,
+        )
         if image_url:
             if self._use_responses_api():
                 return self._edit_with_responses(
-                    prompt,
+                    enhanced_prompt,
                     image_url=image_url,
                     quality=quality,
                     size=resolved,
                     output_dir=output_dir,
                 )
-            return self._edit(prompt, image_url=image_url, quality=quality, size=resolved, output_dir=output_dir)
-        return self._create(prompt, quality=quality, size=resolved, output_dir=output_dir)
+            return self._edit(enhanced_prompt, image_url=image_url, quality=quality, size=resolved, output_dir=output_dir)
+        return self._create(enhanced_prompt, quality=quality, size=resolved, output_dir=output_dir)
 
     def _create(self, prompt: str, *, quality: str | None, size: str | None, output_dir: str) -> list[str]:
         if self._use_responses_api():
@@ -950,7 +1043,10 @@ class CodexAuthProvider(ImageProvider):
             return configured
 
         requested = str(requested_model or "").strip()
-        if requested.startswith(("gpt-", "o1-", "o3-", "o4-")) and not requested.startswith("gpt-image"):
+        requested_lower = requested.lower()
+        if requested_lower.startswith(("gpt-image", "gpt-imagine")):
+            return cls.DEFAULT_MODEL
+        if requested.startswith(("gpt-", "o1-", "o3-", "o4-")):
             return requested
         return cls.DEFAULT_MODEL
 
@@ -965,8 +1061,19 @@ class CodexAuthProvider(ImageProvider):
         output_dir: str = ".",
     ) -> list[str]:
         resolved_size = resolve_size(size, aspect_ratio) if (size or aspect_ratio) else None
-        payload = self._build_payload(
+        enhanced_prompt = _enhance_prompt_for_provider(
             prompt,
+            target="gpt",
+            output_dir=output_dir,
+            model=self.model,
+            runtime="codex_auth",
+            image_url=image_url,
+            quality=quality,
+            size=size,
+            aspect_ratio=aspect_ratio,
+        )
+        payload = self._build_payload(
+            enhanced_prompt,
             image_url=image_url,
             quality=quality,
             size=resolved_size,
@@ -1852,7 +1959,7 @@ _MODEL_PREFERRED_PROVIDER: list[tuple[tuple[str, ...], str]] = [
     (("grok-imagine", "grok", "xai"), "GrokXAI"),
     (("codex", "codex-auth", "codex_auth"), "CodexAuth"),
     (("broker", "external-broker", "local-broker"), "Broker"),
-    (("gpt-image",), "OpenAI"),
+    (("gpt-image", "gpt-imagine"), "OpenAI"),
     (("nano-banana", "gemini-"), "Gemini"),
     (("seedream", "doubao-seedream"), "Seedream"),
     (("qwen-image", "qwen"), "Qwen"),
@@ -2082,8 +2189,9 @@ def main():
             return
         except Exception as e:
             elapsed = time.time() - t0
-            print(f"[image-generation] FAILED {label} in {elapsed:.1f}s: {e}", file=sys.stderr)
-            errors.append(f"{label}: {e}")
+            safe_error = _redact_hidden_prompt_text(e)
+            print(f"[image-generation] FAILED {label} in {elapsed:.1f}s: {safe_error}", file=sys.stderr)
+            errors.append(f"{label}: {safe_error}")
             if not allow_fallback:
                 break
 

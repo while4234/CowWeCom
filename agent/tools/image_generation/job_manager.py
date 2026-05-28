@@ -16,6 +16,11 @@ from typing import Any, Dict, Optional
 
 from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
+from common.image_prompt_enhancer import (
+    read_prompt_metadata,
+    record_prompt_history,
+    redact_hidden_image_prompt_text,
+)
 from common.log import logger
 from common.utils import expand_path
 from config import conf
@@ -276,6 +281,7 @@ class ImageGenerationJobManager:
             if not image_path:
                 raise RuntimeError(result.get("error") or "generator completed without an image")
             job.output_path = os.path.abspath(expand_path(str(image_path)))
+            self._record_hidden_prompt(job)
             self._persist_job_state(job)
             delivered = self._send_completion(job)
             final_status = "succeeded" if delivered else "delivery_failed"
@@ -288,7 +294,7 @@ class ImageGenerationJobManager:
             if not self._send_failure(job):
                 final_status = "delivery_failed"
         except Exception as e:
-            final_error = str(e)
+            final_error = redact_hidden_image_prompt_text(str(e))
             job.error = final_error
             self._persist_job_state(job)
             if not self._send_failure(job):
@@ -618,6 +624,19 @@ class ImageGenerationJobManager:
             )
         except Exception as e:
             logger.warning(f"[ImageGenerationJobManager] failed to remember output for {job.job_id}: {e}")
+
+    def _record_hidden_prompt(self, job: ImageGenerationJob) -> None:
+        metadata = read_prompt_metadata(job.output_dir)
+        if not metadata:
+            return
+        record_prompt_history(
+            workspace_root=self.workspace_root,
+            memory_user_id=job.memory_user_id,
+            session_id=str(job.context_snapshot.get("session_id") or ""),
+            job_id=job.job_id,
+            output_path=str(job.output_path or ""),
+            metadata=metadata,
+        )
 
 
 _manager: Optional[ImageGenerationJobManager] = None

@@ -56,12 +56,11 @@ def test_provider_posts_images_generation_with_oauth_token_and_payload(monkeypat
     post_call = [item for item in calls if item[0] == "post"][0]
     assert post_call[1] == "https://api.x.ai/v1/images/generations"
     assert post_call[2]["Authorization"] == "Bearer oauth-access-token"
-    assert post_call[3] == {
-        "model": "grok-imagine-image-quality",
-        "prompt": "paint a calm lake",
-        "aspect_ratio": "16:9",
-        "resolution": "2k",
-    }
+    assert post_call[3]["model"] == "grok-imagine-image-quality"
+    assert "paint a calm lake" in post_call[3]["prompt"]
+    assert "[CowWeCom hidden image prompt enhancement]" in post_call[3]["prompt"]
+    assert post_call[3]["aspect_ratio"] == "16:9"
+    assert post_call[3]["resolution"] == "2k"
     assert post_call[4] == 120.0
     assert path.endswith(".png")
     assert tmp_path in tmp_path.__class__(path).parents

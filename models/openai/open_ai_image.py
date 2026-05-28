@@ -4,6 +4,7 @@ import time
 import uuid
 
 from common.log import logger
+from common.image_prompt_enhancer import enhance_image_prompt, redact_hidden_image_prompt_text
 from common.llm_backend_router import get_effective_openai_api_config
 from common.token_bucket import TokenBucket
 from config import conf
@@ -20,6 +21,18 @@ _IMAGE_FORMAT_EXTENSIONS = {
     "jpg": ".jpg",
     "webp": ".webp",
 }
+_OPENAI_IMAGE_MODEL_ALIASES = {
+    "gpt-imagine": "gpt-image-2",
+    "gpt-imagine2": "gpt-image-2",
+    "gpt-imagine-2": "gpt-image-2",
+    "gpt_image_2": "gpt-image-2",
+    "gpt_image2": "gpt-image-2",
+}
+
+
+def _normalize_openai_image_model(model):
+    value = str(model or "").strip()
+    return _OPENAI_IMAGE_MODEL_ALIASES.get(value.lower(), value)
 
 
 def _configured_wire_api():
@@ -123,6 +136,16 @@ class OpenAIImage(object):
                 return False, "Image requests are too frequent, please try again later."
 
             logger.info("[OPEN_AI] image_query={}".format(query))
+            image_model = _normalize_openai_image_model(conf().get("text_to_image") or "dall-e-2")
+            metadata = enhance_image_prompt(
+                query,
+                target="gpt",
+                model=image_model,
+                runtime="openai_legacy",
+                size=conf().get("image_create_size", "256x256"),
+                quality=conf().get("image_create_quality") or conf().get("dalle3_image_quality"),
+            )
+            query = metadata.get("enhanced_prompt") or query
 
             if is_responses_wire_api(_configured_wire_api()):
                 ok, image_ref = self._create_img_with_responses(
@@ -143,7 +166,7 @@ class OpenAIImage(object):
                 api_base=api_base or None,
                 prompt=query,
                 n=1,
-                model=conf().get("text_to_image") or "dall-e-2",
+                model=image_model,
                 size=conf().get("image_create_size", "256x256"),
             )
             image_ref = _extract_image_reference(
@@ -226,5 +249,9 @@ class OpenAIImage(object):
                 return True, latest_image_ref
             return False, "Responses image generation returned no image."
         except Exception as e:
-            logger.error(f"[OPEN_AI] responses image generation error: {e}", exc_info=True)
-            return False, str(e)
+            safe_error = redact_hidden_image_prompt_text(e)
+            logger.error(
+                f"[OPEN_AI] responses image generation error: {safe_error}",
+                exc_info=(safe_error == str(e)),
+            )
+            return False, safe_error

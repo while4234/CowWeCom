@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import requests
 
 from common.log import logger
+from common.image_prompt_enhancer import enhance_image_prompt, redact_hidden_image_prompt_text
 from config import conf
 
 from .auth import AuthError, DEFAULT_XAI_OAUTH_BASE_URL
@@ -80,6 +81,7 @@ class XAIImageGenProvider:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = dict(config or {})
+        self.last_prompt_metadata: Optional[Dict[str, Any]] = None
 
     @property
     def name(self) -> str:
@@ -133,6 +135,16 @@ class XAIImageGenProvider:
                 _DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
             ),
         }
+        metadata = enhance_image_prompt(
+            clean_prompt,
+            target="grok",
+            model=options["model"],
+            runtime="grok_direct",
+            size=options["resolution"],
+            aspect_ratio=options["aspect_ratio"],
+        )
+        self.last_prompt_metadata = metadata
+        clean_prompt = str(metadata.get("enhanced_prompt") or clean_prompt).strip()
         payload = {
             "model": options["model"],
             "prompt": clean_prompt,
@@ -322,7 +334,7 @@ def _safe_http_error(response: requests.Response) -> str:
 
 
 def _sanitize_error_text(value: Any, extra_secrets: Optional[Iterable[str]] = None) -> str:
-    text = str(value or "")
+    text = redact_hidden_image_prompt_text(value)
     text = _AUTH_HEADER_RE.sub(r"\1<redacted>", text)
     text = _TOKEN_FIELD_RE.sub(lambda match: f"{match.group(1)}=<redacted>", text)
     text = _URL_RE.sub("<redacted-url>", text)

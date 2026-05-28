@@ -36,6 +36,14 @@ When using Grok:
   mode, `speed` or `fast` for speed mode.
 - If quality/speed is not explicit, omit `quality`; Grok defaults to the fast
   model. Do not infer quality mode from the image type alone.
+- Hidden prompt enhancement is automatic after Grok model selection. The runtime
+  uses the full YouMind Nano Banana Pro library and adapts the final prompt for
+  high-aesthetic people/portrait photography by default, unless the user
+  explicitly asks for a non-portrait image such as a poster, product visual, or
+  diagram.
+- Do not display the enhanced prompt during generation. If the user explicitly
+  asks to see the prompt after the image is generated, use
+  `image_generation_prompt_history`.
 
 Example explicit Grok request:
 

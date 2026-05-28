@@ -29,6 +29,7 @@ from models.session_manager import SessionManager
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
 from common.log import logger
+from common.image_prompt_enhancer import enhance_image_prompt, redact_hidden_image_prompt_text
 from common.token_bucket import TokenBucket
 from config import conf, load_config
 from models.baidu.baidu_wenxin_session import BaiduWenxinSession
@@ -392,6 +393,15 @@ class AzureChatGPTBot(ChatGPTBot):
 
     def create_img(self, query, retry_count=0, api_key=None):
         text_to_image_model = conf().get("text_to_image")
+        metadata = enhance_image_prompt(
+            query,
+            target="gpt",
+            model=str(text_to_image_model or ""),
+            runtime="azure_chatgpt_legacy",
+            size=conf().get("image_create_size", "256x256"),
+            quality=conf().get("dalle3_image_quality", "standard"),
+        )
+        query = metadata.get("enhanced_prompt") or query
         if text_to_image_model == "dall-e-2":
             api_version = "2023-06-01-preview"
             endpoint = conf().get("azure_openai_dalle_api_base","open_ai_api_base")
@@ -447,13 +457,13 @@ class AzureChatGPTBot(ChatGPTBot):
                     error_detail = response.json().get('error', {}).get('message', str(e))
                 except ValueError:
                     error_detail = str(e)
-                error_message = f"{error_detail}"
+                error_message = redact_hidden_image_prompt_text(error_detail)
                 logger.error(error_message)
                 return False, error_message
 
             except Exception as e:
                 # 捕获所有其他异常
-                error_message = f"生成图像时发生错误: {e}"
+                error_message = redact_hidden_image_prompt_text(f"生成图像时发生错误: {e}")
                 logger.error(error_message)
                 return False, "图片生成失败"
         else:

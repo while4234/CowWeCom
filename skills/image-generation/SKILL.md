@@ -28,6 +28,23 @@ Provider routing is strict:
   user does not say that, Grok stays on the fast model even for photos, products,
   posters, or portraits.
 
+Prompt enhancement is automatic and hidden:
+
+- CowWeCom ships the full YouMind Nano Banana Pro prompt reference library under
+  `references/nano-banana-pro/` and uses it as a local retrieval source.
+- Do not manually paste the enhanced prompt into chat before generation. The
+  runtime silently searches the library, adapts the matched template grammar to
+  the selected model, and sends only the hidden enhanced prompt to the image
+  backend.
+- GPT/Codex image generation is all-purpose: portraits, posters, product
+  visuals, infographics, flowcharts, UI mockups, comics, icons, and edits all use
+  the library category that best matches the request.
+- Grok image generation is biased toward high-aesthetic people and portrait
+  photography by default, while still respecting explicit non-portrait requests.
+- If the user explicitly asks to see the prompt after an image is generated,
+  call `image_generation_prompt_history` and show the stored hidden prompt. Do
+  not reveal it otherwise.
+
 Do not run `scripts/generate.py` inside the normal chat turn. Long-running image
 generation must stay out of the ordinary agent loop so the user can keep
 chatting while the image is produced.
@@ -38,7 +55,9 @@ For this project, CowAgent uses direct Codex-auth runtime:
 "skill": {
   "image-generation": {
     "runtime": "codex_auth",
-    "codex_auth_file": ""
+    "codex_auth_file": "",
+    "prompt_enhancement_enabled": true,
+    "prompt_library_dir": ""
   }
 }
 ```

@@ -239,6 +239,8 @@ available_setting = {
     "image_proxy": True,  # 是否需要图片代理，国内访问LinkAI时需要
     "image_create_prefix": ["画", "看", "找"],  # 开启图片回复的前缀
     "concurrency_in_session": 1,  # 同一会话最多有多少条消息在处理中，大于1可能乱序
+    "image_prompt_enhancement_enabled": True,  # Hidden YouMind prompt-library enhancement for GPT/Grok image generation
+    "image_prompt_library_dir": "",  # Optional full YouMind prompt library override; defaults to skills/image-generation/references/nano-banana-pro
     "image_create_size": "256x256",  # 图片大小,可选有 256x256, 512x512, 1024x1024 (dall-e-3默认为1024x1024)
     "image_create_format": "png",  # OpenAI GPT Image output format: png, jpeg, or webp
     "image_create_quality": "",  # OpenAI GPT Image quality: auto, low, medium, or high
@@ -472,6 +474,8 @@ available_setting = {
         "image-generation": {
             "runtime": "codex_auth",
             "codex_auth_file": "",
+            "prompt_enhancement_enabled": True,
+            "prompt_library_dir": "",
         }
     },  # Per-skill runtime config; nested keys flatten to SKILL_<NAME>_<KEY> env vars at startup
     "mcp_servers": [],  # MCP server list; each entry supports type "stdio" (local process) or "sse" (remote URL)

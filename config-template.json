@@ -106,6 +106,8 @@
   "grok_video_timeout_seconds": 240,
   "grok_video_poll_interval_seconds": 5,
   "grok_video_download_timeout_seconds": 120,
+  "image_prompt_enhancement_enabled": true,
+  "image_prompt_library_dir": "",
   "image_create_size": "256x256",
   "image_create_format": "png",
   "image_create_quality": "",
@@ -371,7 +373,9 @@
     },
     "image-generation": {
       "runtime": "codex_auth",
-      "codex_auth_file": ""
+      "codex_auth_file": "",
+      "prompt_enhancement_enabled": true,
+      "prompt_library_dir": ""
     }
   }
 }

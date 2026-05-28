@@ -877,6 +877,12 @@ class AgentBridge:
                                 target_tool.profile = profile
                             except Exception as e:
                                 logger.warning(f"[AgentBridge] Failed to attach context to image_generation_task: {e}")
+                        elif tool.name == "image_generation_prompt_history":
+                            try:
+                                target_tool.current_context = context
+                                target_tool.profile = profile
+                            except Exception as e:
+                                logger.warning(f"[AgentBridge] Failed to attach context to image_generation_prompt_history: {e}")
                         elif tool.name == "grok_video_generation_task":
                             try:
                                 from agent.tools.video_generation.job_manager import get_grok_video_generation_job_manager
