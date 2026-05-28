@@ -49,6 +49,23 @@ class AppSchedulerStartupTest(unittest.TestCase):
 
         manager.recover_unfinished_jobs.assert_called_once_with(notify=True)
 
+    def test_start_grok_video_generation_recovery_runs_manager_recovery(self):
+        manager = SimpleNamespace(recover_unfinished_jobs=Mock(return_value=[]))
+        bridge = SimpleNamespace(get_agent_bridge=lambda: object())
+
+        def immediate_thread(target, **kwargs):
+            return SimpleNamespace(start=target)
+
+        with patch("app.threading.Thread", side_effect=immediate_thread), patch(
+            "bridge.bridge.Bridge", return_value=bridge
+        ), patch(
+            "agent.tools.video_generation.job_manager.get_grok_video_generation_job_manager",
+            return_value=manager,
+        ):
+            app._start_grok_video_generation_recovery(delay_seconds=0)
+
+        manager.recover_unfinished_jobs.assert_called_once_with(notify=True)
+
     def test_app_run_uses_cowchat_scheduler_for_llm_backend_switch(self):
         fake_config = {"channel_type": "web", "web_console": False}
         calls = []
@@ -70,6 +87,7 @@ class AppSchedulerStartupTest(unittest.TestCase):
             patch.object(app, "ChannelManager", FakeChannelManager), \
             patch.object(app, "_start_scheduler_service", side_effect=start_scheduler), \
             patch.object(app, "_start_image_generation_recovery"), \
+            patch.object(app, "_start_grok_video_generation_recovery"), \
             patch.object(app.time, "sleep", side_effect=KeyboardInterrupt):
             app.run()
 

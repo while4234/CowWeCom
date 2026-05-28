@@ -55,7 +55,7 @@ CowWeCom 的目标不是做一个“所有平台都写在 README 里的通用机
 | 长期记忆 | 按用户和会话隔离的记忆文件、每日深度整理、记忆检索和管理 |
 | 知识库 | 本地知识库、协议/规范公共知识后端、上传构建索引、LLM 学习文档生成、可追溯检索 |
 | Skills | 项目内置 Skills 启动同步到运行工作区，可按需启用、禁用、校验和扩展 |
-| 图像生成 | 使用本项目 `image-generation` Skill，经 Codex auth 调用图像生成工具，支持后台任务和结果回传；用户明确说 Grok/xAI 时可切到 `grok-image-generation` 使用已登录 Grok 账号生图 |
+| 图像/视频生成 | 使用本项目 `image-generation` Skill，经 Codex auth 调用图像生成工具，支持后台任务和结果回传；用户明确说 Grok/xAI 时可切到 `grok-image-generation` 使用已登录 Grok 账号生图；视频生成走 `grok-video-generation`，支持文生视频、单图生视频和最多 7 张参考图的视频生成 |
 | 后端路由 | Codex、OpenAI-compatible/CAPI 等后端路由，支持额度查询、自动切换和推理强度策略 |
 | 安全隔离 | 管理员/普通用户角色、普通用户文件访问边界、敏感路径保护、Web 管理接口认证 |
 
@@ -184,7 +184,7 @@ http://127.0.0.1:9899
 
 CAPI 额度卡/月卡查询依赖 `llm_backend.providers.capi` 和 `llm_backend.providers.capi_monthly` 下的专用 key。更新部署后请检查本机 `CAPI_API_KEY`、`CAPI_MONTHLY_API_KEY`，或在 ignored 的 `config.json` 中配置 `llm_backend.providers.capi.api_key`、`llm_backend.providers.capi_monthly.api_key`；不要把真实 key 写入 `config-template.json` 或提交到 Git。
 
-Grok/xAI 目前作为灰度能力接入：管理员可访问 `/grok` 完成原生账号 OAuth 登录，但普通配置页默认不展示 Grok，也不会因为登录 token 改变当前真实聊天后端。需要启用 Grok Chat 时，在 `config.json` 设置 `bot_type=grok` 或 `bot_type=xai`，并用 `grok_model` 控制 xAI 模型，例如 `{"bot_type": "grok", "grok_model": "grok-4.3"}`；通用 `model` 可继续保留给其他后端，Agent 主链路不会用它覆盖 `grok_model`。如需在普通模型配置面板展示 Grok，可显式开启 `grok_gray_enabled=true`。Grok 图片生成复用同一 OAuth 凭据，只有用户明确说使用 Grok、xAI、X.ai、Grok 账号或 Grok 网页生图时才会通过 `grok-image-generation` 切到 xAI；普通生图、仅说质量或速度偏好时仍默认走 Codex 生图。Grok 生图支持 `grok-imagine-image` 速度模型和 `grok-imagine-image-quality` 质量模型；只有用户明确说 Grok 高质量、quality mode、高清、高质量、精细等类似要求时才使用质量模型，否则 Grok 默认使用快速模型，并把 xAI 返回的 URL 或 b64 图片先落成本地文件再发送。OAuth token 默认写入 CowWeCom 的 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。手动粘贴登录默认要求完整 callback URL 或同时包含 `code` 和 `state` 的查询字符串；裸授权码兼容需显式开启 `grok_oauth_accept_bare_code=true`，且必须存在当前 PKCE 登录会话。Web 状态/测试接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token、authorization code 或 code_verifier。
+Grok/xAI 目前作为灰度能力接入：管理员可访问 `/grok` 完成原生账号 OAuth 登录，但普通配置页默认不展示 Grok，也不会因为登录 token 改变当前真实聊天后端。需要启用 Grok Chat 时，在 `config.json` 设置 `bot_type=grok` 或 `bot_type=xai`，并用 `grok_model` 控制 xAI 模型，例如 `{"bot_type": "grok", "grok_model": "grok-4.3"}`；通用 `model` 可继续保留给其他后端，Agent 主链路不会用它覆盖 `grok_model`。如需在普通模型配置面板展示 Grok，可显式开启 `grok_gray_enabled=true`。Grok 图片生成复用同一 OAuth 凭据，只有用户明确说使用 Grok、xAI、X.ai、Grok 账号或 Grok 网页生图时才会通过 `grok-image-generation` 切到 xAI；普通生图、仅说质量或速度偏好时仍默认走 Codex 生图。Grok 生图支持 `grok-imagine-image` 速度模型和 `grok-imagine-image-quality` 质量模型；只有用户明确说 Grok 高质量、quality mode、高清、高质量、精细等类似要求时才使用质量模型，否则 Grok 默认使用快速模型，并把 xAI 返回的 URL 或 b64 图片先落成本地文件再发送。Grok 视频生成使用同一 OAuth 凭据和 `grok-imagine-video`，配置项为 `video_generation_provider=xai`、`video_create_prefix`、`grok_video_model`、`grok_video_duration`、`grok_video_aspect_ratio`、`grok_video_resolution`、`grok_video_timeout_seconds`、`grok_video_poll_interval_seconds` 和 `grok_video_download_timeout_seconds`；微信/企业微信里可直接说“生成视频 ...”，也可以先发或引用一张图片后说“参考上面发的图片生成 ... 视频”，多图场景可说“参考上面发的 3 张图片生成 ... 视频”。生成结果总是先下载为本地 MP4，再用 `ReplyType.VIDEO` 发送，不直接把 xAI 远端 URL 发给用户。OAuth token 默认写入 CowWeCom 的 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。手动粘贴登录默认要求完整 callback URL 或同时包含 `code` 和 `state` 的查询字符串；裸授权码兼容需显式开启 `grok_oauth_accept_bare_code=true`，且必须存在当前 PKCE 登录会话。Web 状态/测试接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token、authorization code 或 code_verifier。
 
 企业微信原生语音气泡仍受平台 AMR 窄带格式限制。为改善听感，默认会减少 Grok 流式 TTS 的切段频率（`grok_voice_max_segment_chars=180`、`grok_voice_flush_idle_ms=1500`），并在转换企业微信语音前启用响度归一化与最高 AMR-NB 码率（`wecom_voice_normalize_enabled=true`、`wecom_voice_normalize_target_dbfs=-18.0`、`wecom_voice_normalize_headroom_db=1.0`、`wecom_voice_amr_bitrate=12.2k`）。这些设置会保留原生语音气泡，但不会突破企业微信 AMR 本身的电话音质上限。
 
@@ -405,7 +405,7 @@ public_document_knowledge/
 
 | 类型 | 示例 |
 | --- | --- |
-| 图像生成 | `image-generation` 默认通过 Codex auth 后台生成并回传图片；`grok-image-generation` 仅在用户明确点名 Grok/xAI 时使用已登录 Grok 账号生图 |
+| 图像/视频生成 | `image-generation` 默认通过 Codex auth 后台生成并回传图片；`grok-image-generation` 仅在用户明确点名 Grok/xAI 时使用已登录 Grok 账号生图；`grok-video-generation` 通过已登录 Grok 账号后台生成 MP4 并回传视频 |
 | 企业微信能力 | `wecom-cli`，用于企业微信相关资料和操作辅助 |
 | Git 与发布安全 | `github`、`safe-github-upload`、`code-update` |
 | 项目运维 | `project-restart`，管理员说“重启/重启项目/重启服务”时默认触发，安全重启当前 CowWechat 服务 |
@@ -416,7 +416,7 @@ public_document_knowledge/
 | 工作进度与周报 | `work-progress-reporter`，私聊记录个人工作进度、临时任务和收获，并在周五生成中文周报；不同用户数据互相隔离 |
 | 旅行与本地助手 | `travel-manager`、`amap-cowwechat`、`takeout-lite-recommender`、`shopping-lite-compare` |
 
-Agent 可用的内置工具包括文件读写、编辑、目录查看、终端执行、定时任务、发送消息、网页搜索、网页抓取、浏览器、视觉识别、知识库查询、图像生成任务、社交桥和 MCP。
+Agent 可用的内置工具包括文件读写、编辑、目录查看、终端执行、定时任务、发送消息、网页搜索、网页抓取、浏览器、视觉识别、知识库查询、图像生成任务、Grok 视频生成任务、社交桥和 MCP。
 
 图像生成说明：README 主图由本项目 `image-generation` Skill 使用 `codex_auth` 运行时生成，未使用上游 README 图片、社区入口或外部宣传素材。
 
@@ -495,20 +495,12 @@ CowWeCom/
 
 ### 2026-05-28
 
-- Grok/xAI 图片生成接入 PR 3：复用 Grok OAuth 凭据和 Hermes 原生图片 provider，支持 b64/URL 返回落成本地图片后发送；新增 `grok-image-generation` Skill，普通生图默认仍走 Codex，只有用户明确点名 Grok/xAI 才切到 Grok，并且只有明确要求 Grok 高质量/quality/高清时才用质量模型，否则默认快速模式；后台生图 worker 现在固定从项目根读取 Grok 登录态，避免运行时 skill 目录误判“未登录”。
-- Grok/xAI 视频发送切片补齐通道保护：WeCom Bot 的 `ReplyType.VIDEO` 明确按 `video` 媒体上传发送，企业微信应用通道收到视频回复时会上传并发送视频，失败时给出可见文本兜底，不再静默无输出；微信个人号视频发送路径增加回归断言。
-- Grok/xAI 企业微信语音回复改为“双模式”规则：独立语音会话模式由 `grok_voice_conversation_mode_enabled` 单独启用，语音输入且渠道允许时强制流式语音回复；非语音会话模式仍由 `grok_voice_reply_enabled`/`grok_voice_mode_enabled` 控制，并且只允许本地 `low_*` 低思考命中转语音。文字输入和非企业微信渠道永远不会被 `text_to_voice=xai/grok` 旧配置转成语音；语音会话低延迟可通过 `grok_voice_low_latency_backend`/`grok_voice_low_latency_model` 做单次请求级后端/模型覆盖，不修改全局后端。
-- Grok/xAI OAuth 灰度登录改为收到本机 loopback callback 后自动轮询完成，手动提交不完整 callback 时也会优先复用后端已收到的回调；本地 Grok OAuth 凭据目录纳入 Git 忽略；`pydub` 纳入基础部署依赖，并明确企业微信 TTS 语音还需要系统 `ffmpeg`。
-- 新增 Grok/xAI 原生账号 OAuth 登录、文字对话和 TTS 语音回复灰度接入：管理员可通过隐藏 `/grok` 页面登录账号并检查凭据；启用 `text_to_voice=xai`/`grok` 与企业微信 Grok 语音模式后，只有用户原始输入为语音且本地思考深度命中低档短任务时才会分段合成并发送 AMR 语音，复杂语音任务和所有文字输入仍按文本回复。
-- 企业微信原生语音气泡的 Grok TTS 默认更偏听感稳定：减少流式切段频率，AMR 导出显式使用 `12.2k`，并在转换前做响度归一化与峰值余量控制；仍保留原生语音气泡，不改成文件发送。
-- Windows Python 3.13 可选语音依赖补充 `audioop-lts`，修复 `pydub` 因标准库 `audioop` 移除而无法加载的问题，语音转换能力在重启后可正常初始化。
-- Agent 同轮重复工具调用结果进一步压缩：相同参数的重复 read/bash/edit 等工具仍保留首次完整结果，重复结果改为短引用，减少上下文膨胀和缓存扰动。
-- KnowledgeStorage 视觉 chunk/source span 完整性继续收口：视觉结果追加、删除和 reset 避免覆盖普通 chunk 与共享 span，并清理无人引用的图谱证据引用。
-- 本机 token 用量查询会展开到每个已识别用户，并支持 `llm_usage_user_aliases` 合并跨渠道同一人的历史用量；账单截图识别收紧金额口径，优先保留截图里的精确小数而不是模型总结出的整数。
-- 本地文档视觉补全链路继续加固：PDF caption 识别按 Figure/Table label 优先分类，保留 ARM/AMBA 无标点标题，同时拒绝正文引用句、label-only 行和正文步骤拼接；候选 bbox 会写入真实页面尺寸，PyMuPDF `find_tables()` 默认受控降级并支持配置预算/超时统计，prepare 会小批量 checkpoint，Web“补全图表/视觉知识”未选择文档/KB 时仍处理全库 source documents，并排除 `llm_study`、`codex_analysis` 等生成文档。
-- 公共协议视觉补全新增并继续收紧公式/方程候选和跨页大表候选：AMBA AXI、AXI4-Stream 与 UCIe 的 signal/list/register/message encoding 表不再触发明显公式 false positive，UCIe CRC/VTF/loss 等公式上下文候选保留；公式乱码默认只识别报告、不凭空猜写普通 chunk，大表破碎文本优先等待高置信视觉 table/formula chunk 替代。
-- 旧公共协议库新增“视觉补全后安全去污染”闭环：服务层 `complete_and_repair_legacy_visual_knowledge`/`repair_legacy_visual_pollution` 与 CLI `--repair-legacy-visual-pollution` 默认 dry-run，只报告旧 ordinary chunk 污染；只有显式 apply、显式 `--strip-completed-visual-regions` 且同页存在高置信可检索 `visual_analysis` 替代时，才清理旧普通 chunk，并自动备份 SQLite、写审计报告和刷新 FTS。
-- 已刷新公共协议知识库 SQLite：UCIe 1.1、AMBA AXI v2.0 和 AXI4-Stream 的 PDF 普通文本 chunk 已用当前 sanitizer 重建，Figure/Table 周边图内信号、时序和表格碎片乱码抽检清零，三个协议验证报告均通过；远端拉取后实际检索使用随仓库更新的 `public_protocol_knowledge/indexes/kb.sqlite`，网页文档库需重新导出到 `knowledge/documents/<kb_id>/`，并清理旧 `~/cow/knowledge/protocols/` 残留，避免误点旧 Markdown。
+- Grok/xAI 原生账号能力继续扩展：OAuth 灰度登录、文字对话、TTS、图片生成和视频生成复用同一登录态；`/grok` 登录页、手动 callback、隐藏配置入口和 token 脱敏边界保持安全。
+- Grok/xAI 图片生成接入 PR 3：新增 `grok-image-generation` Skill，普通生图默认仍走 Codex，明确点名 Grok/xAI 时才切到 xAI；后台 worker 固定从项目根读取 Grok 登录态，避免运行时 skill 目录误判“未登录”。
+- Grok/xAI 视频生成接入 PR 4：新增文生视频、单图生视频、多图参考视频、`VIDEO_CREATE` 前缀和 `grok-video-generation` 后台 Skill；xAI 返回视频会先下载为本地 MP4，再通过 `ReplyType.VIDEO` 发送，WeCom Bot、企业微信应用和个人微信视频发送都有明确发送或兜底。
+- Grok/xAI 企业微信语音回复改为“双模式”规则：语音会话模式可独立启用并强制低延迟流式语音回复，普通文字输入不会被旧 `text_to_voice=xai/grok` 配置误转语音；AMR 转换默认使用更稳定的切段、响度归一化和 `12.2k` 码率。
+- Agent 和本地工具体验继续收口：同轮重复工具调用结果改成短引用，本机 token 用量查询支持用户别名合并，账单截图识别优先保留截图中的精确金额。
+- 本地文档与公共协议知识库继续加固：视觉 chunk/source span、PDF caption、公式/大表候选、prepare checkpoint 和旧 ordinary chunk 去污染闭环收紧；UCIe、AMBA AXI、AXI4-Stream 公共知识库 SQLite 已刷新，Web Markdown 库拉取后需重新导出。
 
 ### 2026-05-27
 

@@ -219,6 +219,15 @@ available_setting = {
     "grok_image_aspect_ratio": "square",
     "grok_image_timeout_seconds": 120,
     "grok_image_download_timeout_seconds": 60,
+    "video_generation_provider": "xai",
+    "video_create_prefix": ["生成视频", "视频生成", "画个视频"],
+    "grok_video_model": "grok-imagine-video",
+    "grok_video_duration": 8,
+    "grok_video_aspect_ratio": "16:9",
+    "grok_video_resolution": "720p",
+    "grok_video_timeout_seconds": 240,
+    "grok_video_poll_interval_seconds": 5,
+    "grok_video_download_timeout_seconds": 120,
     # Azure OpenAI dall-e-3 配置
     "dalle3_image_style": "vivid", # 图片生成dalle3的风格，可选有 vivid, natural
     "dalle3_image_quality": "hd", # 图片生成dalle3的质量，可选有 standard, hd

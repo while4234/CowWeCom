@@ -364,6 +364,27 @@ def _start_image_generation_recovery(delay_seconds: float = 5.0):
     threading.Thread(target=_recover, daemon=True, name="image-generation-recovery").start()
 
 
+def _start_grok_video_generation_recovery(delay_seconds: float = 5.0):
+    """Recover Grok video jobs that were interrupted by a previous process exit."""
+
+    def _recover():
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+        try:
+            from agent.tools.video_generation.job_manager import get_grok_video_generation_job_manager
+            from bridge.bridge import Bridge
+
+            agent_bridge = Bridge().get_agent_bridge()
+            manager = get_grok_video_generation_job_manager(agent_bridge)
+            recovered = manager.recover_unfinished_jobs(notify=True)
+            if recovered:
+                logger.warning("[App] Recovered %s unfinished Grok video generation job(s)", len(recovered))
+        except Exception as e:
+            logger.warning(f"[App] Grok video generation recovery failed: {e}")
+
+    threading.Thread(target=_recover, daemon=True, name="grok-video-generation-recovery").start()
+
+
 def run():
     global _channel_mgr
     try:
@@ -408,6 +429,7 @@ def run():
         _channel_mgr.start(channel_names, first_start=True)
         _start_scheduler_service()
         _start_image_generation_recovery()
+        _start_grok_video_generation_recovery()
 
         while True:
             time.sleep(1)

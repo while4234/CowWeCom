@@ -119,6 +119,11 @@ class Bridge(object):
 
         task_backend = get_current_backend()
         try:
+            if context and context.type == ContextType.VIDEO_CREATE:
+                from models.grok.grok_video import generate_reply, is_grok_video_provider
+
+                if is_grok_video_provider():
+                    return generate_reply(query, context)
             if context and context.type == ContextType.IMAGE_CREATE:
                 from models.grok.grok_image import generate_reply, is_grok_image_provider
 

@@ -2,6 +2,7 @@
 import io
 import os
 import sys
+import tempfile
 import time
 
 import requests
@@ -185,69 +186,77 @@ class WechatComAppChannel(ChatChannel):
         elif reply.type in (ReplyType.VIDEO, ReplyType.VIDEO_URL):
             return self._send_video(reply.content, receiver)
 
-    def _send_video(self, video_path_or_url, receiver):
-        video_storage = None
-        close_after_upload = False
+        logger.warning("[wechatcom] unsupported reply type: {}".format(reply.type))
         try:
-            video_storage, close_after_upload = self._open_video_for_upload(video_path_or_url)
-            if video_storage is None:
-                return self._send_video_fallback(receiver, "[Video send failed: file not found]")
+            self.client.message.send_text(self.agent_id, receiver, "[Unsupported reply type: {}]".format(reply.type))
+        except Exception:
+            pass
+        return False
 
-            try:
-                response = self.client.media.upload("video", video_storage)
-                logger.debug("[wechatcom] upload video response: {}".format(response))
-            except WeChatClientException as e:
-                logger.error("[wechatcom] upload video failed: {}".format(e))
-                return self._send_video_fallback(receiver, "[Video send failed]")
+    def _send_video(self, video_path_or_url, receiver):
+        local_path, cleanup_path = self._resolve_video_file(video_path_or_url)
+        if not local_path or not os.path.exists(local_path):
+            logger.error("[wechatcom] video file not found: {}".format(video_path_or_url))
+            self.client.message.send_text(self.agent_id, receiver, "[Video send failed: file not found]")
+            return False
 
-            try:
-                self.client.message.send_video(self.agent_id, receiver, response["media_id"])
-            except (AttributeError, WeChatClientException) as e:
-                logger.error("[wechatcom] send video failed: {}".format(e))
-                return self._send_video_fallback(receiver, "[Video send failed]")
-
-            logger.info("[wechatcom] sendVideo={}, receiver={}".format(video_path_or_url, receiver))
-            return True
+        try:
+            with open(local_path, "rb") as video_file:
+                response = self.client.media.upload("video", video_file)
+            logger.debug("[wechatcom] upload video response: {}".format(response))
+            media_id = response["media_id"]
+            if hasattr(self.client.message, "send_video"):
+                self.client.message.send_video(self.agent_id, receiver, media_id)
+                logger.info("[wechatcom] sendVideo, receiver={}".format(receiver))
+                return True
+            if hasattr(self.client.message, "send_file"):
+                with open(local_path, "rb") as file_handle:
+                    file_response = self.client.media.upload("file", file_handle)
+                self.client.message.send_file(self.agent_id, receiver, file_response["media_id"])
+                logger.info("[wechatcom] sendVideo fallback sendFile, receiver={}".format(receiver))
+                return True
+            self.client.message.send_text(
+                self.agent_id,
+                receiver,
+                "[Video send failed: current WeCom app SDK does not support video/file sending]",
+            )
+            return False
+        except WeChatClientException as e:
+            logger.error("[wechatcom] send video failed: {}".format(e))
+            self.client.message.send_text(self.agent_id, receiver, "[Video send failed]")
+            return False
         finally:
-            if close_after_upload and video_storage is not None:
+            if cleanup_path:
                 try:
-                    video_storage.close()
+                    os.remove(cleanup_path)
                 except Exception:
                     pass
 
-    def _open_video_for_upload(self, video_path_or_url):
-        video_source = str(video_path_or_url or "").strip()
-        if not video_source:
-            return None, False
-        if video_source.startswith("file://"):
-            video_source = video_source[7:]
-
-        if video_source.startswith(("http://", "https://")):
+    @staticmethod
+    def _resolve_video_file(video_path_or_url):
+        source = str(video_path_or_url or "").strip()
+        if source.startswith("file://"):
+            source = source[7:]
+        if source.startswith(("http://", "https://")):
+            suffix = os.path.splitext(source.split("?", 1)[0])[1] or ".mp4"
+            fd, tmp_path = tempfile.mkstemp(prefix="wechatcom_video_", suffix=suffix)
+            os.close(fd)
             try:
-                response = requests.get(video_source, stream=True, timeout=60)
+                response = requests.get(source, timeout=120, stream=True)
                 response.raise_for_status()
-            except requests.RequestException as e:
-                logger.error("[wechatcom] download video failed: {}".format(e))
-                return None, False
-            video_storage = io.BytesIO()
-            for block in response.iter_content(1024 * 1024):
-                if block:
-                    video_storage.write(block)
-            video_storage.seek(0)
-            return video_storage, True
-
-        if not os.path.exists(video_source):
-            logger.error("[wechatcom] video file not found: {}".format(video_source))
-            return None, False
-        return open(video_source, "rb"), True
-
-    def _send_video_fallback(self, receiver, text):
-        try:
-            self.client.message.send_text(self.agent_id, receiver, text)
-        except WeChatClientException as e:
-            logger.error("[wechatcom] send video fallback failed: {}".format(e))
-            return False
-        return False
+                with open(tmp_path, "wb") as handle:
+                    for chunk in response.iter_content(1024 * 1024):
+                        if chunk:
+                            handle.write(chunk)
+                return tmp_path, tmp_path
+            except Exception as e:
+                logger.error("[wechatcom] failed to download video: {}".format(e))
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+                return "", ""
+        return source, ""
 
 
 class Query:

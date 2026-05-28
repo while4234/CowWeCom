@@ -72,6 +72,12 @@ class Channel(object):
         """
         Build reply content, using agent if enabled in config
         """
+        if context and context.type == ContextType.VIDEO_CREATE:
+            from models.grok.grok_video import is_grok_video_provider
+
+            if is_grok_video_provider():
+                return Bridge().fetch_reply_content(query, context)
+
         if context and context.type == ContextType.IMAGE_CREATE:
             from models.grok.grok_image import is_grok_image_provider
 

@@ -276,11 +276,11 @@ class ChatChannel(Channel):
             "查看", "读取", "修改", "编辑", "删除", "写入", "创建文件",
             "项目", "仓库", "代码库", "目录", "文件", "运行命令", "执行命令",
             "终端", "联网", "搜索", "查天气", "天气", "价格", "股价",
-            "新闻", "最新", "生成图片", "画图", "图片", "继续", "刚才",
+            "新闻", "最新", "生成图片", "画图", "图片", "生成视频", "视频生成", "图生视频", "继续", "刚才",
             "上面", "当前任务", "长任务", "上下文", "总结当前",
             "read file", "write file", "edit file", "delete file", "project",
             "repo", "run command", "shell", "terminal", "web search", "search",
-            "weather", "price", "stock", "news", "latest", "generate image",
+            "weather", "price", "stock", "news", "latest", "generate image", "generate video",
             "continue", "context",
         )
         return any(pattern in lowered for pattern in patterns)
@@ -515,12 +515,17 @@ class ChatChannel(Channel):
                     logger.info("[chat_channel]receive single chat msg, but checkprefix didn't match")
                     return None
             content = content.strip()
-            img_match_prefix = check_prefix(content, conf().get("image_create_prefix",[""]))
-            if img_match_prefix:
-                content = content.replace(img_match_prefix, "", 1)
-                context.type = ContextType.IMAGE_CREATE
+            video_match_prefix = check_prefix(content, conf().get("video_create_prefix", []))
+            if video_match_prefix:
+                content = content.replace(video_match_prefix, "", 1)
+                context.type = ContextType.VIDEO_CREATE
             else:
-                context.type = ContextType.TEXT
+                img_match_prefix = check_prefix(content, conf().get("image_create_prefix",[""]))
+                if img_match_prefix:
+                    content = content.replace(img_match_prefix, "", 1)
+                    context.type = ContextType.IMAGE_CREATE
+                else:
+                    context.type = ContextType.TEXT
             context.content = content.strip()
             if context.type == ContextType.TEXT:
                 context.content = self._append_image_recognition_context(
@@ -658,7 +663,9 @@ class ChatChannel(Channel):
         reply = e_context["reply"]
         if not e_context.is_pass():
             logger.debug("[chat_channel] type={}, content={}".format(context.type, context.content))
-            if context.type == ContextType.TEXT or context.type == ContextType.IMAGE_CREATE:  # 文字和图片消息
+            if context.type in (ContextType.TEXT, ContextType.IMAGE_CREATE, ContextType.VIDEO_CREATE):  # 文字和生成命令
+                if context.type == ContextType.VIDEO_CREATE:
+                    self._send_plain_text(context, "视频生成中，请稍候（通常需要 1-4 分钟）。", track_visible=False)
                 context["channel"] = e_context["channel"]
                 reply = super().build_reply_content(context.content, context)
             elif context.type == ContextType.VOICE:  # 语音消息

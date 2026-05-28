@@ -10,6 +10,7 @@ from agent.tools.bash.bash import Bash
 from agent.tools.ls.ls import Ls
 from agent.tools.send.send import Send
 from agent.tools.image_generation.image_generation_task import ImageGenerationTaskTool
+from agent.tools.video_generation import GrokVideoGenerationTaskTool
 from agent.tools.code_update.git_code_update import GitCodeUpdateTool
 from agent.tools.knowledge_query import KnowledgeQueryTool
 from agent.tools.amap import AmapTool
@@ -144,6 +145,7 @@ __all__ = [
     'Ls',
     'Send',
     'ImageGenerationTaskTool',
+    'GrokVideoGenerationTaskTool',
     'GitCodeUpdateTool',
     'KnowledgeQueryTool',
     'AmapTool',

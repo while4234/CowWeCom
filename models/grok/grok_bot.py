@@ -75,6 +75,10 @@ class GrokBot(Bot, OpenAICompatibleBot):
         return (api_base or "https://api.x.ai/v1").rstrip("/")
 
     def reply(self, query, context=None):
+        if context.type == ContextType.VIDEO_CREATE:
+            from models.grok.grok_video import generate_reply
+
+            return generate_reply(query, context)
         if context.type == ContextType.IMAGE_CREATE:
             from models.grok.grok_image import generate_reply
 

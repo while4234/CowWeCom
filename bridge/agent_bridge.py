@@ -877,6 +877,14 @@ class AgentBridge:
                                 target_tool.profile = profile
                             except Exception as e:
                                 logger.warning(f"[AgentBridge] Failed to attach context to image_generation_task: {e}")
+                        elif tool.name == "grok_video_generation_task":
+                            try:
+                                from agent.tools.video_generation.job_manager import get_grok_video_generation_job_manager
+                                target_tool.job_manager = get_grok_video_generation_job_manager(self)
+                                target_tool.current_context = context
+                                target_tool.profile = profile
+                            except Exception as e:
+                                logger.warning(f"[AgentBridge] Failed to attach context to grok_video_generation_task: {e}")
             
             # Pass context metadata to model for downstream API requests
             if context and hasattr(agent, 'model'):
