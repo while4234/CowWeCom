@@ -15,16 +15,26 @@ from .visual_grouping import bbox_iou
 
 
 DEFAULT_VISUAL_PIPELINE_VERSION = "visual-pipeline-v2"
-_CAPTION_LABEL_PATTERN = r"(?:(?:Figure|Fig\.?|Table)\s+\d+(?:[-.]\d+)*|[图表]\s*\d+(?:[-.]\d+)*)"
+_CAPTION_NUMBER_PATTERN = r"\d+(?:[-.]\d+)*(?![-.]\d)"
+_CAPTION_LABEL_PATTERN = rf"(?:(?:Figure|Fig\.?|Table)\s+{_CAPTION_NUMBER_PATTERN}|[图表]\s*{_CAPTION_NUMBER_PATTERN})"
 _CAPTION_PREFIX = rf"(?P<label>{_CAPTION_LABEL_PATTERN})"
-STRICT_CAPTION_LABEL_RE = re.compile(rf"^\s*{_CAPTION_PREFIX}\s*[.:：-]\s*$", re.IGNORECASE)
+STRICT_CAPTION_LABEL_RE = re.compile(rf"^\s*{_CAPTION_PREFIX}\s*[.:：]\s*$", re.IGNORECASE)
 STRICT_CAPTION_BLOCK_RE = re.compile(
-    rf"^\s*{_CAPTION_PREFIX}(?:\s*[.:：-]\s*|\s+)(?P<title>\S.*)$",
+    rf"^\s*{_CAPTION_PREFIX}(?:\s*[.:：]\s*|\s+)(?P<title>\S.*)$",
     re.IGNORECASE,
 )
 STRICT_CAPTION_RE = STRICT_CAPTION_BLOCK_RE
 VISUAL_KEYWORD_RE = re.compile(
     r"\b(?:timing|waveform|state\s*machine|bit\s*field|diagram|chart)\b|时序|状态机|流程图|位域",
+    re.IGNORECASE,
+)
+FORMULA_CONTEXT_RE = re.compile(
+    r"\b(?:equation|formula|loss|polynomial|crc|vtf|burst\s+address|transfer\s+function|ceil|floor|log)\b|公式|方程",
+    re.IGNORECASE,
+)
+TABLE_CONTINUATION_RE = re.compile(r"\b(?:continued|cont['’]?d)\b|续表|接上页|上页续|下页继续", re.IGNORECASE)
+TABLE_HEADER_RE = re.compile(
+    r"\b(?:signal|direction|description|name|type|bit|field|width|value|encoding|meaning|parameter|module|layer)\b",
     re.IGNORECASE,
 )
 CAPTION_RE = STRICT_CAPTION_RE
@@ -310,7 +320,8 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                     report["skipped_toc_pages"] += 1
                     continue
 
-                caption_candidates = self._caption_candidates(page_rect, text_blocks)
+                table_rects = self._table_rects(page, page_rect, text_blocks, page_text)
+                caption_candidates = self._caption_candidates(page_rect, text_blocks, table_rects)
                 page_candidates: List[VisualArtifactCandidate] = []
                 for rect, caption, artifact_type in caption_candidates:
                     if self._area_ratio(rect, page_area) < min_area_ratio:
@@ -329,6 +340,51 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                             pipeline_version=pipeline_version,
                             caption=caption,
                             parser_confidence=0.85,
+                        )
+                    )
+
+                for rect, parser_confidence in self._standalone_table_rects(
+                    page_rect,
+                    table_rects,
+                    caption_candidates,
+                    page_text,
+                    page_texts.get(page_index - 1, ""),
+                ):
+                    if self._area_ratio(rect, page_area) < min_area_ratio:
+                        continue
+                    page_candidates.append(
+                        self._candidate_from_rect(
+                            rect,
+                            document,
+                            extracted_document,
+                            "table",
+                            page_index,
+                            page_text,
+                            dpi,
+                            padding,
+                            source_path=str(source),
+                            pipeline_version=pipeline_version,
+                            caption="",
+                            parser_confidence=parser_confidence,
+                        )
+                    )
+
+                formula_rect, formula_confidence = self._formula_candidate_rect(page_rect, text_blocks, page_text)
+                if formula_rect is not None and self._area_ratio(formula_rect, page_area) >= min_area_ratio:
+                    page_candidates.append(
+                        self._candidate_from_rect(
+                            formula_rect,
+                            document,
+                            extracted_document,
+                            "formula",
+                            page_index,
+                            page_text,
+                            dpi,
+                            padding,
+                            source_path=str(source),
+                            pipeline_version=pipeline_version,
+                            caption="",
+                            parser_confidence=formula_confidence,
                         )
                     )
 
@@ -408,7 +464,12 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             for rect in page.get_image_rects(xref) or []:
                 yield rect
 
-    def _caption_candidates(self, page_rect: Any, blocks: List[Dict[str, Any]]) -> List[Tuple[Any, str, str]]:
+    def _caption_candidates(
+        self,
+        page_rect: Any,
+        blocks: List[Dict[str, Any]],
+        table_rects: List[Any],
+    ) -> List[Tuple[Any, str, str]]:
         try:
             import fitz
         except ImportError:
@@ -420,10 +481,135 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                 continue
             x0, y0, x1, y1 = block["bbox"]
             caption_rect = fitz.Rect(x0, y0, x1, y1)
-            rect = self._caption_visual_rect(page_rect, caption_rect)
             caption = normalize_caption_text(text)
-            candidates.append((rect, caption[:300], self._artifact_type_from_caption(caption)))
+            artifact_type = self._artifact_type_from_caption(caption)
+            table_rect = self._best_table_rect_for_caption(caption_rect, table_rects) if artifact_type == "table" else None
+            rect = _union_rects([caption_rect, table_rect]) if table_rect is not None else self._caption_visual_rect(page_rect, caption_rect)
+            candidates.append((rect, caption[:300], artifact_type))
         return candidates
+
+    def _table_rects(self, page: Any, page_rect: Any, blocks: List[Dict[str, Any]], page_text: str) -> List[Any]:
+        if _is_toc_or_list_page(page_text):
+            return []
+        rects: List[Any] = []
+        rects.extend(self._pymupdf_table_rects(page))
+        rects.extend(self._dense_table_block_rects(page_rect, blocks))
+        return _dedupe_rects(rects)
+
+    def _pymupdf_table_rects(self, page: Any) -> List[Any]:
+        finder = getattr(page, "find_tables", None)
+        if not callable(finder):
+            return []
+        try:
+            found = finder()
+        except Exception:
+            return []
+        tables = getattr(found, "tables", found)
+        rects = []
+        try:
+            iterator = list(tables or [])
+        except TypeError:
+            iterator = []
+        for table in iterator:
+            bbox = getattr(table, "bbox", None)
+            if not bbox:
+                continue
+            try:
+                import fitz
+
+                rect = fitz.Rect(bbox)
+            except Exception:
+                continue
+            if rect.width > 1 and rect.height > 1:
+                rects.append(rect)
+        return rects
+
+    def _dense_table_block_rects(self, page_rect: Any, blocks: List[Dict[str, Any]]) -> List[Any]:
+        try:
+            import fitz
+            from .text_sanitizer import is_large_table_like_block
+        except Exception:
+            return []
+
+        rects: List[Any] = []
+        tableish_blocks: List[Dict[str, Any]] = []
+        for block in blocks:
+            text = str(block.get("text") or "")
+            if is_large_table_like_block(text) or _block_looks_table_like(text):
+                x0, y0, x1, y1 = block["bbox"]
+                block = {**block, "rect": fitz.Rect(x0, y0, x1, y1)}
+                tableish_blocks.append(block)
+                if is_large_table_like_block(text):
+                    rects.append(block["rect"])
+        if len(tableish_blocks) >= 5:
+            rects.append(_union_rects([block["rect"] for block in tableish_blocks]))
+        if _page_edge_dense_table_like(tableish_blocks, page_rect):
+            rects.append(_union_rects([block["rect"] for block in tableish_blocks]))
+        return [rect for rect in rects if rect is not None and rect.width > 1 and rect.height > 1]
+
+    def _standalone_table_rects(
+        self,
+        page_rect: Any,
+        table_rects: List[Any],
+        caption_candidates: List[Tuple[Any, str, str]],
+        page_text: str,
+        previous_page_text: str,
+    ) -> List[Tuple[Any, float]]:
+        if not table_rects or _is_toc_or_list_page(page_text):
+            return []
+        caption_rects = [rect for rect, _caption, artifact_type in caption_candidates if artifact_type == "table"]
+        candidates: List[Tuple[Any, float]] = []
+        continuation_hint = _table_continuation_hint(page_text, previous_page_text)
+        for rect in table_rects:
+            if any(_rect_overlap_ratio(rect, caption_rect) >= 0.72 for caption_rect in caption_rects):
+                continue
+            edge_hint = _rect_touches_page_edge(rect, page_rect)
+            if continuation_hint or edge_hint or _block_text_dense_table_like(page_text):
+                confidence = 0.70 if continuation_hint or edge_hint else 0.64
+                candidates.append((rect, confidence))
+        return candidates
+
+    def _best_table_rect_for_caption(self, caption_rect: Any, table_rects: List[Any]) -> Optional[Any]:
+        if not table_rects:
+            return None
+        caption_mid = (float(caption_rect.y0) + float(caption_rect.y1)) / 2.0
+        best = None
+        best_distance = 10**9
+        for rect in table_rects:
+            distance = min(abs(float(rect.y0) - caption_mid), abs(float(rect.y1) - caption_mid))
+            if distance < best_distance:
+                best = rect
+                best_distance = distance
+        return best if best_distance <= max(float(caption_rect.height) * 12, 180.0) else None
+
+    def _formula_candidate_rect(self, page_rect: Any, blocks: List[Dict[str, Any]], page_text: str) -> Tuple[Optional[Any], float]:
+        if _is_toc_or_list_page(page_text):
+            return None, 0.0
+        try:
+            import fitz
+            from .text_sanitizer import is_formula_garble_block, is_formula_garble_line
+        except Exception:
+            return None, 0.0
+        context_hint = bool(FORMULA_CONTEXT_RE.search(page_text or ""))
+        block_rects: List[Any] = []
+        for index, block in enumerate(blocks):
+            text = str(block.get("text") or "")
+            neighboring_context = "\n".join(
+                str(blocks[pos].get("text") or "")
+                for pos in range(max(0, index - 1), min(len(blocks), index + 2))
+            )
+            formulaish = is_formula_garble_block(f"{neighboring_context}\n{text}") or any(
+                is_formula_garble_line(line, context=neighboring_context) for line in text.splitlines()
+            )
+            keyword_with_symbols = bool(FORMULA_CONTEXT_RE.search(neighboring_context) and re.search(r"[=+\-*/^(){}\[\]]", text))
+            if formulaish or keyword_with_symbols:
+                x0, y0, x1, y1 = block["bbox"]
+                block_rects.append(fitz.Rect(x0, y0, x1, y1))
+        if block_rects:
+            return _expand_rect(_union_rects(block_rects), page_rect, y_padding=24.0), 0.60
+        if context_hint and is_formula_garble_block(page_text):
+            return page_rect, 0.55
+        return None, 0.0
 
     def _caption_visual_rect(self, page_rect: Any, caption_rect: Any) -> Any:
         """Return a crop that includes the likely visual region, not only the caption."""
@@ -691,6 +877,9 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                 if (same_image or same_caption) and bbox_iou(candidate.bbox, existing.bbox) > 0.75:
                     duplicate = True
                     break
+                if candidate.artifact_type == existing.artifact_type and bbox_iou(candidate.bbox, existing.bbox) > 0.60:
+                    duplicate = True
+                    break
             if not duplicate:
                 result.append(candidate)
         return result
@@ -722,3 +911,96 @@ def _rect_overlap_ratio(inner: Any, outer: Any) -> float:
     intersection_area = max(0.0, float(intersection.width * intersection.height))
     inner_area = max(1.0, float(inner.width * inner.height))
     return intersection_area / inner_area
+
+
+def _union_rects(rects: Iterable[Any]) -> Any:
+    rect_list = [rect for rect in rects if rect is not None]
+    if not rect_list:
+        return None
+    try:
+        import fitz
+    except ImportError:
+        return rect_list[0]
+    x0 = min(float(rect.x0) for rect in rect_list)
+    y0 = min(float(rect.y0) for rect in rect_list)
+    x1 = max(float(rect.x1) for rect in rect_list)
+    y1 = max(float(rect.y1) for rect in rect_list)
+    return fitz.Rect(x0, y0, x1, y1)
+
+
+def _expand_rect(rect: Any, page_rect: Any, *, y_padding: float) -> Any:
+    if rect is None:
+        return None
+    try:
+        import fitz
+    except ImportError:
+        return rect
+    return fitz.Rect(
+        max(float(page_rect.x0), float(rect.x0)),
+        max(float(page_rect.y0), float(rect.y0) - y_padding),
+        min(float(page_rect.x1), float(rect.x1)),
+        min(float(page_rect.y1), float(rect.y1) + y_padding),
+    )
+
+
+def _dedupe_rects(rects: Iterable[Any]) -> List[Any]:
+    result: List[Any] = []
+    for rect in rects:
+        if rect is None:
+            continue
+        duplicate = any(_rect_overlap_ratio(rect, existing) >= 0.82 for existing in result)
+        if not duplicate:
+            result.append(rect)
+    return result
+
+
+def _block_looks_table_like(text: str) -> bool:
+    value = str(text or "")
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    if not lines:
+        return False
+    header_hits = len(TABLE_HEADER_RE.findall(value))
+    pipe_or_tab = sum(1 for line in lines if "|" in line or "\t" in line)
+    dense_rows = sum(1 for line in lines if _line_looks_table_row(line))
+    return bool(pipe_or_tab >= 2 or (header_hits >= 2 and dense_rows >= 2) or dense_rows >= 5)
+
+
+def _line_looks_table_row(line: str) -> bool:
+    tokens = str(line or "").split()
+    if len(tokens) < 3:
+        return False
+    if "|" in line or "\t" in line:
+        return True
+    signalish = sum(1 for token in tokens if re.fullmatch(r"[A-Za-z0-9_./:\-\[\](),+<>|]+", token))
+    numeric = sum(1 for token in tokens if re.search(r"\d", token))
+    return bool(signalish >= max(2, len(tokens) - 1) or numeric >= 2)
+
+
+def _page_edge_dense_table_like(blocks: List[Dict[str, Any]], page_rect: Any) -> bool:
+    if len(blocks) < 3:
+        return False
+    top = any(float(block["rect"].y0) <= float(page_rect.y0) + float(page_rect.height) * 0.18 for block in blocks)
+    bottom = any(float(block["rect"].y1) >= float(page_rect.y1) - float(page_rect.height) * 0.18 for block in blocks)
+    return top or bottom
+
+
+def _rect_touches_page_edge(rect: Any, page_rect: Any) -> bool:
+    height = max(1.0, float(page_rect.height))
+    return bool(float(rect.y0) <= float(page_rect.y0) + height * 0.18 or float(rect.y1) >= float(page_rect.y1) - height * 0.12)
+
+
+def _table_continuation_hint(page_text: str, previous_page_text: str) -> bool:
+    text = str(page_text or "")
+    if TABLE_CONTINUATION_RE.search(text[:1200]):
+        return True
+    current_headers = set(token.lower() for token in TABLE_HEADER_RE.findall(text[:1200]))
+    previous_headers = set(token.lower() for token in TABLE_HEADER_RE.findall(str(previous_page_text or "")[-1600:]))
+    return bool(len(current_headers & previous_headers) >= 2 and _block_text_dense_table_like(text))
+
+
+def _block_text_dense_table_like(text: str) -> bool:
+    lines = [line for line in str(text or "").splitlines() if line.strip()]
+    if len(lines) < 6:
+        return False
+    dense = sum(1 for line in lines[:40] if _line_looks_table_row(line))
+    return dense >= 6 or len(TABLE_HEADER_RE.findall("\n".join(lines[:20]))) >= 4

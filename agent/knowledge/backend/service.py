@@ -1046,10 +1046,11 @@ class KnowledgeBackendService:
             return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false"}
 
         storage = self._backend._get_storage(writable=True)
-        target_kb_id = kb_id or (None if document_id else self.config.default_kb_id)
+        target_kb_id = kb_id or None
         documents = self._visual_completion_documents(storage, document_id=document_id, kb_id=target_kb_id)
         if document_id and not documents:
             return {"ok": False, "status": "error", "message": "source document not found"}
+        scope = "document" if document_id else ("kb" if target_kb_id else "all_source_documents")
 
         max_steps_value = int(max_steps) if max_steps is not None else None
         totals: Dict[str, Any] = {
@@ -1057,6 +1058,8 @@ class KnowledgeBackendService:
             "status": "success",
             "document_id": document_id or "",
             "kb_id": target_kb_id or "",
+            "scope": scope,
+            "all_source_documents": bool(not document_id and not target_kb_id),
             "analysis_backend": normalize_visual_analysis_backend(analysis_backend or "current"),
             "documents_processed": 0,
             "processed": 0,
@@ -1218,11 +1221,15 @@ class KnowledgeBackendService:
         if group is None:
             return {"ok": False, "status": "error", "message": "visual artifact group not found"}
         if group.get("status") == "skipped" and not force:
+            target = _resolve_visual_analysis_target(self.config, analysis_backend=analysis_backend)
             return {
                 "ok": True,
                 "status": "success",
                 "group_id": group_id,
                 "outcome": "skipped",
+                "analysis_backend": target["effective_backend"],
+                "requested_analysis_backend": target["requested_backend"],
+                "analysis_model": target["model"],
                 "group": group,
                 "group_stats": storage.visual_group_stats(document_id=group["document_id"], version_id=group["version_id"]),
             }
@@ -1234,6 +1241,7 @@ class KnowledgeBackendService:
             reasoning_effort=target.get("reasoning_effort"),
         )
         effective_backend = target["effective_backend"]
+        requested_backend = target["requested_backend"]
         self._ensure_visual_backend_available(effective_backend)
         if force:
             storage._mark_visual_group_not_retrievable(group_id)
@@ -1256,6 +1264,9 @@ class KnowledgeBackendService:
             "status": "success" if outcome and outcome != "failed" else "failed",
             "group_id": group_id,
             "outcome": outcome,
+            "analysis_backend": effective_backend,
+            "requested_analysis_backend": requested_backend,
+            "analysis_model": model,
             "group": storage.get_visual_artifact_group(group_id),
             "group_stats": storage.visual_group_stats(document_id=group["document_id"], version_id=group["version_id"]),
         }

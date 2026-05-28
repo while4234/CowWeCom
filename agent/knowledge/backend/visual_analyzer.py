@@ -18,7 +18,7 @@ from .visual_extractors import DEFAULT_VISUAL_PIPELINE_VERSION
 
 
 SYSTEM_PROMPT = (
-    "你是技术文档视觉元素解析器。你的任务是把技术文档中的技术图、表格、时序图、状态机、"
+    "你是技术文档视觉元素解析器。你的任务是把技术文档中的技术图、表格、公式/方程、时序图、状态机、"
     "位域图、流程图、截图、代码图、架构图和嵌入图片解析为可用于 RAG 检索的高质量结构化内容。"
     "必须严格基于给定图片和上下文，不得猜测。无法确认的内容写入 uncertain_fields。"
     "图片模糊、文字不可辨、结构不清时降低 confidence，并把 should_index 设为 false。"
@@ -27,7 +27,7 @@ SYSTEM_PROMPT = (
 
 
 OUTPUT_SCHEMA = {
-    "artifact_type": "table|figure|chart|timing_diagram|state_machine|waveform|bitfield|flowchart|image|unknown",
+    "artifact_type": "table|figure|formula|chart|timing_diagram|state_machine|waveform|bitfield|flowchart|image|unknown",
     "title": "",
     "caption": "",
     "page": 0,
@@ -57,7 +57,7 @@ OUTPUT_SCHEMA = {
 
 
 GROUP_OUTPUT_SCHEMA = {
-    "artifact_type": "table|figure|chart|timing_diagram|state_machine|waveform|bitfield|flowchart|image|unknown",
+    "artifact_type": "table|figure|formula|chart|timing_diagram|state_machine|waveform|bitfield|flowchart|image|unknown",
     "title": "",
     "caption": "",
     "is_multipage": True,
@@ -289,6 +289,12 @@ def build_visual_prompt(candidate: VisualArtifactCandidate, document: KnowledgeD
         "若看到 continued、续表、缺少表头、页首续接、页尾未结束等迹象，请在 continuation 字段中说明。"
         "If headers are missing, infer only when the supplied context supports it and list uncertainty in uncertain_fields.\n\n"
     )
+    if str(candidate.artifact_type or "").lower() in {"formula", "equation"}:
+        instruction += (
+            "Formula mode: convert visible equations into searchable text. Preserve the original visible formula as closely as possible, "
+            "name variables and units when visible, add a short plain-text explanation, and put uncertain or unreadable symbols in uncertain_fields. "
+            "If symbols are too blurry or cannot be confirmed from the image/context, set should_index=false.\n\n"
+        )
     if visual_config.get("prompt_mode") == "tile":
         instruction += (
             "Tile mode: this image is a local tile of a large visual artifact. "
@@ -370,13 +376,15 @@ def validate_visual_analysis_json(
     for key, threshold in thresholds.items():
         if normalized_confidence[key] < threshold:
             reasons.append(f"{key} confidence {normalized_confidence[key]:.2f} below {threshold:.2f}")
-    artifact_type = str(data.get("artifact_type") or candidate.artifact_type or "unknown")
+    artifact_type = _canonical_artifact_type(data.get("artifact_type") or candidate.artifact_type or "unknown")
     table = data.get("table") if isinstance(data.get("table"), dict) else {}
     structured_markdown = str(data.get("structured_markdown") or "")
     if artifact_type == "table" and not (table.get("markdown") or table.get("html") or structured_markdown):
         reasons.append("table result has no structured table content")
     key_facts = data.get("key_facts") if isinstance(data.get("key_facts"), list) else []
     summary = str(data.get("summary") or "").strip()
+    if artifact_type == "formula" and not (structured_markdown or summary or key_facts):
+        reasons.append("formula result has no searchable formula content")
     if not summary and not key_facts:
         reasons.append("summary and key_facts are empty")
     should_index = explicit_should_index and not reasons
@@ -1039,6 +1047,12 @@ def _detail_text(result: VisualAnalysisResult) -> str:
     lines: List[str] = []
     if result.structured_markdown and result.artifact_type != "table":
         lines.extend(["Structured content:", result.structured_markdown])
+    if result.artifact_type == "formula":
+        if result.summary:
+            lines.extend(["Formula explanation:", result.summary])
+        if result.uncertain_fields:
+            lines.append("Uncertain formula fields:")
+            lines.extend(f"- {field}" for field in result.uncertain_fields[:30])
     if result.signals:
         lines.append("Signals:")
         for signal in result.signals[:50]:
@@ -1073,6 +1087,7 @@ def _artifact_aliases(artifact_type: str) -> str:
     base = {
         "table": ["table", "表格", "grid", "matrix"],
         "figure": ["figure", "fig", "diagram", "图", "图表"],
+        "formula": ["formula", "equation", "math", "公式", "方程"],
         "chart": ["chart", "plot", "curve", "图表"],
         "timing_diagram": ["timing", "timing diagram", "waveform", "时序", "时序图"],
         "waveform": ["waveform", "timing", "时序", "波形"],
@@ -1083,6 +1098,13 @@ def _artifact_aliases(artifact_type: str) -> str:
     }
     aliases = base.get(str(artifact_type or "").lower(), ["figure", "diagram", "图表"])
     return ", ".join(aliases)
+
+
+def _canonical_artifact_type(value: Any) -> str:
+    text = str(value or "unknown").strip().lower()
+    if text == "equation":
+        return "formula"
+    return text or "unknown"
 
 
 def _visual_search_terms(candidate: VisualArtifactCandidate, result: VisualAnalysisResult) -> List[str]:
@@ -1100,6 +1122,10 @@ def _visual_search_terms(candidate: VisualArtifactCandidate, result: VisualAnaly
             values.append(str(fact.get("fact") or ""))
         else:
             values.append(str(fact))
+    if result.structured_markdown:
+        values.append(result.structured_markdown)
+    for field in result.uncertain_fields[:50]:
+        values.append(str(field))
     for signal in result.signals[:80]:
         if isinstance(signal, dict):
             values.extend(str(signal.get(key) or "") for key in ("name", "direction", "width", "meaning"))

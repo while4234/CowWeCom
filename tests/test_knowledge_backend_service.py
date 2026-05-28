@@ -643,6 +643,122 @@ def test_deep_query_truncates_evidence_without_breaking_records(tmp_path):
     assert result["coverage_terms"]
 
 
+def test_complete_visual_knowledge_all_kbs_and_kb_filter(monkeypatch, tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "backend-data"),
+                "visual_analysis": {"enabled": True},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    storage = service._backend._get_storage(writable=True)
+    docs = [
+        KnowledgeDocument(id="doc-a", title="A", source_path="a.pdf", mime_type="application/pdf", size=1, content_hash="a", status="ready", kb_id="kb_a", version_id="v-a"),
+        KnowledgeDocument(id="doc-b", title="B", source_path="b.pdf", mime_type="application/pdf", size=1, content_hash="b", status="ready", kb_id="kb_b", version_id="v-b"),
+        KnowledgeDocument(id="doc-generated", title="Generated", source_path="g.md", mime_type="text/markdown", size=1, content_hash="g", status="ready", kb_id="kb_a", doc_type="llm_study", version_id="v-g"),
+    ]
+    for document in docs:
+        storage.save_document(document, [])
+
+    calls = []
+
+    def fake_build(**kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "has_more": False, "prepare": {"status": "done"}}
+
+    monkeypatch.setattr(service, "build_visual_knowledge", fake_build)
+
+    all_result = service.complete_visual_knowledge(max_steps=10, export=False)
+    calls.clear()
+    kb_result = service.complete_visual_knowledge(kb_id="kb_b", max_steps=10, export=False)
+
+    assert all_result["scope"] == "all_source_documents"
+    assert all_result["kb_id"] == ""
+    assert all_result["documents_processed"] == 2
+    assert {item["document_id"] for item in all_result["results"]} == {"doc-a", "doc-b"}
+    assert kb_result["scope"] == "kb"
+    assert kb_result["documents_processed"] == 1
+    assert calls[0]["document_id"] == "doc-b"
+
+
+def test_complete_visual_knowledge_rejects_generated_document_id(tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "visual_analysis": {"enabled": True},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    storage = service._backend._get_storage(writable=True)
+    generated = KnowledgeDocument(
+        id="generated-doc",
+        title="Generated",
+        source_path="generated.md",
+        mime_type="text/markdown",
+        size=1,
+        content_hash="generated",
+        status="ready",
+        kb_id="kb_default",
+        doc_type="codex_analysis",
+        version_id="generated-v1",
+    )
+    storage.save_document(generated, [])
+
+    result = service.complete_visual_knowledge(document_id=generated.id, max_steps=5, export=False)
+
+    assert result["ok"] is False
+    assert "source document not found" in result["message"]
+
+
+def test_analyze_visual_artifact_group_returns_resolved_backend_metadata(tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "visual_analysis": {"enabled": True, "use_current_model": False, "model": "fixed-vision-model"},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    storage = service._backend._get_storage(writable=True)
+    document = KnowledgeDocument(id="doc-group", title="Group", source_path="group.pdf", mime_type="application/pdf", size=1, content_hash="group", status="ready", kb_id="kb_default", version_id="v-group")
+    storage.save_document(document, [])
+    group_id = "visual_group_meta"
+    storage.upsert_visual_artifact_group(
+        {
+            "id": group_id,
+            "document_id": document.id,
+            "version_id": document.version_id,
+            "kb_id": "kb_default",
+            "group_type": "table",
+            "title": "meta",
+            "caption": "Table 1. meta",
+            "source_pages": [1],
+            "status": "skipped",
+            "confidence": 0.0,
+            "result_json": {},
+        }
+    )
+
+    result = service.analyze_visual_artifact_group(group_id, analysis_backend="codex")
+
+    assert result["outcome"] == "skipped"
+    assert result["analysis_backend"] == "codex"
+    assert result["requested_analysis_backend"] == "codex"
+    assert result["analysis_model"] == "fixed-vision-model"
+
+
 def test_sqlite_backend_skips_files_over_size_limit(tmp_path):
     knowledge = tmp_path / "knowledge"
     knowledge.mkdir()

@@ -4,7 +4,12 @@ import pytest
 
 from agent.knowledge.backend import KnowledgeBackendConfig, KnowledgeBackendService
 from agent.knowledge.backend.models import DocumentPage
-from agent.knowledge.backend.text_sanitizer import sanitize_pages_for_knowledge_chunks
+from agent.knowledge.backend.text_sanitizer import (
+    is_formula_garble_block,
+    is_formula_garble_line,
+    is_large_table_like_block,
+    sanitize_pages_for_knowledge_chunks,
+)
 
 
 def _make_noisy_pdf(path):
@@ -114,3 +119,44 @@ def test_sanitizer_preserves_multiline_caption_label(tmp_path):
     assert "Standard Package Bump Map: x16 interface" in text
     assert "L a y e r 1 0 1 2 3" not in text
     assert "rxdatasbtxdatasb txcksb rxcksb" not in text
+
+
+def test_formula_garble_detection_positive_and_negative_examples():
+    assert is_formula_garble_line(
+        "L f( ) 20 10 Vr f( ) Vs f( ) log =",
+        context="Equation defines insertion loss.",
+    )
+    assert is_formula_garble_block(
+        "The following formula defines loss:\nL f( ) 20 10 Vr f( ) Vs f( ) log ="
+    )
+
+    assert not is_formula_garble_line("TVALID and TREADY define the transfer handshake.")
+    assert not is_formula_garble_line("Signal Direction Description")
+    assert not is_formula_garble_line("Figure 1-1 Channel architecture of reads")
+
+
+def test_dense_table_like_block_is_reported_without_caption_false_positive():
+    table_text = "\n".join(
+        ["Signal Direction Description"]
+        + [f"SIG_{index} input Description_{index}" for index in range(12)]
+    )
+    assert is_large_table_like_block(table_text)
+    assert not is_large_table_like_block("Table 2-1 Global signals\nThis table explains global signal usage.")
+
+
+def test_sanitizer_does_not_default_delete_formula_or_large_table_without_visual_replacement(tmp_path):
+    pdf_path = tmp_path / "quality-boundary.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n% fake\n")
+    formula = "L f( ) 20 10 Vr f( ) Vs f( ) log ="
+    table_text = "\n".join(["Signal Direction Description"] + [f"SIG_{i} input Description_{i}" for i in range(12)])
+    pages = [DocumentPage(page=1, text=f"Equation 1 defines insertion loss.\n{formula}\n{table_text}")]
+
+    sanitized, _ = sanitize_pages_for_knowledge_chunks(
+        pdf_path,
+        pages,
+        strip_visual_regions=False,
+        strip_visual_noise_lines=True,
+    )
+
+    assert formula in sanitized[0].text
+    assert "SIG_10 input Description_10" in sanitized[0].text

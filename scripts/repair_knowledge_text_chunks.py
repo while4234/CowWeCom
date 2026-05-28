@@ -28,7 +28,13 @@ from agent.knowledge.backend.extractors import extract_document
 from agent.knowledge.backend.models import KnowledgeChunk, KnowledgeDocument
 from agent.knowledge.backend.service import KnowledgeBackendConfig, KnowledgeBackendService, LocalKnowledgeBackend
 from agent.knowledge.backend.storage import KnowledgeStorage
-from agent.knowledge.backend.text_sanitizer import is_visual_noise_line, sanitize_pages_for_knowledge_chunks
+from agent.knowledge.backend.text_sanitizer import (
+    is_formula_garble_block,
+    is_formula_garble_line,
+    is_large_table_like_block,
+    is_visual_noise_line,
+    sanitize_pages_for_knowledge_chunks,
+)
 
 
 SCRIPT_NAME = "scripts/repair_knowledge_text_chunks.py"
@@ -46,6 +52,7 @@ class RepairOptions:
     apply: bool = False
     export: bool = False
     backup_path: Optional[Path] = None
+    strip_completed_visual_regions: bool = False
 
 
 def main() -> int:
@@ -97,6 +104,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--workspace-root", default="", help="Workspace root used to resolve relative document source paths.")
     parser.add_argument("--data-dir", default="", help="Knowledge backend data directory used for reports and export config.")
     parser.add_argument("--backup", default="", help="Backup directory or backup file path. --apply always creates a backup.")
+    parser.add_argument(
+        "--strip-completed-visual-regions",
+        action="store_true",
+        help="Remove formula/table noise from ordinary chunks only when the same page has high-confidence retrievable visual chunks.",
+    )
     return parser.parse_args(argv)
 
 
@@ -123,7 +135,12 @@ def repair_options_from_args(args: argparse.Namespace, project_root: Path) -> Re
         apply=bool(args.apply),
         export=bool(args.export),
         backup_path=backup_path,
+        strip_completed_visual_regions=bool(getattr(args, "strip_completed_visual_regions", False)),
     )
+
+
+def repair_options_with_visual_strip(options: RepairOptions, enabled: bool = True) -> RepairOptions:
+    return replace(options, strip_completed_visual_regions=bool(enabled))
 
 
 def run_repair(options: RepairOptions) -> Dict[str, Any]:
@@ -233,6 +250,8 @@ def repair_one_document(
         visual_chunks = [chunk for chunk in old_chunks if chunk_metadata_source(chunk) == "visual_analysis"]
         old_text_chunks = [chunk for chunk in old_chunks if chunk_metadata_source(chunk) != "visual_analysis"]
         old_total_chars = sum(len(chunk.text or "") for chunk in old_text_chunks)
+        quality_report = collect_quality_issue_report(old_text_chunks)
+        completed_visual_pages = completed_retrievable_visual_pages(storage, document.id)
 
         extracted = extract_document(source_path)
         sanitized_pages, sanitizer_report = sanitize_pages_for_knowledge_chunks(
@@ -255,6 +274,13 @@ def repair_one_document(
             kb_id=kb_id,
             version_id=document.version_id,
         )
+        stripped_chunk_count = 0
+        stripped_line_count = 0
+        if options.strip_completed_visual_regions:
+            new_raw_chunks, stripped_chunk_count, stripped_line_count = strip_chunks_with_completed_visual_replacements(
+                new_raw_chunks,
+                completed_visual_pages,
+            )
         build_document = replace(document, size=source_path.stat().st_size)
         build = HeuristicKnowledgeBuilder().build(build_document, new_raw_chunks)
         new_total_chars = sum(len(chunk.text or "") for chunk in build.chunks)
@@ -268,6 +294,10 @@ def repair_one_document(
                 "old_total_chars": old_total_chars,
                 "new_total_chars": new_total_chars,
                 "removed_noise_line_examples": removed_examples,
+                **quality_report,
+                "completed_visual_pages": sorted(completed_visual_pages),
+                "stripped_completed_visual_chunks": stripped_chunk_count,
+                "stripped_completed_visual_lines": stripped_line_count,
                 "sanitizer_report": sanitizer_report,
                 "skipped": False,
                 "error": "",
@@ -284,6 +314,10 @@ def repair_one_document(
             "new_text_chunks": len(build.chunks),
             "old_total_chars": old_total_chars,
             "new_total_chars": new_total_chars,
+            "quality_report": quality_report,
+            "completed_visual_pages": sorted(completed_visual_pages),
+            "stripped_completed_visual_chunks": stripped_chunk_count,
+            "stripped_completed_visual_lines": stripped_line_count,
             "sanitizer_report": sanitizer_report,
         }
         repaired_document = replace(build_document, metadata=repair_metadata)
@@ -461,6 +495,208 @@ def collect_removed_noise_examples(
     return examples
 
 
+def collect_quality_issue_report(chunks: Iterable[KnowledgeChunk]) -> Dict[str, Any]:
+    formula_chunks: List[KnowledgeChunk] = []
+    table_chunks: List[KnowledgeChunk] = []
+    formula_pages: set[int] = set()
+    table_pages: set[int] = set()
+    formula_examples: List[str] = []
+    table_examples: List[str] = []
+
+    for chunk in chunks:
+        text = str(chunk.text or "")
+        formula = is_formula_garble_block(text) or any(is_formula_garble_line(line, context=text) for line in text.splitlines())
+        table_like = is_large_table_like_block(text)
+        if formula:
+            formula_chunks.append(chunk)
+            formula_pages.update(_chunk_pages(chunk))
+            _append_example(formula_examples, _first_quality_line(text, formula=True))
+        if table_like:
+            table_chunks.append(chunk)
+            table_pages.update(_chunk_pages(chunk))
+            _append_example(table_examples, _first_quality_line(text, formula=False))
+
+    return {
+        "formula_garble_chunks": len(formula_chunks),
+        "formula_garble_pages": sorted(formula_pages),
+        "formula_garble_examples": formula_examples[:10],
+        "large_table_like_chunks": len(table_chunks),
+        "large_table_like_pages": sorted(table_pages),
+        "large_table_like_examples": table_examples[:10],
+    }
+
+
+def strip_chunks_with_completed_visual_replacements(
+    chunks: Iterable[KnowledgeChunk],
+    completed_visual_pages: set[int],
+) -> Tuple[List[KnowledgeChunk], int, int]:
+    stripped_chunks = 0
+    stripped_lines = 0
+    result: List[KnowledgeChunk] = []
+    for chunk in chunks:
+        pages = set(_chunk_pages(chunk))
+        if not pages or not pages.issubset(completed_visual_pages):
+            result.append(chunk)
+            continue
+        cleaned_text, removed = strip_quality_noise_from_text(chunk.text)
+        if removed <= 0:
+            result.append(chunk)
+            continue
+        stripped_chunks += 1
+        stripped_lines += removed
+        if cleaned_text.strip():
+            result.append(replace(chunk, text=cleaned_text))
+    return result, stripped_chunks, stripped_lines
+
+
+def strip_quality_noise_from_text(text: str) -> Tuple[str, int]:
+    lines = str(text or "").splitlines()
+    kept: List[str] = []
+    removed = 0
+    in_table_noise = False
+    table_buffer: List[str] = []
+
+    def flush_table_buffer(force_keep: bool = False) -> None:
+        nonlocal removed, table_buffer
+        if not table_buffer:
+            return
+        block = "\n".join(table_buffer)
+        if not force_keep and is_large_table_like_block(block):
+            removed += len(table_buffer)
+        else:
+            kept.extend(table_buffer)
+        table_buffer = []
+
+    for raw_line in lines:
+        line = normalize_line(raw_line)
+        if not line:
+            flush_table_buffer()
+            if kept and kept[-1] != "":
+                kept.append("")
+            continue
+        if is_formula_garble_line(line, context=text):
+            flush_table_buffer()
+            removed += 1
+            continue
+        if _line_may_be_table_noise(line):
+            table_buffer.append(line)
+            in_table_noise = True
+            continue
+        if in_table_noise:
+            flush_table_buffer()
+            in_table_noise = False
+        kept.append(line)
+    flush_table_buffer()
+    cleaned = "\n".join(_trim_blank_edges(kept)).strip()
+    return cleaned, removed
+
+
+def completed_retrievable_visual_pages(storage: KnowledgeStorage, document_id: str) -> set[int]:
+    rows = storage.conn.execute(
+        """
+        SELECT
+          c.page_start,
+          c.page_end,
+          c.metadata AS chunk_metadata,
+          va.page,
+          va.retrievable,
+          va.analysis_confidence,
+          vag.retrievable AS group_retrievable
+        FROM chunks c
+        LEFT JOIN visual_artifact_chunks vac ON vac.chunk_id = c.id
+        LEFT JOIN visual_artifacts va ON va.id = vac.artifact_id
+        LEFT JOIN visual_artifact_groups vag ON vag.id = vac.artifact_id
+        WHERE c.document_id = ?
+          AND COALESCE(
+                CASE WHEN json_valid(c.metadata) THEN json_extract(c.metadata, '$.source') ELSE '' END,
+                ''
+              ) = 'visual_analysis'
+        """,
+        (document_id,),
+    ).fetchall()
+    pages: set[int] = set()
+    for row in rows:
+        metadata = json.loads(row["chunk_metadata"]) if row["chunk_metadata"] and str(row["chunk_metadata"]).startswith("{") else {}
+        if not _visual_chunk_is_high_confidence(row, metadata):
+            continue
+        source_pages = metadata.get("source_pages") if isinstance(metadata, dict) else []
+        for page in source_pages or []:
+            try:
+                if int(page) > 0:
+                    pages.add(int(page))
+            except (TypeError, ValueError):
+                continue
+        start = int(row["page_start"] or row["page"] or 0)
+        end = int(row["page_end"] or start or 0)
+        for page in range(max(1, start), max(start, end) + 1):
+            pages.add(page)
+    return pages
+
+
+def _visual_chunk_is_high_confidence(row: Any, metadata: Dict[str, Any]) -> bool:
+    if metadata.get("retrievable") is False:
+        return False
+    metadata_confidence = float(metadata.get("visual_confidence") or 0)
+    keys = set(row.keys()) if hasattr(row, "keys") else set()
+    artifact_confidence = float(row["analysis_confidence"] or 0) if "analysis_confidence" in keys else 0.0
+    row_retrievable = bool(row["retrievable"]) if "retrievable" in keys and row["retrievable"] is not None else False
+    group_retrievable = bool(row["group_retrievable"]) if "group_retrievable" in keys and row["group_retrievable"] is not None else False
+    return bool((row_retrievable or group_retrievable or metadata.get("retrievable") is True) and max(metadata_confidence, artifact_confidence) >= 0.78)
+
+
+def _chunk_pages(chunk: KnowledgeChunk) -> List[int]:
+    start = int(chunk.page_start or 0)
+    end = int(chunk.page_end or start or 0)
+    if start <= 0 and end <= 0:
+        return []
+    start = max(1, start or end)
+    end = max(start, end or start)
+    return list(range(start, end + 1))
+
+
+def _append_example(examples: List[str], text: str) -> None:
+    value = normalize_line(text)
+    if value and value not in examples:
+        examples.append(value[:240])
+
+
+def _first_quality_line(text: str, *, formula: bool) -> str:
+    for raw_line in str(text or "").splitlines():
+        line = normalize_line(raw_line)
+        if not line:
+            continue
+        if formula and is_formula_garble_line(line, context=text):
+            return line
+        if not formula and _line_may_be_table_noise(line):
+            return line
+    return normalize_line(str(text or "").splitlines()[0] if text else "")
+
+
+def _line_may_be_table_noise(line: str) -> bool:
+    text = normalize_line(line)
+    if not text or text.startswith("#") or "Figure " in text or "Table " in text:
+        return False
+    if "|" in text or "\t" in text:
+        return True
+    tokens = text.split()
+    if len(tokens) < 3:
+        return False
+    header_words = {"signal", "direction", "description", "name", "type", "bit", "field", "width", "value", "encoding"}
+    header_hits = sum(1 for token in tokens if token.lower().strip(":") in header_words)
+    signalish = sum(1 for token in tokens if re.fullmatch(r"[A-Za-z0-9_./:\-\[\](),+<>|]+", token))
+    numeric = sum(1 for token in tokens if re.search(r"\d", token))
+    return bool(header_hits >= 2 or signalish + numeric >= max(3, len(tokens) - 1))
+
+
+def _trim_blank_edges(lines: List[str]) -> List[str]:
+    result = list(lines)
+    while result and result[0] == "":
+        result.pop(0)
+    while result and result[-1] == "":
+        result.pop()
+    return result
+
+
 def looks_like_known_visual_pollution(line: str) -> bool:
     text = normalize_line(line)
     lowered = text.lower()
@@ -519,6 +755,7 @@ def export_config(options: RepairOptions) -> KnowledgeBackendConfig:
             "sqlite_path": str(options.db_path),
             "workspace_root": str(options.workspace_root),
             "data_dir": str(options.data_dir),
+            "strip_completed_visual_regions": bool(options.strip_completed_visual_regions),
             "vector_store": {
                 "provider": "sqlite",
                 "required": False,
@@ -540,7 +777,7 @@ def export_config(options: RepairOptions) -> KnowledgeBackendConfig:
 
 
 def select_documents(documents: Iterable[KnowledgeDocument], options: RepairOptions) -> List[KnowledgeDocument]:
-    candidates = [document for document in documents if document.doc_type != "llm_study"]
+    candidates = [document for document in documents if (document.doc_type or "document") == "document"]
     if options.document_id:
         return [document for document in candidates if document.id == options.document_id]
     if options.kb_id:
@@ -617,6 +854,15 @@ def base_document_report(document: KnowledgeDocument, options: RepairOptions) ->
         "new_text_chunks": 0,
         "old_total_chars": 0,
         "new_total_chars": 0,
+        "formula_garble_chunks": 0,
+        "formula_garble_pages": [],
+        "formula_garble_examples": [],
+        "large_table_like_chunks": 0,
+        "large_table_like_pages": [],
+        "large_table_like_examples": [],
+        "completed_visual_pages": [],
+        "stripped_completed_visual_chunks": 0,
+        "stripped_completed_visual_lines": 0,
         "removed_noise_line_examples": [],
         "sanitizer_report": {},
         "normalized_visual_ordinals": 0,
@@ -651,6 +897,12 @@ def new_report(options: RepairOptions, started_at: int) -> Dict[str, Any]:
             "preserved_visual_chunks": 0,
             "old_total_chars": 0,
             "new_total_chars": 0,
+            "formula_garble_chunks": 0,
+            "formula_garble_pages": [],
+            "large_table_like_chunks": 0,
+            "large_table_like_pages": [],
+            "stripped_completed_visual_chunks": 0,
+            "stripped_completed_visual_lines": 0,
         },
         "documents": [],
     }
@@ -669,8 +921,18 @@ def summarize_report(report: Dict[str, Any]) -> None:
         "preserved_visual_chunks",
         "old_total_chars",
         "new_total_chars",
+        "formula_garble_chunks",
+        "large_table_like_chunks",
+        "stripped_completed_visual_chunks",
+        "stripped_completed_visual_lines",
     ):
         summary[key] = sum(int(item.get(key) or 0) for item in documents if not item.get("skipped"))
+    summary["formula_garble_pages"] = sorted(
+        {int(page) for item in documents for page in (item.get("formula_garble_pages") or []) if page}
+    )
+    summary["large_table_like_pages"] = sorted(
+        {int(page) for item in documents for page in (item.get("large_table_like_pages") or []) if page}
+    )
 
 
 def handle_empty_selection(report: Dict[str, Any], options: RepairOptions) -> None:
@@ -720,6 +982,7 @@ def normalize_options(options: RepairOptions, project_root: Path) -> RepairOptio
         apply=options.apply,
         export=options.export,
         backup_path=absolute_path(options.backup_path, project_root) if options.backup_path else None,
+        strip_completed_visual_regions=options.strip_completed_visual_regions,
     )
 
 

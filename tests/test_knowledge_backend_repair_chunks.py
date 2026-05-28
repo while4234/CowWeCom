@@ -111,6 +111,25 @@ def _visual_candidate(document, artifact_id="visual-artifact-1", status_page=2):
     )
 
 
+def _visual_table_candidate(document, artifact_id="visual-table-1", status_page=1):
+    return VisualArtifactCandidate(
+        id=artifact_id,
+        document_id=document.id,
+        version_id=document.version_id,
+        kb_id=document.kb_id,
+        artifact_type="table",
+        page=status_page,
+        label="Table 5-1",
+        caption="Table 5-1. Signal List",
+        bbox={"x0": 1, "y0": 2, "x1": 100, "y1": 720},
+        image_hash=f"image-{artifact_id}",
+        context_hash=f"context-{artifact_id}",
+        parser="test",
+        parser_confidence=0.9,
+        source_path=document.source_path,
+    )
+
+
 def _visual_chunk(document, text="High-confidence visual summary."):
     return KnowledgeChunk(
         id=f"chunk-{document.id}-visual",
@@ -123,6 +142,33 @@ def _visual_chunk(document, text="High-confidence visual summary."):
         version_id=document.version_id,
         source_span_ids=[f"span-{document.id}-visual"],
         metadata={"source": "visual_analysis"},
+    )
+
+
+def _visual_table_chunk(document, text="High-confidence visual table with SIG_A0."):
+    return KnowledgeChunk(
+        id=f"chunk-{document.id}-visual-table",
+        document_id=document.id,
+        ordinal=99,
+        page_start=1,
+        page_end=1,
+        text=text,
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[f"span-{document.id}-visual-table"],
+        metadata={"source": "visual_analysis", "visual_confidence": 0.91, "retrievable": True, "visual_artifact_type": "table"},
+    )
+
+
+def _visual_table_span(document, text="High-confidence visual table with SIG_A0."):
+    return SourceSpan(
+        id=f"span-{document.id}-visual-table",
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=1,
+        page_end=1,
+        text=text,
     )
 
 
@@ -1786,3 +1832,151 @@ def test_reset_visual_cache_preserves_shared_ordinary_span_and_reports_actual_de
             ).fetchone()[0] == 0
     finally:
         storage.close()
+
+
+def test_repair_report_includes_formula_and_large_table_quality_stats(monkeypatch, tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-quality-report", _pdf(tmp_path, "quality-report.pdf"))
+    formula = "L f( ) 20 10 Vr f( ) Vs f( ) log ="
+    table = "\n".join(["Signal Direction Description"] + [f"SIG_{i} input Description_{i}" for i in range(12)])
+    noisy_text = f"Equation defines insertion loss.\n{formula}\n\n{table}"
+    storage = KnowledgeStorage(db_path)
+    try:
+        chunk = _ordinary_chunk(document, noisy_text)
+        storage.save_document(document, [chunk], source_spans=[_ordinary_span(document, noisy_text)])
+    finally:
+        storage.close()
+
+    def fake_extract(path):
+        return ExtractedDocument(Path(path).stem, str(path), "application/pdf", [DocumentPage(page=1, text=noisy_text)])
+
+    def fake_sanitize(source_path, pages, **kwargs):
+        return [DocumentPage(page=1, text=noisy_text)], {"removed_total_lines": 0, "pages": [{"page": 1}]}
+
+    monkeypatch.setattr(repair_script, "extract_document", fake_extract)
+    monkeypatch.setattr(repair_script, "sanitize_pages_for_knowledge_chunks", fake_sanitize)
+
+    report = repair_script.run_repair(_options(tmp_path, db_path, document_id=document.id))
+
+    item = report["documents"][0]
+    assert item["formula_garble_chunks"] == 1
+    assert item["formula_garble_pages"] == [1]
+    assert item["large_table_like_chunks"] == 1
+    assert item["large_table_like_pages"] == [1]
+    assert report["summary"]["formula_garble_chunks"] == 1
+    assert report["summary"]["large_table_like_chunks"] == 1
+
+
+def test_strip_completed_visual_regions_requires_high_confidence_visual_replacement(monkeypatch, tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-strip-visual", _pdf(tmp_path, "strip-visual.pdf"))
+    formula = "L f( ) 20 10 Vr f( ) Vs f( ) log ="
+    table = "\n".join(["Signal Direction Description"] + [f"SIG_{i} input Description_{i}" for i in range(12)])
+    clean_intro = "This paragraph explains the table and formula."
+    noisy_text = f"{clean_intro}\n{formula}\n{table}"
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document, [_ordinary_chunk(document, noisy_text)], source_spans=[_ordinary_span(document, noisy_text)])
+        artifact = _visual_table_candidate(document, status_page=1)
+        visual_chunk = _visual_table_chunk(document)
+        storage.upsert_visual_artifact(artifact)
+        storage.append_visual_chunks(document.id, document.version_id, artifact.id, [visual_chunk], [_visual_table_span(document)])
+        storage.complete_visual_artifact_success(
+            artifact.id,
+            {
+                "artifact_type": "table",
+                "summary": "High-confidence visual table with SIG_A0.",
+                "confidence": {"overall": 0.91},
+                "should_index": True,
+            },
+            0.91,
+            retrievable=True,
+        )
+    finally:
+        storage.close()
+
+    def fake_extract(path):
+        return ExtractedDocument(Path(path).stem, str(path), "application/pdf", [DocumentPage(page=1, text=noisy_text)])
+
+    def fake_sanitize(source_path, pages, **kwargs):
+        return [DocumentPage(page=1, text=noisy_text)], {"removed_total_lines": 0, "pages": [{"page": 1}]}
+
+    monkeypatch.setattr(repair_script, "extract_document", fake_extract)
+    monkeypatch.setattr(repair_script, "sanitize_pages_for_knowledge_chunks", fake_sanitize)
+
+    dry = repair_script.run_repair(_options(tmp_path, db_path, document_id=document.id, apply=True))
+    assert any(formula in text for text in _chunk_texts(db_path, document.id))
+    assert dry["documents"][0]["stripped_completed_visual_chunks"] == 0
+
+    strip_options = _options(tmp_path, db_path, document_id=document.id, apply=True, strip_completed_visual_regions=True, backup_path=tmp_path / 'strip-backups')
+    stripped = repair_script.run_repair(strip_options)
+    texts = _chunk_texts(db_path, document.id)
+
+    assert stripped["documents"][0]["stripped_completed_visual_chunks"] >= 1
+    assert not any(formula in text for text in texts if "visual table" not in text)
+    assert not any("SIG_10 input Description_10" in text for text in texts if "visual table" not in text)
+    assert any("High-confidence visual table with SIG_A0" in text for text in texts)
+
+
+def test_repair_without_visual_replacement_only_reports_and_preserves_noise(monkeypatch, tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-no-strip", _pdf(tmp_path, "no-strip.pdf"))
+    formula = "L f( ) 20 10 Vr f( ) Vs f( ) log ="
+    noisy_text = f"Equation defines insertion loss.\n{formula}"
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document, [_ordinary_chunk(document, noisy_text)], source_spans=[_ordinary_span(document, noisy_text)])
+    finally:
+        storage.close()
+
+    monkeypatch.setattr(
+        repair_script,
+        "extract_document",
+        lambda path: ExtractedDocument(Path(path).stem, str(path), "application/pdf", [DocumentPage(page=1, text=noisy_text)]),
+    )
+    monkeypatch.setattr(
+        repair_script,
+        "sanitize_pages_for_knowledge_chunks",
+        lambda source_path, pages, **kwargs: ([DocumentPage(page=1, text=noisy_text)], {"removed_total_lines": 0}),
+    )
+
+    report = repair_script.run_repair(_options(tmp_path, db_path, document_id=document.id, apply=True, strip_completed_visual_regions=True))
+
+    assert report["documents"][0]["formula_garble_chunks"] == 1
+    assert report["documents"][0]["stripped_completed_visual_chunks"] == 0
+    assert any(formula in text for text in _chunk_texts(db_path, document.id))
+
+
+def test_repair_select_documents_excludes_generated_docs(tmp_path):
+    source = _document("doc-source", _pdf(tmp_path, "source.pdf"))
+    generated = KnowledgeDocument(
+        id="doc-generated",
+        title="Generated",
+        source_path="generated.md",
+        mime_type="text/markdown",
+        size=1,
+        content_hash="generated",
+        status="ready",
+        kb_id="ucie",
+        doc_type="codex_analysis",
+        version_id="generated-v1",
+    )
+    study = KnowledgeDocument(
+        id="doc-study",
+        title="Study",
+        source_path="study.md",
+        mime_type="text/markdown",
+        size=1,
+        content_hash="study",
+        status="ready",
+        kb_id="ucie",
+        doc_type="llm_study",
+        version_id="study-v1",
+    )
+
+    selected = repair_script.select_documents(
+        [source, generated, study],
+        _options(tmp_path, tmp_path / "kb.sqlite", all_documents=True),
+    )
+
+    assert [document.id for document in selected] == [source.id]

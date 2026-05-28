@@ -36,6 +36,39 @@ _VISUAL_LABELS = {
     "adapter",
     "phy",
 }
+_MATH_KEYWORDS = {
+    "ceil",
+    "crc",
+    "equation",
+    "floor",
+    "formula",
+    "int",
+    "log",
+    "loss",
+    "polynomial",
+    "vtf",
+}
+_FORMULA_CONTEXT_RE = re.compile(
+    r"\b(?:equation|formula|loss|polynomial|crc|vtf|burst\s+address|transfer\s+function|log|ceil|floor|int)\b|公式|方程",
+    re.IGNORECASE,
+)
+_FORMULA_TOKEN_RE = re.compile(r"[A-Za-z]+|\d+(?:\.\d+)?|[=+\-*/^(){}\[\]|<>]|[^\s]")
+_TABLE_HEADER_WORDS = {
+    "bit",
+    "description",
+    "direction",
+    "encoding",
+    "field",
+    "layer",
+    "meaning",
+    "module",
+    "name",
+    "parameter",
+    "signal",
+    "type",
+    "value",
+    "width",
+}
 
 
 def sanitize_pages_for_knowledge_chunks(
@@ -91,6 +124,8 @@ def is_visual_noise_line(line: str) -> bool:
     text = _normalize_line(line)
     if not text or is_strict_caption_block(text) or is_caption_label_line(text):
         return False
+    if is_formula_garble_line(text):
+        return False
 
     tokens = text.split()
     if len(tokens) >= 8:
@@ -109,6 +144,101 @@ def is_visual_noise_line(line: str) -> bool:
     if len(text) <= 96 and _looks_like_concatenated_signal_line(text):
         return True
 
+    return False
+
+
+def is_formula_garble_line(line: str, context: str = "") -> bool:
+    """Return True for PDF text extraction fragments that look like broken math."""
+
+    text = _normalize_line(line)
+    if not text or is_strict_caption_block(text) or is_caption_label_line(text):
+        return False
+    tokens = _FORMULA_TOKEN_RE.findall(text)
+    if len(tokens) < 6:
+        return False
+
+    words = [token for token in tokens if re.fullmatch(r"[A-Za-z]+", token)]
+    natural_words = [
+        word
+        for word in words
+        if len(word) >= 4 and word.lower() not in _MATH_KEYWORDS and not _is_signalish_token(word)
+    ]
+    if len(natural_words) >= 4:
+        return False
+
+    alnum_tokens = [token for token in tokens if re.fullmatch(r"[A-Za-z0-9]+", token)]
+    single_char_tokens = [token for token in alnum_tokens if len(token) == 1]
+    single_char_ratio = len(single_char_tokens) / max(1, len(alnum_tokens))
+    math_symbols = sum(1 for token in tokens if re.fullmatch(r"[=+\-*/^(){}\[\]|<>]", token))
+    numbers = sum(1 for token in tokens if re.fullmatch(r"\d+(?:\.\d+)?", token))
+    keyword_hits = sum(1 for word in words if word.lower() in _MATH_KEYWORDS)
+    repeated_parentheses = text.count("(") + text.count(")")
+    context_hint = bool(_FORMULA_CONTEXT_RE.search(f"{context}\n{text}"))
+    math_score = math_symbols + min(numbers, 4) + keyword_hits * 2 + min(repeated_parentheses, 4)
+
+    if "=" in text and repeated_parentheses >= 2 and single_char_ratio >= 0.28 and len(natural_words) <= 2:
+        return True
+    if single_char_ratio >= 0.45 and math_score >= (4 if context_hint else 6) and len(natural_words) <= 2:
+        return True
+    if context_hint and single_char_ratio >= 0.35 and math_score >= 5 and len(natural_words) <= 2:
+        return True
+    return False
+
+
+def is_formula_garble_block(text: str) -> bool:
+    """Return True when a block contains likely broken formula extraction."""
+
+    value = str(text or "")
+    if not value.strip():
+        return False
+    context_hint = bool(_FORMULA_CONTEXT_RE.search(value))
+    lines = [_normalize_line(line) for line in value.splitlines() if _normalize_line(line)]
+    if not lines:
+        return False
+    matches = [line for line in lines if is_formula_garble_line(line, context=value)]
+    if matches:
+        return True
+    if not context_hint:
+        return False
+    compact = " ".join(lines)
+    tokens = _FORMULA_TOKEN_RE.findall(compact)
+    if len(tokens) < 10:
+        return False
+    alnum_tokens = [token for token in tokens if re.fullmatch(r"[A-Za-z0-9]+", token)]
+    single_char_ratio = sum(1 for token in alnum_tokens if len(token) == 1) / max(1, len(alnum_tokens))
+    natural_words = [
+        token
+        for token in tokens
+        if re.fullmatch(r"[A-Za-z]{4,}", token)
+        and token.lower() not in _MATH_KEYWORDS
+        and not _is_signalish_token(token)
+    ]
+    math_symbols = sum(1 for token in tokens if re.fullmatch(r"[=+\-*/^(){}\[\]|<>]", token))
+    return bool(single_char_ratio >= 0.34 and math_symbols >= 4 and len(natural_words) <= 4)
+
+
+def is_large_table_like_block(text: str) -> bool:
+    """Return True for oversized dense table text that should be visual-first."""
+
+    lines = [_normalize_line(line) for line in str(text or "").splitlines() if _normalize_line(line)]
+    if len(lines) < 8:
+        return False
+    if any(is_strict_caption_block(line) for line in lines[:3]) and len(lines) < 10:
+        return False
+
+    table_lines = sum(1 for line in lines if _is_table_like_line(line))
+    pipe_or_tab_lines = sum(1 for line in lines if "|" in line or "\t" in line)
+    header_hits = len(_table_header_tokens("\n".join(lines[:20])))
+    short_dense_lines = sum(1 for line in lines if _is_dense_short_table_row(line))
+    natural_sentences = sum(1 for line in lines if _is_natural_language_line(line))
+    density = table_lines / max(1, len(lines))
+
+    if pipe_or_tab_lines >= 4 and len(lines) >= 8:
+        return True
+    if header_hits >= 2 and len(lines) >= 12 and density >= 0.45 and natural_sentences <= max(2, len(lines) // 5):
+        return True
+    if short_dense_lines >= 10 and natural_sentences <= 2:
+        return True
     return False
 
 
@@ -164,6 +294,7 @@ def _sanitize_pdf_pages_with_pymupdf(
                     and not is_caption_block
                     and not _is_section_heading(text)
                     and not _is_natural_language_block(text)
+                    and not is_formula_garble_block(text)
                 ):
                     page_report["removed_lines"] += max(1, len([line for line in text.splitlines() if line.strip()]))
                     page_report["removed_blocks"] += 1
@@ -363,6 +494,52 @@ def _is_signalish_token(token: str) -> bool:
 
 def _looks_like_word(token: str) -> bool:
     return bool(_WORD_RE.fullmatch(token.strip()))
+
+
+def _table_header_tokens(text: str) -> set[str]:
+    return {
+        token.lower()
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9_/-]{1,32}", str(text or ""))
+        if token.lower() in _TABLE_HEADER_WORDS
+    }
+
+
+def _is_table_like_line(line: str) -> bool:
+    text = _normalize_line(line)
+    if not text or is_strict_caption_block(text) or is_caption_label_line(text):
+        return False
+    if "|" in text or "\t" in text:
+        return True
+    tokens = text.split()
+    if len(tokens) < 3:
+        return False
+    header_hits = sum(1 for token in tokens if token.lower().strip(":") in _TABLE_HEADER_WORDS)
+    if header_hits >= 2:
+        return True
+    signalish = sum(1 for token in tokens if _is_signalish_token(token))
+    numeric = sum(1 for token in tokens if re.search(r"\d", token))
+    natural = sum(1 for token in tokens if _looks_like_word(token))
+    return bool(len(tokens) >= 4 and signalish + numeric >= 3 and natural <= max(2, len(tokens) // 3))
+
+
+def _is_dense_short_table_row(line: str) -> bool:
+    text = _normalize_line(line)
+    if not text or len(text) > 180:
+        return False
+    tokens = text.split()
+    if len(tokens) < 3:
+        return False
+    signalish = sum(1 for token in tokens if _is_signalish_token(token))
+    separators = text.count("|") + text.count("\t") + len(re.findall(r"\s{2,}", text))
+    return bool(signalish >= max(2, len(tokens) - 2) or separators >= 2)
+
+
+def _is_natural_language_line(line: str) -> bool:
+    text = _normalize_line(line)
+    if len(text) < 40:
+        return False
+    words = _WORD_RE.findall(text)
+    return bool(len(words) >= 7 and re.search(r"[.!?。；;]\s*$", text))
 
 
 def _looks_like_concatenated_signal_line(text: str) -> bool:

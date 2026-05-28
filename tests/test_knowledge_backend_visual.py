@@ -104,7 +104,13 @@ class FakeRangeExtractor(FakeExtractor):
     def extract_candidates_for_page_range(self, document, extracted_document, storage, config, start_page, max_pages):
         self.calls.append((start_page, max_pages))
         end_page = start_page + max_pages - 1
-        candidates = [candidate for candidate in self.candidates if start_page <= candidate.page <= end_page]
+        candidates = [
+            candidate
+            for candidate in self.candidates
+            if candidate.document_id == document.id
+            and candidate.version_id == document.version_id
+            and start_page <= candidate.page <= end_page
+        ]
         return list(candidates), {"pages_scanned": self.pages_per_call, "candidates": len(candidates)}
 
     def ensure_visual_artifact_image(self, candidate, config):
@@ -653,16 +659,98 @@ def test_visual_complete_without_document_uses_current_kb_source_documents(tmp_p
         version_id="other-v1",
     )
     service._backend._get_storage(writable=True).save_document(other, [])
-    service._visual_extractor = FakeRangeExtractor([_candidate(default_doc_id, default_version, 1)])
-    service._visual_analyzer = QueueAnalyzer([_high_result("default_kb_visualfact")])
+    service._visual_extractor = FakeRangeExtractor(
+        [
+            _candidate(default_doc_id, default_version, 1),
+            VisualArtifactCandidate(
+                **{
+                    **_candidate(other.id, other.version_id, 2).to_dict(),
+                    "document_id": other.id,
+                    "version_id": other.version_id,
+                    "kb_id": "other_kb",
+                    "page": 2,
+                }
+            ),
+        ]
+    )
+    service._visual_analyzer = QueueAnalyzer([_high_result("default_kb_visualfact"), _high_result("other_kb_visualfact")])
 
     result = service.complete_visual_knowledge(max_steps=10, export=False)
 
-    assert result["kb_id"] == "kb_default"
+    assert result["scope"] == "all_source_documents"
+    assert result["kb_id"] == ""
+    assert result["documents_processed"] == 2
+    assert result["succeeded"] == 2
+    assert service.search("default_kb_visualfact", limit=5)
+    assert service.search("other_kb_visualfact", limit=5)
+    assert service.get_visual_stats("other_kb_doc")["total"] == 1
+
+
+def test_visual_complete_with_kb_id_filters_to_that_kb(tmp_path):
+    service = _service(tmp_path)
+    default_doc_id, default_version = _ingest(service)
+    other = KnowledgeDocument(
+        id="other_kb_doc_kb_filter",
+        title="Other KB",
+        source_path="other-kb.md",
+        mime_type="text/markdown",
+        size=1,
+        content_hash="other-hash",
+        status="ready",
+        kb_id="other_kb",
+        doc_type="document",
+        version_id="other-v1",
+    )
+    service._backend._get_storage(writable=True).save_document(other, [])
+    service._visual_extractor = FakeRangeExtractor(
+        [
+            _candidate(default_doc_id, default_version, 1),
+            VisualArtifactCandidate(
+                **{
+                    **_candidate(other.id, other.version_id, 2).to_dict(),
+                    "document_id": other.id,
+                    "version_id": other.version_id,
+                    "kb_id": "other_kb",
+                    "page": 2,
+                }
+            ),
+        ]
+    )
+    service._visual_analyzer = QueueAnalyzer([_high_result("other_kb_only_visualfact")])
+
+    result = service.complete_visual_knowledge(kb_id="other_kb", max_steps=10, export=False)
+
+    assert result["scope"] == "kb"
+    assert result["kb_id"] == "other_kb"
     assert result["documents_processed"] == 1
     assert result["succeeded"] == 1
-    assert service.search("default_kb_visualfact", limit=5)
-    assert service.get_visual_stats("other_kb_doc")["total"] == 0
+    assert service.search("other_kb_only_visualfact", limit=5)
+    assert service.get_visual_stats(default_doc_id)["total"] == 0
+
+
+def test_visual_complete_with_document_id_processes_only_that_source_document(tmp_path):
+    service = _service(tmp_path)
+    doc1_id, doc1_version = _ingest(service)
+    doc2 = service.ingest_upload_bytes(
+        "visual-source-2.md",
+        b"# Visual Source 2\n\nFigure 2 shows a protocol timing table.",
+        title="Visual Source 2",
+    )
+    doc2_id = doc2["document"]["id"]
+    doc2_version = doc2["document"]["version_id"]
+    service._visual_extractor = FakeRangeExtractor(
+        [_candidate(doc1_id, doc1_version, 1), _candidate(doc2_id, doc2_version, 2)]
+    )
+    service._visual_analyzer = QueueAnalyzer([_high_result("doc2_selected_visualfact")])
+
+    result = service.complete_visual_knowledge(document_id=doc2_id, max_steps=10, export=False)
+
+    assert result["scope"] == "document"
+    assert result["document_id"] == doc2_id
+    assert result["documents_processed"] == 1
+    assert result["succeeded"] == 1
+    assert service.search("doc2_selected_visualfact", limit=5)
+    assert service.get_visual_stats(doc1_id)["total"] == 0
 
 
 def test_visual_reset_api_clears_artifacts_chunks_and_prepare_state(monkeypatch, tmp_path):
@@ -2413,6 +2501,222 @@ def test_grouping_page_window_queries_high_pages_after_many_artifacts(tmp_path):
     assert groups[0]["source_pages"] == [3000, 3001]
 
 
+def test_formula_visual_candidate_indexes_structured_formula(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "formula.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    page.insert_text((72, 90), "Equation 5-1 defines insertion loss for VTF.")
+    page.insert_text((110, 150), "L f( ) 20 10 Vr f( ) Vs f( ) log =")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    service = _service(tmp_path, ingest={"allowed_extensions": [".pdf"]}, visual_analysis={"tile_large_artifacts": False})
+    document = KnowledgeDocument(
+        id="formula_doc",
+        title="Formula Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        size=pdf_path.stat().st_size,
+        content_hash="formula-hash",
+        status="ready",
+        version_id="formula-v1",
+    )
+    storage = service._backend._get_storage(writable=True)
+    storage.save_document(
+        document,
+        [
+            KnowledgeChunk(
+                id="formula-text",
+                document_id=document.id,
+                ordinal=1,
+                page_start=1,
+                page_end=1,
+                text="Equation 5-1 defines insertion loss.\nL f( ) 20 10 Vr f( ) Vs f( ) log =",
+                kb_id="kb_default",
+                version_id=document.version_id,
+            )
+        ],
+    )
+    extracted = ExtractedDocument(
+        title=document.title,
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[DocumentPage(1, "Equation 5-1 defines insertion loss.\nL f( ) 20 10 Vr f( ) Vs f( ) log =")],
+    )
+    candidates, _ = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        storage,
+        service.config,
+        start_page=1,
+        max_pages=1,
+    )
+    formula_candidate = next(candidate for candidate in candidates if candidate.artifact_type == "formula")
+    storage.upsert_visual_artifact(formula_candidate)
+    service._visual_analyzer = QueueAnalyzer(
+        [
+            VisualAnalysisResult(
+                artifact_type="formula",
+                title="Equation 5-1 insertion loss",
+                caption="Equation 5-1",
+                page=1,
+                summary="Insertion loss L(f) = 20 log10(Vr(f) / Vs(f)).",
+                structured_markdown="Formula: L(f) = 20 log10(Vr(f) / Vs(f))\nVariables: Vr(f), Vs(f)",
+                key_facts=[{"fact": "Vr(f) and Vs(f) define insertion loss L(f)", "confidence": 0.9}],
+                readability="good",
+                confidence={"ocr": 0.9, "structure": 0.9, "semantic": 0.9, "overall": 0.9},
+                should_index=True,
+            )
+        ]
+    )
+
+    result = service.build_visual_knowledge(document_id=document.id, limit=1)
+
+    assert result["succeeded"] == 1
+    assert service.search("Vr(f)", limit=5)
+    deep = service.deep_query("insertion loss Vr(f) Vs(f)", limit=3)
+    assert deep["status"] == "ok"
+    assert "Vs(f)" in "\n".join(block["text"] for block in deep["evidence_blocks"])
+
+
+def test_low_confidence_formula_result_is_not_retrievable(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    formula_candidate = _candidate(document_id, version_id, 1, artifact_type="formula")
+    service._visual_extractor = FakeRangeExtractor([formula_candidate])
+    service._visual_analyzer = QueueAnalyzer([_low_result("LOW_FORMULA_SHOULD_NOT_INDEX")])
+
+    result = service.build_visual_knowledge(document_id=document_id, limit=1)
+
+    assert result["low_confidence"] == 1
+    assert service.search("LOW_FORMULA_SHOULD_NOT_INDEX", limit=5) == []
+
+
+def test_two_page_pdf_table_candidates_form_group_and_index_visual_table(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "long-table.pdf"
+    pdf = fitz.open()
+    first = pdf.new_page(width=600, height=800)
+    first.insert_text((72, 72), "Table 5-1. Signal List")
+    for index in range(22):
+        first.insert_text((72, 120 + index * 24), f"SIG_A{index} input Description_A{index}")
+    second = pdf.new_page(width=600, height=800)
+    second.insert_text((72, 42), "Table 5-1. Signal List continued")
+    for index in range(22):
+        second.insert_text((72, 90 + index * 24), f"SIG_B{index} output Description_B{index}")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    service = _service(tmp_path, ingest={"allowed_extensions": [".pdf"]}, visual_analysis={"tile_large_artifacts": False})
+    document = KnowledgeDocument(
+        id="table_doc",
+        title="Table Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        size=pdf_path.stat().st_size,
+        content_hash="table-hash",
+        status="ready",
+        version_id="table-v1",
+    )
+    storage = service._backend._get_storage(writable=True)
+    page1_text = "Table 5-1. Signal List\n" + "\n".join(f"SIG_A{i} input Description_A{i}" for i in range(22))
+    page2_text = "Table 5-1. Signal List continued\n" + "\n".join(f"SIG_B{i} output Description_B{i}" for i in range(22))
+    storage.save_document(
+        document,
+        [
+            KnowledgeChunk(id="table-page-1", document_id=document.id, ordinal=1, page_start=1, page_end=1, text=page1_text, kb_id="kb_default", version_id=document.version_id),
+            KnowledgeChunk(id="table-page-2", document_id=document.id, ordinal=2, page_start=2, page_end=2, text=page2_text, kb_id="kb_default", version_id=document.version_id),
+        ],
+    )
+    extracted = ExtractedDocument(
+        title=document.title,
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[DocumentPage(1, page1_text), DocumentPage(2, page2_text)],
+    )
+    candidates, _ = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        storage,
+        service.config,
+        start_page=1,
+        max_pages=2,
+    )
+    table_candidates_by_page = {}
+    for candidate in candidates:
+        if candidate.artifact_type == "table":
+            table_candidates_by_page.setdefault(candidate.page, candidate)
+    table_candidates = [table_candidates_by_page[1], table_candidates_by_page[2]]
+    assert set(table_candidates_by_page) == {1, 2}
+    for candidate in table_candidates:
+        storage.upsert_visual_artifact(candidate)
+    storage.upsert_visual_prepare_state(
+        document_id=document.id,
+        version_id=document.version_id,
+        kb_id="kb_default",
+        source_path=str(pdf_path),
+        total_pages=2,
+        next_page=3,
+        prepared_pages=2,
+        prepared_artifacts=2,
+        status="done",
+        pipeline_version=service.config.visual_analysis.get("pipeline_version", "visual-pipeline-v2"),
+    )
+
+    VisualArtifactGrouper(storage).update_groups_for_document(document.id, document.version_id, page_window=(1, 2))
+    groups = storage.list_visual_artifact_groups(document_id=document.id, version_id=document.version_id)
+    assert groups
+    assert groups[0]["source_pages"] == [1, 2]
+
+    service._visual_analyzer = QueueVisualAnalyzer(
+        [_table_result("SIG_A0", page=1), _table_result("SIG_B0", page=2)],
+        group_results=[
+            {
+                "artifact_type": "table",
+                "title": "Signal List",
+                "caption": "Table 5-1. Signal List",
+                "is_multipage": True,
+                "source_pages": [1, 2],
+                "summary": "Merged table includes SIG_A0 and SIG_B0 rows.",
+                "key_facts": [{"fact": "SIG_B0 appears in the continued table", "confidence": 0.9}],
+                "parts": [
+                    {"page": 1, "artifact_id": table_candidates[0].id, "role": "first", "summary": "SIG_A rows", "confidence": 0.9},
+                    {"page": 2, "artifact_id": table_candidates[1].id, "role": "last", "summary": "SIG_B rows", "confidence": 0.9},
+                ],
+                "merged_table": {
+                    "headers": ["Signal", "Direction", "Description"],
+                    "rows": [
+                        {"Signal": "SIG_A0", "Direction": "input", "Description": "page 1"},
+                        {"Signal": "SIG_B0", "Direction": "output", "Description": "page 2"},
+                    ],
+                    "markdown": "| Signal | Direction | Description |\n| --- | --- | --- |\n| SIG_A0 | input | page 1 |\n| SIG_B0 | output | page 2 |",
+                    "row_page_map": [{"row_index": 0, "page": 1}, {"row_index": 1, "page": 2}],
+                },
+                "continuation_evidence": ["continued caption"],
+                "confidence": {"ocr": 0.9, "structure": 0.9, "semantic": 0.9, "continuation": 0.9, "overall": 0.9},
+                "should_index": True,
+            }
+        ],
+    )
+
+    first_build = service.build_visual_knowledge(document_id=document.id, limit=1)
+    second_build = service.build_visual_knowledge(document_id=document.id, limit=1)
+
+    assert first_build["processed"] == 1
+    assert second_build["processed"] == 1
+    assert second_build["group_succeeded"] == 1
+    assert service.search("SIG_B0", limit=5)
+    deep = service.deep_query("SIG_B0 continued table", limit=5)
+    assert deep["status"] == "ok"
+    group_chunks = [
+        chunk for chunk in storage.list_chunks(document.id)
+        if chunk.metadata.get("visual_scope") == "group"
+    ]
+    assert group_chunks
+    assert group_chunks[0].metadata["source_pages"] == [1, 2]
+
+
 def test_group_model_merge_uses_images_when_supported(tmp_path):
     pytest.importorskip("PIL")
     from PIL import Image
@@ -2431,6 +2735,9 @@ def test_group_model_merge_uses_images_when_supported(tmp_path):
     result = service.analyze_visual_artifact_group("visual_group_images", analysis_backend="capi")
 
     assert result["outcome"] == "succeeded"
+    assert result["analysis_backend"] == "capi"
+    assert result["requested_analysis_backend"] == "capi"
+    assert result["analysis_model"]
     assert analyzer.image_url_count == 2
     assert service.search("image_group_merge_fact", limit=5)
 
@@ -2936,22 +3243,22 @@ def test_visual_extractor_skips_toc_pages_but_keeps_strict_caption(tmp_path):
 
 
 def test_strict_caption_accepts_arm_amba_caption_styles():
-    assert is_strict_caption_block("Figure 1-1 Channel architecture of reads")
-    assert is_strict_caption_block("Figure 2-1 TVALID before TREADY handshake")
-    assert is_strict_caption_block("Figure 3-2 AXI write channel signals")
-    assert is_strict_caption_block("Figure 4-10 Read data channel signals")
-    assert is_strict_caption_block("Fig. 2-3 Write address channel")
-    assert is_strict_caption_block("Table 2-1 Global signals")
-    assert is_strict_caption_block("Table 3-4 Burst type encoding")
-    assert is_strict_caption_block("图 1-1 通道结构")
-    assert is_strict_caption_block("表 2-1 全局信号")
-    assert is_strict_caption_block("Figure 1-1. Channel architecture of reads")
-    assert is_strict_caption_block("Figure 1-1: Channel architecture of reads")
-    assert is_strict_caption_block("Table 2-1.\nGlobal signals")
-    assert not is_strict_caption_block("Figure 1-1 shows how reads are issued.")
-    assert not is_strict_caption_block("Table 2-2 on page 2-3 lists global signals.")
-    assert not is_strict_caption_block("Figure 3-4 and Figure 3-5 show valid configurations.")
-    assert not is_strict_caption_block("Figure 3-6 to Figure 3-11 represent examples.")
+    accepted = [
+        "Figure 1-1 Channel architecture of reads",
+        "Figure 2-1 TVALID before TREADY handshake",
+        "Figure 3-2 AXI write channel signals",
+        "Figure 4-10 Read data channel signals",
+        "Fig. 2-3 Write address channel",
+        "Table 2-1 Global signals",
+        "Table 3-4 Burst type encoding",
+        "图 1-1 通道结构",
+        "表 2-1 全局信号",
+        "Figure 1-1. Channel architecture of reads",
+        "Figure 1-1: Channel architecture of reads",
+        "Table 2-1.\nGlobal signals",
+    ]
+    for caption in accepted:
+        assert is_strict_caption_block(caption), caption
 
 
 def test_strict_caption_rejects_body_figure_table_references():
@@ -2972,6 +3279,17 @@ def test_strict_caption_rejects_body_figure_table_references():
     ]
     for reference in rejected:
         assert not is_strict_caption_block(reference), reference
+
+
+def test_strict_caption_rejects_label_only_without_title():
+    rejected = [
+        "Figure 5-19.",
+        "Figure 1-1.",
+        "Table 3-9.",
+        "Table 2-1.",
+    ]
+    for caption in rejected:
+        assert not is_strict_caption_block(caption), caption
 
 
 def test_visual_extractor_accepts_space_separated_caption(tmp_path):
