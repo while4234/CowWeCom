@@ -7,7 +7,16 @@ const LOGIN_POLL_INTERVAL_MS = 1500;
 const LOGIN_POLL_MAX_ATTEMPTS = 120;
 
 function writeOutput(value) {
-    output.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    output.textContent = redactSecrets(text);
+}
+
+function redactSecrets(value) {
+    return String(value || '')
+        .replace(/(Authorization\s*:\s*Bearer\s+)[^\s"',}]+/ig, '$1***')
+        .replace(/(\bBearer\s+)[^\s"',}]+/ig, '$1***')
+        .replace(/((?:access_token|refresh_token|authorization_code|code_verifier|id_token|api_key|code)=)[^&\s"',}]+/ig, '$1***')
+        .replace(/("?(?:access_token|refresh_token|authorization_code|code_verifier|id_token|api_key|code)"?\s*:\s*")[^"]+"/ig, '$1***"');
 }
 
 function setText(id, text) {
@@ -126,6 +135,7 @@ function setLoginInputsVisible(visible) {
     });
     if (visible) return;
     stopLoginPolling();
+    document.getElementById('login-box').classList.add('hidden');
     document.getElementById('authorize-url').textContent = '';
     document.getElementById('authorize-url').removeAttribute('href');
     document.getElementById('login-message').textContent = '';

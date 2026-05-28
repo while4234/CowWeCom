@@ -17,6 +17,8 @@ class TestGrokConfigTemplate(unittest.TestCase):
 
     def test_bare_manual_code_compatibility_is_disabled_by_default(self):
         self.assertIs(self.template["grok_oauth_accept_bare_code"], False)
+        self.assertIs(self.template["grok_import_hermes_auth"], True)
+        self.assertIs(self.template["grok_import_hermes_auth_overwrite"], False)
 
     def test_template_exposes_grok_tts_and_voice_mode_defaults(self):
         expected = {
@@ -68,6 +70,54 @@ class TestGrokConfigTemplate(unittest.TestCase):
         for key, value in expected.items():
             self.assertIn(key, self.template)
             self.assertEqual(self.template[key], value)
+
+    def test_template_contains_all_pr1_to_pr4_grok_config_keys(self):
+        expected_keys = {
+            "grok_model",
+            "grok_api_base",
+            "grok_auth_file",
+            "grok_auth_prefer_oauth",
+            "grok_import_hermes_auth",
+            "grok_import_hermes_auth_overwrite",
+            "grok_wire_api",
+            "grok_api_key",
+            "text_to_voice",
+            "grok_tts_voice_id",
+            "grok_tts_language",
+            "grok_tts_sample_rate",
+            "grok_tts_bit_rate",
+            "grok_tts_auto_speech_tags",
+            "grok_voice_mode_enabled",
+            "grok_voice_reply_channels",
+            "grok_voice_streaming_enabled",
+            "grok_voice_require_low_reasoning",
+            "grok_voice_max_segment_chars",
+            "grok_voice_min_segment_chars",
+            "grok_voice_flush_idle_ms",
+            "grok_voice_tts_queue_size",
+            "wecom_voice_max_seconds",
+            "wecom_voice_max_bytes",
+            "reasoning_effort_policy_low_effort",
+            "text_to_image",
+            "grok_image_model",
+            "grok_image_resolution",
+            "grok_image_aspect_ratio",
+            "grok_image_timeout_seconds",
+            "grok_image_download_timeout_seconds",
+            "video_generation_provider",
+            "video_create_prefix",
+            "grok_video_model",
+            "grok_video_duration",
+            "grok_video_aspect_ratio",
+            "grok_video_resolution",
+            "grok_video_timeout_seconds",
+            "grok_video_poll_interval_seconds",
+            "grok_video_download_timeout_seconds",
+        }
+
+        missing = sorted(expected_keys.difference(self.template))
+
+        self.assertEqual(missing, [])
 
     def test_template_defaults_to_recommended_voice_backend_model_and_reasoning(self):
         llm_backend = self.template["llm_backend"]

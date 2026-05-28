@@ -167,7 +167,8 @@ available_setting = {
     "grok_auth_prefer_oauth": True,  # Prefer Web OAuth tokens before API key fallback
     "grok_oauth_accept_bare_code": False,  # Optional legacy manual paste: accept bare authorization code only with active PKCE login
     "grok_gray_enabled": False,  # Show Grok in normal Web model provider selection only for gray testing
-    "grok_import_hermes_auth": False,  # Reserved for future read-only Hermes auth import
+    "grok_import_hermes_auth": True,  # Read-only import from ~/.hermes/auth.json when CowWeCom auth store is absent
+    "grok_import_hermes_auth_overwrite": False,  # Do not overwrite CowWeCom xai-oauth unless explicitly enabled
     "grok_wire_api": "responses",  # Grok uses Responses API
     "grok_api_key": "",  # Fallback xAI API key when OAuth is unavailable
     "codex_auth_file": "",  # Optional Codex auth.json path; defaults to CODEX_AUTH_FILE or ~/.codex/auth.json

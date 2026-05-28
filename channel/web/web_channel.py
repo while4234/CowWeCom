@@ -966,9 +966,31 @@ def _safe_grok_error(exc: Exception) -> str:
     if code == "xai_login_session_missing":
         return "No active Grok login session. Start Grok login again."
     text = str(exc) or "Grok OAuth request failed"
+    try:
+        from integrations.hermes_xai.auth import redact_sensitive_text
+
+        redacted = redact_sensitive_text(text)
+    except Exception:
+        redacted = text
+    sensitive_markers = (
+        "access_token",
+        "refresh_token",
+        "authorization_code",
+        "code_verifier",
+        "id_token",
+        "api_key",
+        "authorization:",
+        "bearer ",
+        "callback?",
+        "/callback?",
+        "code=",
+    )
+    lowered = text.lower()
+    if any(marker in lowered for marker in sensitive_markers):
+        return "Grok OAuth request failed. Sensitive details were redacted."
     if "callback" in text.lower() or "code=" in text.lower():
         return "Grok OAuth callback validation failed"
-    return text
+    return redacted
 
 
 class GrokStatusHandler:
@@ -1348,6 +1370,7 @@ class ConfigHandler:
         "zhipu_ai_api_key", "dashscope_api_key", "moonshot_api_key",
         "ark_api_key", "minimax_api_key", "linkai_api_key", "custom_api_key", "grok_api_key",
         "grok_model", "grok_wire_api", "grok_auth_file", "grok_auth_prefer_oauth",
+        "grok_gray_enabled", "grok_import_hermes_auth", "grok_import_hermes_auth_overwrite",
         "agent_max_context_tokens", "agent_max_context_turns", "agent_max_steps",
         "agent_development_max_steps", "agent_complex_planning_max_steps",
         "enable_thinking", "web_password",
@@ -1459,7 +1482,14 @@ class ConfigHandler:
                     "agent_complex_planning_max_steps",
                 ):
                     value = int(value)
-                if key in ("use_linkai", "enable_thinking", "grok_auth_prefer_oauth", "grok_gray_enabled"):
+                if key in (
+                    "use_linkai",
+                    "enable_thinking",
+                    "grok_auth_prefer_oauth",
+                    "grok_gray_enabled",
+                    "grok_import_hermes_auth",
+                    "grok_import_hermes_auth_overwrite",
+                ):
                     value = bool(value)
                 local_config[key] = value
                 applied[key] = value

@@ -48,6 +48,18 @@ _store_lock = threading.RLock()
 _login_lock = threading.RLock()
 _active_login: Optional["_LoginSession"] = None
 
+_SENSITIVE_MAPPING_KEYS = {
+    "access_token",
+    "refresh_token",
+    "authorization",
+    "authorization_code",
+    "code",
+    "code_verifier",
+    "id_token",
+    "api_key",
+    "bearer",
+}
+
 
 class AuthError(RuntimeError):
     """Structured auth error with safe, user-facing semantics."""
@@ -208,6 +220,7 @@ def poll_xai_oauth_login() -> dict:
 
 def read_xai_oauth_tokens() -> dict:
     """Read the CowWeCom xai-oauth provider state, including tokens."""
+    _import_hermes_xai_auth_if_enabled()
     with _store_lock:
         state = _read_provider_state()
     tokens = state.get("tokens") if isinstance(state, dict) else None
@@ -309,6 +322,7 @@ def refresh_xai_oauth(force: bool = False) -> dict:
 
 def resolve_xai_oauth_runtime_credentials(force_refresh: bool = False) -> dict:
     """Return xAI OAuth credentials for runtime HTTP calls."""
+    _import_hermes_xai_auth_if_enabled()
     state = read_xai_oauth_tokens()
     tokens = dict(state.get("tokens") or {})
     access_token = str(tokens.get("access_token") or "").strip()
@@ -354,6 +368,7 @@ def logout_xai_oauth() -> dict:
 
 def get_xai_oauth_status() -> dict:
     """Return a token-free Grok OAuth status payload."""
+    _import_hermes_xai_auth_if_enabled()
     try:
         state = _read_provider_state()
     except AuthError:
@@ -381,6 +396,191 @@ def get_xai_oauth_status() -> dict:
         "expires_at": expires_at,
         "needs_reauth": needs_reauth,
     }
+
+
+def import_hermes_xai_auth_if_available() -> dict:
+    """
+    Copy Hermes' singleton xai-oauth provider into CowWeCom's auth store.
+
+    This is intentionally a one-way, read-only import from ``~/.hermes/auth.json``
+    (or ``HERMES_HOME/auth.json``). It never writes back to Hermes and never
+    returns token material.
+    """
+    if not _config_bool("grok_import_hermes_auth", True):
+        return {"imported": False, "reason": "disabled"}
+
+    overwrite = _config_bool("grok_import_hermes_auth_overwrite", False)
+    hermes_path = _hermes_auth_file_path()
+
+    with _store_lock:
+        cow_path = _auth_file_path()
+        if os.path.exists(cow_path):
+            store = _load_auth_store()
+            providers = store.get("providers") if isinstance(store.get("providers"), dict) else {}
+            existing = providers.get(PROVIDER_ID) if isinstance(providers, dict) else None
+            if not overwrite:
+                return {
+                    "imported": False,
+                    "reason": "cowwecom_auth_store_exists",
+                    "logged_in": _provider_has_oauth_tokens(existing),
+                }
+        if not os.path.exists(hermes_path):
+            return {"imported": False, "reason": "hermes_auth_missing"}
+
+        try:
+            with open(hermes_path, "r", encoding="utf-8") as handle:
+                hermes_store = json.load(handle)
+        except Exception:
+            return {"imported": False, "reason": "hermes_auth_unreadable"}
+
+        providers = hermes_store.get("providers") if isinstance(hermes_store, dict) else None
+        hermes_state = providers.get(PROVIDER_ID) if isinstance(providers, dict) else None
+        if not isinstance(hermes_state, dict):
+            return {"imported": False, "reason": "hermes_xai_oauth_missing"}
+
+        tokens = _copy_hermes_xai_tokens(hermes_state.get("tokens"))
+        if not tokens.get("access_token") or not tokens.get("refresh_token"):
+            return {"imported": False, "reason": "hermes_xai_oauth_incomplete"}
+
+        discovery = _copy_hermes_discovery(hermes_state.get("discovery"))
+        redirect_uri = str(hermes_state.get("redirect_uri") or _default_redirect_uri())
+        save_xai_oauth_tokens(tokens, discovery=discovery, redirect_uri=redirect_uri)
+        return {
+            "imported": True,
+            "provider": PROVIDER_ID,
+            "source": "hermes_auth_store",
+            "logged_in": True,
+        }
+
+
+def redact_secret(value: str) -> str:
+    """Return a short, stable redaction for user-facing status/errors."""
+    text = str(value or "")
+    if not text:
+        return ""
+    if len(text) <= 8:
+        return "***"
+    return f"{text[:4]}...{text[-4:]}"
+
+
+def redact_sensitive_mapping(data: dict) -> dict:
+    """Recursively redact sensitive mapping values without mutating input."""
+    if not isinstance(data, dict):
+        return {}
+    return {
+        key: _redact_sensitive_value(key, value)
+        for key, value in data.items()
+    }
+
+
+def redact_sensitive_text(value: str) -> str:
+    """Redact common bearer/token fragments from exception text."""
+    import re
+
+    text = str(value or "")
+    if not text:
+        return ""
+    redacted = re.sub(
+        r"(Authorization\s*:\s*Bearer\s+)([^\s,;'\")}\]]+)",
+        lambda match: f"{match.group(1)}{redact_secret(match.group(2))}",
+        text,
+        flags=re.IGNORECASE,
+    )
+    redacted = re.sub(
+        r"(\bBearer\s+)([^\s,;'\")}\]]+)",
+        lambda match: f"{match.group(1)}{redact_secret(match.group(2))}",
+        redacted,
+        flags=re.IGNORECASE,
+    )
+    markers = (
+        "access_token",
+        "refresh_token",
+        "authorization_code",
+        "code_verifier",
+        "id_token",
+        "api_key",
+        "Authorization",
+        "Bearer",
+    )
+    for marker in markers:
+        redacted = _redact_marker_value(redacted, marker)
+    return redacted
+
+
+def _redact_sensitive_value(key: Any, value: Any) -> Any:
+    lowered = str(key or "").lower()
+    if any(marker in lowered for marker in _SENSITIVE_MAPPING_KEYS):
+        return redact_secret(str(value or ""))
+    if isinstance(value, dict):
+        return redact_sensitive_mapping(value)
+    if isinstance(value, list):
+        return [_redact_sensitive_value(key, item) for item in value]
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    return value
+
+
+def _redact_marker_value(text: str, marker: str) -> str:
+    import re
+
+    pattern = re.compile(
+        rf"({re.escape(marker)}\s*(?:[:=]\s*|\s+))([A-Za-z0-9._~+/\-=%]+)",
+        flags=re.IGNORECASE,
+    )
+    return pattern.sub(lambda match: f"{match.group(1)}{redact_secret(match.group(2))}", text)
+
+
+def _import_hermes_xai_auth_if_enabled() -> None:
+    try:
+        import_hermes_xai_auth_if_available()
+    except Exception as exc:
+        logger.warning("Hermes xAI auth import skipped: %s", redact_sensitive_text(str(exc)))
+
+
+def _hermes_auth_file_path() -> str:
+    hermes_home = str(os.environ.get("HERMES_HOME") or "").strip()
+    if hermes_home:
+        return os.path.abspath(os.path.join(expand_path(hermes_home), "auth.json"))
+    return os.path.abspath(os.path.join(expand_path("~/.hermes"), "auth.json"))
+
+
+def _provider_has_oauth_tokens(state: Any) -> bool:
+    if not isinstance(state, dict):
+        return False
+    tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else {}
+    return bool(tokens.get("access_token") and tokens.get("refresh_token"))
+
+
+def _copy_hermes_xai_tokens(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    allowed = {
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "expires_in",
+        "expires_at",
+        "token_type",
+    }
+    return {key: value[key] for key in allowed if value.get(key) is not None}
+
+
+def _copy_hermes_discovery(value: Any) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    if not value.get("authorization_endpoint") or not value.get("token_endpoint"):
+        return None
+    try:
+        return _sanitize_discovery(value)
+    except AuthError:
+        return None
+
+
+def _config_bool(key: str, default: bool) -> bool:
+    value = conf().get(key, default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _complete_current_login(callback: Dict[str, Any]) -> dict:

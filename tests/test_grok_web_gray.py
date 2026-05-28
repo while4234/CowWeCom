@@ -136,6 +136,42 @@ class TestGrokWebGray(unittest.TestCase):
         pending_complete.assert_called_once_with()
         self._assert_no_secret_fields(payload)
 
+    def test_grok_api_errors_redact_sensitive_details(self):
+        import channel.web.web_channel as web_channel
+
+        secret_message = (
+            "failed Authorization: Bearer secret-bearer access_token=secret-access "
+            "refresh_token=secret-refresh api_key=secret-api "
+            "http://127.0.0.1:56121/callback?code=secret-code&state=secret-state"
+        )
+
+        with patch.object(web_channel, "_require_auth", return_value=None), \
+                patch.object(web_channel.web, "header", return_value=None), \
+                patch(
+                    "integrations.hermes_xai.auth.get_xai_oauth_status",
+                    side_effect=RuntimeError(secret_message),
+                ):
+            payload = json.loads(web_channel.GrokStatusHandler().GET())
+
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertIn("redacted", serialized.lower())
+        for secret in (
+            "secret-bearer",
+            "secret-access",
+            "secret-refresh",
+            "secret-api",
+            "secret-code",
+            "secret-state",
+        ):
+            self.assertNotIn(secret, serialized)
+
+    def test_grok_web_config_can_toggle_gray_and_import_flags(self):
+        import channel.web.web_channel as web_channel
+
+        self.assertIn("grok_gray_enabled", web_channel.ConfigHandler.EDITABLE_KEYS)
+        self.assertIn("grok_import_hermes_auth", web_channel.ConfigHandler.EDITABLE_KEYS)
+        self.assertIn("grok_import_hermes_auth_overwrite", web_channel.ConfigHandler.EDITABLE_KEYS)
+
 
 if __name__ == "__main__":
     unittest.main()

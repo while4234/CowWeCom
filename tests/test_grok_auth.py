@@ -30,6 +30,8 @@ class TestGrokAuth(unittest.TestCase):
             "grok_auth_file": self.auth_file,
             "grok_api_base": "https://api.x.ai/v1",
             "grok_oauth_accept_bare_code": False,
+            "grok_import_hermes_auth": False,
+            "grok_import_hermes_auth_overwrite": False,
         }.get(key, default)
         self.conf_patch = patch("integrations.hermes_xai.auth.conf", return_value=self.fake_conf)
         self.conf_patch.start()
@@ -152,6 +154,8 @@ class TestGrokAuth(unittest.TestCase):
             "grok_auth_file": self.auth_file,
             "grok_api_base": "https://api.x.ai/v1",
             "grok_oauth_accept_bare_code": True,
+            "grok_import_hermes_auth": False,
+            "grok_import_hermes_auth_overwrite": False,
         }.get(key, default)
         self._start_fake_login()
         fake_response = self._fake_token_response()
@@ -255,6 +259,150 @@ class TestGrokAuth(unittest.TestCase):
         self.assertNotIn("refresh-secret", serialized)
         self.assertNotIn("code", serialized)
 
+    def test_import_hermes_auth_copies_only_xai_provider_without_returning_tokens(self):
+        hermes_home = os.path.join(self.tmp.name, "hermes")
+        os.makedirs(hermes_home)
+        hermes_auth_path = os.path.join(hermes_home, "auth.json")
+        hermes_store = {
+            "version": 1,
+            "active_provider": "other",
+            "providers": {
+                "xai-oauth": {
+                    "provider": "xai-oauth",
+                    "auth_mode": "oauth_pkce",
+                    "redirect_uri": auth._default_redirect_uri(),
+                    "tokens": {
+                        "access_token": _jwt_with_exp(time.time() + 3600),
+                        "refresh_token": "hermes-refresh-secret",
+                        "id_token": _jwt_with_payload({"email": "hermes@example.com"}),
+                        "expires_in": 3600,
+                        "token_type": "Bearer",
+                    },
+                    "discovery": {
+                        "issuer": auth.XAI_OAUTH_ISSUER,
+                        "authorization_endpoint": "https://auth.x.ai/oauth2/auth",
+                        "token_endpoint": "https://auth.x.ai/oauth2/token",
+                    },
+                },
+                "openrouter": {
+                    "tokens": {"access_token": "must-not-copy"},
+                },
+            },
+        }
+        with open(hermes_auth_path, "w", encoding="utf-8") as handle:
+            json.dump(hermes_store, handle)
+        self.fake_conf.get.side_effect = lambda key, default=None: {
+            "grok_auth_file": self.auth_file,
+            "grok_api_base": "https://api.x.ai/v1",
+            "grok_oauth_accept_bare_code": False,
+            "grok_import_hermes_auth": True,
+            "grok_import_hermes_auth_overwrite": False,
+        }.get(key, default)
+
+        with patch.dict(os.environ, {"HERMES_HOME": hermes_home}, clear=False):
+            result = auth.import_hermes_xai_auth_if_available()
+
+        self.assertTrue(result["imported"])
+        self._assert_no_secret_fields(result)
+        status = auth.get_xai_oauth_status()
+        self.assertTrue(status["logged_in"])
+        self.assertEqual(status["email"], "hermes@example.com")
+        stored = json.loads(open(self.auth_file, encoding="utf-8").read())
+        self.assertIn("xai-oauth", stored["providers"])
+        self.assertNotIn("openrouter", stored["providers"])
+        self.assertEqual(json.loads(open(hermes_auth_path, encoding="utf-8").read()), hermes_store)
+
+    def test_import_hermes_auth_does_not_overwrite_existing_cowwecom_provider(self):
+        auth.save_xai_oauth_tokens(
+            {
+                "access_token": _jwt_with_exp(time.time() + 3600),
+                "refresh_token": "cow-refresh-secret",
+                "id_token": _jwt_with_payload({"email": "cow@example.com"}),
+                "expires_in": 3600,
+            },
+            discovery={
+                "issuer": auth.XAI_OAUTH_ISSUER,
+                "authorization_endpoint": "https://auth.x.ai/oauth2/auth",
+                "token_endpoint": "https://auth.x.ai/oauth2/token",
+            },
+            redirect_uri=auth._default_redirect_uri(),
+        )
+        hermes_home = os.path.join(self.tmp.name, "hermes-existing")
+        os.makedirs(hermes_home)
+        with open(os.path.join(hermes_home, "auth.json"), "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "providers": {
+                        "xai-oauth": {
+                            "tokens": {
+                                "access_token": _jwt_with_exp(time.time() + 7200),
+                                "refresh_token": "hermes-refresh-secret",
+                            }
+                        }
+                    }
+                },
+                handle,
+            )
+        self.fake_conf.get.side_effect = lambda key, default=None: {
+            "grok_auth_file": self.auth_file,
+            "grok_api_base": "https://api.x.ai/v1",
+            "grok_oauth_accept_bare_code": False,
+            "grok_import_hermes_auth": True,
+            "grok_import_hermes_auth_overwrite": False,
+        }.get(key, default)
+
+        with patch.dict(os.environ, {"HERMES_HOME": hermes_home}, clear=False):
+            result = auth.import_hermes_xai_auth_if_available()
+
+        self.assertFalse(result["imported"])
+        self.assertEqual(result["reason"], "cowwecom_auth_store_exists")
+        self.assertEqual(auth.get_xai_oauth_status()["email"], "cow@example.com")
+
+    def test_logout_does_not_immediately_reimport_hermes_auth(self):
+        auth.save_xai_oauth_tokens(
+            {
+                "access_token": _jwt_with_exp(time.time() + 3600),
+                "refresh_token": "cow-refresh-secret",
+                "expires_in": 3600,
+            },
+            discovery={
+                "issuer": auth.XAI_OAUTH_ISSUER,
+                "authorization_endpoint": "https://auth.x.ai/oauth2/auth",
+                "token_endpoint": "https://auth.x.ai/oauth2/token",
+            },
+            redirect_uri=auth._default_redirect_uri(),
+        )
+        hermes_home = os.path.join(self.tmp.name, "hermes-logout")
+        os.makedirs(hermes_home)
+        with open(os.path.join(hermes_home, "auth.json"), "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "providers": {
+                        "xai-oauth": {
+                            "tokens": {
+                                "access_token": _jwt_with_exp(time.time() + 7200),
+                                "refresh_token": "hermes-refresh-secret",
+                            }
+                        }
+                    }
+                },
+                handle,
+            )
+        self.fake_conf.get.side_effect = lambda key, default=None: {
+            "grok_auth_file": self.auth_file,
+            "grok_api_base": "https://api.x.ai/v1",
+            "grok_oauth_accept_bare_code": False,
+            "grok_import_hermes_auth": True,
+            "grok_import_hermes_auth_overwrite": False,
+        }.get(key, default)
+
+        with patch.dict(os.environ, {"HERMES_HOME": hermes_home}, clear=False):
+            status = auth.logout_xai_oauth()
+
+        self.assertFalse(status["logged_in"])
+        stored = json.loads(open(self.auth_file, encoding="utf-8").read())
+        self.assertNotIn("xai-oauth", stored["providers"])
+
     def test_status_includes_email_from_id_token_when_available(self):
         auth.save_xai_oauth_tokens(
             {
@@ -277,6 +425,18 @@ class TestGrokAuth(unittest.TestCase):
         serialized = json.dumps(status, ensure_ascii=False)
         self.assertNotIn("id_token", serialized)
         self.assertNotIn("refresh-secret", serialized)
+
+    def test_redact_sensitive_text_masks_token_values(self):
+        redacted = auth.redact_sensitive_text(
+            "Authorization: Bearer secret-token access_token=secret-access "
+            "refresh_token=secret-refresh code_verifier=secret-verifier"
+        )
+
+        self.assertNotIn("secret-token", redacted)
+        self.assertNotIn("secret-access", redacted)
+        self.assertNotIn("secret-refresh", redacted)
+        self.assertNotIn("secret-verifier", redacted)
+        self.assertIn("***", redacted)
 
     def test_resolve_credentials_refreshes_expiring_token_and_writes_back(self):
         auth.save_xai_oauth_tokens(
@@ -314,6 +474,8 @@ class TestGrokAuth(unittest.TestCase):
             "grok_auth_file": "",
             "grok_api_base": "https://api.x.ai/v1",
             "grok_oauth_accept_bare_code": False,
+            "grok_import_hermes_auth": False,
+            "grok_import_hermes_auth_overwrite": False,
         }.get(key, default)
 
         with tempfile.TemporaryDirectory() as cwd, patch(
@@ -334,6 +496,8 @@ class TestGrokAuth(unittest.TestCase):
             "grok_auth_file": "custom/grok_auth.json",
             "grok_api_base": "https://api.x.ai/v1",
             "grok_oauth_accept_bare_code": False,
+            "grok_import_hermes_auth": False,
+            "grok_import_hermes_auth_overwrite": False,
         }.get(key, default)
 
         with tempfile.TemporaryDirectory() as cwd, patch(
