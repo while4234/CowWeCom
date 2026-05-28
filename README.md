@@ -491,7 +491,7 @@ CowWeCom/
 
 ### 2026-05-28
 
-- 新增 Grok/xAI 原生账号 OAuth 登录与文字对话灰度接入：管理员可通过隐藏 `/grok` 页面登录账号并检查凭据；普通配置页默认不展示 Grok，不会影响当前真实后端，只有手动设置 `bot_type=grok`/`xai` 或开启 `grok_gray_enabled` 后才进入灰度切换。
+- 新增 Grok/xAI 原生账号 OAuth 登录与文字对话灰度接入：管理员可通过隐藏 `/grok` 页面登录账号并检查凭据，无法连接 loopback 时可粘贴 Grok Build 显示的授权码；普通配置页默认不展示 Grok，不会影响当前真实后端，只有手动设置 `bot_type=grok`/`xai` 或开启 `grok_gray_enabled` 后才进入灰度切换。
 - Windows Python 3.13 可选语音依赖补充 `audioop-lts`，修复 `pydub` 因标准库 `audioop` 移除而无法加载的问题，语音转换能力在重启后可正常初始化。
 - Agent 同轮重复工具调用结果进一步压缩：相同参数的重复 read/bash/edit 等工具仍保留首次完整结果，重复结果改为短引用，减少上下文膨胀和缓存扰动。
 - KnowledgeStorage 视觉 chunk/source span 完整性继续收口：视觉结果追加、删除和 reset 避免覆盖普通 chunk 与共享 span，并清理无人引用的图谱证据引用。

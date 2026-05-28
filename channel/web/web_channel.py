@@ -1013,9 +1013,12 @@ class GrokLoginManualHandler:
         except Exception:
             return json.dumps({"status": "error", "message": "Invalid request"}, ensure_ascii=False)
 
-        callback_url = str(body.get("callback_url") or "").strip()
+        callback_url = str(body.get("callback_url") or body.get("authorization_code") or "").strip()
         if not callback_url:
-            return json.dumps({"status": "error", "message": "callback_url required"}, ensure_ascii=False)
+            return json.dumps({
+                "status": "error",
+                "message": "callback_url or authorization_code required",
+            }, ensure_ascii=False)
 
         try:
             from integrations.hermes_xai.auth import complete_xai_oauth_with_callback_url
@@ -1164,7 +1167,9 @@ class GrokPageHandler:
         web.header('Pragma', 'no-cache')
         file_path = os.path.join(os.path.dirname(__file__), 'grok.html')
         with open(file_path, 'r', encoding='utf-8') as f:
-            return f.read()
+            html = f.read()
+        cache_bust = str(int(time.time()))
+        return html.replace('assets/js/grok.js', f'assets/js/grok.js?v={cache_bust}')
 
 
 class ConfigHandler:

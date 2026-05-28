@@ -44,7 +44,7 @@ async function startLogin() {
     box.classList.remove('hidden');
     link.href = data.authorize_url || '#';
     link.textContent = data.authorize_url || '';
-    document.getElementById('login-message').textContent = data.message || '打开链接完成登录；如果浏览器无法访问本机 loopback，请复制最终 callback URL 到下方。';
+    document.getElementById('login-message').textContent = data.message || '打开链接完成登录；如果浏览器无法访问本机 loopback，请复制最终 callback URL，或复制 Grok Build 页面显示的授权码到下方。';
     writeOutput({ status: data.status, redirect_uri: data.redirect_uri, manual_paste_supported: data.manual_paste_supported });
 }
 
@@ -57,7 +57,7 @@ async function pollLogin() {
 async function manualLogin() {
     const callbackUrl = document.getElementById('callback-url').value.trim();
     if (!callbackUrl) {
-        writeOutput('callback_url required');
+        writeOutput('callback URL or authorization code required');
         return;
     }
     const data = await requestJson('/api/grok/login/manual', {

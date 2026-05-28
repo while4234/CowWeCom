@@ -143,8 +143,8 @@ def start_xai_oauth_login() -> dict:
 
 
 def complete_xai_oauth_with_callback_url(callback_url: str) -> dict:
-    """Complete the current OAuth flow from a pasted loopback callback URL."""
-    callback = _parse_callback_url(callback_url)
+    """Complete the current OAuth flow from a pasted callback URL or code."""
+    callback = _parse_manual_callback_input(callback_url)
     return _complete_current_login(callback)
 
 
@@ -364,6 +364,9 @@ def _complete_current_login(callback: Dict[str, Any]) -> dict:
                 "No active Grok login session. Start login again.",
                 code="xai_login_session_missing",
             )
+        if callback.get("manual_code") and not callback.get("state"):
+            callback = dict(callback)
+            callback["state"] = session.state
         return _complete_login_session(session, callback)
 
 
@@ -557,6 +560,25 @@ def _is_loopback_http_request(remote_addr: str, host_header: str) -> bool:
     return remote == XAI_OAUTH_REDIRECT_HOST and host == XAI_OAUTH_REDIRECT_HOST
 
 
+def _parse_manual_callback_input(raw_value: str) -> Dict[str, Any]:
+    stripped = str(raw_value or "").strip()
+    if not stripped:
+        raise AuthError("Grok callback URL or authorization code is required.", code="xai_callback_invalid")
+    if stripped.startswith(("http://", "https://")):
+        return _parse_callback_url(stripped)
+    if stripped.startswith("?"):
+        return _parse_callback_query(stripped[1:])
+    if "=" in stripped:
+        return _parse_callback_query(stripped)
+    return {
+        "code": stripped,
+        "state": None,
+        "error": None,
+        "error_description": None,
+        "manual_code": True,
+    }
+
+
 def _parse_callback_url(callback_url: str) -> Dict[str, Any]:
     parsed = urlparse(str(callback_url or "").strip())
     if parsed.scheme != "http":
@@ -565,7 +587,11 @@ def _parse_callback_url(callback_url: str) -> Dict[str, Any]:
         raise AuthError("Grok callback host or path did not match the login session.", code="xai_callback_invalid")
     if parsed.port != XAI_OAUTH_REDIRECT_PORT:
         raise AuthError("Grok callback port did not match the login session.", code="xai_callback_invalid")
-    params = parse_qs(parsed.query)
+    return _parse_callback_query(parsed.query)
+
+
+def _parse_callback_query(query: str) -> Dict[str, Any]:
+    params = parse_qs(str(query or ""), keep_blank_values=False)
     return {
         "code": params.get("code", [None])[0],
         "state": params.get("state", [None])[0],

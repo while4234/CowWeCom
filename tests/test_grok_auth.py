@@ -74,6 +74,45 @@ class TestGrokAuth(unittest.TestCase):
                 with self.assertRaises(auth.AuthError):
                     auth._parse_callback_url(callback_url)
 
+    def test_manual_authorization_code_uses_active_session_state(self):
+        auth._active_login = auth._LoginSession(
+            state="expected-state",
+            nonce="nonce",
+            code_verifier="verifier",
+            code_challenge="challenge",
+            redirect_uri=auth._default_redirect_uri(),
+            discovery={
+                "issuer": auth.XAI_OAUTH_ISSUER,
+                "authorization_endpoint": "https://auth.x.ai/oauth2/auth",
+                "token_endpoint": "https://auth.x.ai/oauth2/token",
+            },
+            authorize_url="https://auth.x.ai/oauth2/auth",
+            created_at=time.time(),
+        )
+        access_token = _jwt_with_exp(time.time() + 3600)
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "access_token": access_token,
+            "refresh_token": "refresh-secret",
+            "expires_in": 3600,
+        }
+
+        with patch("integrations.hermes_xai.auth.requests.post", return_value=fake_response) as post:
+            status = auth.complete_xai_oauth_with_callback_url("manual-code-from-grok-build")
+
+        self.assertTrue(status["logged_in"])
+        request_data = post.call_args.kwargs["data"]
+        self.assertEqual(request_data["code"], "manual-code-from-grok-build")
+        self.assertEqual(request_data["redirect_uri"], auth._default_redirect_uri())
+        self.assertEqual(request_data["code_verifier"], "verifier")
+
+    def test_manual_callback_query_is_accepted(self):
+        parsed = auth._parse_manual_callback_input("?code=secret-code&state=state-1")
+
+        self.assertEqual(parsed["code"], "secret-code")
+        self.assertEqual(parsed["state"], "state-1")
+
     def test_discovery_endpoint_must_be_https_xai_origin(self):
         bad_discoveries = [
             {
