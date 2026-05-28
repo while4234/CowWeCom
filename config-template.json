@@ -105,9 +105,9 @@
   "grok_tts_bit_rate": 128000,
   "grok_tts_codec": "mp3",
   "grok_tts_auto_speech_tags": false,
-  "grok_voice_reply_enabled": false,
-  "grok_voice_mode_enabled": false,
-  "grok_voice_conversation_mode_enabled": false,
+  "grok_voice_reply_enabled": true,
+  "grok_voice_mode_enabled": true,
+  "grok_voice_conversation_mode_enabled": true,
   "grok_voice_reply_channels": ["wechatcom_app", "wecom_bot"],
   "grok_voice_streaming_enabled": true,
   "grok_voice_require_low_reasoning": true,
@@ -192,7 +192,7 @@
   "reasoning_effort": "high",
   "knowledge": true,
   "llm_backend": {
-    "current_backend": "capi",
+    "current_backend": "codex",
     "state_path": "",
     "providers": {
       "codex": {

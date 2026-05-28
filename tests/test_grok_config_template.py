@@ -26,9 +26,9 @@ class TestGrokConfigTemplate(unittest.TestCase):
             "grok_tts_sample_rate": 24000,
             "grok_tts_bit_rate": 128000,
             "grok_tts_auto_speech_tags": False,
-            "grok_voice_reply_enabled": False,
-            "grok_voice_mode_enabled": False,
-            "grok_voice_conversation_mode_enabled": False,
+            "grok_voice_reply_enabled": True,
+            "grok_voice_mode_enabled": True,
+            "grok_voice_conversation_mode_enabled": True,
             "grok_voice_reply_channels": ["wechatcom_app", "wecom_bot"],
             "grok_voice_streaming_enabled": True,
             "grok_voice_require_low_reasoning": True,
@@ -54,6 +54,13 @@ class TestGrokConfigTemplate(unittest.TestCase):
         for key, value in expected.items():
             self.assertIn(key, self.template)
             self.assertEqual(self.template[key], value)
+
+    def test_template_defaults_to_recommended_voice_backend_model_and_reasoning(self):
+        llm_backend = self.template["llm_backend"]
+        self.assertEqual(llm_backend["current_backend"], "codex")
+        self.assertEqual(llm_backend["providers"]["codex"]["model"], "gpt-5.5")
+        self.assertEqual(llm_backend["providers"]["codex"]["reasoning_effort"], "xhigh")
+        self.assertEqual(self.template["grok_voice_force_reasoning_effort"], "low")
 
 
 if __name__ == "__main__":

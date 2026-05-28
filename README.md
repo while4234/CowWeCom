@@ -495,7 +495,7 @@ CowWeCom/
 
 ### 2026-05-28
 
-- Grok/xAI 企业微信语音回复改为“双模式”规则：独立语音会话模式下，只有用户原始输入为语音且渠道允许时才强制流式语音回复；非语音会话模式继续要求本地 `low_*` 低思考命中才语音回复，文字输入和非企业微信渠道永远不会被 `text_to_voice=xai/grok` 旧配置转成语音。语音会话低延迟只使用当前全局后端，可用 `grok_voice_max_output_tokens`、短回答提示和当前后端内模型配置控长；本次 CAPI 额度卡与 Codex benchmark 成功率/质量相同，Codex `gpt-5.5` 的 p50/p95 首段可听延迟更低，且 Codex `low` reasoning 明显快于 `xhigh`，但不能通过语音配置跨后端调用。
+- Grok/xAI 企业微信语音回复改为“双模式”规则：独立语音会话模式下，只有用户原始输入为语音且渠道允许时才强制流式语音回复；非语音会话模式继续要求本地 `low_*` 低思考命中才语音回复，文字输入和非企业微信渠道永远不会被 `text_to_voice=xai/grok` 旧配置转成语音。语音会话低延迟只使用当前全局后端，可用 `grok_voice_max_output_tokens`、短回答提示和当前后端内模型配置控长；本次 CAPI 额度卡与 Codex benchmark 成功率/质量相同，Codex `gpt-5.5` 的 p50/p95 首段可听延迟更低，且 Codex `low` reasoning 明显快于 `xhigh`，因此模板默认启用 Codex `gpt-5.5` + Grok 语音会话 low reasoning，但不能通过语音配置跨后端调用。
 - Grok/xAI OAuth 灰度登录改为收到本机 loopback callback 后自动轮询完成，手动提交不完整 callback 时也会优先复用后端已收到的回调；本地 Grok OAuth 凭据目录纳入 Git 忽略；`pydub` 纳入基础部署依赖，并明确企业微信 TTS 语音还需要系统 `ffmpeg`。
 - 新增 Grok/xAI 原生账号 OAuth 登录、文字对话和 TTS 语音回复灰度接入：管理员可通过隐藏 `/grok` 页面登录账号并检查凭据；启用 `text_to_voice=xai`/`grok` 与企业微信 Grok 语音模式后，只有用户原始输入为语音且本地思考深度命中低档短任务时才会分段合成并发送 AMR 语音，复杂语音任务和所有文字输入仍按文本回复。
 - 企业微信原生语音气泡的 Grok TTS 默认更偏听感稳定：减少流式切段频率，AMR 导出显式使用 `12.2k`，并在转换前做响度归一化与峰值余量控制；仍保留原生语音气泡，不改成文件发送。
