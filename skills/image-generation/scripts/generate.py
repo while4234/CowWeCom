@@ -26,6 +26,7 @@ import sys
 import os
 import base64
 import io
+import logging
 import time
 import uuid
 import re
@@ -77,6 +78,7 @@ _GROK_RUNTIMES = {
 
 _GROK_SPEED_MODEL = "grok-imagine-image"
 _GROK_QUALITY_MODEL = "grok-imagine-image-quality"
+_DETACHED_COWWECOM_LOG_STREAMS = []
 _GROK_SPEED_QUALITY_HINTS = {
     "speed",
     "fast",
@@ -432,6 +434,19 @@ def _ensure_project_root_on_path() -> None:
             return
 
 
+def _route_cowwecom_console_logs_to_stderr() -> None:
+    try:
+        from common.log import logger as cow_logger
+    except Exception:
+        return
+    for handler in getattr(cow_logger, "handlers", []):
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            old_stream = getattr(handler, "stream", None)
+            if old_stream is not None and old_stream not in {sys.stderr, sys.__stderr__}:
+                _DETACHED_COWWECOM_LOG_STREAMS.append(old_stream)
+            handler.stream = sys.__stderr__
+
+
 def _resolve_grok_model(prompt: str, quality: str | None = None, model: str | None = None) -> str:
     explicit_model = (model or "").strip()
     if explicit_model in {_GROK_SPEED_MODEL, _GROK_QUALITY_MODEL}:
@@ -497,6 +512,7 @@ class GrokXAIProvider(ImageProvider):
         _ensure_project_root_on_path()
         from integrations.hermes_xai.image_gen import XAIImageGenProvider
 
+        _route_cowwecom_console_logs_to_stderr()
         selected_model = _resolve_grok_model(prompt, quality=quality, model=self.model)
         self.model = selected_model
         generated_path = Path(
@@ -1876,7 +1892,8 @@ def _build_providers(
     """
     broker_command = _broker_command_from_env()
     if _is_grok_runtime(runtime):
-        return [("GrokXAI", GrokXAIProvider(model=model))]
+        grok_model = model if str(model or "").strip() in {_GROK_SPEED_MODEL, _GROK_QUALITY_MODEL} else ""
+        return [("GrokXAI", GrokXAIProvider(model=grok_model))]
     if _is_codex_auth_runtime(runtime):
         return [("CodexAuth", CodexAuthProvider(model=model))]
     if broker_only:

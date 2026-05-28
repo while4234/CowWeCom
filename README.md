@@ -495,7 +495,7 @@ CowWeCom/
 
 ### 2026-05-28
 
-- Grok/xAI 图片生成接入 PR 3：复用 Grok OAuth 凭据和 Hermes 原生图片 provider，支持 b64/URL 返回落成本地图片后发送；新增 `grok-image-generation` Skill，普通生图默认仍走 Codex，只有用户明确点名 Grok/xAI 才切到 Grok，并且只有明确要求 Grok 高质量/quality/高清时才用质量模型，否则默认快速模式。
+- Grok/xAI 图片生成接入 PR 3：复用 Grok OAuth 凭据和 Hermes 原生图片 provider，支持 b64/URL 返回落成本地图片后发送；新增 `grok-image-generation` Skill，普通生图默认仍走 Codex，只有用户明确点名 Grok/xAI 才切到 Grok，并且只有明确要求 Grok 高质量/quality/高清时才用质量模型，否则默认快速模式；后台生图 worker 现在固定从项目根读取 Grok 登录态，避免运行时 skill 目录误判“未登录”。
 - Grok/xAI 企业微信语音回复改为“双模式”规则：独立语音会话模式由 `grok_voice_conversation_mode_enabled` 单独启用，语音输入且渠道允许时强制流式语音回复；非语音会话模式仍由 `grok_voice_reply_enabled`/`grok_voice_mode_enabled` 控制，并且只允许本地 `low_*` 低思考命中转语音。文字输入和非企业微信渠道永远不会被 `text_to_voice=xai/grok` 旧配置转成语音；语音会话低延迟可通过 `grok_voice_low_latency_backend`/`grok_voice_low_latency_model` 做单次请求级后端/模型覆盖，不修改全局后端。
 - Grok/xAI OAuth 灰度登录改为收到本机 loopback callback 后自动轮询完成，手动提交不完整 callback 时也会优先复用后端已收到的回调；本地 Grok OAuth 凭据目录纳入 Git 忽略；`pydub` 纳入基础部署依赖，并明确企业微信 TTS 语音还需要系统 `ffmpeg`。
 - 新增 Grok/xAI 原生账号 OAuth 登录、文字对话和 TTS 语音回复灰度接入：管理员可通过隐藏 `/grok` 页面登录账号并检查凭据；启用 `text_to_voice=xai`/`grok` 与企业微信 Grok 语音模式后，只有用户原始输入为语音且本地思考深度命中低档短任务时才会分段合成并发送 AMR 语音，复杂语音任务和所有文字输入仍按文本回复。

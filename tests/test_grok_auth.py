@@ -309,6 +309,46 @@ class TestGrokAuth(unittest.TestCase):
         self.assertEqual(stored["refresh_token"], "refresh-secret-2")
         post.assert_called_once()
 
+    def test_default_auth_file_is_project_root_relative_not_cwd_relative(self):
+        self.fake_conf.get.side_effect = lambda key, default=None: {
+            "grok_auth_file": "",
+            "grok_api_base": "https://api.x.ai/v1",
+            "grok_oauth_accept_bare_code": False,
+        }.get(key, default)
+
+        with tempfile.TemporaryDirectory() as cwd, patch(
+            "integrations.hermes_xai.auth.get_root",
+            return_value=self.tmp.name,
+        ):
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(cwd)
+                path = auth._auth_file_path()
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(path, os.path.join(self.tmp.name, "data", "auth", "grok_auth.json"))
+
+    def test_relative_auth_file_is_project_root_relative_not_cwd_relative(self):
+        self.fake_conf.get.side_effect = lambda key, default=None: {
+            "grok_auth_file": "custom/grok_auth.json",
+            "grok_api_base": "https://api.x.ai/v1",
+            "grok_oauth_accept_bare_code": False,
+        }.get(key, default)
+
+        with tempfile.TemporaryDirectory() as cwd, patch(
+            "integrations.hermes_xai.auth.get_root",
+            return_value=self.tmp.name,
+        ):
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(cwd)
+                path = auth._auth_file_path()
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(path, os.path.join(self.tmp.name, "custom", "grok_auth.json"))
+
     def test_id_token_nonce_mismatch_is_rejected(self):
         with self.assertRaises(auth.AuthError) as ctx:
             auth._validate_id_token_nonce(_jwt_with_payload({"nonce": "wrong"}), "expected")

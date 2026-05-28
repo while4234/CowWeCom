@@ -291,6 +291,69 @@ class TestImageGenerationSkillScript(unittest.TestCase):
             self.assertIn("external broker exited 9", body["error"])
             self.assertIn("生成失败", body["error"])
 
+    def test_grok_runtime_keeps_cowwecom_logs_off_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = Path(tmp) / "fake_root"
+            output_dir = Path(tmp) / "out"
+            provider_pkg = fake_root / "integrations" / "hermes_xai"
+            common_pkg = fake_root / "common"
+            provider_pkg.mkdir(parents=True)
+            common_pkg.mkdir(parents=True)
+            (fake_root / "integrations" / "__init__.py").write_text("", encoding="utf-8")
+            (provider_pkg / "__init__.py").write_text("", encoding="utf-8")
+            (common_pkg / "__init__.py").write_text("", encoding="utf-8")
+            (common_pkg / "log.py").write_text(
+                "\n".join(
+                    [
+                        "import io",
+                        "import logging",
+                        "import sys",
+                        "logger = logging.getLogger('fake-cowwecom-log')",
+                        "logger.handlers.clear()",
+                        "stream = sys.stdout",
+                        "if hasattr(stream, 'buffer'):",
+                        "    stream = io.TextIOWrapper(stream.buffer, encoding='utf-8', errors='replace', line_buffering=True)",
+                        "handler = logging.StreamHandler(stream)",
+                        "handler.setFormatter(logging.Formatter('[%(levelname)s] %(message)s'))",
+                        "logger.addHandler(handler)",
+                        "logger.setLevel(logging.INFO)",
+                        "logger.propagate = False",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (provider_pkg / "image_gen.py").write_text(
+                "\n".join(
+                    [
+                        "from pathlib import Path",
+                        "from common.log import logger",
+                        "class XAIImageGenProvider:",
+                        "    def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None):",
+                        "        logger.info('fake grok provider log on cow logger')",
+                        "        path = Path(__file__).resolve().parents[2] / 'source.jpg'",
+                        "        path.write_bytes(b'\\xff\\xd8\\xff\\xe0fake-jpeg')",
+                        "        return str(path)",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = run_generate(
+                {
+                    "prompt": "use grok to draw a test cup",
+                    "runtime": "grok",
+                    "output_dir": str(output_dir),
+                },
+                extra_env={"COWWECHAT_ROOT": str(fake_root)},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            body = json.loads(result.stdout)
+            self.assertEqual(body["model"], "grok-imagine-image")
+            self.assertTrue(Path(body["images"][0]["url"]).exists())
+            self.assertNotIn("fake grok provider log", result.stdout)
+            self.assertIn("fake grok provider log", result.stderr)
+
     def test_openai_responses_wire_api_uses_responses_endpoint(self):
         module = load_generate_module()
         image_b64 = base64.b64encode(b"responses-image").decode()

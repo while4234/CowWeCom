@@ -27,7 +27,7 @@ import requests
 
 from common.log import logger
 from common.utils import expand_path
-from config import conf
+from config import conf, get_root
 
 
 AUTH_STORE_VERSION = 1
@@ -518,7 +518,12 @@ def _save_auth_store(store: Dict[str, Any]) -> None:
 
 def _auth_file_path() -> str:
     configured = str(conf().get("grok_auth_file") or "").strip()
-    path = expand_path(configured) if configured else os.path.join("data", "auth", "grok_auth.json")
+    if configured:
+        path = expand_path(configured)
+        if not os.path.isabs(path):
+            path = os.path.join(get_root(), path)
+    else:
+        path = os.path.join(get_root(), "data", "auth", "grok_auth.json")
     return os.path.abspath(path)
 
 

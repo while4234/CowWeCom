@@ -1,9 +1,13 @@
 import importlib.util
+import io
 import json
+import logging
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from agent.tools.image_generation.image_generation_task import ImageGenerationTaskTool
 from agent.tools.image_generation.job_manager import ImageGenerationJobManager
@@ -86,8 +90,9 @@ class TestGrokImageSkill(unittest.TestCase):
 
         self.assertTrue(module._is_grok_runtime("grok"))
         self.assertTrue(module._is_grok_runtime("xai"))
-        providers = module._build_providers("", runtime="grok")
+        providers = module._build_providers("gpt-image-1", runtime="grok")
         self.assertEqual([(label, type(provider).__name__) for label, provider in providers], [("GrokXAI", "GrokXAIProvider")])
+        self.assertEqual(providers[0][1].model, "")
 
     def test_grok_model_selection_keeps_fast_default_until_quality_is_explicit(self):
         module = load_generate_module()
@@ -119,7 +124,9 @@ class TestGrokImageSkill(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output_tmp = tmp
             original = xai_image_gen.XAIImageGenProvider
+            original_route_logs = module._route_cowwecom_console_logs_to_stderr
             xai_image_gen.XAIImageGenProvider = FakeXAIImageGenProvider
+            module._route_cowwecom_console_logs_to_stderr = lambda: None
             try:
                 provider = module.GrokXAIProvider()
                 paths = provider.generate(
@@ -130,6 +137,7 @@ class TestGrokImageSkill(unittest.TestCase):
                 )
             finally:
                 xai_image_gen.XAIImageGenProvider = original
+                module._route_cowwecom_console_logs_to_stderr = original_route_logs
 
             self.assertEqual(len(paths), 1)
             self.assertTrue(Path(paths[0]).exists())
@@ -137,6 +145,18 @@ class TestGrokImageSkill(unittest.TestCase):
             self.assertEqual(calls[0]["resolution"], "2k")
             self.assertEqual(calls[0]["aspect_ratio"], "3:4")
             self.assertEqual(calls[0]["model"], "grok-imagine-image-quality")
+
+    def test_grok_runtime_routes_cowwecom_console_logs_to_stderr(self):
+        module = load_generate_module()
+        original_stream = io.StringIO()
+        console_handler = logging.StreamHandler(original_stream)
+        fake_logger = SimpleNamespace(handlers=[console_handler])
+
+        with patch.dict(sys.modules, {"common.log": SimpleNamespace(logger=fake_logger)}):
+            module._route_cowwecom_console_logs_to_stderr()
+
+        self.assertIs(console_handler.stream, sys.__stderr__)
+        self.assertIn(original_stream, module._DETACHED_COWWECOM_LOG_STREAMS)
 
     def test_grok_skill_doc_forbids_quality_only_provider_switch(self):
         text = (PROJECT_ROOT / "skills" / "grok-image-generation" / "SKILL.md").read_text(encoding="utf-8")
