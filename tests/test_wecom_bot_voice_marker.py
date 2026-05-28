@@ -31,6 +31,7 @@ def test_wecom_bot_message_keeps_voice_origin_marker():
     assert msg.content == "你好"
     assert msg.input_is_voice is True
     assert msg.source_msgtype == "voice"
+    assert msg.origin_ctype == ContextType.VOICE
 
 
 def test_wecom_bot_context_preserves_voice_origin(monkeypatch):
@@ -51,4 +52,5 @@ def test_wecom_bot_context_preserves_voice_origin(monkeypatch):
     assert context["input_is_voice"] is True
     assert context["source_msgtype"] == "voice"
     assert context["origin_ctype"] == ContextType.VOICE
+    assert msg.origin_ctype == ContextType.VOICE
     assert context.type == ContextType.TEXT

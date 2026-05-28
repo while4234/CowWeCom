@@ -767,6 +767,12 @@ class ChatChannel(Channel):
             )
             reply = e_context["reply"]
             if not e_context.is_pass() and reply and reply.type:
+                if (
+                    reply.type == ReplyType.TEXT
+                    and context.get("voice_stream_sent")
+                    and context.get("suppress_final_text_when_voice_stream", True)
+                ):
+                    return True
                 logger.debug("[chat_channel] sending reply: {}, context: {}".format(reply, context))
                 
                 # 如果是文本回复，尝试提取并发送图片

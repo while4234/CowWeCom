@@ -97,7 +97,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "config_suggestions": _config_suggestions(candidates, results),
         "notes": [
             "CAPI 月卡与额度卡本质为同一后端，性能差异不应作为模型选择依据；优先按费用策略、额度策略和用户账户状态选择 billing_profile。",
-            "语音会话模式运行时只使用当前后端；grok_voice_low_latency_model 只应配置为当前后端可用模型，不会跨后端调用其他模型。",
+            "语音会话模式支持 request-level backend override；grok_voice_low_latency_model 应与推荐后端匹配，避免把仅在其他后端可用的模型写入当前后端配置。",
             "当 first_voice_ready_ms 差距低于用户感知阈值时，推荐逻辑优先考虑回答质量、口语化和稳定性，而不是单纯追求最低延迟。",
         ],
     }
@@ -359,16 +359,17 @@ def _recommendation_from_group(group: Optional[Dict[str, Any]], reason: str) -> 
 def _config_suggestions(candidates: List[Dict[str, Any]], results: List[Dict[str, Any]]) -> Dict[str, Any]:
     recommendation = recommend(candidates, results)
     current_backend = get_current_backend()
-    recommended_backend = normalize_backend(str(recommendation.get("recommended_backend") or ""))
+    raw_recommended_backend = str(recommendation.get("recommended_backend") or "").strip()
+    recommended_backend = normalize_backend(raw_recommended_backend) if raw_recommended_backend else ""
     recommended_model = recommendation.get("recommended_model") or ""
     return {
-        "grok_voice_low_latency_backend": "",
-        "grok_voice_low_latency_model": recommended_model if recommended_backend == current_backend else "",
+        "grok_voice_low_latency_backend": "" if not recommended_backend or recommended_backend == current_backend else recommended_backend,
+        "grok_voice_low_latency_model": recommended_model,
         "grok_voice_force_reasoning_effort": "low",
         "grok_voice_max_output_tokens": DEFAULT_MAX_TOKENS,
         "grok_voice_max_segment_chars": 180,
         "grok_voice_flush_idle_ms": 1500,
-        "note": "保持 grok_voice_low_latency_backend 为空以使用当前后端；只有推荐后端就是当前后端时才建议配置低延迟模型。",
+        "note": "保持 grok_voice_low_latency_backend 为空以使用当前后端；如需采用其他推荐后端，请同时配置 backend override 与该后端可用的低延迟模型。",
     }
 
 

@@ -435,7 +435,10 @@ class AgentLLMModel(LLMModel):
             request_kind = ""
             if isinstance(metadata, dict):
                 request_kind = str(metadata.get("request_kind") or "")
-            note_user_visible_model_call(request_kind=request_kind)
+            note_user_visible_model_call(
+                backend=getattr(request, "backend", None),
+                request_kind=request_kind,
+            )
         except Exception as e:
             logger.debug("[LLMBackend] Quota refresh call counter skipped: %s", e)
 

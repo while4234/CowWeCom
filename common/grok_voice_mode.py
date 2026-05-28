@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
-from common.llm_backend_router import get_current_backend, normalize_backend
+from common.llm_backend_router import normalize_backend
 from config import conf
 
 
@@ -58,9 +58,6 @@ def resolve_grok_voice_mode_decision(
     decision_source = _safe_text(getattr(reasoning_decision, "decision_source", None))
     local_rule = _safe_text(getattr(reasoning_decision, "local_rule", None)) or None
 
-    if not _voice_reply_enabled():
-        return _disabled(input_is_voice, channel, selected_effort, local_rule, "grok_voice_reply_disabled")
-
     if not input_is_voice:
         return _disabled(False, channel, selected_effort, local_rule, "input_is_not_voice")
 
@@ -84,6 +81,9 @@ def resolve_grok_voice_mode_decision(
             max_output_tokens=_max_output_tokens(),
             reason="conversation_voice_input_allowed_channel",
         )
+
+    if not _voice_reply_enabled():
+        return _disabled(input_is_voice, channel, selected_effort, local_rule, "grok_voice_reply_disabled")
 
     if selected_effort == "low" and decision_source == "local" and str(local_rule or "").startswith("low_"):
         return VoiceModeDecision(
@@ -158,16 +158,10 @@ def _selected_backend() -> Optional[str]:
     configured_backend = str(conf().get("grok_voice_low_latency_backend") or "").strip()
     if not configured_backend:
         return None
-    current_backend = get_current_backend()
-    normalized = normalize_backend(configured_backend)
-    return normalized if normalized == current_backend else None
+    return normalize_backend(configured_backend)
 
 
 def _selected_model() -> Optional[str]:
-    current_backend = get_current_backend()
-    configured_backend = str(conf().get("grok_voice_low_latency_backend") or "").strip()
-    if configured_backend and normalize_backend(configured_backend) != current_backend:
-        return None
     raw = str(conf().get("grok_voice_low_latency_model") or "").strip()
     return raw or None
 

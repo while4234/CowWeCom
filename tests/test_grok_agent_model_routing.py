@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from agent.protocol import LLMRequest
 from bridge.agent_bridge import AgentLLMModel
+from common import const
 from models.openai_compatible_bot import OpenAICompatibleBot
 
 
@@ -155,6 +156,35 @@ class TestGrokAgentModelRouting(unittest.TestCase):
 
         self.assertEqual(result["choices"][0]["message"]["content"], "ok")
         self.assertEqual(client.calls[0]["model"], "deepseek-v4-flash")
+
+    def test_request_backend_override_resolves_codex_route(self):
+        model = AgentLLMModel(bridge=MagicMock())
+        request = LLMRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            model="codex-fast",
+            backend="codex",
+        )
+
+        bot_type, routed_model, route_backend = model._resolve_request_route(request)
+
+        self.assertEqual(bot_type, const.CODEX)
+        self.assertEqual(routed_model, "codex-fast")
+        self.assertEqual(route_backend, "codex")
+
+    def test_user_visible_call_counter_uses_request_backend_override(self):
+        model = AgentLLMModel(bridge=MagicMock())
+        model.channel_type = "wechatcom_app"
+        model.session_id = "s1"
+        request = LLMRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            backend="codex",
+            cache_shape_metadata={"request_kind": "normal"},
+        )
+
+        with patch("common.llm_backend_quota_refresh.note_user_visible_model_call") as note:
+            model._note_user_visible_model_call(request)
+
+        note.assert_called_once_with(backend="codex", request_kind="normal")
 
 
 if __name__ == "__main__":

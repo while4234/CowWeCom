@@ -93,3 +93,32 @@ def test_recommendation_prefers_quality_when_latency_is_perceptually_close():
     assert recommendation["recommended_backend"] == "codex"
     assert recommendation["recommended_model"] == "better"
     assert recommendation["reason"] == "quality_first_within_perceptual_latency_threshold"
+
+
+def test_config_suggestions_include_request_backend_override(monkeypatch):
+    monkeypatch.setattr(bench, "get_current_backend", lambda: "capi")
+    candidates = [
+        {"backend_profile": "capi", "billing_profile": "quota", "model": "fast", "ready": True},
+        {"backend_profile": "codex", "billing_profile": "codex", "model": "better", "ready": True},
+    ]
+    results = [
+        {
+            "backend_profile": "capi",
+            "model": "fast",
+            "success": True,
+            "first_voice_ready_ms": 1000,
+            "quality_score": 1.0,
+        },
+        {
+            "backend_profile": "codex",
+            "model": "better",
+            "success": True,
+            "first_voice_ready_ms": 1500,
+            "quality_score": 3.0,
+        },
+    ]
+
+    suggestions = bench._config_suggestions(candidates, results)
+
+    assert suggestions["grok_voice_low_latency_backend"] == "codex"
+    assert suggestions["grok_voice_low_latency_model"] == "better"

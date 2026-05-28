@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.protocol.agent_stream import AgentStreamExecutor
+from agent.protocol.models import LLMModel
 from bridge.context import Context, ContextType
 from channel.chat_channel import ChatChannel
 from common import grok_voice_mode
@@ -27,7 +29,6 @@ def voice_settings(monkeypatch):
         "text_to_voice": "openai",
     }
     monkeypatch.setattr(grok_voice_mode, "conf", lambda: settings)
-    monkeypatch.setattr(grok_voice_mode, "get_current_backend", lambda: "capi")
     return settings
 
 
@@ -37,6 +38,55 @@ def _model(input_is_voice=True, channel_type="wechatcom_app"):
 
 def _reasoning(effort="low", source="local", rule="low_greeting"):
     return SimpleNamespace(selected_effort=effort, decision_source=source, local_rule=rule)
+
+
+class _FakeAgent:
+    memory_manager = None
+    skill_manager = None
+    max_context_tokens = None
+    runtime_info = {}
+
+    def _estimate_message_tokens(self, msg):
+        return len(str(msg))
+
+    def _get_model_context_window(self):
+        return 100000
+
+
+class _CaptureStreamModel(LLMModel):
+    def __init__(self, input_is_voice=True, channel_type="wechatcom_app"):
+        super().__init__(model="default-model")
+        self.input_is_voice = input_is_voice
+        self.channel_type = channel_type
+        self.session_id = "s1"
+        self.is_group = False
+        self.requests = []
+
+    def call_stream(self, request):
+        self.requests.append(request)
+        yield {"choices": [{"delta": {"content": "ok"}}]}
+        yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+
+def _run_capture_request(model, monkeypatch):
+    monkeypatch.setattr(
+        "agent.protocol.agent_stream.resolve_reasoning_effort_for_task",
+        lambda *_args, **_kwargs: None,
+    )
+    executor = AgentStreamExecutor(
+        agent=_FakeAgent(),
+        model=model,
+        system_prompt="system",
+        tools=[],
+        messages=[],
+    )
+    executor._build_request_context_text = lambda _user_message: ""
+    executor._record_project_optimizer_task_start = lambda _user_message: ""
+    executor._record_project_optimizer_task_end = lambda *_args, **_kwargs: None
+
+    assert executor.run_stream("hello") == "ok"
+    assert len(model.requests) == 1
+    return model.requests[0]
 
 
 def test_text_input_conversation_mode_stays_text(voice_settings):
@@ -49,11 +99,25 @@ def test_text_input_conversation_mode_stays_text(voice_settings):
     assert decision.reason == "input_is_not_voice"
 
 
-def test_new_total_switch_false_overrides_legacy_alias(voice_settings):
+def test_conversation_flag_alone_enables_voice(voice_settings):
+    voice_settings.update({
+        "grok_voice_reply_enabled": False,
+        "grok_voice_mode_enabled": False,
+        "grok_voice_conversation_mode_enabled": True,
+    })
+
+    decision = resolve_grok_voice_mode_decision(_model(), _reasoning("low", "local", "low_greeting"))
+
+    assert decision.enabled is True
+    assert decision.mode == "conversation"
+    assert decision.source == "conversation_mode"
+
+
+def test_non_conversation_voice_switch_still_controls_low_gated_mode(voice_settings):
     voice_settings.update({
         "grok_voice_reply_enabled": False,
         "grok_voice_mode_enabled": True,
-        "grok_voice_conversation_mode_enabled": True,
+        "grok_voice_conversation_mode_enabled": False,
     })
 
     decision = resolve_grok_voice_mode_decision(_model(), _reasoning("low", "local", "low_greeting"))
@@ -105,7 +169,7 @@ def test_conversation_mode_short_prompt_is_strict(voice_settings):
     assert "120 个中文字符" in prompt
 
 
-def test_voice_low_latency_model_does_not_cross_backend(voice_settings):
+def test_voice_low_latency_backend_model_can_override_current_backend(voice_settings):
     voice_settings.update({
         "grok_voice_conversation_mode_enabled": True,
         "grok_voice_low_latency_backend": "codex",
@@ -115,8 +179,45 @@ def test_voice_low_latency_model_does_not_cross_backend(voice_settings):
     decision = resolve_grok_voice_mode_decision(_model(), _reasoning("xhigh", rule="coding"))
 
     assert decision.enabled is True
-    assert decision.selected_backend is None
-    assert decision.selected_model is None
+    assert decision.selected_backend == "codex"
+    assert decision.selected_model == "codex-fast-model"
+
+
+def test_conversation_voice_request_sets_backend_model_for_current_request(voice_settings, monkeypatch):
+    voice_settings.update({
+        "grok_voice_reply_enabled": False,
+        "grok_voice_conversation_mode_enabled": True,
+        "grok_voice_low_latency_backend": "codex",
+        "grok_voice_low_latency_model": "codex-fast-model",
+        "grok_voice_max_output_tokens": 180,
+    })
+
+    request = _run_capture_request(_CaptureStreamModel(input_is_voice=True), monkeypatch)
+
+    assert request.backend == "codex"
+    assert request.model == "codex-fast-model"
+    assert request.max_tokens == 180
+    assert request.max_output_tokens == 180
+    assert request.reasoning_effort == "low"
+    assert request.reasoning_effort_locked is True
+
+
+def test_text_request_does_not_receive_voice_backend_model_override(voice_settings, monkeypatch):
+    voice_settings.update({
+        "grok_voice_reply_enabled": False,
+        "grok_voice_conversation_mode_enabled": True,
+        "grok_voice_low_latency_backend": "codex",
+        "grok_voice_low_latency_model": "codex-fast-model",
+        "grok_voice_max_output_tokens": 180,
+    })
+
+    request = _run_capture_request(_CaptureStreamModel(input_is_voice=False), monkeypatch)
+
+    assert getattr(request, "backend", None) is None
+    assert request.model is None
+    assert request.max_tokens is None
+    assert not hasattr(request, "max_output_tokens")
+    assert not hasattr(request, "reasoning_effort_locked")
 
 
 def test_non_conversation_mode_requires_local_low(voice_settings):

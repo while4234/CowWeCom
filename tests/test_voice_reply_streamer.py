@@ -1,8 +1,10 @@
 # encoding:utf-8
 
 from bridge.context import Context, ContextType
-from bridge.reply import ReplyType
+from bridge.reply import Reply, ReplyType
+from channel import chat_channel as chat_channel_module
 from channel import voice_streamer
+from channel.chat_channel import ChatChannel
 from channel.voice_streamer import VoiceReplyStreamer, voice_stream_enabled
 
 
@@ -43,6 +45,19 @@ def _decision(mode="low_gated", source="local_low", rule="low_greeting", enabled
         "channel": "wechatcom_app",
         "session_id": "s1",
     }
+
+
+class _NoopPluginManager:
+    def emit_event(self, event):
+        return event
+
+
+def _send_reply_channel(monkeypatch):
+    channel = object.__new__(ChatChannel)
+    sent = []
+    channel._send = lambda reply, context: sent.append((reply.type, reply.content)) or True
+    monkeypatch.setattr(chat_channel_module, "PluginManager", lambda: _NoopPluginManager())
+    return channel, sent
 
 
 def test_voice_stream_requires_voice_low_local_rule(monkeypatch):
@@ -162,3 +177,22 @@ def test_streamer_all_voice_failures_leave_final_text_fallback(monkeypatch, tmp_
 
     assert "voice_stream_sent" not in context
     assert channel.sent == [(ReplyType.VOICE, str(tmp_path / "voice.mp3"))]
+
+
+def test_final_text_suppressed_after_successful_voice_stream(monkeypatch):
+    context = _context()
+    context["channel_type"] = "web"
+    context["voice_stream_sent"] = True
+    channel, sent = _send_reply_channel(monkeypatch)
+
+    assert channel._send_reply(context, Reply(ReplyType.TEXT, "final text")) is True
+    assert sent == []
+
+
+def test_final_text_still_sends_when_voice_stream_never_succeeded(monkeypatch):
+    context = _context()
+    context["channel_type"] = "web"
+    channel, sent = _send_reply_channel(monkeypatch)
+
+    assert channel._send_reply(context, Reply(ReplyType.TEXT, "fallback text")) is True
+    assert sent == [(ReplyType.TEXT, "fallback text")]

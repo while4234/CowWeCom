@@ -116,6 +116,7 @@ class WecomBotMessage(ChatMessage):
 
         elif msg_type == "voice":
             self.ctype = ContextType.TEXT
+            self.origin_ctype = ContextType.VOICE
             self.content = msg_body.get("voice", {}).get("content", "")
             self.source_msgtype = "voice"
             self.input_is_voice = True
