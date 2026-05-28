@@ -27,15 +27,35 @@ def main() -> int:
     from agent.knowledge.backend import KnowledgeBackendConfig, KnowledgeBackendService
 
     parser = argparse.ArgumentParser(description="Build CowAgent local knowledge backend.")
-    parser.add_argument("paths", nargs="+", help="Document files to copy into the backend and index.")
+    parser.add_argument("paths", nargs="*", help="Document files to copy into the backend and index.")
     parser.add_argument("--title", default="", help="Optional title for a single input document.")
     parser.add_argument("--kb-id", default="", help="Override the configured default knowledge-base id.")
+    parser.add_argument("--document-id", default="", help="Existing document id for legacy visual repair.")
+    parser.add_argument("--all", action="store_true", help="Apply legacy repair command to all source documents.")
     parser.add_argument("--visual", action="store_true", help="Run visual knowledge completion after each ingest.")
     parser.add_argument("--visual-analysis-backend", default="current", help="Visual analysis backend, default: current.")
     parser.add_argument("--visual-force-prepare", action="store_true", help="Reset and rescan visual prepare state first.")
     parser.add_argument("--visual-max-steps", type=int, default=5000, help="Maximum visual build steps per document.")
     parser.add_argument("--no-export", action="store_true", help="Skip export after visual completion.")
+    parser.add_argument(
+        "--repair-legacy-visual-pollution",
+        action="store_true",
+        help="Complete visual chunks, then dry-run/apply visual-gated legacy ordinary chunk pollution repair.",
+    )
+    parser.add_argument("--repair-dry-run", action="store_true", help="Preview legacy visual pollution repair. This is the default.")
+    parser.add_argument("--repair-apply", action="store_true", help="Write legacy visual pollution repair changes to SQLite.")
+    parser.add_argument(
+        "--strip-completed-visual-regions",
+        action="store_true",
+        help="Allow stripping ordinary chunk pollution only on pages covered by high-confidence retrievable visual chunks.",
+    )
     args = parser.parse_args()
+    if not args.paths and not args.repair_legacy_visual_pollution:
+        parser.error("paths are required unless --repair-legacy-visual-pollution is used")
+    if args.repair_apply and args.repair_dry_run:
+        parser.error("--repair-apply and --repair-dry-run cannot be used together")
+    if args.repair_legacy_visual_pollution and not (args.document_id or args.kb_id or args.all):
+        parser.error("--repair-legacy-visual-pollution requires --document-id, --kb-id, or --all")
 
     previous_level = logger.level
     logger.setLevel(logging.WARNING)
@@ -55,6 +75,22 @@ def main() -> int:
 
     results: List[Dict[str, Any]] = []
     with KnowledgeBackendService(config) as service:
+        if args.repair_legacy_visual_pollution:
+            repair_result = service.complete_and_repair_legacy_visual_knowledge(
+                document_id=args.document_id or None,
+                kb_id=(args.kb_id or None) if not args.document_id else None,
+                analysis_backend=args.visual_analysis_backend or "current",
+                force_prepare=args.visual_force_prepare,
+                dry_run=not args.repair_apply,
+                apply=bool(args.repair_apply),
+                strip_completed_visual_regions=bool(args.strip_completed_visual_regions),
+                max_steps=args.visual_max_steps,
+                export=not args.no_export,
+            )
+            _write_manifest(config.data_dir, service)
+            print(json.dumps({"status": "success", "repair_legacy_visual_pollution": _jsonable(repair_result)}, ensure_ascii=False, indent=2))
+            return 0 if repair_result.get("ok") else 1
+
         for raw_path in args.paths:
             source = Path(raw_path).expanduser().resolve()
             if not source.is_file():

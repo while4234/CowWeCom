@@ -41,6 +41,7 @@ def _options(tmp_path, db_path, **overrides):
         "apply": False,
         "export": False,
         "backup_path": None,
+        "strip_completed_visual_regions": False,
     }
     values.update(overrides)
     return repair_script.RepairOptions(**values)
@@ -277,6 +278,30 @@ def _seed_document(db_path, document, *, with_visual=True, with_low_confidence=F
         storage.close()
 
 
+def _add_high_confidence_visual_replacement(db_path, document, *, artifact_id="visual-replacement-1"):
+    storage = KnowledgeStorage(db_path)
+    try:
+        artifact = _visual_table_candidate(document, artifact_id=artifact_id, status_page=1)
+        visual_chunk = _visual_table_chunk(document, text=f"High-confidence visual table replacement {artifact_id}.")
+        visual_span = _visual_table_span(document, text=visual_chunk.text)
+        storage.upsert_visual_artifact(artifact)
+        storage.append_visual_chunks(document.id, document.version_id, artifact.id, [visual_chunk], [visual_span])
+        storage.complete_visual_artifact_success(
+            artifact.id,
+            {
+                "artifact_type": "table",
+                "summary": visual_chunk.text,
+                "confidence": {"overall": 0.91},
+                "should_index": True,
+            },
+            0.91,
+            retrievable=True,
+        )
+        storage.conn.execute("PRAGMA wal_checkpoint(FULL)")
+    finally:
+        storage.close()
+
+
 def _patch_extract_and_sanitize(monkeypatch, sanitizer_text=CLEAN_TEXT):
     def fake_extract(path):
         return ExtractedDocument(
@@ -320,12 +345,14 @@ def test_dry_run_does_not_modify_db(monkeypatch, tmp_path):
     assert report["mode"] == "dry-run"
     assert report["summary"]["old_text_chunks"] == 1
     assert report["summary"]["new_text_chunks"] == 1
-    assert any("L a y e r 1 0 1 2 3" in item for item in report["documents"][0]["removed_noise_line_examples"])
+    assert report["documents"][0]["candidate_chunks_to_strip"] == 0
+    assert report["documents"][0]["skipped_chunks_without_visual_replacement"] == 1
+    assert report["documents"][0]["skipped_pages_without_visual_replacement"] == [1]
     assert any(POLLUTION in text for text in _chunk_texts(db_path, document.id))
     assert report["backup_path"] == ""
 
 
-def test_apply_removes_polluted_text_keeps_caption_visual_chunk_and_mapping(monkeypatch, tmp_path):
+def test_apply_without_explicit_visual_strip_preserves_polluted_text_and_visual_chunk(monkeypatch, tmp_path):
     db_path = tmp_path / "kb.sqlite"
     document = _document("doc-apply", _pdf(tmp_path, "apply.pdf"))
     _seed_document(db_path, document)
@@ -337,9 +364,9 @@ def test_apply_removes_polluted_text_keeps_caption_visual_chunk_and_mapping(monk
     assert Path(report["backup_path"]).is_file()
     chunks = _chunks(db_path, document.id)
     ordinary_text = "\n".join(chunk.text for chunk in chunks if chunk.metadata.get("source") != "visual_analysis")
-    assert "L a y e r 1 0 1 2 3" not in ordinary_text
-    assert "rxdatasbtxdatasb" not in ordinary_text
-    assert CAPTION in ordinary_text
+    assert "L a y e r 1 0 1 2 3" in ordinary_text
+    assert "rxdatasbtxdatasb" in ordinary_text
+    assert report["documents"][0]["stripped_completed_visual_chunks"] == 0
 
     visual = next(chunk for chunk in chunks if chunk.metadata.get("source") == "visual_analysis")
     assert visual.id == f"chunk-{document.id}-visual"
@@ -374,23 +401,30 @@ def test_apply_handles_legacy_invalid_json_chunk_metadata(monkeypatch, tmp_path)
     report = repair_script.run_repair(_options(tmp_path, db_path, document_id=document.id, apply=True))
 
     assert report["ok"] is True
-    ordinary = [chunk for chunk in _chunks(db_path, document.id) if chunk.metadata.get("source") != "visual_analysis"]
+    ordinary = [
+        chunk
+        for chunk in _chunks(db_path, document.id)
+        if not isinstance(chunk.metadata, dict) or chunk.metadata.get("source") != "visual_analysis"
+    ]
     assert ordinary
-    assert not any(POLLUTION in chunk.text for chunk in ordinary)
+    assert any(POLLUTION in chunk.text for chunk in ordinary)
 
 
 def test_apply_rebuilds_fts_without_pollution(monkeypatch, tmp_path):
     db_path = tmp_path / "kb.sqlite"
     document = _document("doc-fts", _pdf(tmp_path, "fts.pdf"))
     _seed_document(db_path, document)
+    _add_high_confidence_visual_replacement(db_path, document)
     _patch_extract_and_sanitize(monkeypatch)
 
-    repair_script.run_repair(_options(tmp_path, db_path, document_id=document.id, apply=True))
+    repair_script.run_repair(
+        _options(tmp_path, db_path, document_id=document.id, apply=True, strip_completed_visual_regions=True)
+    )
 
     storage = KnowledgeStorage(db_path)
     try:
         assert storage.search("rxdatasbtxdatasb", limit=5) == []
-        assert storage.search("Standard Package x16 interface", limit=5)
+        assert storage.search("visual table replacement", limit=5)
     finally:
         storage.close()
 
@@ -399,6 +433,7 @@ def test_export_markdown_omits_pollution_and_keeps_visual_sections(monkeypatch, 
     db_path = tmp_path / "kb.sqlite"
     document = _document("doc-export", _pdf(tmp_path, "export.pdf"))
     _seed_document(db_path, document, with_low_confidence=True)
+    _add_high_confidence_visual_replacement(db_path, document)
     _patch_extract_and_sanitize(monkeypatch)
     monkeypatch.setattr(
         repair_script,
@@ -416,7 +451,7 @@ def test_export_markdown_omits_pollution_and_keeps_visual_sections(monkeypatch, 
     )
 
     report = repair_script.run_repair(
-        _options(tmp_path, db_path, document_id=document.id, apply=True, export=True)
+        _options(tmp_path, db_path, document_id=document.id, apply=True, export=True, strip_completed_visual_regions=True)
     )
 
     export = report["documents"][0]["export"]
@@ -425,8 +460,8 @@ def test_export_markdown_omits_pollution_and_keeps_visual_sections(monkeypatch, 
     source_section = markdown.split("## Source Chunks", 1)[1].split("\n## ", 1)[0]
     assert "L a y e r 1 0 1 2 3" not in source_section
     assert "rxdatasbtxdatasb" not in source_section
-    assert CAPTION in source_section
     assert "High-confidence visual summary." in markdown
+    assert "High-confidence visual table replacement" in markdown
     assert "test low confidence" in markdown
 
 
@@ -436,9 +471,12 @@ def test_document_id_repairs_only_selected_document(monkeypatch, tmp_path):
     doc2 = _document("doc-two", _pdf(tmp_path, "two.pdf"))
     _seed_document(db_path, doc1, with_visual=False)
     _seed_document(db_path, doc2, with_visual=False)
+    _add_high_confidence_visual_replacement(db_path, doc2)
     _patch_extract_and_sanitize(monkeypatch)
 
-    repair_script.run_repair(_options(tmp_path, db_path, document_id=doc2.id, apply=True))
+    repair_script.run_repair(
+        _options(tmp_path, db_path, document_id=doc2.id, apply=True, strip_completed_visual_regions=True)
+    )
 
     assert any(POLLUTION in text for text in _chunk_texts(db_path, doc1.id))
     assert not any(POLLUTION in text for text in _chunk_texts(db_path, doc2.id))
@@ -450,9 +488,12 @@ def test_kb_id_repairs_only_matching_kb(monkeypatch, tmp_path):
     pcie_doc = _document("doc-pcie", _pdf(tmp_path, "pcie.pdf"), kb_id="pcie")
     _seed_document(db_path, ucie_doc, with_visual=False)
     _seed_document(db_path, pcie_doc, with_visual=False)
+    _add_high_confidence_visual_replacement(db_path, ucie_doc)
     _patch_extract_and_sanitize(monkeypatch)
 
-    report = repair_script.run_repair(_options(tmp_path, db_path, kb_id="ucie", apply=True))
+    report = repair_script.run_repair(
+        _options(tmp_path, db_path, kb_id="ucie", apply=True, strip_completed_visual_regions=True)
+    )
 
     assert report["summary"]["selected_documents"] == 1
     assert not any(POLLUTION in text for text in _chunk_texts(db_path, ucie_doc.id))
@@ -1342,6 +1383,7 @@ def test_repair_apply_prunes_entity_references_to_deleted_old_span(monkeypatch, 
     document = _document("doc-entity-prune", _pdf(tmp_path, "entity-prune.pdf"))
     old_span = _ordinary_span(document)
     _seed_document(db_path, document, with_visual=True)
+    _add_high_confidence_visual_replacement(db_path, document)
     storage = KnowledgeStorage(db_path)
     try:
         storage.upsert_entity(
@@ -1357,7 +1399,9 @@ def test_repair_apply_prunes_entity_references_to_deleted_old_span(monkeypatch, 
         storage.close()
     _patch_extract_and_sanitize(monkeypatch, sanitizer_text="UCIe is a die-to-die interconnect standard.")
 
-    report = repair_script.run_repair(_options(tmp_path, db_path, document_id=document.id, apply=True))
+    report = repair_script.run_repair(
+        _options(tmp_path, db_path, document_id=document.id, apply=True, strip_completed_visual_regions=True)
+    )
 
     assert report["ok"] is True
     storage = KnowledgeStorage(db_path)
@@ -1365,15 +1409,11 @@ def test_repair_apply_prunes_entity_references_to_deleted_old_span(monkeypatch, 
         entity = storage.resolve_entity("UCIe")
         assert entity is not None
         assert old_span.id not in entity.source_span_ids
-        assert entity.source_span_ids
-        for span_id in entity.source_span_ids:
-            assert storage.get_source_span(span_id) is not None
         chunks = storage.list_chunks(document.id)
         ordinary = [chunk for chunk in chunks if chunk.metadata.get("source") != "visual_analysis"]
         visual = [chunk for chunk in chunks if chunk.metadata.get("source") == "visual_analysis"]
-        assert ordinary
+        assert not ordinary
         assert visual
-        assert not any(POLLUTION in chunk.text for chunk in ordinary)
     finally:
         storage.close()
 

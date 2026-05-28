@@ -505,7 +505,8 @@ CowWeCom/
 - KnowledgeStorage 视觉 chunk/source span 完整性继续收口：视觉结果追加、删除和 reset 避免覆盖普通 chunk 与共享 span，并清理无人引用的图谱证据引用。
 - 本机 token 用量查询会展开到每个已识别用户，并支持 `llm_usage_user_aliases` 合并跨渠道同一人的历史用量；账单截图识别收紧金额口径，优先保留截图里的精确小数而不是模型总结出的整数。
 - 本地文档视觉补全链路继续加固：PDF caption 识别按 Figure/Table label 优先分类，保留 ARM/AMBA 无标点标题，同时拒绝正文引用句、label-only 行和正文步骤拼接；候选 bbox 会写入真实页面尺寸，PyMuPDF `find_tables()` 默认受控降级并支持配置预算/超时统计，prepare 会小批量 checkpoint，Web“补全图表/视觉知识”未选择文档/KB 时仍处理全库 source documents，并排除 `llm_study`、`codex_analysis` 等生成文档。
-- 公共协议视觉补全新增并继续收紧公式/方程候选和跨页大表候选：AMBA AXI 与 AXI4-Stream 的信号表、位宽/信号名密集页不再触发明显公式 false positive，UCIe CRC/VTF/loss 等公式上下文候选保留；公式乱码默认只识别报告、不凭空猜写普通 chunk，大表破碎文本优先等待高置信视觉 table/formula chunk 替代。
+- 公共协议视觉补全新增并继续收紧公式/方程候选和跨页大表候选：AMBA AXI、AXI4-Stream 与 UCIe 的 signal/list/register/message encoding 表不再触发明显公式 false positive，UCIe CRC/VTF/loss 等公式上下文候选保留；公式乱码默认只识别报告、不凭空猜写普通 chunk，大表破碎文本优先等待高置信视觉 table/formula chunk 替代。
+- 旧公共协议库新增“视觉补全后安全去污染”闭环：服务层 `complete_and_repair_legacy_visual_knowledge`/`repair_legacy_visual_pollution` 与 CLI `--repair-legacy-visual-pollution` 默认 dry-run，只报告旧 ordinary chunk 污染；只有显式 apply、显式 `--strip-completed-visual-regions` 且同页存在高置信可检索 `visual_analysis` 替代时，才清理旧普通 chunk，并自动备份 SQLite、写审计报告和刷新 FTS。
 - 已刷新公共协议知识库 SQLite：UCIe 1.1、AMBA AXI v2.0 和 AXI4-Stream 的 PDF 普通文本 chunk 已用当前 sanitizer 重建，Figure/Table 周边图内信号、时序和表格碎片乱码抽检清零，三个协议验证报告均通过；远端拉取后实际检索使用随仓库更新的 `public_protocol_knowledge/indexes/kb.sqlite`，网页文档库需重新导出到 `knowledge/documents/<kb_id>/`，并清理旧 `~/cow/knowledge/protocols/` 残留，避免误点旧 Markdown。
 
 ### 2026-05-27

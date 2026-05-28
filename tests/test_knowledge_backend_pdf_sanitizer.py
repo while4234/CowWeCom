@@ -135,6 +135,41 @@ def test_formula_garble_detection_positive_and_negative_examples():
     assert not is_formula_garble_line("Figure 1-1 Channel architecture of reads")
 
 
+def test_signal_and_encoding_table_rows_are_not_formula_garble():
+    signal_context = "Table 8-1. RDI signal list\nSignal Description"
+    message_context = "Table 6-9. Link Training State Machine related Message encodings\nMessage MsgInfo MsgCode MsgSubcode Field Bits Encoding Value Reserved"
+
+    assert not is_formula_garble_line(
+        "lp_data[NBYTES-1:0][7:0] Adapter to Physical Layer data, where NBYTES equals number of bytes",
+        context=signal_context,
+    )
+    assert not is_formula_garble_block(
+        "Table 8-1. RDI signal list\n"
+        "Signal Description\n"
+        "lp_data[NBYTES-1:0][7:0]\n"
+        "Adapter to Physical Layer data, where NBYTES equals number of bytes determined by the data width."
+    )
+    assert not is_formula_garble_line("MsgInfo[15:0] Message information field", context=message_context)
+    assert not is_formula_garble_line("MsgCode[7:0] Message code", context=message_context)
+    assert not is_formula_garble_line("MsgSubcode[7:0] Message subcode", context=message_context)
+    assert not is_formula_garble_line("[15:6]: Reserved", context=message_context)
+
+
+def test_real_formula_rows_still_detected_after_table_guards():
+    assert is_formula_garble_line(
+        "L f( ) 20 10 Vr f( ) Vs f( ) log =",
+        context="Equation 5-1 defines VTF loss.",
+    )
+    assert is_formula_garble_block(
+        "CRC polynomial is defined by the following formula:\n"
+        "G x( ) x 16 x 12 x 5 1 + + + ="
+    )
+    assert is_formula_garble_block(
+        "VTF loss is calculated using:\n"
+        "L f( ) 20 10 Vr f( ) Vs f( ) log ="
+    )
+
+
 def test_dense_table_like_block_is_reported_without_caption_false_positive():
     table_text = "\n".join(
         ["Signal Direction Description"]

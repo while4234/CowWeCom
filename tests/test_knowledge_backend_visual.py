@@ -2775,6 +2775,34 @@ def test_axi4_stream_signal_rows_do_not_create_formula_candidates():
     assert not any(candidate.artifact_type == "formula" for candidate in page24)
 
 
+def test_ucie_signal_and_encoding_tables_do_not_create_formula_candidates():
+    source = _public_protocol_pdf("UCIe_1p1")
+    fitz = pytest.importorskip("fitz")
+    pages_to_check = (204, 205, 288, 302, 303)
+    with fitz.open(str(source)) as pdf:
+        pages = [DocumentPage(page, pdf[page - 1].get_text("text")) for page in pages_to_check]
+    document = _pdf_document(source, document_id="ucie_signal_encoding_doc", version_id="ucie-signal-encoding-v1")
+    extractor = PyMuPDFVisualArtifactExtractor()
+
+    for page in pages_to_check:
+        extracted = ExtractedDocument(
+            title=document.title,
+            source_path=str(source),
+            mime_type="application/pdf",
+            pages=[next(item for item in pages if item.page == page)],
+        )
+        candidates, _report = extractor.extract_candidates_for_page_range(
+            document,
+            extracted,
+            None,
+            _config(Path(source).parent, ingest={"allowed_extensions": [".pdf"]}),
+            start_page=page,
+            max_pages=1,
+        )
+        assert not any(candidate.artifact_type == "formula" for candidate in candidates), page
+        assert any(candidate.artifact_type == "table" for candidate in candidates), page
+
+
 def test_ucie_formula_pages_still_create_formula_candidates():
     source = _public_protocol_pdf("UCIe_1p1")
     fitz = pytest.importorskip("fitz")

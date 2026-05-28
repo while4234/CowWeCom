@@ -197,6 +197,7 @@ def run_repair(options: RepairOptions) -> Dict[str, Any]:
             except Exception as exc:
                 document_report = base_document_report(document, options)
                 document_report["error"] = str(exc)
+            document_report.pop("updates", None)
             report["documents"].append(document_report)
 
         if options.apply and options.export:
@@ -253,52 +254,33 @@ def repair_one_document(
         quality_report = collect_quality_issue_report(old_text_chunks)
         completed_visual_pages = completed_retrievable_visual_pages(storage, document.id)
 
-        extracted = extract_document(source_path)
-        sanitized_pages, sanitizer_report = sanitize_pages_for_knowledge_chunks(
-            source_path,
-            extracted.pages,
-            enabled=True,
-            strip_visual_regions=True,
-            strip_visual_noise_lines=True,
+        coverage = collect_visual_replacement_coverage(storage, document.id)
+        completed_visual_pages = set(coverage["visual_replacement_pages"])
+        strip_report = strip_pollution_only_when_visual_replaced(
+            old_text_chunks,
+            completed_visual_pages,
+            strip_completed_visual_regions=options.strip_completed_visual_regions,
         )
-        kb_id = document.kb_id or "kb_default"
-        backend = LocalKnowledgeBackend(
-            workspace_root=str(options.workspace_root),
-            db_path=str(options.db_path),
-            enabled=True,
-            default_kb_id=kb_id,
-        )
-        new_raw_chunks = backend._build_chunks(
-            document.id,
-            sanitized_pages,
-            kb_id=kb_id,
-            version_id=document.version_id,
-        )
-        stripped_chunk_count = 0
-        stripped_line_count = 0
+        new_text_chunks = len(old_text_chunks)
+        new_total_chars = old_total_chars
         if options.strip_completed_visual_regions:
-            new_raw_chunks, stripped_chunk_count, stripped_line_count = strip_chunks_with_completed_visual_replacements(
-                new_raw_chunks,
-                completed_visual_pages,
-            )
-        build_document = replace(document, size=source_path.stat().st_size)
-        build = HeuristicKnowledgeBuilder().build(build_document, new_raw_chunks)
-        new_total_chars = sum(len(chunk.text or "") for chunk in build.chunks)
-        removed_examples = collect_removed_noise_examples(old_text_chunks, build.chunks)
+            new_text_chunks = len(old_text_chunks) - int(strip_report.get("candidate_chunks_to_delete") or 0)
+            new_total_chars = old_total_chars - int(strip_report.get("candidate_chars_to_strip") or 0)
 
         report.update(
             {
                 "old_text_chunks": len(old_text_chunks),
                 "preserved_visual_chunks": len(visual_chunks),
-                "new_text_chunks": len(build.chunks),
+                "new_text_chunks": new_text_chunks,
                 "old_total_chars": old_total_chars,
                 "new_total_chars": new_total_chars,
-                "removed_noise_line_examples": removed_examples,
                 **quality_report,
+                **coverage,
+                **strip_report,
                 "completed_visual_pages": sorted(completed_visual_pages),
-                "stripped_completed_visual_chunks": stripped_chunk_count,
-                "stripped_completed_visual_lines": stripped_line_count,
-                "sanitizer_report": sanitizer_report,
+                "stripped_completed_visual_chunks": 0,
+                "stripped_completed_visual_lines": 0,
+                "sanitizer_report": {},
                 "skipped": False,
                 "error": "",
             }
@@ -311,36 +293,28 @@ def repair_one_document(
             "dry_run": not apply,
             "old_text_chunks": len(old_text_chunks),
             "preserved_visual_chunks": len(visual_chunks),
-            "new_text_chunks": len(build.chunks),
+            "new_text_chunks": new_text_chunks,
             "old_total_chars": old_total_chars,
             "new_total_chars": new_total_chars,
             "quality_report": quality_report,
             "completed_visual_pages": sorted(completed_visual_pages),
-            "stripped_completed_visual_chunks": stripped_chunk_count,
-            "stripped_completed_visual_lines": stripped_line_count,
-            "sanitizer_report": sanitizer_report,
+            "visual_replacement_chunks": coverage["visual_replacement_chunks"],
+            "candidate_chunks_to_strip": strip_report["candidate_chunks_to_strip"],
+            "candidate_lines_to_strip": strip_report["candidate_lines_to_strip"],
+            "strip_completed_visual_regions": options.strip_completed_visual_regions,
         }
-        repaired_document = replace(build_document, metadata=repair_metadata)
+        repaired_document = replace(document, size=source_path.stat().st_size, metadata=repair_metadata)
 
         if not apply:
             return report
 
+        if not options.strip_completed_visual_regions or not strip_report.get("updates"):
+            report["applied"] = True
+            return report
+
         storage.conn.execute("BEGIN IMMEDIATE")
         try:
-            storage.save_document(
-                repaired_document,
-                build.chunks,
-                source_spans=build.source_spans,
-                entities=build.entities,
-                relations=build.relations,
-                commit=False,
-            )
-            normalized = normalize_visual_chunk_ordinals_after_text_chunks(
-                storage,
-                document_id=document.id,
-                max_text_ordinal=max((chunk.ordinal for chunk in build.chunks), default=0),
-            )
-            deleted_spans = delete_unreferenced_source_spans_for_document(storage, document.id)
+            apply_result = apply_pollution_strip_updates(storage, repaired_document, strip_report["updates"])
             if storage.fts5_available:
                 storage._rebuild_fts()
             storage.conn.commit()
@@ -348,8 +322,11 @@ def repair_one_document(
             storage.conn.rollback()
             raise
 
-        report["normalized_visual_ordinals"] = normalized
-        report["deleted_unreferenced_source_spans"] = deleted_spans
+        report["stripped_completed_visual_chunks"] = apply_result["stripped_completed_visual_chunks"]
+        report["stripped_completed_visual_lines"] = apply_result["stripped_completed_visual_lines"]
+        report["deleted_unreferenced_source_spans"] = apply_result["deleted_unreferenced_source_spans"]
+        report["new_text_chunks"] = apply_result["new_text_chunks"]
+        report["new_total_chars"] = apply_result["new_total_chars"]
         report["applied"] = True
         return report
     except Exception as exc:
@@ -435,6 +412,8 @@ def create_sqlite_backup(db_path: Path, backup_path: Optional[Path]) -> Path:
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     default_name = f"{source.name}.backup-{timestamp}"
     final_backup_path = resolve_backup_target(source, backup_path, default_name)
+    if backup_path is None:
+        final_backup_path = unique_backup_path(final_backup_path)
     final_backup_path.parent.mkdir(parents=True, exist_ok=True)
     if final_backup_path.exists():
         raise FileExistsError(str(final_backup_path))
@@ -453,6 +432,17 @@ def create_sqlite_backup(db_path: Path, backup_path: Optional[Path]) -> Path:
     finally:
         src.close()
     return final_backup_path
+
+
+def unique_backup_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    index = 1
+    while True:
+        candidate = path.with_name(f"{path.name}-{index}")
+        if not candidate.exists():
+            return candidate
+        index += 1
 
 
 def resolve_backup_target(db_path: Path, backup_path: Optional[Path], default_name: str) -> Path:
@@ -504,26 +494,127 @@ def collect_quality_issue_report(chunks: Iterable[KnowledgeChunk]) -> Dict[str, 
     table_examples: List[str] = []
 
     for chunk in chunks:
-        text = str(chunk.text or "")
-        formula = is_formula_garble_block(text) or any(is_formula_garble_line(line, context=text) for line in text.splitlines())
-        table_like = is_large_table_like_block(text)
-        if formula:
+        issue = _chunk_quality_issue(chunk)
+        if issue["formula"]:
             formula_chunks.append(chunk)
             formula_pages.update(_chunk_pages(chunk))
-            _append_example(formula_examples, _first_quality_line(text, formula=True))
-        if table_like:
+            _append_example(formula_examples, issue["formula_example"])
+        if issue["table"]:
             table_chunks.append(chunk)
             table_pages.update(_chunk_pages(chunk))
-            _append_example(table_examples, _first_quality_line(text, formula=False))
+            _append_example(table_examples, issue["table_example"])
 
+    formula_pages_sorted = sorted(formula_pages)
+    table_pages_sorted = sorted(table_pages)
     return {
         "formula_garble_chunks": len(formula_chunks),
-        "formula_garble_pages": sorted(formula_pages),
+        "formula_garble_chunks_before": len(formula_chunks),
+        "formula_garble_pages": formula_pages_sorted,
+        "formula_garble_pages_before": formula_pages_sorted,
         "formula_garble_examples": formula_examples[:10],
         "large_table_like_chunks": len(table_chunks),
-        "large_table_like_pages": sorted(table_pages),
+        "large_table_like_chunks_before": len(table_chunks),
+        "large_table_like_pages": table_pages_sorted,
+        "large_table_like_pages_before": table_pages_sorted,
         "large_table_like_examples": table_examples[:10],
     }
+
+
+def collect_visual_replacement_coverage(storage: KnowledgeStorage, document_id: str) -> Dict[str, Any]:
+    pages = completed_retrievable_visual_pages(storage, document_id)
+    chunks = completed_retrievable_visual_chunks(storage, document_id)
+    return {
+        "visual_replacement_pages": sorted(pages),
+        "visual_replacement_chunks": chunks,
+        "completed_visual_pages": sorted(pages),
+    }
+
+
+def build_ordinary_chunk_pollution_report(
+    chunks: Iterable[KnowledgeChunk],
+    completed_visual_pages: set[int],
+) -> Dict[str, Any]:
+    return strip_pollution_only_when_visual_replaced(
+        chunks,
+        completed_visual_pages,
+        strip_completed_visual_regions=False,
+    )
+
+
+def strip_pollution_only_when_visual_replaced(
+    chunks: Iterable[KnowledgeChunk],
+    completed_visual_pages: set[int],
+    *,
+    strip_completed_visual_regions: bool,
+) -> Dict[str, Any]:
+    completed_pages = {int(page) for page in completed_visual_pages if int(page) > 0}
+    candidate_chunks = 0
+    candidate_lines = 0
+    candidate_chars = 0
+    candidate_delete_chunks = 0
+    skipped_chunks = 0
+    skipped_pages: set[int] = set()
+    stripped_examples: List[str] = []
+    skipped_examples: List[Dict[str, Any]] = []
+    updates: List[Dict[str, Any]] = []
+
+    for chunk in chunks:
+        issue = _chunk_quality_issue(chunk)
+        if not issue["polluted"]:
+            continue
+        pages = set(_chunk_pages(chunk))
+        has_visual_replacement = bool(pages and pages.issubset(completed_pages))
+        if not has_visual_replacement:
+            skipped_chunks += 1
+            skipped_pages.update(pages)
+            if len(skipped_examples) < 10:
+                skipped_examples.append(
+                    {
+                        "chunk_id": chunk.id,
+                        "pages": sorted(pages),
+                        "reason": "missing_high_confidence_visual_replacement",
+                        "example": issue["example"],
+                    }
+                )
+            continue
+
+        cleaned_text, removed = strip_quality_noise_from_text(chunk.text)
+        if removed <= 0:
+            continue
+        candidate_chunks += 1
+        candidate_lines += removed
+        candidate_chars += max(0, len(chunk.text or "") - len(cleaned_text or ""))
+        if not cleaned_text.strip():
+            candidate_delete_chunks += 1
+        _append_example(stripped_examples, issue["example"])
+        if strip_completed_visual_regions:
+            updates.append(
+                {
+                    "chunk_id": chunk.id,
+                    "old_text": chunk.text,
+                    "new_text": cleaned_text,
+                    "removed_lines": removed,
+                    "delete": not bool(cleaned_text.strip()),
+                    "source_span_ids": list(chunk.source_span_ids or []),
+                    "pages": sorted(pages),
+                }
+            )
+
+    return {
+        "candidate_chunks_to_strip": candidate_chunks,
+        "candidate_lines_to_strip": candidate_lines,
+        "candidate_chars_to_strip": candidate_chars,
+        "candidate_chunks_to_delete": candidate_delete_chunks,
+        "skipped_chunks_without_visual_replacement": skipped_chunks,
+        "skipped_pages_without_visual_replacement": sorted(skipped_pages),
+        "stripped_line_examples": stripped_examples[:10],
+        "skipped_reason_examples": skipped_examples,
+        "updates": updates,
+    }
+
+
+def repair_legacy_chunks_after_visual_completion(options: RepairOptions) -> Dict[str, Any]:
+    return run_repair(options)
 
 
 def strip_chunks_with_completed_visual_replacements(
@@ -578,6 +669,10 @@ def strip_quality_noise_from_text(text: str) -> Tuple[str, int]:
             flush_table_buffer()
             removed += 1
             continue
+        if is_visual_noise_line(line):
+            flush_table_buffer()
+            removed += 1
+            continue
         if _line_may_be_table_noise(line):
             table_buffer.append(line)
             in_table_noise = True
@@ -589,6 +684,58 @@ def strip_quality_noise_from_text(text: str) -> Tuple[str, int]:
     flush_table_buffer()
     cleaned = "\n".join(_trim_blank_edges(kept)).strip()
     return cleaned, removed
+
+
+def apply_pollution_strip_updates(
+    storage: KnowledgeStorage,
+    document: KnowledgeDocument,
+    updates: Iterable[Dict[str, Any]],
+) -> Dict[str, Any]:
+    updates = list(updates)
+    deleted_span_ids: List[str] = []
+    stripped_chunks = 0
+    stripped_lines = 0
+    for item in updates:
+        chunk_id = str(item.get("chunk_id") or "")
+        if not chunk_id:
+            continue
+        stripped_chunks += 1
+        stripped_lines += int(item.get("removed_lines") or 0)
+        if item.get("delete"):
+            deleted_span_ids.extend(str(span_id) for span_id in item.get("source_span_ids") or [] if span_id)
+            storage._delete_chunks_and_unreferenced_source_spans(
+                [chunk_id],
+                item.get("source_span_ids") or [],
+                commit=False,
+            )
+            continue
+        storage.conn.execute(
+            "UPDATE chunks SET text = ? WHERE id = ? AND document_id = ?",
+            (str(item.get("new_text") or ""), chunk_id, document.id),
+        )
+        for span_id in item.get("source_span_ids") or []:
+            if span_id:
+                storage.conn.execute(
+                    "UPDATE source_spans SET text = ? WHERE id = ? AND document_id = ?",
+                    (str(item.get("new_text") or "")[:5000], span_id, document.id),
+                )
+
+    storage.conn.execute(
+        "UPDATE documents SET metadata = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(document.metadata or {}, ensure_ascii=False), int(time.time()), document.id),
+    )
+    deleted_spans = delete_unreferenced_source_spans_for_document(storage, document.id)
+    old_text_chunks = [
+        chunk for chunk in storage.list_chunks(document.id) if chunk_metadata_source(chunk) != "visual_analysis"
+    ]
+    return {
+        "stripped_completed_visual_chunks": stripped_chunks,
+        "stripped_completed_visual_lines": stripped_lines,
+        "deleted_unreferenced_source_spans": deleted_spans,
+        "deleted_candidate_source_spans": len(deleted_span_ids),
+        "new_text_chunks": len(old_text_chunks),
+        "new_total_chars": sum(len(chunk.text or "") for chunk in old_text_chunks),
+    }
 
 
 def completed_retrievable_visual_pages(storage: KnowledgeStorage, document_id: str) -> set[int]:
@@ -633,6 +780,34 @@ def completed_retrievable_visual_pages(storage: KnowledgeStorage, document_id: s
     return pages
 
 
+def completed_retrievable_visual_chunks(storage: KnowledgeStorage, document_id: str) -> int:
+    rows = storage.conn.execute(
+        """
+        SELECT
+          c.metadata AS chunk_metadata,
+          va.retrievable,
+          va.analysis_confidence,
+          vag.retrievable AS group_retrievable
+        FROM chunks c
+        LEFT JOIN visual_artifact_chunks vac ON vac.chunk_id = c.id
+        LEFT JOIN visual_artifacts va ON va.id = vac.artifact_id
+        LEFT JOIN visual_artifact_groups vag ON vag.id = vac.artifact_id
+        WHERE c.document_id = ?
+          AND COALESCE(
+                CASE WHEN json_valid(c.metadata) THEN json_extract(c.metadata, '$.source') ELSE '' END,
+                ''
+              ) = 'visual_analysis'
+        """,
+        (document_id,),
+    ).fetchall()
+    count = 0
+    for row in rows:
+        metadata = json.loads(row["chunk_metadata"]) if row["chunk_metadata"] and str(row["chunk_metadata"]).startswith("{") else {}
+        if _visual_chunk_is_high_confidence(row, metadata):
+            count += 1
+    return count
+
+
 def _visual_chunk_is_high_confidence(row: Any, metadata: Dict[str, Any]) -> bool:
     if metadata.get("retrievable") is False:
         return False
@@ -652,6 +827,24 @@ def _chunk_pages(chunk: KnowledgeChunk) -> List[int]:
     start = max(1, start or end)
     end = max(start, end or start)
     return list(range(start, end + 1))
+
+
+def _chunk_quality_issue(chunk: KnowledgeChunk) -> Dict[str, Any]:
+    text = str(chunk.text or "")
+    formula = is_formula_garble_block(text) or any(is_formula_garble_line(line, context=text) for line in text.splitlines())
+    visual_noise = any(is_visual_noise_line(line) for line in text.splitlines())
+    table_like = is_large_table_like_block(text) or visual_noise
+    formula_example = _first_quality_line(text, formula=True) if formula else ""
+    table_example = _first_quality_line(text, formula=False) if table_like else ""
+    return {
+        "formula": formula,
+        "table": table_like,
+        "visual_noise": visual_noise,
+        "polluted": bool(formula or table_like),
+        "formula_example": formula_example,
+        "table_example": table_example,
+        "example": formula_example or table_example or normalize_line(str(text).splitlines()[0] if text else ""),
+    }
 
 
 def _append_example(examples: List[str], text: str) -> None:
@@ -675,6 +868,8 @@ def _first_quality_line(text: str, *, formula: bool) -> str:
 def _line_may_be_table_noise(line: str) -> bool:
     text = normalize_line(line)
     if not text or text.startswith("#") or "Figure " in text or "Table " in text:
+        return False
+    if is_formula_garble_line(text, context=text):
         return False
     if "|" in text or "\t" in text:
         return True
@@ -846,6 +1041,7 @@ def base_document_report(document: KnowledgeDocument, options: RepairOptions) ->
         "document_id": document.id,
         "title": document.title,
         "kb_id": document.kb_id,
+        "doc_type": document.doc_type or "document",
         "source_path": document.source_path,
         "resolved_source_path": "",
         "dry_run": not options.apply,
@@ -855,14 +1051,28 @@ def base_document_report(document: KnowledgeDocument, options: RepairOptions) ->
         "old_total_chars": 0,
         "new_total_chars": 0,
         "formula_garble_chunks": 0,
+        "formula_garble_chunks_before": 0,
         "formula_garble_pages": [],
+        "formula_garble_pages_before": [],
         "formula_garble_examples": [],
         "large_table_like_chunks": 0,
+        "large_table_like_chunks_before": 0,
         "large_table_like_pages": [],
+        "large_table_like_pages_before": [],
         "large_table_like_examples": [],
+        "visual_replacement_pages": [],
+        "visual_replacement_chunks": 0,
         "completed_visual_pages": [],
+        "candidate_chunks_to_strip": 0,
+        "candidate_lines_to_strip": 0,
+        "candidate_chars_to_strip": 0,
+        "candidate_chunks_to_delete": 0,
+        "skipped_chunks_without_visual_replacement": 0,
+        "skipped_pages_without_visual_replacement": [],
         "stripped_completed_visual_chunks": 0,
         "stripped_completed_visual_lines": 0,
+        "stripped_line_examples": [],
+        "skipped_reason_examples": [],
         "removed_noise_line_examples": [],
         "sanitizer_report": {},
         "normalized_visual_ordinals": 0,
@@ -898,11 +1108,25 @@ def new_report(options: RepairOptions, started_at: int) -> Dict[str, Any]:
             "old_total_chars": 0,
             "new_total_chars": 0,
             "formula_garble_chunks": 0,
+            "formula_garble_chunks_before": 0,
             "formula_garble_pages": [],
+            "formula_garble_pages_before": [],
             "large_table_like_chunks": 0,
+            "large_table_like_chunks_before": 0,
             "large_table_like_pages": [],
+            "large_table_like_pages_before": [],
+            "visual_replacement_pages": [],
+            "visual_replacement_chunks": 0,
+            "candidate_chunks_to_strip": 0,
+            "candidate_lines_to_strip": 0,
+            "candidate_chars_to_strip": 0,
+            "candidate_chunks_to_delete": 0,
+            "skipped_chunks_without_visual_replacement": 0,
+            "skipped_pages_without_visual_replacement": [],
             "stripped_completed_visual_chunks": 0,
             "stripped_completed_visual_lines": 0,
+            "backup_path": "",
+            "dry_run": not options.apply,
         },
         "documents": [],
     }
@@ -922,7 +1146,15 @@ def summarize_report(report: Dict[str, Any]) -> None:
         "old_total_chars",
         "new_total_chars",
         "formula_garble_chunks",
+        "formula_garble_chunks_before",
         "large_table_like_chunks",
+        "large_table_like_chunks_before",
+        "visual_replacement_chunks",
+        "candidate_chunks_to_strip",
+        "candidate_lines_to_strip",
+        "candidate_chars_to_strip",
+        "candidate_chunks_to_delete",
+        "skipped_chunks_without_visual_replacement",
         "stripped_completed_visual_chunks",
         "stripped_completed_visual_lines",
     ):
@@ -930,9 +1162,23 @@ def summarize_report(report: Dict[str, Any]) -> None:
     summary["formula_garble_pages"] = sorted(
         {int(page) for item in documents for page in (item.get("formula_garble_pages") or []) if page}
     )
+    summary["formula_garble_pages_before"] = sorted(
+        {int(page) for item in documents for page in (item.get("formula_garble_pages_before") or []) if page}
+    )
     summary["large_table_like_pages"] = sorted(
         {int(page) for item in documents for page in (item.get("large_table_like_pages") or []) if page}
     )
+    summary["large_table_like_pages_before"] = sorted(
+        {int(page) for item in documents for page in (item.get("large_table_like_pages_before") or []) if page}
+    )
+    summary["visual_replacement_pages"] = sorted(
+        {int(page) for item in documents for page in (item.get("visual_replacement_pages") or []) if page}
+    )
+    summary["skipped_pages_without_visual_replacement"] = sorted(
+        {int(page) for item in documents for page in (item.get("skipped_pages_without_visual_replacement") or []) if page}
+    )
+    summary["backup_path"] = report.get("backup_path", "")
+    summary["dry_run"] = report.get("mode") != "apply"
 
 
 def handle_empty_selection(report: Dict[str, Any], options: RepairOptions) -> None:

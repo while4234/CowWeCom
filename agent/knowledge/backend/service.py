@@ -1223,6 +1223,105 @@ class KnowledgeBackendService:
             totals["stopped_reason"] = "error"
         return totals
 
+    def complete_and_repair_legacy_visual_knowledge(
+        self,
+        document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        analysis_backend: Optional[str] = "current",
+        force_prepare: bool = False,
+        dry_run: bool = True,
+        apply: bool = False,
+        strip_completed_visual_regions: bool = False,
+        max_steps: Optional[int] = None,
+        export: bool = False,
+    ) -> Dict[str, Any]:
+        """Complete high-confidence visual chunks, then safely report or strip legacy pollution."""
+
+        if not self.config.enabled:
+            return {"ok": False, "status": "disabled", "message": "local knowledge backend is disabled"}
+        if not _visual_analysis_enabled(self.config):
+            return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false"}
+
+        storage = self._backend._get_storage(writable=True)
+        target_kb_id = kb_id or None
+        documents = self._visual_completion_documents(storage, document_id=document_id, kb_id=target_kb_id)
+        if document_id and not documents:
+            return {"ok": False, "status": "error", "message": "source document not found"}
+        self._backend.close()
+        scope = "document" if document_id else ("kb" if target_kb_id else "all_source_documents")
+
+        visual_completion = self.complete_visual_knowledge(
+            document_id=document_id,
+            kb_id=target_kb_id,
+            analysis_backend=analysis_backend or "current",
+            force_prepare=force_prepare,
+            max_steps=max_steps,
+            export=export,
+        )
+        visual_completed = bool(
+            visual_completion.get("ok")
+            and visual_completion.get("stopped_reason") == "completed"
+            and not visual_completion.get("errors")
+        )
+        effective_apply = bool(apply)
+        repair_apply = effective_apply and visual_completed
+
+        from scripts import repair_knowledge_text_chunks as repair_script
+
+        options = repair_script.RepairOptions(
+            db_path=Path(self.config.sqlite_path),
+            workspace_root=Path(self.config.workspace_root),
+            data_dir=Path(self.config.data_dir),
+            document_id=document_id or "",
+            kb_id=target_kb_id or "",
+            all_documents=bool(not document_id and not target_kb_id),
+            apply=repair_apply,
+            export=False,
+            backup_path=None,
+            strip_completed_visual_regions=bool(strip_completed_visual_regions),
+        )
+        repair_report = repair_script.repair_legacy_chunks_after_visual_completion(options)
+        summary = dict(repair_report.get("summary") or {})
+        pollution_remaining = bool(
+            int(summary.get("skipped_chunks_without_visual_replacement") or 0) > 0
+            or (
+                int(summary.get("candidate_chunks_to_strip") or 0) > int(summary.get("stripped_completed_visual_chunks") or 0)
+                and not (repair_apply and strip_completed_visual_regions)
+            )
+        )
+        destructive_blocked = bool(effective_apply and not visual_completed)
+        return {
+            "ok": bool(visual_completion.get("ok")) and bool(repair_report.get("ok")),
+            "status": "success" if repair_report.get("ok") else "error",
+            "scope": scope,
+            "document_id": document_id or "",
+            "kb_id": target_kb_id or "",
+            "analysis_backend": normalize_visual_analysis_backend(analysis_backend or "current"),
+            "dry_run": not repair_apply,
+            "apply_requested": effective_apply,
+            "applied": bool(repair_apply and repair_report.get("mode") == "apply"),
+            "strip_completed_visual_regions": bool(strip_completed_visual_regions),
+            "visual_completion_complete": visual_completed,
+            "destructive_repair_blocked": destructive_blocked,
+            "block_reason": "visual_completion_not_complete" if destructive_blocked else "",
+            "source_documents": [
+                {
+                    "document_id": document.id,
+                    "kb_id": document.kb_id or "kb_default",
+                    "title": document.title,
+                    "doc_type": document.doc_type or "document",
+                }
+                for document in documents
+            ],
+            "visual_completion": visual_completion,
+            "repair": repair_report,
+            "repair_summary": summary,
+            "pollution_remaining": pollution_remaining,
+        }
+
+    def repair_legacy_visual_pollution(self, **kwargs: Any) -> Dict[str, Any]:
+        return self.complete_and_repair_legacy_visual_knowledge(**kwargs)
+
     def _visual_completion_documents(
         self,
         storage: KnowledgeStorage,
@@ -3440,6 +3539,24 @@ def dispatch_admin_request(method: str, path: str, payload: Dict[str, Any]) -> D
                 force_prepare=parse_knowledge_backend_enabled(payload.get("force_prepare")),
                 max_steps=int(payload.get("max_steps") or 0) or None,
                 export=not _payload_bool_is_false(payload.get("export"), default=True),
+            )
+        )
+    if method == "POST" and path in ("visual/repair-legacy-pollution", "visual/repair-legacy", "visual-repair-legacy"):
+        apply_requested = parse_knowledge_backend_enabled(payload.get("apply"))
+        dry_run = not apply_requested
+        if "dry_run" in payload:
+            dry_run = parse_knowledge_backend_enabled(payload.get("dry_run"))
+        return _to_jsonable(
+            service.complete_and_repair_legacy_visual_knowledge(
+                document_id=str(payload.get("document_id") or "") or None,
+                kb_id=str(payload.get("kb_id") or "") or None,
+                analysis_backend=str(payload.get("analysis_backend") or "current") or "current",
+                force_prepare=parse_knowledge_backend_enabled(payload.get("force_prepare")),
+                dry_run=dry_run,
+                apply=apply_requested,
+                strip_completed_visual_regions=parse_knowledge_backend_enabled(payload.get("strip_completed_visual_regions")),
+                max_steps=int(payload.get("max_steps") or 0) or None,
+                export=not _payload_bool_is_false(payload.get("export"), default=False),
             )
         )
     if method == "GET" and path in ("visual/backends", "visual-backends"):

@@ -141,18 +141,34 @@ _FORMULA_FUNCTION_RE = re.compile(r"\b(?:ceil|floor|log|int|crc|vtf|sin|cos|tan|
 _FORMULA_ASSIGNMENT_RE = re.compile(r"(?:[A-Za-z][A-Za-z0-9_]*\s*(?:\([^)]{0,80}\))?\s*=|=\s*[^=\n]{2,})")
 _FORMULA_SYMBOL_RE = re.compile(r"[=+\-*/^(){}<>]")
 _SIGNAL_ROW_DIRECTION_RE = re.compile(r"\b(?:input|output|inout|source|destination|master|slave|write|read)\b", re.IGNORECASE)
-_SIGNAL_NAME_WITH_WIDTH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\[[A-Za-z0-9_+\-*/():]+\])?$")
+_SIGNAL_NAME_WITH_WIDTH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\[[A-Za-z0-9_+\-*/():]+\])*$")
 _KNOWN_SIGNAL_WIDTH_RE = re.compile(
-    r"\b(?:AWLEN|ARLEN|TDATA|TSTRB|TKEEP|TID|TDEST|TUSER)\s*(?:\[[A-Za-z0-9_+\-*/():]+\])?",
+    r"\b(?:AWLEN|ARLEN|TDATA|TSTRB|TKEEP|TID|TDEST|TUSER|lp_[A-Za-z0-9_]+|pl_[A-Za-z0-9_]+|MsgInfo|MsgCode|MsgSubcode)\s*(?:\[[A-Za-z0-9_+\-*/():]+\])*",
     re.IGNORECASE,
 )
 _SIGNAL_WIDTH_RE = re.compile(
-    r"\[[A-Za-z0-9_+\-*/()]+(?::[A-Za-z0-9_+\-*/()]+)?\]|\b\d+\s*(?:bits?|b)\b",
+    r"(?:\[[A-Za-z0-9_+\-*/()]+(?::[A-Za-z0-9_+\-*/()]+)?\])+|\b\d+\s*(?:bits?|b)\b",
     re.IGNORECASE,
 )
 _SIGNAL_DESCRIPTION_RE = re.compile(
     r"\b(?:signal|signals|master|slave|payload|byte\s+qualifier|associated\s+with|data\s+stream|routing\s+information|"
-    r"user\s+defined|burst\s+length|description|direction)\b",
+    r"user\s+defined|burst\s+length|description|direction|adapter|physical\s+layer|protocol\s+layer|retimer|"
+    r"message|msginfo|msgcode|msgsubcode|encoding|field|bits|reserved|valid|register)\b",
+    re.IGNORECASE,
+)
+_BIT_FIELD_ROW_RE = re.compile(
+    r"^\s*\[[A-Za-z0-9_+\-*/():]+\]\s*:\s*"
+    r"(?:Reserved|Valid|Invalid|Enable|Disable|Value|Encoding|Field|Stack|PCIe|CXL|Streaming|[A-Za-z0-9_].*)$",
+    re.IGNORECASE,
+)
+_ENCODING_VALUE_ROW_RE = re.compile(
+    r"^\s*(?:0x[0-9A-Fa-f]+|[0-9A-Fa-f]+h|[01]{1,8}|[A-Za-z][A-Za-z0-9_]*)\s*:\s*"
+    r"(?:Reserved|Valid|Invalid|Stack|PCIe|CXL|Streaming|Protocol|Message|[A-Za-z0-9_].*)$",
+    re.IGNORECASE,
+)
+_SHEET_COUNT_RE = re.compile(r"^\(?\s*sheet\s+\d+\s+of\s+\d+\s*\)?$", re.IGNORECASE)
+_SIGNAL_TABLE_TITLE_RE = re.compile(
+    r"\b(?:signal\s+list|message\s+encodings?|register|bit\s+field|field\s+descriptions?|bits?\s+description)\b",
     re.IGNORECASE,
 )
 _PYMUPDF_FIND_TABLES_SCRIPT = r"""
@@ -855,7 +871,8 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                 for pos in range(max(0, index - 1), min(len(blocks), index + 2))
             )
             strong_garble = any(
-                is_formula_garble_line(line, context=neighboring_context) and not _line_looks_signal_list_row(line)
+                is_formula_garble_line(line, context=neighboring_context)
+                and not _line_looks_signal_or_encoding_table_row(line, context=neighboring_context)
                 for line in text.splitlines()
             )
             formulaish = strong_garble or (
@@ -873,7 +890,12 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                 block_rects.append(fitz.Rect(x0, y0, x1, y1))
         if block_rects:
             return _expand_rect(_union_rects(block_rects), page_rect, y_padding=24.0), 0.60
-        if context_hint and is_formula_garble_block(page_text) and not _block_text_dense_table_like(page_text):
+        if (
+            context_hint
+            and is_formula_garble_block(page_text)
+            and not _block_text_dense_table_like(page_text)
+            and not _block_has_signal_table_shape(page_text)
+        ):
             return page_rect, 0.55
         return None, 0.0
 
@@ -1308,7 +1330,7 @@ def _block_is_formula_negative(text: str, block: Dict[str, Any], tableish_rects:
         return True
     if _block_has_signal_table_shape(value):
         return True
-    if _text_has_formula_structure(value) and not _line_looks_signal_list_row(value):
+    if _text_has_formula_structure(value) and not _line_looks_signal_or_encoding_table_row(value, context=value):
         return False
     if _block_text_dense_table_like(value) or _block_looks_table_like(value):
         return True
@@ -1341,30 +1363,66 @@ def _text_has_formula_structure(text: str) -> bool:
 
 
 def _signal_list_rows(text: str) -> int:
-    return sum(1 for line in str(text or "").splitlines() if _line_looks_signal_list_row(line))
+    value = str(text or "")
+    return sum(1 for line in value.splitlines() if _line_looks_signal_or_encoding_table_row(line, context=value))
 
 
 def _line_looks_signal_list_row(line: str) -> bool:
+    return _line_looks_signal_or_encoding_table_row(line)
+
+
+def _line_looks_signal_or_encoding_table_row(line: str, context: str = "") -> bool:
     text = str(line or "").strip()
     if not text:
         return False
+    if _SHEET_COUNT_RE.fullmatch(text):
+        return True
+    if _BIT_FIELD_ROW_RE.match(text) or _ENCODING_VALUE_ROW_RE.match(text):
+        return True
     text = re.sub(r"\s*\|\s*", " | ", text)
-    tokens = text.split()
-    if len(tokens) < 3:
+    tokens = [token for token in text.split() if token != "|"]
+    if len(tokens) < 2:
         return False
-    header_hits = sum(1 for token in tokens if token.lower().strip(":") in {"signal", "direction", "description", "width", "type"})
+    header_words = {
+        "signal",
+        "direction",
+        "description",
+        "width",
+        "type",
+        "message",
+        "msginfo",
+        "msgcode",
+        "msgsubcode",
+        "field",
+        "bits",
+        "bit",
+        "encoding",
+        "value",
+        "reserved",
+        "register",
+    }
+    header_hits = sum(1 for token in tokens if token.lower().strip(":") in header_words)
     if header_hits >= 2:
         return True
     first = tokens[0].strip(",:;")
-    if first == "|" and len(tokens) > 1:
-        first = tokens[1].strip(",:;")
     signal_name = bool(_SIGNAL_NAME_WITH_WIDTH_RE.fullmatch(first))
     bit_width = bool(_SIGNAL_WIDTH_RE.search(text))
     direction = bool(_SIGNAL_ROW_DIRECTION_RE.search(text))
     description = bool(_SIGNAL_DESCRIPTION_RE.search(text))
     natural_words = len(re.findall(r"[A-Za-z]{4,}", text))
     explicit_signal = bool(_KNOWN_SIGNAL_WIDTH_RE.search(text))
-    return bool(signal_name and (direction or bit_width or explicit_signal) and (description or natural_words >= 1))
+    signal_shape = "_" in first or "[" in first or first.lower().startswith(("lp_", "pl_")) or first.lower() in {
+        "msginfo",
+        "msgcode",
+        "msgsubcode",
+    }
+    table_context = header_hits >= 1 or bool(
+        _SIGNAL_TABLE_TITLE_RE.search(context or "")
+        or len(TABLE_HEADER_RE.findall(context or "")) >= 2
+    )
+    if signal_name and signal_shape and (bit_width or explicit_signal or table_context) and (description or natural_words >= 1):
+        return True
+    return bool(signal_name and (direction or explicit_signal) and (description or natural_words >= 1))
 
 
 def _block_has_signal_table_shape(text: str) -> bool:
@@ -1374,13 +1432,18 @@ def _block_has_signal_table_shape(text: str) -> bool:
     lines = [_normalize_signal_row_line(line) for line in value.splitlines() if _normalize_signal_row_line(line)]
     if not lines:
         lines = [_normalize_signal_row_line(value)]
-    if any(_line_looks_signal_list_row(line) for line in lines):
+    if any(_line_looks_signal_or_encoding_table_row(line, context=value) for line in lines):
+        return True
+    if any(_SHEET_COUNT_RE.fullmatch(line) for line in lines) and re.search(
+        r"\b(?:table|signal\s+list|message\s+encodings?)\b", value, re.IGNORECASE
+    ):
         return True
     if _KNOWN_SIGNAL_WIDTH_RE.search(value) and _SIGNAL_DESCRIPTION_RE.search(value):
         return True
     header_hits = len(TABLE_HEADER_RE.findall(value))
     signal_hits = len(_KNOWN_SIGNAL_WIDTH_RE.findall(value))
-    return bool(header_hits >= 2 and signal_hits >= 1)
+    row_hits = sum(1 for line in lines if _line_looks_signal_or_encoding_table_row(line, context=value))
+    return bool((header_hits >= 2 and signal_hits >= 1) or row_hits >= 2)
 
 
 def _normalize_signal_row_line(line: str) -> str:
@@ -1420,7 +1483,7 @@ def _line_looks_table_row(line: str) -> bool:
     })
     if header_hits >= 2:
         return True
-    if _line_looks_signal_list_row(line):
+    if _line_looks_signal_or_encoding_table_row(line):
         return True
     signalish = sum(1 for token in tokens if _token_looks_table_cell(token))
     numeric = sum(1 for token in tokens if re.search(r"\d", token))

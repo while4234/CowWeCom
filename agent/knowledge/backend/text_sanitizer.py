@@ -18,6 +18,20 @@ from .visual_extractors import (
 
 
 _SIGNALISH_RE = re.compile(r"^[A-Za-z0-9_./:\-\[\](),+<>|]+$")
+_SIGNAL_NAME_WITH_RANGES_RE = re.compile(
+    r"^[A-Za-z][A-Za-z0-9_]*(?:\[[A-Za-z0-9_+\-*/():]+\])*$"
+)
+_BIT_FIELD_ROW_RE = re.compile(
+    r"^\s*\[[A-Za-z0-9_+\-*/():]+\]\s*:\s*"
+    r"(?:Reserved|Valid|Invalid|Enable|Disable|Value|Encoding|Field|Stack|PCIe|CXL|Streaming|[A-Za-z0-9_].*)$",
+    re.IGNORECASE,
+)
+_ENCODING_VALUE_ROW_RE = re.compile(
+    r"^\s*(?:0x[0-9A-Fa-f]+|[0-9A-Fa-f]+h|[01]{1,8}|[A-Za-z][A-Za-z0-9_]*)\s*:\s*"
+    r"(?:Reserved|Valid|Invalid|Stack|PCIe|CXL|Streaming|Protocol|Message|[A-Za-z0-9_].*)$",
+    re.IGNORECASE,
+)
+_SHEET_COUNT_RE = re.compile(r"^\(?\s*sheet\s+\d+\s+of\s+\d+\s*\)?$", re.IGNORECASE)
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z]{2,}")
 _SECTION_HEADING_RE = re.compile(
     r"^\s*(?:#{1,6}\s+)?(?:\d+(?:\.\d+){0,8}|[A-Z][A-Z0-9 ]{2,})\s+[A-Za-z0-9][A-Za-z0-9 ,:;()_./+\-\[\]]{2,160}$"
@@ -56,15 +70,22 @@ _FORMULA_CONTEXT_RE = re.compile(
 _FORMULA_TOKEN_RE = re.compile(r"[A-Za-z]+|\d+(?:\.\d+)?|[=+\-*/^(){}\[\]|<>]|[^\s]")
 _TABLE_HEADER_WORDS = {
     "bit",
+    "bits",
     "description",
     "direction",
     "encoding",
     "field",
     "layer",
     "meaning",
+    "message",
     "module",
+    "msgcode",
+    "msginfo",
+    "msgsubcode",
     "name",
     "parameter",
+    "register",
+    "reserved",
     "signal",
     "type",
     "value",
@@ -154,6 +175,8 @@ def is_formula_garble_line(line: str, context: str = "") -> bool:
     text = _normalize_line(line)
     if not text or is_strict_caption_block(text) or is_caption_label_line(text):
         return False
+    if _is_signal_or_encoding_table_line(text, context=context):
+        return False
     tokens = _FORMULA_TOKEN_RE.findall(text)
     if len(tokens) < 6:
         return False
@@ -191,6 +214,8 @@ def is_formula_garble_block(text: str) -> bool:
 
     value = str(text or "")
     if not value.strip():
+        return False
+    if _looks_like_signal_or_encoding_table_block(value):
         return False
     context_hint = bool(_FORMULA_CONTEXT_RE.search(value))
     lines = [_normalize_line(line) for line in value.splitlines() if _normalize_line(line)]
@@ -509,6 +534,8 @@ def _is_table_like_line(line: str) -> bool:
     text = _normalize_line(line)
     if not text or is_strict_caption_block(text) or is_caption_label_line(text):
         return False
+    if _is_signal_or_encoding_table_line(text):
+        return True
     if "|" in text or "\t" in text:
         return True
     tokens = text.split()
@@ -527,6 +554,8 @@ def _is_dense_short_table_row(line: str) -> bool:
     text = _normalize_line(line)
     if not text or len(text) > 180:
         return False
+    if _is_signal_or_encoding_table_line(text):
+        return True
     tokens = text.split()
     if len(tokens) < 3:
         return False
@@ -551,6 +580,61 @@ def _looks_like_concatenated_signal_line(text: str) -> bool:
     marker_count = sum(1 for marker in ("rx", "tx", "clk", "ck", "data", "sb", "valid", "vld") if marker in lowered)
     natural_words = _WORD_RE.findall(text)
     return marker_count >= 3 and len(natural_words) <= 2
+
+
+def _is_signal_or_encoding_table_line(line: str, context: str = "") -> bool:
+    text = _normalize_line(line)
+    if not text:
+        return False
+    if _SHEET_COUNT_RE.fullmatch(text):
+        return True
+    if _BIT_FIELD_ROW_RE.match(text) or _ENCODING_VALUE_ROW_RE.match(text):
+        return True
+
+    normalized = re.sub(r"\s*\|\s*", " | ", text)
+    tokens = [token.strip(",:;") for token in normalized.split() if token != "|"]
+    if not tokens:
+        return False
+    header_hits = sum(1 for token in tokens if token.lower().strip(":") in _TABLE_HEADER_WORDS)
+    if header_hits >= 2:
+        return True
+
+    first = tokens[0]
+    first_is_signal = bool(_SIGNAL_NAME_WITH_RANGES_RE.fullmatch(first))
+    first_has_signal_shape = (
+        "_" in first
+        or "[" in first
+        or first.lower().startswith(("lp_", "pl_"))
+        or first.lower() in {"msginfo", "msgcode", "msgsubcode"}
+    )
+    has_bit_range = bool(re.search(r"\[[A-Za-z0-9_+\-*/():]+\]", text))
+    has_table_context = len(_table_header_tokens(context)) >= 2 or bool(
+        re.search(r"\b(?:signal\s+list|message\s+encodings?|register|bit\s+field)\b", context, re.IGNORECASE)
+    )
+    natural_words = [
+        token
+        for token in re.findall(r"[A-Za-z]{4,}", text)
+        if token.lower() not in _MATH_KEYWORDS and not _is_signalish_token(token)
+    ]
+    if first_is_signal and first_has_signal_shape and (has_bit_range or len(tokens) >= 2) and (natural_words or has_table_context):
+        return True
+    return False
+
+
+def _looks_like_signal_or_encoding_table_block(text: str) -> bool:
+    value = str(text or "")
+    lines = [_normalize_line(line) for line in value.splitlines() if _normalize_line(line)]
+    if not lines:
+        return False
+    if any(_SHEET_COUNT_RE.fullmatch(line) for line in lines) and re.search(
+        r"\b(?:table|signal\s+list|message\s+encodings?)\b", value, re.IGNORECASE
+    ):
+        return True
+    header_hits = len(_table_header_tokens(value))
+    row_hits = sum(1 for line in lines if _is_signal_or_encoding_table_line(line, context=value))
+    if row_hits >= 2:
+        return True
+    return bool(header_hits >= 2 and row_hits >= 1)
 
 
 def _is_visual_region_label_line(line: str) -> bool:

@@ -26,6 +26,106 @@ def _result_text(result):
     return "\n".join(parts)
 
 
+def _source_document(document_id, tmp_path, *, kb_id="kb_default", doc_type="document"):
+    pdf_path = tmp_path / f"{document_id}.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n% fake service test pdf\n")
+    return KnowledgeDocument(
+        id=document_id,
+        title=document_id,
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        size=pdf_path.stat().st_size,
+        content_hash=f"hash-{document_id}",
+        status="ready",
+        kb_id=kb_id,
+        doc_type=doc_type,
+        version_id=f"version-{document_id}",
+    )
+
+
+def _polluted_chunk(document):
+    text = "L f( ) 20 10 Vr f( ) Vs f( ) log ="
+    return KnowledgeChunk(
+        id=f"chunk-{document.id}-ordinary",
+        document_id=document.id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text=text,
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[f"span-{document.id}-ordinary"],
+    )
+
+
+def _polluted_span(document):
+    return SourceSpan(
+        id=f"span-{document.id}-ordinary",
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=1,
+        page_end=1,
+        text="L f( ) 20 10 Vr f( ) Vs f( ) log =",
+    )
+
+
+def _add_visual_replacement(storage, document, *, confidence=0.91, retrievable=True):
+    artifact = VisualArtifactCandidate(
+        id=f"artifact-{document.id}",
+        document_id=document.id,
+        version_id=document.version_id,
+        kb_id=document.kb_id,
+        artifact_type="formula",
+        page=1,
+        label="Equation 1",
+        caption="Equation 1. Formula",
+        bbox={"x0": 1, "y0": 2, "x1": 100, "y1": 120},
+        image_hash=f"hash-{document.id}",
+        context_hash=f"context-{document.id}",
+        parser="test",
+        parser_confidence=0.9,
+        source_path=document.source_path,
+    )
+    chunk = KnowledgeChunk(
+        id=f"chunk-{document.id}-visual",
+        document_id=document.id,
+        ordinal=99,
+        page_start=1,
+        page_end=1,
+        text="High confidence visual formula replacement.",
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[f"span-{document.id}-visual"],
+        metadata={"source": "visual_analysis", "visual_confidence": confidence, "retrievable": retrievable},
+    )
+    span = SourceSpan(
+        id=f"span-{document.id}-visual",
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=1,
+        page_end=1,
+        text=chunk.text,
+    )
+    storage.upsert_visual_artifact(artifact)
+    storage.append_visual_chunks(document.id, document.version_id, artifact.id, [chunk], [span])
+    if retrievable:
+        storage.complete_visual_artifact_success(
+            artifact.id,
+            {"artifact_type": "formula", "summary": chunk.text, "confidence": {"overall": confidence}, "should_index": True},
+            confidence,
+            retrievable=True,
+        )
+    else:
+        storage.complete_visual_artifact_low_confidence(
+            artifact.id,
+            {"reason": "test low confidence"},
+            confidence,
+            "test low confidence",
+        )
+
+
 def test_sqlite_backend_ingests_and_searches_markdown_and_text_files(tmp_path):
     workspace = tmp_path / "workspace"
     knowledge = workspace / "knowledge"
@@ -717,6 +817,158 @@ def test_complete_visual_knowledge_rejects_generated_document_id(tmp_path):
 
     assert result["ok"] is False
     assert "source document not found" in result["message"]
+
+
+def test_legacy_visual_repair_all_source_documents_excludes_generated_and_returns_summaries(monkeypatch, tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "backend-data"),
+                "visual_analysis": {"enabled": True},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    storage = service._backend._get_storage(writable=True)
+    docs = [
+        _source_document("legacy-a", tmp_path, kb_id="kb_a"),
+        _source_document("legacy-b", tmp_path, kb_id="kb_b"),
+        _source_document("legacy-generated", tmp_path, kb_id="kb_a", doc_type="llm_study"),
+    ]
+    for document in docs:
+        storage.save_document(document, [_polluted_chunk(document)], source_spans=[_polluted_span(document)])
+
+    monkeypatch.setattr(
+        service,
+        "complete_visual_knowledge",
+        lambda **kwargs: {"ok": True, "stopped_reason": "completed", "errors": [], "results": []},
+    )
+
+    result = service.complete_and_repair_legacy_visual_knowledge(max_steps=5)
+
+    assert result["scope"] == "all_source_documents"
+    assert {item["document_id"] for item in result["source_documents"]} == {"legacy-a", "legacy-b"}
+    assert result["visual_completion"]["stopped_reason"] == "completed"
+    assert result["repair_summary"]["selected_documents"] == 2
+    assert result["repair_summary"]["skipped_chunks_without_visual_replacement"] == 2
+
+
+def test_legacy_visual_repair_dry_run_default_does_not_write_db(monkeypatch, tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "backend-data"),
+                "visual_analysis": {"enabled": True},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    storage = service._backend._get_storage(writable=True)
+    document = _source_document("legacy-dry", tmp_path)
+    storage.save_document(document, [_polluted_chunk(document)], source_spans=[_polluted_span(document)])
+    _add_visual_replacement(storage, document)
+    monkeypatch.setattr(
+        service,
+        "complete_visual_knowledge",
+        lambda **kwargs: {"ok": True, "stopped_reason": "completed", "errors": [], "results": []},
+    )
+
+    result = service.complete_and_repair_legacy_visual_knowledge(document_id=document.id)
+
+    assert result["dry_run"] is True
+    assert result["repair_summary"]["candidate_chunks_to_strip"] == 1
+    storage = service._backend._get_storage(writable=True)
+    assert storage.search("Vr", limit=5)
+    assert any("L f( )" in chunk.text for chunk in storage.list_chunks(document.id) if chunk.metadata.get("source") != "visual_analysis")
+
+
+def test_legacy_visual_repair_apply_strip_requires_high_confidence_visual_replacement(monkeypatch, tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "backend-data"),
+                "visual_analysis": {"enabled": True},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    storage = service._backend._get_storage(writable=True)
+    high_doc = _source_document("legacy-high", tmp_path, kb_id="kb_high")
+    low_doc = _source_document("legacy-low", tmp_path, kb_id="kb_low")
+    for document in (high_doc, low_doc):
+        storage.save_document(document, [_polluted_chunk(document)], source_spans=[_polluted_span(document)])
+    _add_visual_replacement(storage, high_doc)
+    _add_visual_replacement(storage, low_doc, confidence=0.3, retrievable=False)
+    monkeypatch.setattr(
+        service,
+        "complete_visual_knowledge",
+        lambda **kwargs: {"ok": True, "stopped_reason": "completed", "errors": [], "results": []},
+    )
+
+    high_result = service.complete_and_repair_legacy_visual_knowledge(
+        document_id=high_doc.id,
+        apply=True,
+        strip_completed_visual_regions=True,
+    )
+    low_result = service.complete_and_repair_legacy_visual_knowledge(
+        document_id=low_doc.id,
+        apply=True,
+        strip_completed_visual_regions=True,
+    )
+
+    assert high_result["applied"] is True
+    assert high_result["repair_summary"]["stripped_completed_visual_chunks"] == 1
+    storage = service._backend._get_storage(writable=True)
+    assert not any("L f( )" in chunk.text for chunk in storage.list_chunks(high_doc.id) if chunk.metadata.get("source") != "visual_analysis")
+    assert low_result["repair_summary"]["stripped_completed_visual_chunks"] == 0
+    assert low_result["repair_summary"]["skipped_chunks_without_visual_replacement"] == 1
+    assert any("L f( )" in chunk.text for chunk in storage.list_chunks(low_doc.id) if chunk.metadata.get("source") != "visual_analysis")
+
+
+def test_legacy_visual_repair_blocks_destructive_apply_when_visual_completion_incomplete(monkeypatch, tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "backend-data"),
+                "visual_analysis": {"enabled": True},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    storage = service._backend._get_storage(writable=True)
+    document = _source_document("legacy-blocked", tmp_path)
+    storage.save_document(document, [_polluted_chunk(document)], source_spans=[_polluted_span(document)])
+    _add_visual_replacement(storage, document)
+    monkeypatch.setattr(
+        service,
+        "complete_visual_knowledge",
+        lambda **kwargs: {"ok": True, "stopped_reason": "max_steps", "errors": [], "results": []},
+    )
+
+    result = service.complete_and_repair_legacy_visual_knowledge(
+        document_id=document.id,
+        apply=True,
+        strip_completed_visual_regions=True,
+        max_steps=1,
+    )
+
+    assert result["destructive_repair_blocked"] is True
+    assert result["dry_run"] is True
+    assert result["repair"]["mode"] == "dry-run"
+    storage = service._backend._get_storage(writable=True)
+    assert any("L f( )" in chunk.text for chunk in storage.list_chunks(document.id) if chunk.metadata.get("source") != "visual_analysis")
 
 
 def test_analyze_visual_artifact_group_returns_resolved_backend_metadata(tmp_path):
