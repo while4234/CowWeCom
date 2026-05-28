@@ -587,6 +587,84 @@ def test_visual_complete_admin_api_builds_all_source_documents(monkeypatch, tmp_
     assert service.search("complete_doc2", limit=5)
 
 
+def test_visual_complete_filters_to_source_documents_and_rejects_generated_doc(tmp_path):
+    service = _service(tmp_path)
+    source_id, source_version = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    generated = KnowledgeDocument(
+        id="generated_codex_analysis",
+        title="Generated Analysis",
+        source_path="generated.md",
+        mime_type="text/markdown",
+        size=1,
+        content_hash="generated-hash",
+        status="ready",
+        kb_id="kb_default",
+        doc_type="codex_analysis",
+        version_id="generated-v1",
+    )
+    study = KnowledgeDocument(
+        id="generated_llm_study",
+        title="Generated Study",
+        source_path="study.md",
+        mime_type="text/markdown",
+        size=1,
+        content_hash="study-hash",
+        status="ready",
+        kb_id="kb_default",
+        doc_type="llm_study",
+        version_id="study-v1",
+    )
+    storage.save_document(generated, [])
+    storage.save_document(study, [])
+    service._visual_extractor = FakeRangeExtractor([_candidate(source_id, source_version, 1)])
+    service._visual_analyzer = QueueAnalyzer([_high_result("source_only_visualfact")])
+
+    all_result = service.complete_visual_knowledge(max_steps=10, export=False)
+    generated_result = service.complete_visual_knowledge(document_id=generated.id, max_steps=5, export=False)
+    source_result = service.complete_visual_knowledge(document_id=source_id, max_steps=5, export=False)
+
+    assert all_result["ok"] is True
+    assert all_result["documents_processed"] == 1
+    assert all_result["succeeded"] == 1
+    assert service.search("source_only_visualfact", limit=5)
+    assert service.get_visual_stats(generated.id)["total"] == 0
+    assert service.get_visual_stats(study.id)["total"] == 0
+    assert generated_result["ok"] is False
+    assert "source document not found" in generated_result["message"]
+    assert source_result["ok"] is True
+    assert source_result["documents_processed"] == 1
+    assert source_result["processed"] == 0
+
+
+def test_visual_complete_without_document_uses_current_kb_source_documents(tmp_path):
+    service = _service(tmp_path)
+    default_doc_id, default_version = _ingest(service)
+    other = KnowledgeDocument(
+        id="other_kb_doc",
+        title="Other KB",
+        source_path="other-kb.md",
+        mime_type="text/markdown",
+        size=1,
+        content_hash="other-hash",
+        status="ready",
+        kb_id="other_kb",
+        doc_type="document",
+        version_id="other-v1",
+    )
+    service._backend._get_storage(writable=True).save_document(other, [])
+    service._visual_extractor = FakeRangeExtractor([_candidate(default_doc_id, default_version, 1)])
+    service._visual_analyzer = QueueAnalyzer([_high_result("default_kb_visualfact")])
+
+    result = service.complete_visual_knowledge(max_steps=10, export=False)
+
+    assert result["kb_id"] == "kb_default"
+    assert result["documents_processed"] == 1
+    assert result["succeeded"] == 1
+    assert service.search("default_kb_visualfact", limit=5)
+    assert service.get_visual_stats("other_kb_doc")["total"] == 0
+
+
 def test_visual_reset_api_clears_artifacts_chunks_and_prepare_state(monkeypatch, tmp_path):
     service = _service(tmp_path)
     document_id, version_id = _ingest(service)
@@ -754,6 +832,64 @@ def test_visual_use_current_model_resolves_current_backend_model(monkeypatch, tm
     assert artifact["analysis_model"] == "current-vision-model"
     visual_chunks = [chunk for chunk in storage.list_chunks(document_id) if chunk.metadata.get("source") == "visual_analysis"]
     assert visual_chunks[0].metadata["analysis_model"] == "current-vision-model"
+
+
+def test_retry_visual_artifact_resolves_current_backend_and_model(monkeypatch, tmp_path):
+    from common import llm_backend_router
+
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    storage.upsert_visual_artifact(_candidate(document_id, version_id, 1))
+    analyzer = QueueVisualAnalyzer([_high_result("retry_current_visualfact")])
+    service._visual_extractor = FakeRangeExtractor([])
+    service._visual_analyzer = analyzer
+    monkeypatch.setattr(llm_backend_router, "get_current_backend", lambda: "capi")
+    monkeypatch.setattr(llm_backend_router, "get_effective_model", lambda: "retry-current-model")
+    monkeypatch.setattr("agent.knowledge.backend.service._visual_backend_available", lambda backend: True)
+
+    retry = service.retry_visual_artifact("visual_test_1", analysis_backend="current")
+
+    assert retry["outcome"] == "succeeded"
+    assert retry["analysis_backend"] == "capi"
+    assert retry["analysis_model"] == "retry-current-model"
+    assert analyzer.backends == ["capi"]
+    assert analyzer.models == ["retry-current-model"]
+    artifact = storage.get_visual_artifact("visual_test_1")
+    assert artifact["analysis_backend"] == "capi"
+    assert artifact["analysis_model"] == "retry-current-model"
+    visual_chunks = [chunk for chunk in storage.list_chunks(document_id) if chunk.metadata.get("source") == "visual_analysis"]
+    assert visual_chunks[0].metadata["analysis_backend"] == "capi"
+    assert visual_chunks[0].metadata["analysis_model"] == "retry-current-model"
+
+
+def test_retry_visual_artifact_uses_explicit_backend_model(monkeypatch, tmp_path):
+    from common import llm_backend_router
+
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    storage.upsert_visual_artifact(_candidate(document_id, version_id, 1))
+    analyzer = QueueVisualAnalyzer([_high_result("retry_monthly_visualfact")])
+    service._visual_extractor = FakeRangeExtractor([])
+    service._visual_analyzer = analyzer
+    monkeypatch.setattr(
+        llm_backend_router,
+        "get_effective_openai_api_config",
+        lambda backend: {"model": "retry-monthly-model", "api_key": "x"} if backend == "capi_monthly" else {},
+    )
+    monkeypatch.setattr("agent.knowledge.backend.service._visual_backend_available", lambda backend: True)
+
+    retry = service.retry_visual_artifact("visual_test_1", analysis_backend="capi_monthly")
+
+    assert retry["outcome"] == "succeeded"
+    assert retry["analysis_backend"] == "capi_monthly"
+    assert retry["analysis_model"] == "retry-monthly-model"
+    assert analyzer.backends == ["capi_monthly"]
+    assert analyzer.models == ["retry-monthly-model"]
+    artifact = storage.get_visual_artifact("visual_test_1")
+    assert artifact["analysis_backend"] == "capi_monthly"
+    assert artifact["analysis_model"] == "retry-monthly-model"
 
 
 def test_visual_explicit_backend_uses_backend_specific_model(monkeypatch, tmp_path):
@@ -2802,8 +2938,11 @@ def test_visual_extractor_skips_toc_pages_but_keeps_strict_caption(tmp_path):
 def test_strict_caption_accepts_arm_amba_caption_styles():
     assert is_strict_caption_block("Figure 1-1 Channel architecture of reads")
     assert is_strict_caption_block("Figure 2-1 TVALID before TREADY handshake")
+    assert is_strict_caption_block("Figure 3-2 AXI write channel signals")
+    assert is_strict_caption_block("Figure 4-10 Read data channel signals")
     assert is_strict_caption_block("Fig. 2-3 Write address channel")
     assert is_strict_caption_block("Table 2-1 Global signals")
+    assert is_strict_caption_block("Table 3-4 Burst type encoding")
     assert is_strict_caption_block("图 1-1 通道结构")
     assert is_strict_caption_block("表 2-1 全局信号")
     assert is_strict_caption_block("Figure 1-1. Channel architecture of reads")
@@ -2813,6 +2952,26 @@ def test_strict_caption_accepts_arm_amba_caption_styles():
     assert not is_strict_caption_block("Table 2-2 on page 2-3 lists global signals.")
     assert not is_strict_caption_block("Figure 3-4 and Figure 3-5 show valid configurations.")
     assert not is_strict_caption_block("Figure 3-6 to Figure 3-11 represent examples.")
+
+
+def test_strict_caption_rejects_body_figure_table_references():
+    rejected = [
+        "Figure 1-1 shows how reads are issued.",
+        "Table 2-2 on page 2-3 lists global signals.",
+        "Figure 3-4 and Figure 3-5 show valid configurations.",
+        "Figure 5-19, Figure 5-20, and Figure 5-21 show transaction examples.",
+        "Figure 5-23, Figure 5-24, and Figure 5-25 show clocking examples.",
+        "Table 6-2, Table 6-3, and Table 6-4 give signal lists.",
+        "Table 3-9 (Truth Table 1) shows the truth table for decode.",
+        "Table 2-1 uses the following parameters to define the signal widths:",
+        "Figure 2-1 is an example of TVALID before TREADY.",
+        "Table 1-2 describes the signal naming convention.",
+        "Figure 1-3 illustrates channel ordering.",
+        "Figure 4-1 on page 4-2 shows the read data channel.",
+        "Figure 3-1 and Table 3-2 list supported encodings.",
+    ]
+    for reference in rejected:
+        assert not is_strict_caption_block(reference), reference
 
 
 def test_visual_extractor_accepts_space_separated_caption(tmp_path):
@@ -2963,6 +3122,87 @@ def test_visual_extractor_rejects_body_figure_references(tmp_path):
     assert "Figure 5-34" in captions
     assert "demonstrates" not in captions
     assert "gives a summary" not in captions
+
+
+def test_visual_extractor_adds_page_fallback_when_visual_page_has_weak_caption(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "fallback-visual.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    page.draw_rect(fitz.Rect(80, 120, 520, 420), color=(0, 0, 0))
+    pdf.save(pdf_path)
+    pdf.close()
+
+    config = _config(tmp_path, ingest={"allowed_extensions": [".pdf"]}, visual_analysis={"max_image_candidates_per_page": 0})
+    document = KnowledgeDocument(
+        id="doc",
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        size=pdf_path.stat().st_size,
+        content_hash="hash",
+        status="ready",
+        version_id="v1",
+    )
+    extracted = ExtractedDocument(
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[DocumentPage(1, "System timing diagram overview without a numbered caption.")],
+    )
+
+    candidates, _ = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        config,
+        start_page=1,
+        max_pages=1,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].caption == ""
+    assert candidates[0].parser_confidence == 0.55
+
+
+def test_visual_extractor_page_fallback_skips_reference_only_pages(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "fallback-reference.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    page.draw_rect(fitz.Rect(80, 120, 520, 420), color=(0, 0, 0))
+    page.insert_text((72, 455), "Figure 1-1 shows the timing diagram.")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    config = _config(tmp_path, ingest={"allowed_extensions": [".pdf"]}, visual_analysis={"max_image_candidates_per_page": 0})
+    document = KnowledgeDocument(
+        id="doc",
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        size=pdf_path.stat().st_size,
+        content_hash="hash",
+        status="ready",
+        version_id="v1",
+    )
+    extracted = ExtractedDocument(
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[DocumentPage(1, "Figure 1-1 shows the timing diagram.")],
+    )
+
+    candidates, _ = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        config,
+        start_page=1,
+        max_pages=1,
+    )
+
+    assert candidates == []
 
 
 def test_visual_extractor_dedupes_image_inside_caption_region(tmp_path):

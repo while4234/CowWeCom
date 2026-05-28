@@ -4976,13 +4976,18 @@ function renderVisualAnalysisBackendSelector(data) {
 
 function getSelectedVisualAnalysisBackend() {
     const select = document.getElementById('knowledge-backend-visual-backend-select');
-    return (select && select.value) || 'current';
+    return _normalizeVisualAnalysisBackend((select && select.value) || 'current');
+}
+
+function _normalizeVisualAnalysisBackend(value) {
+    const text = String(value || '').trim().toLowerCase();
+    return ['current', 'capi', 'capi_monthly', 'codex'].includes(text) ? text : 'current';
 }
 
 function renderKnowledgeBackendDocumentSelector(documents) {
     const select = document.getElementById('knowledge-backend-document-select');
     if (!select) return;
-    const sourceDocs = (documents || []).filter(doc => (doc.doc_type || 'document') !== 'llm_study');
+    const sourceDocs = (documents || []).filter(_isKnowledgeBackendSourceDocument);
     if (!sourceDocs.length) {
         select.innerHTML = '<option value="">请选择文档</option>';
         select.disabled = true;
@@ -5042,7 +5047,7 @@ function renderKnowledgeBackendDocuments(documents) {
                        title="打开导出的文档" aria-label="打开导出的文档"><i class="fas fa-arrow-up-right-from-square"></i></button>`
             : '';
         const safeDocId = escapeAttr(escapeJs(doc.id || ''));
-        const visualBtns = (doc.doc_type || 'document') !== 'llm_study'
+        const visualBtns = _isKnowledgeBackendSourceDocument(doc)
             ? `<button type="button" onclick="selectKnowledgeBackendDocument('${safeDocId}'); showLowConfidenceVisualArtifacts('${safeDocId}')"
                        class="knowledge-backend-doc-action knowledge-backend-doc-action-text"
                        title="查看此文档未入库的低置信视觉内容">
@@ -5136,20 +5141,82 @@ function _knowledgeBackendUploadedDocumentIds(data) {
 }
 
 function _knowledgeBackendSourceDocument() {
-    return (_knowledgeBackendDocuments || []).find(doc => (doc.doc_type || 'document') !== 'llm_study') || null;
+    return (_knowledgeBackendDocuments || []).find(_isKnowledgeBackendSourceDocument) || null;
 }
 
 function _knowledgeBackendDocumentById(documentId) {
     return (_knowledgeBackendDocuments || []).find(doc => doc.id === documentId) || null;
 }
 
+function _isKnowledgeBackendSourceDocument(doc) {
+    return ((doc && doc.doc_type) || 'document') === 'document';
+}
+
 function _knowledgeBackendSourceDocumentIds() {
     return (_knowledgeBackendDocuments || [])
-        .filter(doc => (doc.doc_type || 'document') !== 'llm_study' && doc.id)
+        .filter(doc => _isKnowledgeBackendSourceDocument(doc) && doc.id)
         .map(doc => doc.id);
 }
 
 async function startVisualBuildLoop(documentId, force, retryFailed, options) {
+    if (_knowledgeBackendVisualRunning) return;
+    const messageEl = document.getElementById('knowledge-backend-message');
+    const buildOptions = options || {};
+    const selectedId = documentId || getSelectedKnowledgeBackendDocumentId();
+    const selectedDoc = selectedId ? _knowledgeBackendDocumentById(selectedId) : null;
+    const sourceDocumentIds = _knowledgeBackendSourceDocumentIds();
+    if (selectedDoc && !_isKnowledgeBackendSourceDocument(selectedDoc)) {
+        if (messageEl) messageEl.textContent = 'Selected document is generated and cannot be used for visual completion.';
+        return;
+    }
+    if (!selectedId && !sourceDocumentIds.length) {
+        if (messageEl) messageEl.textContent = 'Please upload or select a source document first.';
+        return;
+    }
+    const sourceDoc = selectedId
+        ? (selectedDoc || { id: selectedId, title: selectedId })
+        : { id: '', title: `${sourceDocumentIds.length} source document(s)` };
+    if (sourceDoc.id) selectKnowledgeBackendDocument(sourceDoc.id);
+    _knowledgeBackendVisualRunning = true;
+    const backend = _normalizeVisualAnalysisBackend(buildOptions.analysisBackend || getSelectedVisualAnalysisBackend() || 'current');
+    const requestForce = buildOptions.force !== undefined ? !!buildOptions.force : !!force;
+    const requestRetryFailed = buildOptions.retryFailed !== undefined ? !!buildOptions.retryFailed : !!retryFailed;
+    setVisualBuildProgressVisible(true);
+    resetVisualBuildProgress();
+    if (messageEl) messageEl.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>${t('knowledge_backend_visual_running')}`;
+    try {
+        const payload = {
+            analysis_backend: backend || 'current',
+            retry_failed: requestRetryFailed,
+            force: requestForce,
+            export: true
+        };
+        if (sourceDoc.id) payload.document_id = sourceDoc.id;
+        if (buildOptions.maxSteps) payload.max_steps = buildOptions.maxSteps;
+        const resp = await fetch('/api/knowledge/admin/visual/complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await _knowledgeBackendJson(resp);
+        updateVisualBuildProgress(data, data, sourceDoc, data.analysis_backend || backend);
+        if (data.status === 'disabled' || data.ok === false) {
+            if (messageEl) messageEl.textContent = data.message || 'Visual analysis is disabled';
+        } else if (messageEl) {
+            const changed = _visualCompletionChanged(data);
+            const suffix = changed ? '' : ' (no new changes)';
+            messageEl.textContent = `Visual completion finished${suffix}: documents ${data.documents_processed || 0}, processed ${data.processed || 0}, indexed ${data.succeeded || 0}, low confidence ${data.low_confidence || 0}, failed ${data.failed || 0}, groups merged ${data.group_succeeded || 0}`;
+        }
+        loadKnowledgeBackendPanel();
+        loadKnowledgeView();
+    } catch (err) {
+        if (messageEl) messageEl.textContent = err.message || 'Visual build failed';
+    } finally {
+        _knowledgeBackendVisualRunning = false;
+    }
+}
+
+async function startVisualBuildLoopLegacy(documentId, force, retryFailed, options) {
     if (_knowledgeBackendVisualRunning) return;
     const messageEl = document.getElementById('knowledge-backend-message');
     const buildOptions = options || {};
@@ -5171,7 +5238,7 @@ async function startVisualBuildLoop(documentId, force, retryFailed, options) {
     selectKnowledgeBackendDocument(sourceDoc.id);
     _knowledgeBackendVisualRunning = true;
     let runId = '';
-    const backend = buildOptions.analysisBackend || getSelectedVisualAnalysisBackend() || 'current';
+    const backend = _normalizeVisualAnalysisBackend(buildOptions.analysisBackend || getSelectedVisualAnalysisBackend() || 'current');
     const requestForce = buildOptions.force !== undefined ? !!buildOptions.force : !!force;
     const requestRetryFailed = buildOptions.retryFailed !== undefined ? !!buildOptions.retryFailed : !!retryFailed;
     let totals = { processed: 0, succeeded: 0, low_confidence: 0, failed: 0, pending: 0, group_succeeded: 0, group_low_confidence: 0 };
@@ -5274,17 +5341,41 @@ async function startVisualBuildLoopQueue(documentIds, options) {
     return _knowledgeBackendVisualQueue;
 }
 
+function _visualCompletionChanged(data) {
+    if (data && data.changed === true) return true;
+    return [
+        'processed',
+        'failed',
+        'low_confidence',
+        'group_processed',
+        'group_succeeded',
+        'group_low_confidence',
+        'group_failed'
+    ].some(key => Number((data && data[key]) || 0) > 0);
+}
+
+function _visualProgressLastResult(data) {
+    const results = (data && data.results) || [];
+    for (let index = results.length - 1; index >= 0; index -= 1) {
+        const result = results[index] && results[index].last_result;
+        if (result) return result;
+    }
+    return {};
+}
+
 function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
-    const stats = (data && data.stats) || {};
-    const groupStats = (data && data.group_stats) || {};
-    const prepare = (data && data.prepare) || {};
+    const lastResult = _visualProgressLastResult(data);
+    const stats = (data && data.stats) || lastResult.stats || {};
+    const groupStats = (data && data.group_stats) || lastResult.group_stats || {};
+    const prepare = (data && data.prepare) || lastResult.prepare || {};
     const total = Number(stats.total || 0);
     const pending = Number(stats.pending || 0);
     const running = Number(stats.running || 0);
-    const succeeded = Number(stats.succeeded || 0);
-    const lowConfidence = Number(stats.low_confidence || 0);
-    const failed = Number(stats.failed || 0);
-    const done = succeeded + lowConfidence + failed;
+    const succeeded = Number(stats.succeeded || (data && data.succeeded) || 0);
+    const lowConfidence = Number(stats.low_confidence || (data && data.low_confidence) || 0);
+    const failed = Number(stats.failed || (data && data.failed) || 0);
+    const processed = Number((data && data.processed) || 0);
+    const done = total > 0 ? succeeded + lowConfidence + failed : processed;
     const remaining = Math.max(0, pending + running);
     const totalGroups = Number(groupStats.total || 0);
     const succeededGroups = Number(groupStats.succeeded || 0);

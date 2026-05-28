@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sys
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -44,23 +45,9 @@ def main() -> int:
         logger.setLevel(previous_level)
     config = KnowledgeBackendConfig.from_project_config()
     if args.kb_id:
-        config = KnowledgeBackendConfig.from_mapping(
-            {
-                **config.__dict__,
-                "default_kb_id": args.kb_id,
-                "ingest": {
-                    "allowed_extensions": config.ingest.allowed_extensions,
-                    "allowed_import_roots": [str(path) for path in config.ingest.allowed_import_roots],
-                    "max_file_size_mb": config.ingest.max_file_size_mb,
-                },
-                "vector_store": {
-                    "provider": config.vector_store.provider,
-                    "url": config.vector_store.url,
-                    "collection": config.vector_store.collection,
-                    "required": config.vector_store.required,
-                },
-            }
-        )
+        config_mapping = _config_to_mapping(config)
+        config_mapping["default_kb_id"] = args.kb_id
+        config = KnowledgeBackendConfig.from_mapping(config_mapping)
 
     if not config.enabled:
         print(json.dumps({"status": "disabled", "message": "knowledge_backend.enabled is false"}, ensure_ascii=False))
@@ -79,18 +66,45 @@ def main() -> int:
             document = result.get("document") if isinstance(result, dict) else None
             document_id = document.get("id") if isinstance(document, dict) else ""
             if args.visual and result.get("status") == "succeeded" and document_id:
-                result["visual_completion"] = service.complete_visual_knowledge(
-                    document_id=document_id,
-                    analysis_backend=args.visual_analysis_backend or "current",
-                    force_prepare=args.visual_force_prepare,
-                    max_steps=args.visual_max_steps,
-                    export=not args.no_export,
-                )
+                try:
+                    result["visual_completion"] = service.complete_visual_knowledge(
+                        document_id=document_id,
+                        analysis_backend=args.visual_analysis_backend or "current",
+                        force_prepare=args.visual_force_prepare,
+                        max_steps=args.visual_max_steps,
+                        export=not args.no_export,
+                    )
+                except Exception as exc:
+                    result["visual_completion"] = {
+                        "ok": False,
+                        "status": "error",
+                        "message": str(exc),
+                        "document_id": document_id,
+                        "analysis_backend": args.visual_analysis_backend or "current",
+                    }
             results.append(result)
         _write_manifest(config.data_dir, service)
 
     print(json.dumps({"status": "success", "results": _jsonable(results)}, ensure_ascii=False, indent=2))
     return 0
+
+
+def _config_to_mapping(config: Any) -> Dict[str, Any]:
+    if is_dataclass(config):
+        mapping = asdict(config)
+    else:
+        mapping = dict(getattr(config, "__dict__", {}) or {})
+    return _stringify_paths(mapping)
+
+
+def _stringify_paths(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _stringify_paths(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_stringify_paths(item) for item in value]
+    return value
 
 
 def _jsonable(value: Any) -> Any:

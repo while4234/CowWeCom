@@ -593,7 +593,7 @@ class KnowledgeBackendService:
             documents = [document for document in documents if document.id == document_id]
         elif kb_id:
             documents = [document for document in documents if document.kb_id == kb_id]
-        documents = [document for document in documents if (document.doc_type or "document") == "document"]
+        documents = [document for document in documents if _is_source_document(document)]
         totals = {"artifacts": 0, "chunks": 0, "source_spans": 0, "prepare_states": 0}
         for document in documents:
             should_reset = bool(force)
@@ -631,7 +631,7 @@ class KnowledgeBackendService:
             documents = [document for document in documents if document.id == document_id]
         elif kb_id:
             documents = [document for document in documents if document.kb_id == kb_id]
-        documents = [document for document in documents if (document.doc_type or "document") == "document"]
+        documents = [document for document in documents if _is_source_document(document)]
         prepared = 0
         prepared_pages_delta = 0
         prepared_artifacts_delta = 0
@@ -1046,7 +1046,8 @@ class KnowledgeBackendService:
             return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false"}
 
         storage = self._backend._get_storage(writable=True)
-        documents = self._visual_completion_documents(storage, document_id=document_id, kb_id=kb_id)
+        target_kb_id = kb_id or (None if document_id else self.config.default_kb_id)
+        documents = self._visual_completion_documents(storage, document_id=document_id, kb_id=target_kb_id)
         if document_id and not documents:
             return {"ok": False, "status": "error", "message": "source document not found"}
 
@@ -1055,7 +1056,7 @@ class KnowledgeBackendService:
             "ok": True,
             "status": "success",
             "document_id": document_id or "",
-            "kb_id": kb_id or "",
+            "kb_id": target_kb_id or "",
             "analysis_backend": normalize_visual_analysis_backend(analysis_backend or "current"),
             "documents_processed": 0,
             "processed": 0,
@@ -1070,6 +1071,7 @@ class KnowledgeBackendService:
             "prepared_artifacts_delta": 0,
             "errors": [],
             "stopped_reason": "completed",
+            "changed": False,
             "results": [],
             "document_library": [],
         }
@@ -1112,6 +1114,9 @@ class KnowledgeBackendService:
                         totals["stopped_reason"] = "error"
                     break
                 _accumulate_visual_completion_totals(totals, result)
+                if _visual_completion_changed(result):
+                    totals["changed"] = True
+                    document_result["changed"] = True
                 prepare = result.get("prepare") or {}
                 if prepare.get("status") == "failed":
                     error = str(prepare.get("error") or "visual prepare failed")
@@ -1132,7 +1137,7 @@ class KnowledgeBackendService:
                         if totals["stopped_reason"] == "completed":
                             totals["stopped_reason"] = "no_progress"
                         break
-            if export:
+            if export and document_result.get("changed"):
                 export_result = self.export_document_library(document_id=document.id)
                 totals["document_library"].append(export_result)
             totals["results"].append(document_result)
@@ -1154,17 +1159,19 @@ class KnowledgeBackendService:
             documents = [document for document in documents if document.id == document_id]
         elif kb_id:
             documents = [document for document in documents if document.kb_id == kb_id]
-        return [document for document in documents if (document.doc_type or "document") != "llm_study"]
+        return [document for document in documents if _is_source_document(document)]
 
-    def retry_visual_artifact(self, artifact_id: str) -> Dict[str, Any]:
+    def retry_visual_artifact(self, artifact_id: str, analysis_backend: Optional[str] = None) -> Dict[str, Any]:
         if not self.config.enabled:
             return {"ok": False, "status": "disabled", "message": "local knowledge backend is disabled"}
+        if not _visual_analysis_enabled(self.config):
+            return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false"}
         storage = self._backend._get_storage(writable=True)
         artifact = storage.get_visual_artifact(artifact_id)
         if artifact is None:
             return {"ok": False, "status": "error", "message": "visual artifact not found"}
         visual_config = self.config.visual_analysis or {}
-        target = _resolve_visual_analysis_target(self.config, analysis_backend="current")
+        target = _resolve_visual_analysis_target(self.config, analysis_backend=analysis_backend or "current")
         model = target["model"]
         analysis_config = _visual_config_with_model(
             self.config,
@@ -1173,6 +1180,7 @@ class KnowledgeBackendService:
         )
         prompt_version = str(visual_config.get("prompt_version") or "visual-v1")
         effective_backend = target["effective_backend"]
+        requested_backend = target["requested_backend"]
         self._ensure_visual_backend_available(effective_backend)
         outcome = self._process_visual_artifact(
             storage,
@@ -1183,11 +1191,16 @@ class KnowledgeBackendService:
             effective_backend,
             analysis_config,
         )
+        updated_artifact = storage.get_visual_artifact(artifact_id) or {}
         return {
             "ok": outcome != "failed",
             "status": "success" if outcome != "failed" else "failed",
             "artifact_id": artifact_id,
             "outcome": outcome,
+            "analysis_backend": effective_backend,
+            "requested_analysis_backend": requested_backend,
+            "analysis_model": model,
+            "artifact": updated_artifact,
             "stats": storage.visual_stats(document_id=artifact["document_id"], version_id=artifact["version_id"]),
         }
 
@@ -2130,7 +2143,7 @@ def _select_llm_source_document(
     *,
     document_id: str = "",
 ) -> Optional[KnowledgeDocument]:
-    source_documents = [document for document in documents if document.doc_type != "llm_study"]
+    source_documents = [document for document in documents if _is_source_document(document)]
     if document_id:
         return next((document for document in source_documents if document.id == document_id), None)
     return source_documents[0] if source_documents else None
@@ -2604,6 +2617,10 @@ def _visual_analysis_enabled(config: KnowledgeBackendConfig) -> bool:
     return parse_knowledge_backend_enabled((config.visual_analysis or {}).get("enabled", True))
 
 
+def _is_source_document(document: KnowledgeDocument) -> bool:
+    return (document.doc_type or "document") == "document"
+
+
 def _resolve_visual_analysis_target(
     config: KnowledgeBackendConfig,
     analysis_backend: Optional[str] = None,
@@ -2687,6 +2704,19 @@ def _visual_completion_made_progress(result: Mapping[str, Any]) -> bool:
         "scanned_pages_delta",
     )
     return any(int(result.get(key) or 0) > 0 for key in progress_keys)
+
+
+def _visual_completion_changed(result: Mapping[str, Any]) -> bool:
+    changed_keys = (
+        "processed",
+        "failed",
+        "low_confidence",
+        "group_processed",
+        "group_succeeded",
+        "group_low_confidence",
+        "group_failed",
+    )
+    return any(int(result.get(key) or 0) > 0 for key in changed_keys)
 
 
 def _accumulate_visual_completion_totals(totals: Dict[str, Any], result: Mapping[str, Any]) -> None:
@@ -3364,7 +3394,12 @@ def dispatch_admin_request(method: str, path: str, payload: Dict[str, Any]) -> D
         artifact_id = str(payload.get("artifact_id") or payload.get("id") or "")
         if not artifact_id:
             return {"status": "error", "message": "artifact_id is required"}
-        return _to_jsonable(service.retry_visual_artifact(artifact_id))
+        return _to_jsonable(
+            service.retry_visual_artifact(
+                artifact_id,
+                analysis_backend=str(payload.get("analysis_backend") or "") or None,
+            )
+        )
     if method == "POST" and path in ("upload", "docs/upload"):
         return _handle_upload_payload(service, payload)
     if method == "POST" and path in ("ingest", "rebuild", "docs/import-folder"):

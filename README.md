@@ -495,7 +495,7 @@ CowWeCom/
 - Windows Python 3.13 可选语音依赖补充 `audioop-lts`，修复 `pydub` 因标准库 `audioop` 移除而无法加载的问题，语音转换能力在重启后可正常初始化。
 - Agent 同轮重复工具调用结果进一步压缩：相同参数的重复 read/bash/edit 等工具仍保留首次完整结果，重复结果改为短引用，减少上下文膨胀和缓存扰动。
 - KnowledgeStorage 视觉 chunk/source span 完整性继续收口：视觉结果追加、删除和 reset 避免覆盖普通 chunk 与共享 span，并清理无人引用的图谱证据引用。
-- 本地文档视觉补全链路继续加固：AMBA/ARM 常见无点号 Figure/Table caption 可被重新发现，默认使用当前后端视觉模型；Web 未选中文档时可一键补全全部 source documents，并新增脚本/API 级完整补全入口。
+- 本地文档视觉补全链路继续加固：PDF caption 识别保留 ARM/AMBA 无标点 Figure/Table 标题，同时先过滤正文引用句和目录页；Web“补全图表/视觉知识”主流程切到服务端完整补全接口，只处理当前 KB 的 source documents，并排除 `llm_study`、`codex_analysis` 等生成文档；视觉重试和 CLI 构建统一解析当前/显式视觉后端并记录实际模型。
 - 已刷新公共协议知识库 SQLite：UCIe 1.1、AMBA AXI v2.0 和 AXI4-Stream 的 PDF 普通文本 chunk 已用当前 sanitizer 重建，Figure/Table 周边图内信号、时序和表格碎片乱码抽检清零，三个协议验证报告均通过；远端拉取后实际检索使用随仓库更新的 `public_protocol_knowledge/indexes/kb.sqlite`，网页文档库需重新导出到 `knowledge/documents/<kb_id>/`，并清理旧 `~/cow/knowledge/protocols/` 残留，避免误点旧 Markdown。
 
 ### 2026-05-27

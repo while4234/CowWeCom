@@ -63,6 +63,44 @@ _REFERENCE_CAPTION_VERBS = {
     "depicts",
     "depicted",
 }
+_BODY_REFERENCE_VERBS = {
+    *_REFERENCE_CAPTION_VERBS,
+    "define",
+    "defines",
+    "defined",
+    "indicate",
+    "indicates",
+    "indicated",
+    "present",
+    "presents",
+    "presented",
+    "see",
+    "specify",
+    "specifies",
+    "specified",
+    "use",
+    "uses",
+    "used",
+}
+_REFERENCE_ITEM_PATTERN = rf"(?:{_CAPTION_LABEL_PATTERN})(?:\s*\([^)\n]{{1,80}}\))?"
+_REFERENCE_CLUSTER_RE = re.compile(
+    rf"^\s*(?P<cluster>{_REFERENCE_ITEM_PATTERN}"
+    rf"(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s+to\s+){_REFERENCE_ITEM_PATTERN})*)"
+    rf"(?P<tail>.*)$",
+    re.IGNORECASE,
+)
+_BODY_REFERENCE_VERB_RE = re.compile(
+    r"^(?:" + "|".join(sorted(re.escape(verb) for verb in _BODY_REFERENCE_VERBS)) + r")\b",
+    re.IGNORECASE,
+)
+_BODY_REFERENCE_PHRASE_RE = re.compile(
+    r"^(?:"
+    r"on\s+pages?\b|"
+    r"as\s+shown\b|"
+    r"(?:is|are)\s+(?:an?\s+)?(?:example|examples|illustration|summary)\b"
+    r")",
+    re.IGNORECASE,
+)
 _REFERENCE_TITLE_START_RE = re.compile(
     rf"^(?:on\s+pages?|in\s+pages?|and\s+(?:{_CAPTION_LABEL_PATTERN})|to\s+(?:{_CAPTION_LABEL_PATTERN}))\b",
     re.IGNORECASE,
@@ -101,6 +139,8 @@ def is_strict_caption_block(text: str) -> bool:
     lines = _first_nonempty_lines(text, limit=3)
     if not lines:
         return False
+    if _looks_like_body_figure_table_reference("\n".join(lines)):
+        return False
     first = lines[0]
     inline_match = STRICT_CAPTION_BLOCK_RE.match(first)
     if inline_match:
@@ -127,9 +167,36 @@ def _normalize_caption_line(line: str) -> str:
 
 def _caption_line_looks_like_reference(line: str, title: str = "") -> bool:
     normalized = _normalize_caption_line(line)
+    if _looks_like_body_figure_table_reference(normalized):
+        return True
     if _REFERENCE_RANGE_OR_LIST_RE.search(normalized):
         return True
     return _caption_title_looks_like_reference(title)
+
+
+def _looks_like_body_figure_table_reference(text: str) -> bool:
+    normalized = _normalize_reference_line(text)
+    if not normalized:
+        return False
+    match = _REFERENCE_CLUSTER_RE.match(normalized)
+    if not match:
+        return False
+    tail = _normalize_reference_tail(match.group("tail") or "")
+    if not tail:
+        return False
+    return bool(_BODY_REFERENCE_PHRASE_RE.match(tail) or _BODY_REFERENCE_VERB_RE.match(tail))
+
+
+def _normalize_reference_line(text: str) -> str:
+    normalized = _normalize_caption_line(re.sub(r"\s+", " ", str(text or "")))
+    # Drop simple printed page numbers from list/table-of-figures entries before
+    # judging whether the remaining text is a body reference sentence.
+    return re.sub(r"(?:\.{2,}\s*)?\s+\d+(?:[-.]\d+)?\s*$", "", normalized).strip()
+
+
+def _normalize_reference_tail(text: str) -> str:
+    tail = _normalize_caption_line(text)
+    return re.sub(r"^[.:：．]\s*", "", tail).strip()
 
 
 def _caption_title_looks_like_reference(title: str) -> bool:
@@ -293,7 +360,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                 for candidate in page_candidates:
                     candidates.append(candidate)
 
-                if self._should_add_page_fallback(page_text, caption_candidates, candidates, page_index):
+                if self._should_add_page_fallback(page_text, caption_candidates, page_candidates):
                     page_candidates.append(
                         self._candidate_from_rect(
                             page_rect,
@@ -548,15 +615,16 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         self,
         page_text: str,
         caption_candidates: List[Tuple[Any, str, str]],
-        candidates: List[VisualArtifactCandidate],
-        page_index: int,
+        page_candidates: List[VisualArtifactCandidate],
     ) -> bool:
-        if caption_candidates or any(candidate.page == page_index for candidate in candidates):
+        if caption_candidates or page_candidates:
             return False
         text = page_text or ""
         if _is_toc_or_list_page(text):
             return False
-        return bool(is_strict_caption_block(text) and VISUAL_KEYWORD_RE.search(text))
+        if any(_looks_like_body_figure_table_reference(line) for line in _first_nonempty_lines(text, limit=20)):
+            return False
+        return bool(VISUAL_KEYWORD_RE.search(text))
 
     def _context_around_caption(
         self,
