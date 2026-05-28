@@ -501,8 +501,8 @@ CowWeCom/
 - Windows Python 3.13 可选语音依赖补充 `audioop-lts`，修复 `pydub` 因标准库 `audioop` 移除而无法加载的问题，语音转换能力在重启后可正常初始化。
 - Agent 同轮重复工具调用结果进一步压缩：相同参数的重复 read/bash/edit 等工具仍保留首次完整结果，重复结果改为短引用，减少上下文膨胀和缓存扰动。
 - KnowledgeStorage 视觉 chunk/source span 完整性继续收口：视觉结果追加、删除和 reset 避免覆盖普通 chunk 与共享 span，并清理无人引用的图谱证据引用。
-- 本地文档视觉补全链路继续加固：PDF caption 识别保留 ARM/AMBA 无标点 Figure/Table 标题，同时拒绝正文引用句和 label-only 行；Web“补全图表/视觉知识”主流程继续走服务端完整补全接口，未选择文档/KB 时处理全库 source documents，并排除 `llm_study`、`codex_analysis` 等生成文档；视觉重试和 CLI 构建统一记录实际后端与模型。
-- 公共协议视觉补全新增公式/方程候选和跨页大表候选：公式乱码默认只识别报告、不凭空猜写普通 chunk，大表破碎文本优先等待高置信视觉 table/formula chunk 替代；显式修复参数只会在已有高置信可检索视觉替代时清理坏普通文本。
+- 本地文档视觉补全链路继续加固：PDF caption 识别按 Figure/Table label 优先分类，保留 ARM/AMBA 无标点标题，同时拒绝正文引用句、label-only 行和正文步骤拼接；候选 bbox 会写入真实页面尺寸，`find_tables()` 增加预检与调用统计，Web“补全图表/视觉知识”未选择文档/KB 时仍处理全库 source documents，并排除 `llm_study`、`codex_analysis` 等生成文档。
+- 公共协议视觉补全新增并继续收紧公式/方程候选和跨页大表候选：信号表、位宽/信号名密集页不再触发明显公式 false positive，UCIe CRC/VTF/loss 等公式上下文候选保留；公式乱码默认只识别报告、不凭空猜写普通 chunk，大表破碎文本优先等待高置信视觉 table/formula chunk 替代。
 - 已刷新公共协议知识库 SQLite：UCIe 1.1、AMBA AXI v2.0 和 AXI4-Stream 的 PDF 普通文本 chunk 已用当前 sanitizer 重建，Figure/Table 周边图内信号、时序和表格碎片乱码抽检清零，三个协议验证报告均通过；远端拉取后实际检索使用随仓库更新的 `public_protocol_knowledge/indexes/kb.sqlite`，网页文档库需重新导出到 `knowledge/documents/<kb_id>/`，并清理旧 `~/cow/knowledge/protocols/` 残留，避免误点旧 Markdown。
 
 ### 2026-05-27

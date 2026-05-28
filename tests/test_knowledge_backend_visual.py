@@ -111,7 +111,12 @@ class FakeRangeExtractor(FakeExtractor):
             and candidate.version_id == document.version_id
             and start_page <= candidate.page <= end_page
         ]
-        return list(candidates), {"pages_scanned": self.pages_per_call, "candidates": len(candidates)}
+        return list(candidates), {
+            "pages_scanned": self.pages_per_call,
+            "candidates": len(candidates),
+            "find_tables_calls": 1,
+            "find_tables_skipped": max(0, max_pages - 1),
+        }
 
     def ensure_visual_artifact_image(self, candidate, config):
         return candidate
@@ -357,6 +362,19 @@ def _count_rows(conn, table, column, values):
         return 0
     placeholders = ",".join("?" for _ in values)
     return conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} IN ({placeholders})", values).fetchone()[0]
+
+
+def _pdf_document(pdf_path, *, document_id="doc", title="Doc", version_id="v1"):
+    return KnowledgeDocument(
+        id=document_id,
+        title=title,
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        size=pdf_path.stat().st_size,
+        content_hash=f"{document_id}-hash",
+        status="ready",
+        version_id=version_id,
+    )
 
 
 def _upsert_visual_group(storage, document_id, version_id, group_id, source_pages=None, *, status="pending", retrievable=0):
@@ -1123,6 +1141,8 @@ def test_visual_build_prepares_pages_incrementally(tmp_path):
     assert extractor.calls[:2] == [(1, 1), (2, 1)]
     assert first["prepare"]["prepared_pages"] == 1
     assert first["prepare"]["prepared_artifacts"] == 1
+    assert first["prepare_report"]["find_tables_calls"] == 1
+    assert first["prepare_report"]["find_tables_skipped"] == 0
     assert second["prepare"]["prepared_pages"] >= 2
     assert first["processed"] == 1
     assert second["processed"] == 1
@@ -2580,6 +2600,111 @@ def test_formula_visual_candidate_indexes_structured_formula(tmp_path):
     assert "Vs(f)" in "\n".join(block["text"] for block in deep["evidence_blocks"])
 
 
+def test_signal_table_pdf_does_not_create_formula_candidate(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "signal-table.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    page.insert_text((72, 72), "Table 2-1.")
+    page.insert_text((72, 96), "Global signals")
+    page.insert_text((72, 130), "Signal Direction Width Description")
+    for index in range(18):
+        page.insert_text((72, 160 + index * 26), f"AXI_SIG_{index}[3:0] input 4 Description_{index}")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    document = _pdf_document(pdf_path, document_id="signal_table_doc", version_id="signal-table-v1")
+    page_text = "Table 2-1.\nGlobal signals\nSignal Direction Width Description\n" + "\n".join(
+        f"AXI_SIG_{index}[3:0] input 4 Description_{index}" for index in range(18)
+    )
+    extracted = ExtractedDocument(
+        title=document.title,
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[DocumentPage(1, page_text)],
+    )
+
+    candidates, report = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        _config(tmp_path, ingest={"allowed_extensions": [".pdf"]}, visual_analysis={"tile_large_artifacts": False}),
+        start_page=1,
+        max_pages=1,
+    )
+
+    assert report["find_tables_calls"] >= 1
+    assert any(candidate.artifact_type == "table" for candidate in candidates)
+    assert not any(candidate.artifact_type == "formula" for candidate in candidates)
+    assert all(candidate.bbox["page_width"] > 0 and candidate.bbox["page_height"] > 0 for candidate in candidates)
+
+
+def test_formula_pdf_still_creates_candidate_with_page_size(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "formula-candidate.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    page.insert_text((72, 90), "Equation 5-1 defines insertion loss for VTF.")
+    page.insert_text((110, 150), "L f( ) 20 10 Vr f( ) Vs f( ) log =")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    document = _pdf_document(pdf_path, document_id="formula_candidate_doc", version_id="formula-candidate-v1")
+    extracted = ExtractedDocument(
+        title=document.title,
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[DocumentPage(1, "Equation 5-1 defines insertion loss for VTF.\nL f( ) 20 10 Vr f( ) Vs f( ) log =")],
+    )
+
+    candidates, report = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        _config(tmp_path, ingest={"allowed_extensions": [".pdf"]}, visual_analysis={"tile_large_artifacts": False}),
+        start_page=1,
+        max_pages=1,
+    )
+
+    formula_candidate = next(candidate for candidate in candidates if candidate.artifact_type == "formula")
+    assert report["find_tables_calls"] == 0
+    assert report["find_tables_skipped"] == 1
+    assert formula_candidate.bbox["page_width"] == 600
+    assert formula_candidate.bbox["page_height"] == 800
+
+
+def test_pymupdf_find_tables_precheck_skips_plain_pages(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "plain.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    page.insert_text((72, 90), "This page contains ordinary protocol prose without table geometry.")
+    page.insert_text((72, 125), "The channel handshake is described in nearby paragraphs.")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    document = _pdf_document(pdf_path, document_id="plain_doc", version_id="plain-v1")
+    extracted = ExtractedDocument(
+        title=document.title,
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[DocumentPage(1, "This page contains ordinary protocol prose without table geometry.")],
+    )
+
+    candidates, report = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        _config(tmp_path, ingest={"allowed_extensions": [".pdf"]}),
+        start_page=1,
+        max_pages=1,
+    )
+
+    assert candidates == []
+    assert report["find_tables_calls"] == 0
+    assert report["find_tables_skipped"] == 1
+
+
 def test_low_confidence_formula_result_is_not_retrievable(tmp_path):
     service = _service(tmp_path)
     document_id, version_id = _ingest(service)
@@ -3276,9 +3401,22 @@ def test_strict_caption_rejects_body_figure_table_references():
         "Figure 1-3 illustrates channel ordering.",
         "Figure 4-1 on page 4-2 shows the read data channel.",
         "Figure 3-1 and Table 3-2 list supported encodings.",
+        "Figure 5-15.\n2. Use the generated channel response in a signal-integrity or channel-simulation",
     ]
     for reference in rejected:
         assert not is_strict_caption_block(reference), reference
+
+
+def test_caption_label_kind_controls_visual_artifact_type():
+    extractor = PyMuPDFVisualArtifactExtractor()
+
+    assert (
+        extractor._artifact_type_from_caption("Figure 5-10.\nReceiver termination map for Table 5-6 (TX Swing = 0.85 V)")
+        == "figure"
+    )
+    assert extractor._artifact_type_from_caption("Figure 2-1 TVALID before TREADY handshake") == "figure"
+    assert extractor._artifact_type_from_caption("Table 2-1.\nGlobal signals") == "table"
+    assert extractor._artifact_type_from_caption("CRC polynomial table") == "table"
 
 
 def test_strict_caption_rejects_label_only_without_title():

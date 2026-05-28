@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .models import DocumentPage
 from .visual_extractors import (
+    _next_line_can_be_caption_title,
     is_caption_label_line,
     is_strict_caption_block,
     normalize_caption_text,
@@ -595,6 +596,6 @@ def _caption_text_from_block(blocks: List[Dict[str, Any]], index: int) -> str:
     if lines and is_caption_label_line(lines[0]) and len(lines) < 2 and index + 1 < len(blocks):
         next_text = str(blocks[index + 1].get("text") or "")
         next_lines = [_normalize_line(line) for line in next_text.splitlines() if _normalize_line(line)]
-        if next_lines:
+        if next_lines and _next_line_can_be_caption_title(next_lines[0]):
             return f"{text.rstrip()}\n{next_lines[0]}"
     return text

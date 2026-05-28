@@ -636,6 +636,7 @@ class KnowledgeBackendService:
         prepared_pages_delta = 0
         prepared_artifacts_delta = 0
         scanned_pages_delta = 0
+        prepare_report_totals: Dict[str, int] = {}
         errors: List[str] = []
         visual_config = self.config.visual_analysis or {}
         pipeline_version = str(visual_config.get("pipeline_version") or DEFAULT_VISUAL_PIPELINE_VERSION)
@@ -704,6 +705,9 @@ class KnowledgeBackendService:
                         candidate = VisualArtifactCandidate(**{**candidate.to_dict(), "pipeline_version": pipeline_version})
                     storage.upsert_visual_artifact(candidate)
                     prepared += 1
+                for key in ("find_tables_calls", "find_tables_skipped"):
+                    if key in prepare_report:
+                        prepare_report_totals[key] = prepare_report_totals.get(key, 0) + int(prepare_report.get(key) or 0)
                 scanned_pages = max(0, int(prepare_report.get("pages_scanned") or 0))
                 prepared_pages_delta += scanned_pages
                 prepared_artifacts_delta += len(candidates)
@@ -754,6 +758,7 @@ class KnowledgeBackendService:
             "prepared_artifacts_delta": prepared_artifacts_delta,
             "scanned_pages_delta": scanned_pages_delta,
             "errors": errors,
+            "prepare_report": prepare_report_totals,
             "prepare": prepare_stats,
             **stats,
         }
@@ -840,6 +845,7 @@ class KnowledgeBackendService:
         prepared_pages_delta = 0
         prepared_artifacts_delta = 0
         scanned_pages_delta = 0
+        prepare_report_totals: Dict[str, int] = {}
         processed_artifact_ids: set[str] = set()
 
         for _ in range(batch_limit):
@@ -860,6 +866,8 @@ class KnowledgeBackendService:
                 prepared_pages_delta += int(prepare_result.get("prepared_pages_delta") or 0)
                 prepared_artifacts_delta += int(prepare_result.get("prepared_artifacts_delta") or 0)
                 scanned_pages_delta += int(prepare_result.get("scanned_pages_delta") or 0)
+                for key, value in (prepare_result.get("prepare_report") or {}).items():
+                    prepare_report_totals[str(key)] = prepare_report_totals.get(str(key), 0) + int(value or 0)
                 stats = storage.visual_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
                 prepare = storage.visual_prepare_stats(document_id=document_id, kb_id=None if document_id else kb_id, version_id=version_id)
                 artifact = storage.claim_next_visual_artifact(
@@ -930,6 +938,7 @@ class KnowledgeBackendService:
             "prepared_pages_delta": prepared_pages_delta,
             "prepared_artifacts_delta": prepared_artifacts_delta,
             "scanned_pages_delta": scanned_pages_delta,
+            "prepare_report": prepare_report_totals,
             "processed": processed,
             "succeeded": succeeded,
             "low_confidence": low_confidence,

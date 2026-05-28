@@ -23,6 +23,10 @@ STRICT_CAPTION_BLOCK_RE = re.compile(
     rf"^\s*{_CAPTION_PREFIX}(?:\s*[.:：]\s*|\s+)(?P<title>\S.*)$",
     re.IGNORECASE,
 )
+_CAPTION_LABEL_KIND_RE = re.compile(
+    rf"^\s*(?:(?P<word_kind>Figure|Fig\.?|Table)\s+|(?P<cjk_kind>[图表])\s*){_CAPTION_NUMBER_PATTERN}",
+    re.IGNORECASE,
+)
 STRICT_CAPTION_RE = STRICT_CAPTION_BLOCK_RE
 VISUAL_KEYWORD_RE = re.compile(
     r"\b(?:timing|waveform|state\s*machine|bit\s*field|diagram|chart)\b|时序|状态机|流程图|位域",
@@ -124,6 +128,16 @@ _REFERENCE_SENTENCE_VERB_RE = re.compile(
     r"illustrate|illustrates|provide|provides|explain|explains|depict|depicts)\b",
     re.IGNORECASE,
 )
+_BODY_SENTENCE_VERB_RE = re.compile(
+    r"\b(?:use|uses|used|define|defines|defined|generate|generated|list|lists|listed|show|shows|shown|"
+    r"describe|describes|described|provide|provides|provided|include|includes|included|contain|contains|"
+    r"indicate|indicates|specified|specifies|required|requires)\b",
+    re.IGNORECASE,
+)
+_FORMULA_FUNCTION_RE = re.compile(r"\b(?:ceil|floor|log|int|crc|vtf|sin|cos|tan|sqrt)\s*\(", re.IGNORECASE)
+_FORMULA_ASSIGNMENT_RE = re.compile(r"(?:[A-Za-z][A-Za-z0-9_]*\s*(?:\([^)]{0,80}\))?\s*=|=\s*[^=\n]{2,})")
+_FORMULA_SYMBOL_RE = re.compile(r"[=+\-*/^(){}<>]")
+_SIGNAL_ROW_DIRECTION_RE = re.compile(r"\b(?:input|output|inout|source|destination|master|slave|write|read)\b", re.IGNORECASE)
 
 
 def normalize_caption_text(text: str) -> str:
@@ -156,7 +170,7 @@ def is_strict_caption_block(text: str) -> bool:
     if inline_match:
         return not _caption_line_looks_like_reference(first, inline_match.group("title"))
     if is_caption_label_line(first) and len(lines) >= 2:
-        return not _caption_title_looks_like_reference(lines[1])
+        return _next_line_can_be_caption_title(lines[1])
     return False
 
 
@@ -232,6 +246,31 @@ def _caption_title_looks_like_reference(title: str) -> bool:
     return bool(len(compact) >= 16 and signal_markers >= 3)
 
 
+def _next_line_can_be_caption_title(line: str) -> bool:
+    text = _normalize_caption_line(line)
+    if not text:
+        return False
+    if is_caption_label_line(text) or STRICT_CAPTION_BLOCK_RE.match(text):
+        return False
+    if _looks_like_body_figure_table_reference(text) or _caption_title_looks_like_reference(text):
+        return False
+    if _BODY_REFERENCE_VERB_RE.match(text):
+        return False
+    if re.match(r"^(?:[-*•]\s+|[A-Za-z][.)]\s+|\d+[.)]\s+)", text):
+        return False
+    if re.match(r"^\d+(?:\.\d+){1,8}\s+\S+", text):
+        return False
+
+    tokens = text.split()
+    if len(tokens) > 18:
+        return False
+    has_body_verb = bool(_BODY_SENTENCE_VERB_RE.search(text))
+    has_sentence_shape = bool(re.search(r"[.!?;。；]\s*$", text) or re.search(r"\b(?:the|a|an|this|these|following)\b", text, re.IGNORECASE))
+    if len(tokens) >= 8 and has_body_verb and has_sentence_shape:
+        return False
+    return True
+
+
 class VisualArtifactExtractor:
     """Interface for parser-specific visual artifact candidate extraction."""
 
@@ -287,6 +326,8 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             "pages_scanned": 0,
             "candidates": 0,
             "skipped_toc_pages": 0,
+            "find_tables_calls": 0,
+            "find_tables_skipped": 0,
         }
         if source.suffix.lower() != ".pdf" or not source.is_file():
             return [], report
@@ -320,7 +361,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                     report["skipped_toc_pages"] += 1
                     continue
 
-                table_rects = self._table_rects(page, page_rect, text_blocks, page_text)
+                table_rects = self._table_rects(page, page_rect, text_blocks, page_text, report=report)
                 caption_candidates = self._caption_candidates(page_rect, text_blocks, table_rects)
                 page_candidates: List[VisualArtifactCandidate] = []
                 for rect, caption, artifact_type in caption_candidates:
@@ -329,6 +370,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                     page_candidates.append(
                         self._candidate_from_rect(
                             rect,
+                            page_rect,
                             document,
                             extracted_document,
                             artifact_type,
@@ -355,6 +397,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                     page_candidates.append(
                         self._candidate_from_rect(
                             rect,
+                            page_rect,
                             document,
                             extracted_document,
                             "table",
@@ -374,6 +417,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                     page_candidates.append(
                         self._candidate_from_rect(
                             formula_rect,
+                            page_rect,
                             document,
                             extracted_document,
                             "formula",
@@ -399,6 +443,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                     page_candidates.append(
                         self._candidate_from_rect(
                             rect,
+                            page_rect,
                             document,
                             extracted_document,
                             "image",
@@ -419,6 +464,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                 if self._should_add_page_fallback(page_text, caption_candidates, page_candidates):
                     page_candidates.append(
                         self._candidate_from_rect(
+                            page_rect,
                             page_rect,
                             document,
                             extracted_document,
@@ -488,12 +534,26 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             candidates.append((rect, caption[:300], artifact_type))
         return candidates
 
-    def _table_rects(self, page: Any, page_rect: Any, blocks: List[Dict[str, Any]], page_text: str) -> List[Any]:
+    def _table_rects(
+        self,
+        page: Any,
+        page_rect: Any,
+        blocks: List[Dict[str, Any]],
+        page_text: str,
+        *,
+        report: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
         if _is_toc_or_list_page(page_text):
             return []
         rects: List[Any] = []
-        rects.extend(self._pymupdf_table_rects(page))
-        rects.extend(self._dense_table_block_rects(page_rect, blocks))
+        dense_rects = self._dense_table_block_rects(page_rect, blocks)
+        if _page_has_pymupdf_table_hints(blocks, page_text):
+            if report is not None:
+                report["find_tables_calls"] = int(report.get("find_tables_calls") or 0) + 1
+            rects.extend(self._pymupdf_table_rects(page))
+        elif report is not None:
+            report["find_tables_skipped"] = int(report.get("find_tables_skipped") or 0) + 1
+        rects.extend(dense_rects)
         return _dedupe_rects(rects)
 
     def _pymupdf_table_rects(self, page: Any) -> List[Any]:
@@ -592,22 +652,35 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             return None, 0.0
         context_hint = bool(FORMULA_CONTEXT_RE.search(page_text or ""))
         block_rects: List[Any] = []
+        tableish_rects = _tableish_block_rects(blocks)
         for index, block in enumerate(blocks):
             text = str(block.get("text") or "")
+            if _block_is_formula_negative(text, block, tableish_rects):
+                continue
             neighboring_context = "\n".join(
                 str(blocks[pos].get("text") or "")
                 for pos in range(max(0, index - 1), min(len(blocks), index + 2))
             )
-            formulaish = is_formula_garble_block(f"{neighboring_context}\n{text}") or any(
-                is_formula_garble_line(line, context=neighboring_context) for line in text.splitlines()
+            strong_garble = any(
+                is_formula_garble_line(line, context=neighboring_context) and not _line_looks_signal_list_row(line)
+                for line in text.splitlines()
             )
-            keyword_with_symbols = bool(FORMULA_CONTEXT_RE.search(neighboring_context) and re.search(r"[=+\-*/^(){}\[\]]", text))
+            formulaish = strong_garble or (
+                bool(FORMULA_CONTEXT_RE.search(neighboring_context))
+                and is_formula_garble_block(f"{neighboring_context}\n{text}")
+                and not _block_text_dense_table_like(text)
+            )
+            keyword_with_symbols = bool(
+                FORMULA_CONTEXT_RE.search(neighboring_context)
+                and _text_has_formula_structure(text)
+                and not _block_text_dense_table_like(text)
+            )
             if formulaish or keyword_with_symbols:
                 x0, y0, x1, y1 = block["bbox"]
                 block_rects.append(fitz.Rect(x0, y0, x1, y1))
         if block_rects:
             return _expand_rect(_union_rects(block_rects), page_rect, y_padding=24.0), 0.60
-        if context_hint and is_formula_garble_block(page_text):
+        if context_hint and is_formula_garble_block(page_text) and not _block_text_dense_table_like(page_text):
             return page_rect, 0.55
         return None, 0.0
 
@@ -642,13 +715,14 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         if is_caption_label_line(lines[0] if lines else "") and len(lines) < 2 and index + 1 < len(blocks):
             next_text = str(blocks[index + 1].get("text") or "")
             next_lines = _first_nonempty_lines(next_text, limit=1)
-            if next_lines:
+            if next_lines and _next_line_can_be_caption_title(next_lines[0]):
                 return f"{text.rstrip()}\n{next_lines[0]}"
         return text
 
     def _candidate_from_rect(
         self,
         rect: Any,
+        page_rect: Any,
         document: KnowledgeDocument,
         extracted_document: ExtractedDocument,
         artifact_type: str,
@@ -674,8 +748,8 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             "y0": round(float(clip.y0), 3),
             "x1": round(float(clip.x1), 3),
             "y1": round(float(clip.y1), 3),
-            "page_width": round(float(rect.parent.width), 3) if getattr(rect, "parent", None) else 0,
-            "page_height": round(float(rect.parent.height), 3) if getattr(rect, "parent", None) else 0,
+            "page_width": round(float(page_rect.width), 3),
+            "page_height": round(float(page_rect.height), 3),
             "unit": "pdf_points",
         }
         context_before, context_after = self._context_around_caption(
@@ -845,8 +919,9 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         return match.group(0) if match else ""
 
     def _artifact_type_from_caption(self, caption: str) -> str:
+        label_kind = _caption_label_kind(caption)
         lower = (caption or "").lower()
-        if "table" in lower or "表" in caption:
+        if label_kind == "table":
             return "table"
         if "timing" in lower or "时序" in caption:
             return "timing_diagram"
@@ -860,6 +935,10 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             return "flowchart"
         if "chart" in lower:
             return "chart"
+        if label_kind == "figure":
+            return "figure"
+        if "table" in lower or "表" in caption:
+            return "table"
         return "figure"
 
     def _area_ratio(self, rect: Any, page_area: float) -> float:
@@ -886,6 +965,21 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
 
     def _iou(self, a: Dict[str, Any], b: Dict[str, Any]) -> float:
         return bbox_iou(a, b)
+
+
+def _caption_label_kind(caption: str) -> str:
+    match = _CAPTION_LABEL_KIND_RE.match(caption or "")
+    if not match:
+        return ""
+    word_kind = (match.group("word_kind") or "").lower().rstrip(".")
+    cjk_kind = match.group("cjk_kind") or ""
+    if word_kind == "table" or cjk_kind == "表":
+        return "table"
+    if word_kind in {"figure", "fig"} or cjk_kind == "图":
+        return "figure"
+    return ""
+
+
 def _is_toc_or_list_page(page_text: str) -> bool:
     lowered = (page_text or "").lower()
     return any(
@@ -954,6 +1048,112 @@ def _dedupe_rects(rects: Iterable[Any]) -> List[Any]:
     return result
 
 
+def _page_has_pymupdf_table_hints(blocks: List[Dict[str, Any]], page_text: str) -> bool:
+    text = str(page_text or "")
+    if not text.strip():
+        return False
+    if TABLE_CONTINUATION_RE.search(text):
+        return True
+    if any(
+        is_strict_caption_block(caption_text)
+        and _caption_label_kind(normalize_caption_text(caption_text)) == "table"
+        for caption_text in (_candidate_caption_text_from_blocks(blocks, index) for index in range(len(blocks)))
+    ):
+        return True
+    if _block_text_dense_table_like(text):
+        return True
+    for block in blocks:
+        block_text = str(block.get("text") or "")
+        if _block_looks_table_like(block_text):
+            return True
+    return False
+
+
+def _candidate_caption_text_from_blocks(blocks: List[Dict[str, Any]], index: int) -> str:
+    text = str(blocks[index].get("text") or "")
+    lines = _first_nonempty_lines(text, limit=3)
+    if is_caption_label_line(lines[0] if lines else "") and len(lines) < 2 and index + 1 < len(blocks):
+        next_text = str(blocks[index + 1].get("text") or "")
+        next_lines = _first_nonempty_lines(next_text, limit=1)
+        if next_lines and _next_line_can_be_caption_title(next_lines[0]):
+            return f"{text.rstrip()}\n{next_lines[0]}"
+    return text
+
+
+def _tableish_block_rects(blocks: List[Dict[str, Any]]) -> List[Any]:
+    try:
+        import fitz
+    except ImportError:
+        return []
+    rects = []
+    for block in blocks:
+        text = str(block.get("text") or "")
+        if _text_has_formula_structure(text):
+            continue
+        if _block_looks_table_like(text) or _block_text_dense_table_like(text) or _signal_list_rows(text) >= 2:
+            x0, y0, x1, y1 = block["bbox"]
+            rects.append(fitz.Rect(x0, y0, x1, y1))
+    return rects
+
+
+def _block_is_formula_negative(text: str, block: Dict[str, Any], tableish_rects: List[Any]) -> bool:
+    value = str(text or "")
+    if not value.strip():
+        return True
+    if _text_has_formula_structure(value) and not _line_looks_signal_list_row(value):
+        return False
+    if _block_text_dense_table_like(value) or _block_looks_table_like(value):
+        return True
+    if _signal_list_rows(value) >= 2:
+        return True
+    if len(TABLE_HEADER_RE.findall(value)) >= 3 and not _text_has_formula_structure(value):
+        return True
+    try:
+        import fitz
+
+        x0, y0, x1, y1 = block["bbox"]
+        rect = fitz.Rect(x0, y0, x1, y1)
+    except Exception:
+        return False
+    return any(_rect_overlap_ratio(rect, table_rect) >= 0.70 for table_rect in tableish_rects)
+
+
+def _text_has_formula_structure(text: str) -> bool:
+    compact = " ".join(str(text or "").split())
+    if not compact:
+        return False
+    symbol_count = len(_FORMULA_SYMBOL_RE.findall(compact))
+    has_assignment = bool(_FORMULA_ASSIGNMENT_RE.search(compact))
+    has_function = bool(_FORMULA_FUNCTION_RE.search(compact) or re.search(r"\b(?:log|ceil|floor|crc|vtf)\s*=", compact, re.IGNORECASE))
+    if has_assignment and (symbol_count >= 3 or has_function):
+        return True
+    return bool(has_function and symbol_count >= 4)
+
+
+def _signal_list_rows(text: str) -> int:
+    return sum(1 for line in str(text or "").splitlines() if _line_looks_signal_list_row(line))
+
+
+def _line_looks_signal_list_row(line: str) -> bool:
+    text = str(line or "").strip()
+    if not text:
+        return False
+    if _text_has_formula_structure(text):
+        return False
+    tokens = text.split()
+    if len(tokens) < 3:
+        return False
+    header_hits = sum(1 for token in tokens if token.lower().strip(":") in {"signal", "direction", "description", "width", "type"})
+    if header_hits >= 2:
+        return True
+    first = tokens[0].strip(",:;")
+    signal_name = bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\[[0-9:]+\])?", first))
+    bit_width = bool(re.search(r"\[[0-9]+(?::[0-9]+)?\]|\b\d+\s*(?:bits?|b)\b", text, re.IGNORECASE))
+    direction = bool(_SIGNAL_ROW_DIRECTION_RE.search(text))
+    natural_words = len(re.findall(r"[A-Za-z]{4,}", text))
+    return bool(signal_name and (direction or bit_width) and natural_words >= 1)
+
+
 def _block_looks_table_like(text: str) -> bool:
     value = str(text or "")
     lines = [line.strip() for line in value.splitlines() if line.strip()]
@@ -971,9 +1171,39 @@ def _line_looks_table_row(line: str) -> bool:
         return False
     if "|" in line or "\t" in line:
         return True
-    signalish = sum(1 for token in tokens if re.fullmatch(r"[A-Za-z0-9_./:\-\[\](),+<>|]+", token))
+    header_hits = sum(1 for token in tokens if token.lower().strip(":") in {
+        "signal",
+        "direction",
+        "description",
+        "name",
+        "type",
+        "bit",
+        "field",
+        "width",
+        "value",
+        "encoding",
+        "meaning",
+        "parameter",
+    })
+    if header_hits >= 2:
+        return True
+    if _line_looks_signal_list_row(line):
+        return True
+    signalish = sum(1 for token in tokens if _token_looks_table_cell(token))
     numeric = sum(1 for token in tokens if re.search(r"\d", token))
-    return bool(signalish >= max(2, len(tokens) - 1) or numeric >= 2)
+    natural = sum(1 for token in tokens if re.fullmatch(r"[A-Za-z]{4,}", token.strip(".,;:()")))
+    if natural >= max(3, len(tokens) // 2) and signalish <= 1:
+        return False
+    return bool(signalish >= max(2, len(tokens) - 1) or (numeric >= 2 and signalish >= 1 and natural <= max(2, len(tokens) // 3)))
+
+
+def _token_looks_table_cell(token: str) -> bool:
+    value = str(token or "").strip(".,;:")
+    if not value:
+        return False
+    if "_" in value or "[" in value or "]" in value or re.search(r"\d", value):
+        return bool(re.fullmatch(r"[A-Za-z0-9_./:\-\[\](),+<>|]+", value))
+    return bool(len(value) <= 16 and value.upper() == value and re.fullmatch(r"[A-Z0-9_./:\-\[\](),+<>|]+", value))
 
 
 def _page_edge_dense_table_like(blocks: List[Dict[str, Any]], page_rect: Any) -> bool:
