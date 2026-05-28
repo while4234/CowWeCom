@@ -375,7 +375,7 @@ Web 控制台默认随服务启动，提供以下管理能力：
 public_document_knowledge/
 ```
 
-视觉图表补全会记录 `pipeline_version`，视觉提取、裁剪或提示词版本变化时会自动清理旧视觉缓存，管理员也可通过 `visual/reset` 按文档或知识库手动重建。视觉管线同时保留 page-level artifact 与 group-level artifact：跨页表格、大图、时序图会优先生成多页视觉 chunk，低置信结果只留分析记录不参与检索；高密度单页图表会按需高分辨率重试或 tile 分块合并，Web 进度会显示 artifact、group 和 tile 状态。旧公共协议 SQLite 如果已经有 PDF 图内乱码普通文本 chunk，可用 `scripts/repair_knowledge_text_chunks.py` 先 dry-run 检查，再用 `--apply` 备份并替换普通文本 chunk；脚本会保留高置信 `visual_analysis` chunk、视觉 artifact 表与映射，并重建 FTS。
+视觉图表补全会记录 `pipeline_version`，视觉提取、裁剪或提示词版本变化时会自动清理旧视觉缓存，管理员也可通过 `visual/reset` 按文档或知识库手动重建。当前默认视觉管线为 `visual-pipeline-v2`；如果本机 ignored 的 `config.json` 仍显式设置 `visual_analysis.pipeline_version="visual-pipeline-v1"`，请改成 v2，或先调用 `visual/reset` 后再补全。视觉管线同时保留 page-level artifact 与 group-level artifact：跨页表格、大图、时序图会优先生成多页视觉 chunk，低置信结果只留分析记录不参与检索；高密度单页图表会按需高分辨率重试或 tile 分块合并，Web 进度会显示 artifact、group 和 tile 状态。旧公共协议 SQLite 如果已经有 PDF 图内乱码普通文本 chunk，可用 `scripts/repair_knowledge_text_chunks.py` 先 dry-run 检查，再用 `--apply` 备份并替换普通文本 chunk；脚本会保留高置信 `visual_analysis` chunk、视觉 artifact 表与映射，并重建 FTS。
 
 可提交到仓库的公共协议/规范知识数据仍仅限：
 
@@ -495,7 +495,7 @@ CowWeCom/
 - Windows Python 3.13 可选语音依赖补充 `audioop-lts`，修复 `pydub` 因标准库 `audioop` 移除而无法加载的问题，语音转换能力在重启后可正常初始化。
 - Agent 同轮重复工具调用结果进一步压缩：相同参数的重复 read/bash/edit 等工具仍保留首次完整结果，重复结果改为短引用，减少上下文膨胀和缓存扰动。
 - KnowledgeStorage 视觉 chunk/source span 完整性继续收口：视觉结果追加、删除和 reset 避免覆盖普通 chunk 与共享 span，并清理无人引用的图谱证据引用。
-- 本地文档视觉 group 回归继续加固：覆盖成员重试、stale member 批量清理、真实成员检索边界、缺失 source_pages 回填，以及 legacy 污染状态修复。
+- 本地文档视觉补全链路继续加固：AMBA/ARM 常见无点号 Figure/Table caption 可被重新发现，默认使用当前后端视觉模型；Web 未选中文档时可一键补全全部 source documents，并新增脚本/API 级完整补全入口。
 - 已刷新公共协议知识库 SQLite：UCIe 1.1、AMBA AXI v2.0 和 AXI4-Stream 的 PDF 普通文本 chunk 已用当前 sanitizer 重建，Figure/Table 周边图内信号、时序和表格碎片乱码抽检清零，三个协议验证报告均通过；远端拉取后实际检索使用随仓库更新的 `public_protocol_knowledge/indexes/kb.sqlite`，网页文档库需重新导出到 `knowledge/documents/<kb_id>/`，并清理旧 `~/cow/knowledge/protocols/` 残留，避免误点旧 Markdown。
 
 ### 2026-05-27

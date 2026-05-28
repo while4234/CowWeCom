@@ -252,7 +252,7 @@
       "model": "gpt-5.5",
       "reasoning_effort": "xhigh",
       "prompt_version": "visual-v1",
-      "pipeline_version": "visual-pipeline-v1",
+      "pipeline_version": "visual-pipeline-v2",
       "max_items_per_request": 1,
       "prepare_pages_per_request": 3,
       "min_confidence": 0.78,

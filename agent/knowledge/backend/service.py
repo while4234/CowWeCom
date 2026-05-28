@@ -51,7 +51,7 @@ from .visual_analyzer import (
     visual_group_result_to_chunks,
     visual_result_to_chunks,
 )
-from .visual_extractors import PyMuPDFVisualArtifactExtractor
+from .visual_extractors import DEFAULT_VISUAL_PIPELINE_VERSION, PyMuPDFVisualArtifactExtractor
 from .visual_grouping import VisualArtifactGrouper
 
 
@@ -67,7 +67,7 @@ DEFAULT_VISUAL_ANALYSIS_CONFIG: Dict[str, Any] = {
     "model": "gpt-5.5",
     "reasoning_effort": "xhigh",
     "prompt_version": "visual-v1",
-    "pipeline_version": "visual-pipeline-v1",
+    "pipeline_version": DEFAULT_VISUAL_PIPELINE_VERSION,
     "max_items_per_request": 1,
     "prepare_pages_per_request": 3,
     "min_confidence": 0.78,
@@ -218,7 +218,8 @@ class KnowledgeBackendConfig:
                 "model": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MODEL") or "gpt-5.5",
                 "reasoning_effort": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_REASONING_EFFORT") or "xhigh",
                 "prompt_version": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PROMPT_VERSION") or "visual-v1",
-                "pipeline_version": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PIPELINE_VERSION") or "visual-pipeline-v1",
+                "pipeline_version": os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PIPELINE_VERSION")
+                or DEFAULT_VISUAL_PIPELINE_VERSION,
                 "max_items_per_request": int(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MAX_ITEMS_PER_REQUEST") or 1),
                 "min_confidence": float(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MIN_CONFIDENCE") or 0.78),
                 "min_ocr_confidence": float(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_MIN_OCR_CONFIDENCE") or 0.70),
@@ -586,7 +587,7 @@ class KnowledgeBackendService:
     ) -> Dict[str, int]:
         """Clear stale visual caches when extractor/prompt pipeline version changes."""
 
-        target_pipeline = str(pipeline_version or "visual-pipeline-v1")
+        target_pipeline = str(pipeline_version or DEFAULT_VISUAL_PIPELINE_VERSION)
         documents = storage.list_documents()
         if document_id:
             documents = [document for document in documents if document.id == document_id]
@@ -637,7 +638,7 @@ class KnowledgeBackendService:
         scanned_pages_delta = 0
         errors: List[str] = []
         visual_config = self.config.visual_analysis or {}
-        pipeline_version = str(visual_config.get("pipeline_version") or "visual-pipeline-v1")
+        pipeline_version = str(visual_config.get("pipeline_version") or DEFAULT_VISUAL_PIPELINE_VERSION)
         pages_per_request = max(1, int(max_pages or visual_config.get("prepare_pages_per_request") or 3))
         for document in documents:
             try:
@@ -774,14 +775,18 @@ class KnowledgeBackendService:
         if not _visual_analysis_enabled(self.config):
             return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false"}
         visual_config = self.config.visual_analysis or {}
-        model = str(visual_config.get("model") or "gpt-5.5")
-        prompt_version = str(visual_config.get("prompt_version") or "visual-v1")
-        pipeline_version = str(visual_config.get("pipeline_version") or "visual-pipeline-v1")
-        requested_backend = normalize_visual_analysis_backend(
-            analysis_backend if analysis_backend is not None else visual_config.get("analysis_backend")
+        target = _resolve_visual_analysis_target(self.config, analysis_backend=analysis_backend)
+        model = target["model"]
+        analysis_config = _visual_config_with_model(
+            self.config,
+            model=model,
+            reasoning_effort=target.get("reasoning_effort"),
         )
+        prompt_version = str(visual_config.get("prompt_version") or "visual-v1")
+        pipeline_version = str(visual_config.get("pipeline_version") or DEFAULT_VISUAL_PIPELINE_VERSION)
+        requested_backend = target["requested_backend"]
+        effective_backend = target["effective_backend"]
         try:
-            effective_backend = resolve_visual_analysis_backend(requested_backend)
             self._ensure_visual_backend_available(effective_backend)
         except Exception as exc:
             return {
@@ -791,6 +796,7 @@ class KnowledgeBackendService:
                 "document_id": document_id or "",
                 "kb_id": kb_id or "",
                 "analysis_backend": requested_backend,
+                "analysis_model": model,
                 "prepared": 0,
                 "prepared_pages_delta": 0,
                 "prepared_artifacts_delta": 0,
@@ -871,7 +877,15 @@ class KnowledgeBackendService:
                 break
             processed_artifact_ids.add(artifact["id"])
             processed += 1
-            outcome = self._process_visual_artifact(storage, artifact, force, model, prompt_version, effective_backend)
+            outcome = self._process_visual_artifact(
+                storage,
+                artifact,
+                force,
+                model,
+                prompt_version,
+                effective_backend,
+                analysis_config,
+            )
             if outcome == "succeeded":
                 succeeded += 1
             elif outcome == "low_confidence":
@@ -889,6 +903,7 @@ class KnowledgeBackendService:
             model=model,
             prompt_version="visual-group-v1",
             analysis_backend=effective_backend,
+            analysis_config=analysis_config,
         )
         if group_outcome:
             group_processed = 1
@@ -910,6 +925,7 @@ class KnowledgeBackendService:
             "document_id": document_id or "",
             "kb_id": kb_id or "",
             "analysis_backend": effective_backend,
+            "analysis_model": model,
             "prepared": prepared,
             "prepared_pages_delta": prepared_pages_delta,
             "prepared_artifacts_delta": prepared_artifacts_delta,
@@ -1013,6 +1029,133 @@ class KnowledgeBackendService:
             **stats,
         }
 
+    def complete_visual_knowledge(
+        self,
+        document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        analysis_backend: Optional[str] = "current",
+        retry_failed: bool = False,
+        force: bool = False,
+        force_prepare: bool = False,
+        max_steps: Optional[int] = None,
+        export: bool = True,
+    ) -> Dict[str, Any]:
+        if not self.config.enabled:
+            return {"ok": False, "status": "disabled", "message": "local knowledge backend is disabled"}
+        if not _visual_analysis_enabled(self.config):
+            return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false"}
+
+        storage = self._backend._get_storage(writable=True)
+        documents = self._visual_completion_documents(storage, document_id=document_id, kb_id=kb_id)
+        if document_id and not documents:
+            return {"ok": False, "status": "error", "message": "source document not found"}
+
+        max_steps_value = int(max_steps) if max_steps is not None else None
+        totals: Dict[str, Any] = {
+            "ok": True,
+            "status": "success",
+            "document_id": document_id or "",
+            "kb_id": kb_id or "",
+            "analysis_backend": normalize_visual_analysis_backend(analysis_backend or "current"),
+            "documents_processed": 0,
+            "processed": 0,
+            "succeeded": 0,
+            "low_confidence": 0,
+            "failed": 0,
+            "group_processed": 0,
+            "group_succeeded": 0,
+            "group_low_confidence": 0,
+            "group_failed": 0,
+            "prepared_pages_delta": 0,
+            "prepared_artifacts_delta": 0,
+            "errors": [],
+            "stopped_reason": "completed",
+            "results": [],
+            "document_library": [],
+        }
+        steps = 0
+
+        for document in documents:
+            if max_steps_value is not None and steps >= max_steps_value:
+                totals["stopped_reason"] = "max_steps"
+                break
+            totals["documents_processed"] += 1
+            if force_prepare:
+                reset = self.reset_visual_knowledge(document_id=document.id)
+                totals.setdefault("reset", []).append(reset)
+
+            no_progress_count = 0
+            document_result: Dict[str, Any] = {"document_id": document.id, "steps": 0, "stopped_reason": "completed"}
+            while True:
+                if max_steps_value is not None and steps >= max_steps_value:
+                    totals["stopped_reason"] = "max_steps"
+                    document_result["stopped_reason"] = "max_steps"
+                    break
+                result = self.build_visual_knowledge(
+                    document_id=document.id,
+                    limit=1,
+                    force=force,
+                    analysis_backend=analysis_backend or "current",
+                    retry_failed=retry_failed,
+                )
+                steps += 1
+                document_result["steps"] += 1
+                document_result["last_result"] = result
+                if result.get("analysis_backend"):
+                    totals["analysis_backend"] = result["analysis_backend"]
+                if result.get("analysis_model"):
+                    totals["analysis_model"] = result["analysis_model"]
+                if result.get("ok") is False:
+                    totals["errors"].append(f"{document.id}: {result.get('message') or result.get('status') or 'visual build failed'}")
+                    document_result["stopped_reason"] = "error"
+                    if totals["stopped_reason"] == "completed":
+                        totals["stopped_reason"] = "error"
+                    break
+                _accumulate_visual_completion_totals(totals, result)
+                prepare = result.get("prepare") or {}
+                if prepare.get("status") == "failed":
+                    error = str(prepare.get("error") or "visual prepare failed")
+                    totals["errors"].append(f"{document.id}: {error}")
+                    document_result["stopped_reason"] = "prepare_failed"
+                    if totals["stopped_reason"] == "completed":
+                        totals["stopped_reason"] = "prepare_failed"
+                    break
+                if not result.get("has_more"):
+                    document_result["stopped_reason"] = "completed"
+                    break
+                if _visual_completion_made_progress(result):
+                    no_progress_count = 0
+                else:
+                    no_progress_count += 1
+                    if no_progress_count >= 2:
+                        document_result["stopped_reason"] = "no_progress"
+                        if totals["stopped_reason"] == "completed":
+                            totals["stopped_reason"] = "no_progress"
+                        break
+            if export:
+                export_result = self.export_document_library(document_id=document.id)
+                totals["document_library"].append(export_result)
+            totals["results"].append(document_result)
+
+        totals["steps"] = steps
+        if totals["errors"] and totals["stopped_reason"] == "completed":
+            totals["stopped_reason"] = "error"
+        return totals
+
+    def _visual_completion_documents(
+        self,
+        storage: KnowledgeStorage,
+        *,
+        document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+    ) -> List[KnowledgeDocument]:
+        documents = storage.list_documents()
+        if document_id:
+            documents = [document for document in documents if document.id == document_id]
+        elif kb_id:
+            documents = [document for document in documents if document.kb_id == kb_id]
+        return [document for document in documents if (document.doc_type or "document") != "llm_study"]
+
     def retry_visual_artifact(self, artifact_id: str) -> Dict[str, Any]:
         if not self.config.enabled:
             return {"ok": False, "status": "disabled", "message": "local knowledge backend is disabled"}
@@ -1021,12 +1164,25 @@ class KnowledgeBackendService:
         if artifact is None:
             return {"ok": False, "status": "error", "message": "visual artifact not found"}
         visual_config = self.config.visual_analysis or {}
-        model = str(visual_config.get("model") or "gpt-5.5")
+        target = _resolve_visual_analysis_target(self.config, analysis_backend="current")
+        model = target["model"]
+        analysis_config = _visual_config_with_model(
+            self.config,
+            model=model,
+            reasoning_effort=target.get("reasoning_effort"),
+        )
         prompt_version = str(visual_config.get("prompt_version") or "visual-v1")
-        requested_backend = normalize_visual_analysis_backend(visual_config.get("analysis_backend") or "current")
-        effective_backend = resolve_visual_analysis_backend(requested_backend)
+        effective_backend = target["effective_backend"]
         self._ensure_visual_backend_available(effective_backend)
-        outcome = self._process_visual_artifact(storage, artifact, True, model, prompt_version, effective_backend)
+        outcome = self._process_visual_artifact(
+            storage,
+            artifact,
+            True,
+            model,
+            prompt_version,
+            effective_backend,
+            analysis_config,
+        )
         return {
             "ok": outcome != "failed",
             "status": "success" if outcome != "failed" else "failed",
@@ -1057,12 +1213,14 @@ class KnowledgeBackendService:
                 "group": group,
                 "group_stats": storage.visual_group_stats(document_id=group["document_id"], version_id=group["version_id"]),
             }
-        visual_config = self.config.visual_analysis or {}
-        model = str(visual_config.get("model") or "gpt-5.5")
-        requested_backend = normalize_visual_analysis_backend(
-            analysis_backend if analysis_backend is not None else visual_config.get("analysis_backend")
+        target = _resolve_visual_analysis_target(self.config, analysis_backend=analysis_backend)
+        model = target["model"]
+        analysis_config = _visual_config_with_model(
+            self.config,
+            model=model,
+            reasoning_effort=target.get("reasoning_effort"),
         )
-        effective_backend = resolve_visual_analysis_backend(requested_backend)
+        effective_backend = target["effective_backend"]
         self._ensure_visual_backend_available(effective_backend)
         if force:
             storage._mark_visual_group_not_retrievable(group_id)
@@ -1078,6 +1236,7 @@ class KnowledgeBackendService:
             model=model,
             prompt_version="visual-group-v1",
             analysis_backend=effective_backend,
+            analysis_config=analysis_config,
         )
         return {
             "ok": outcome not in ("", "failed"),
@@ -1198,8 +1357,9 @@ class KnowledgeBackendService:
         model: str,
         prompt_version: str,
         analysis_backend: str,
+        analysis_config: KnowledgeBackendConfig,
     ) -> str:
-        visual_config = self.config.visual_analysis or {}
+        visual_config = analysis_config.visual_analysis or {}
         try:
             document = storage.get_document(artifact["document_id"])
             if document is None:
@@ -1209,9 +1369,9 @@ class KnowledgeBackendService:
                     storage.delete_visual_page_chunks_for_artifact(artifact["id"])
                 else:
                     storage.delete_visual_chunks_for_artifact(artifact["id"])
-            candidate = _candidate_from_artifact_row(artifact, document, storage, self.config)
+            candidate = _candidate_from_artifact_row(artifact, document, storage, analysis_config)
             if isinstance(self._visual_analyzer, VisualAnalyzer):
-                candidate = self._visual_extractor.ensure_visual_artifact_image(candidate, self.config)
+                candidate = self._visual_extractor.ensure_visual_artifact_image(candidate, analysis_config)
                 storage.update_visual_artifact_image(candidate.id, candidate.image_path, candidate.image_hash)
                 if _should_tile_visual_candidate(candidate, visual_config):
                     result = self._analyze_tiled_visual_artifact(
@@ -1221,13 +1381,14 @@ class KnowledgeBackendService:
                         model,
                         prompt_version,
                         analysis_backend,
+                        analysis_config,
                         force=force,
                     )
                     result = validate_visual_analysis_json(result, candidate, visual_config)
                 else:
                     result = self._visual_analyzer.analyze(
                         candidate,
-                        self.config,
+                        analysis_config,
                         document,
                         analysis_backend=analysis_backend,
                     )
@@ -1240,13 +1401,17 @@ class KnowledgeBackendService:
                                 "crop_dpi": int(visual_config.get("high_res_page_render_dpi") or 260),
                             }
                         )
-                        high_res_candidate = self._visual_extractor.ensure_visual_artifact_image(high_res_candidate, self.config)
+                        high_res_candidate = self._visual_extractor.ensure_visual_artifact_image(
+                            high_res_candidate,
+                            analysis_config,
+                        )
                         storage.update_visual_artifact_image(high_res_candidate.id, high_res_candidate.image_path, high_res_candidate.image_hash)
                         retry_visual_config = {
                             **visual_config,
                             "max_image_long_edge": high_res_long_edge,
+                            "model": model,
                         }
-                        retry_config = replace(self.config, visual_analysis=retry_visual_config)
+                        retry_config = replace(analysis_config, visual_analysis=retry_visual_config)
                         retry_result = self._visual_analyzer.analyze(
                             high_res_candidate,
                             retry_config,
@@ -1269,7 +1434,7 @@ class KnowledgeBackendService:
             else:
                 result = self._visual_analyzer.analyze(
                     candidate,
-                    self.config,
+                    analysis_config,
                     document,
                     analysis_backend=analysis_backend,
                 )
@@ -1338,7 +1503,13 @@ class KnowledgeBackendService:
             return "low_confidence"
         except Exception as exc:
             logger.warning("[KnowledgeBackend] visual artifact analysis failed: %s", exc)
-            storage.complete_visual_artifact_failed(artifact["id"], str(exc), analysis_backend=analysis_backend)
+            storage.complete_visual_artifact_failed(
+                artifact["id"],
+                str(exc),
+                analysis_backend=analysis_backend,
+                model=model,
+                prompt_version=prompt_version,
+            )
             self._invalidate_visual_group_after_member_analysis(
                 storage,
                 artifact,
@@ -1387,6 +1558,7 @@ class KnowledgeBackendService:
         model: str,
         prompt_version: str,
         analysis_backend: str,
+        analysis_config: KnowledgeBackendConfig,
     ) -> str:
         group = storage.claim_next_visual_artifact_group(
             group_id=group_id,
@@ -1402,7 +1574,7 @@ class KnowledgeBackendService:
         if not group:
             return ""
         members = storage.get_visual_artifact_group_members(group["id"])
-        visual_config = self.config.visual_analysis or {}
+        visual_config = analysis_config.visual_analysis or {}
         prepare_state = storage.get_visual_prepare_state(group["document_id"], group["version_id"])
         if not _visual_group_is_stable(
             group,
@@ -1467,7 +1639,7 @@ class KnowledgeBackendService:
                 result = self._visual_analyzer.analyze_group(
                     group,
                     members,
-                    self.config,
+                    analysis_config,
                     document,
                     analysis_backend=analysis_backend,
                 )
@@ -1512,7 +1684,13 @@ class KnowledgeBackendService:
         except Exception as exc:
             logger.warning("[KnowledgeBackend] visual group analysis failed: %s", exc)
             storage._mark_visual_group_not_retrievable(group["id"])
-            storage.complete_visual_artifact_group_failed(group["id"], str(exc), analysis_backend=analysis_backend)
+            storage.complete_visual_artifact_group_failed(
+                group["id"],
+                str(exc),
+                analysis_backend=analysis_backend,
+                model=model,
+                prompt_version=prompt_version,
+            )
             return "failed"
 
     def _analyze_tiled_visual_artifact(
@@ -1523,14 +1701,15 @@ class KnowledgeBackendService:
         model: str,
         prompt_version: str,
         analysis_backend: str,
+        analysis_config: KnowledgeBackendConfig,
         force: bool = False,
     ) -> VisualAnalysisResult:
-        tiles = _split_visual_candidate_tiles(candidate, self.config.visual_analysis or {})
+        tiles = _split_visual_candidate_tiles(candidate, analysis_config.visual_analysis or {})
         tile_results: List[Dict[str, Any]] = []
         if force:
             storage.delete_visual_artifact_tiles(candidate.id)
         existing_tiles = {str(tile["id"]): tile for tile in storage.list_visual_artifact_tiles(candidate.id)}
-        visual_config = self.config.visual_analysis or {}
+        visual_config = analysis_config.visual_analysis or {}
         for tile in tiles:
             tile_id = f"{candidate.id}_tile_{tile['tile_index']}"
             existing = existing_tiles.get(tile_id)
@@ -1541,7 +1720,7 @@ class KnowledgeBackendService:
                     "context_before": _tile_context_before(candidate, tile),
                 }
             )
-            tile_candidate = self._visual_extractor.ensure_visual_artifact_image(tile_candidate, self.config)
+            tile_candidate = self._visual_extractor.ensure_visual_artifact_image(tile_candidate, analysis_config)
             expected_image_hash = tile_candidate.image_hash
             if _can_reuse_visual_tile(existing, model, prompt_version, expected_image_hash, force=force):
                 existing_result = existing["result_json"] if isinstance(existing.get("result_json"), dict) else {}
@@ -1555,8 +1734,8 @@ class KnowledgeBackendService:
                     }
                 )
                 continue
-            tile_visual_config = {**visual_config, "prompt_mode": "tile"}
-            tile_config = replace(self.config, visual_analysis=tile_visual_config)
+            tile_visual_config = {**visual_config, "prompt_mode": "tile", "model": model}
+            tile_config = replace(analysis_config, visual_analysis=tile_visual_config)
             result = self._visual_analyzer.analyze(
                 tile_candidate,
                 tile_config,
@@ -2414,7 +2593,7 @@ def _normalize_visual_analysis_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
     config["model"] = str(config.get("model") or "gpt-5.5")
     config["reasoning_effort"] = str(config.get("reasoning_effort") or "xhigh")
     config["prompt_version"] = str(config.get("prompt_version") or "visual-v1")
-    config["pipeline_version"] = str(config.get("pipeline_version") or "visual-pipeline-v1")
+    config["pipeline_version"] = str(config.get("pipeline_version") or DEFAULT_VISUAL_PIPELINE_VERSION)
     config["analysis_backend"] = normalize_visual_analysis_backend(config.get("analysis_backend") or "current")
     config["parser_provider"] = str(config.get("parser_provider") or "pymupdf")
     config["mineru_api_url"] = str(config.get("mineru_api_url") or "")
@@ -2423,6 +2602,109 @@ def _normalize_visual_analysis_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
 
 def _visual_analysis_enabled(config: KnowledgeBackendConfig) -> bool:
     return parse_knowledge_backend_enabled((config.visual_analysis or {}).get("enabled", True))
+
+
+def _resolve_visual_analysis_target(
+    config: KnowledgeBackendConfig,
+    analysis_backend: Optional[str] = None,
+) -> Dict[str, str]:
+    visual_config = config.visual_analysis or {}
+    requested_backend = normalize_visual_analysis_backend(
+        analysis_backend if analysis_backend is not None else visual_config.get("analysis_backend")
+    )
+    effective_backend = resolve_visual_analysis_backend(requested_backend)
+    configured_model = str(visual_config.get("model") or DEFAULT_VISUAL_ANALYSIS_CONFIG["model"])
+    configured_reasoning = str(
+        visual_config.get("reasoning_effort") or DEFAULT_VISUAL_ANALYSIS_CONFIG["reasoning_effort"]
+    )
+    use_current_model = parse_knowledge_backend_enabled(visual_config.get("use_current_model"))
+    model = configured_model
+    reasoning_effort = configured_reasoning
+
+    if use_current_model:
+        from common import llm_backend_router
+
+        if analysis_backend is None or requested_backend == "current":
+            model = _nonempty_or_default(llm_backend_router.get_effective_model(), configured_model)
+            if effective_backend == "codex":
+                try:
+                    provider = llm_backend_router.get_codex_provider_config()
+                    reasoning_effort = _nonempty_or_default(provider.get("reasoning_effort"), configured_reasoning)
+                except Exception:
+                    pass
+        elif requested_backend in ("capi", "capi_monthly"):
+            try:
+                routed = llm_backend_router.get_effective_openai_api_config(requested_backend)
+                model = _nonempty_or_default(routed.get("model"), configured_model)
+            except Exception:
+                model = configured_model
+        elif requested_backend == "codex":
+            try:
+                provider = llm_backend_router.get_codex_provider_config()
+                model = _nonempty_or_default(provider.get("model"), configured_model)
+                reasoning_effort = _nonempty_or_default(provider.get("reasoning_effort"), configured_reasoning)
+            except Exception:
+                model = configured_model
+
+    return {
+        "requested_backend": requested_backend,
+        "effective_backend": effective_backend,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+    }
+
+
+def _visual_config_with_model(
+    config: KnowledgeBackendConfig,
+    *,
+    model: str,
+    reasoning_effort: Optional[str] = None,
+) -> KnowledgeBackendConfig:
+    visual_config = dict(config.visual_analysis or {})
+    visual_config["model"] = str(model or visual_config.get("model") or DEFAULT_VISUAL_ANALYSIS_CONFIG["model"])
+    if reasoning_effort:
+        visual_config["reasoning_effort"] = str(reasoning_effort)
+    return replace(config, visual_analysis=visual_config)
+
+
+def _nonempty_or_default(value: Any, default: str) -> str:
+    text = str(value or "").strip()
+    return text or str(default or "")
+
+
+def _visual_completion_made_progress(result: Mapping[str, Any]) -> bool:
+    progress_keys = (
+        "processed",
+        "succeeded",
+        "low_confidence",
+        "failed",
+        "group_processed",
+        "group_succeeded",
+        "group_low_confidence",
+        "group_failed",
+        "prepared_pages_delta",
+        "prepared_artifacts_delta",
+        "scanned_pages_delta",
+    )
+    return any(int(result.get(key) or 0) > 0 for key in progress_keys)
+
+
+def _accumulate_visual_completion_totals(totals: Dict[str, Any], result: Mapping[str, Any]) -> None:
+    for key in (
+        "processed",
+        "succeeded",
+        "low_confidence",
+        "failed",
+        "group_processed",
+        "group_succeeded",
+        "group_low_confidence",
+        "group_failed",
+        "prepared_pages_delta",
+        "prepared_artifacts_delta",
+    ):
+        totals[key] = int(totals.get(key) or 0) + int(result.get(key) or 0)
+    for error in result.get("errors") or []:
+        totals.setdefault("errors", []).append(str(error))
 
 
 def _empty_visual_stats() -> Dict[str, Any]:
@@ -2548,7 +2830,8 @@ def _candidate_from_artifact_row(
         image_path=artifact.get("image_path") or "",
         image_hash=artifact.get("image_hash") or "",
         context_hash=artifact.get("context_hash") or "",
-        pipeline_version=artifact.get("pipeline_version") or str(visual_config.get("pipeline_version") or "visual-pipeline-v1"),
+        pipeline_version=artifact.get("pipeline_version")
+        or str(visual_config.get("pipeline_version") or DEFAULT_VISUAL_PIPELINE_VERSION),
         parser=artifact.get("parser") or "",
         parser_confidence=float(artifact.get("parser_confidence") or 0),
         section_path=section_path,
@@ -3029,6 +3312,19 @@ def dispatch_admin_request(method: str, path: str, payload: Dict[str, Any]) -> D
                 retry_failed=parse_knowledge_backend_enabled(payload.get("retry_failed")),
             )
         )
+    if method == "POST" and path in ("visual/complete", "visual-complete"):
+        return _to_jsonable(
+            service.complete_visual_knowledge(
+                document_id=str(payload.get("document_id") or "") or None,
+                kb_id=str(payload.get("kb_id") or "") or None,
+                analysis_backend=str(payload.get("analysis_backend") or "current") or "current",
+                retry_failed=parse_knowledge_backend_enabled(payload.get("retry_failed")),
+                force=parse_knowledge_backend_enabled(payload.get("force")),
+                force_prepare=parse_knowledge_backend_enabled(payload.get("force_prepare")),
+                max_steps=int(payload.get("max_steps") or 0) or None,
+                export=not _payload_bool_is_false(payload.get("export"), default=True),
+            )
+        )
     if method == "GET" and path in ("visual/backends", "visual-backends"):
         return _to_jsonable(service.get_visual_analysis_backends())
     if method == "POST" and path in ("visual/reset", "visual-reset"):
@@ -3286,6 +3582,15 @@ def _payload_query(payload: Dict[str, Any]) -> str:
 
 def _payload_limit(payload: Dict[str, Any]) -> int:
     return int(payload.get("limit") or payload.get("top_k") or 5)
+
+
+def _payload_bool_is_false(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return not default
+    if isinstance(value, bool):
+        return value is False
+    text = str(value).strip().lower()
+    return text in FALSE_VALUES
 
 
 def _clean_route_path(path: str) -> str:

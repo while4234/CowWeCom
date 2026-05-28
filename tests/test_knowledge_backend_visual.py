@@ -162,18 +162,21 @@ class QueueVisualAnalyzer(VisualAnalyzer):
         self.backends = []
         self.max_image_long_edges = []
         self.contexts_before = []
+        self.models = []
 
     def analyze(self, candidate, config, document=None, analysis_backend=None):
         self.calls.append(candidate.id)
         self.backends.append(analysis_backend)
         self.max_image_long_edges.append((config.visual_analysis or {}).get("max_image_long_edge"))
         self.contexts_before.append(candidate.context_before)
+        self.models.append((config.visual_analysis or {}).get("model"))
         item = self.results.pop(0)
         return item(candidate) if callable(item) else item
 
     def analyze_group(self, group, members, config, document=None, analysis_backend=None):
         self.group_calls.append(group["id"])
         self.backends.append(analysis_backend)
+        self.models.append((config.visual_analysis or {}).get("model"))
         assert self.group_results, "no queued group result"
         item = self.group_results.pop(0)
         return item(group, members) if callable(item) else item
@@ -548,6 +551,42 @@ def test_visual_admin_dispatch_and_disabled_state(monkeypatch, tmp_path):
     assert "visual_analysis.enabled" in disabled["message"]
 
 
+def test_visual_complete_admin_api_builds_all_source_documents(monkeypatch, tmp_path):
+    service = _service(tmp_path)
+    doc1_id, doc1_version = _ingest(service)
+    doc2 = service.ingest_upload_bytes(
+        "visual-source-2.md",
+        b"# Visual Source 2\n\nFigure 2 shows a protocol timing table.",
+        title="Visual Source 2",
+    )
+    assert doc2["status"] == "succeeded", doc2
+    doc2_id = doc2["document"]["id"]
+    doc2_version = doc2["document"]["version_id"]
+    service._visual_extractor = FakeRangeExtractor(
+        [
+            _candidate(doc1_id, doc1_version, 1),
+            _candidate(doc2_id, doc2_version, 2),
+        ]
+    )
+    service._visual_analyzer = QueueAnalyzer([_high_result("complete_doc1"), _high_result("complete_doc2")])
+    monkeypatch.setattr(KnowledgeBackendConfig, "from_project_config", classmethod(lambda cls: service.config))
+    monkeypatch.setattr("agent.knowledge.backend.service.build_knowledge_backend", lambda _: service)
+
+    response = dispatch_admin_request(
+        "POST",
+        "visual/complete",
+        {"analysis_backend": "current", "max_steps": 20, "export": True},
+    )
+
+    assert response["ok"] is True
+    assert response["documents_processed"] == 2
+    assert response["succeeded"] == 2
+    assert response["stopped_reason"] == "completed"
+    assert len(response["document_library"]) == 2
+    assert service.search("complete_doc1", limit=5)
+    assert service.search("complete_doc2", limit=5)
+
+
 def test_visual_reset_api_clears_artifacts_chunks_and_prepare_state(monkeypatch, tmp_path):
     service = _service(tmp_path)
     document_id, version_id = _ingest(service)
@@ -571,6 +610,7 @@ def test_visual_reset_api_clears_artifacts_chunks_and_prepare_state(monkeypatch,
 
 def test_visual_pipeline_version_change_resets_stale_cache(tmp_path):
     service = _service(tmp_path)
+    service.config.visual_analysis["pipeline_version"] = "visual-pipeline-v1"
     document_id, version_id = _ingest(service)
     service._visual_extractor = FakeExtractor([_candidate(document_id, version_id, 1)])
     service._visual_analyzer = QueueAnalyzer([_high_result("old_pipeline_visualfact")])
@@ -690,6 +730,74 @@ def test_visual_build_records_selected_analysis_backend(tmp_path):
     assert visual_chunks
     assert visual_chunks[0].metadata["analysis_backend"] == "codex"
     assert visual_chunks[0].metadata["analysis_model"] == "gpt-5.5"
+
+
+def test_visual_use_current_model_resolves_current_backend_model(monkeypatch, tmp_path):
+    from common import llm_backend_router
+
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    analyzer = QueueVisualAnalyzer([_high_result("current_model_visualfact")])
+    service._visual_extractor = FakeRangeExtractor([_candidate(document_id, version_id, 1)])
+    service._visual_analyzer = analyzer
+    monkeypatch.setattr(llm_backend_router, "get_current_backend", lambda: "capi")
+    monkeypatch.setattr(llm_backend_router, "get_effective_model", lambda: "current-vision-model")
+    monkeypatch.setattr("agent.knowledge.backend.service._visual_backend_available", lambda backend: True)
+
+    result = service.build_visual_knowledge(document_id=document_id, analysis_backend="current", limit=1)
+
+    assert result["analysis_backend"] == "capi"
+    assert result["analysis_model"] == "current-vision-model"
+    assert analyzer.models == ["current-vision-model"]
+    storage = service._backend._get_read_storage()
+    artifact = storage.list_visual_artifacts(document_id=document_id)[0]
+    assert artifact["analysis_model"] == "current-vision-model"
+    visual_chunks = [chunk for chunk in storage.list_chunks(document_id) if chunk.metadata.get("source") == "visual_analysis"]
+    assert visual_chunks[0].metadata["analysis_model"] == "current-vision-model"
+
+
+def test_visual_explicit_backend_uses_backend_specific_model(monkeypatch, tmp_path):
+    from common import llm_backend_router
+
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    analyzer = QueueVisualAnalyzer([_high_result("monthly_model_visualfact")])
+    service._visual_extractor = FakeRangeExtractor([_candidate(document_id, version_id, 1)])
+    service._visual_analyzer = analyzer
+    monkeypatch.setattr(
+        llm_backend_router,
+        "get_effective_openai_api_config",
+        lambda backend: {"model": "monthly-vision-model", "api_key": "x"} if backend == "capi_monthly" else {},
+    )
+    monkeypatch.setattr("agent.knowledge.backend.service._visual_backend_available", lambda backend: True)
+
+    result = service.build_visual_knowledge(document_id=document_id, analysis_backend="capi_monthly", limit=1)
+
+    assert result["analysis_backend"] == "capi_monthly"
+    assert result["analysis_model"] == "monthly-vision-model"
+    assert analyzer.models == ["monthly-vision-model"]
+    artifact = service._backend._get_read_storage().list_visual_artifacts(document_id=document_id)[0]
+    assert artifact["analysis_model"] == "monthly-vision-model"
+
+
+def test_visual_use_current_model_false_keeps_configured_visual_model(monkeypatch, tmp_path):
+    from common import llm_backend_router
+
+    service = _service(tmp_path, visual_analysis={"use_current_model": False, "model": "configured-visual-model"})
+    document_id, version_id = _ingest(service)
+    analyzer = QueueVisualAnalyzer([_high_result("configured_model_visualfact")])
+    service._visual_extractor = FakeRangeExtractor([_candidate(document_id, version_id, 1)])
+    service._visual_analyzer = analyzer
+    monkeypatch.setattr(llm_backend_router, "get_current_backend", lambda: "capi")
+    monkeypatch.setattr(llm_backend_router, "get_effective_model", lambda: "current-vision-model")
+    monkeypatch.setattr("agent.knowledge.backend.service._visual_backend_available", lambda backend: True)
+
+    result = service.build_visual_knowledge(document_id=document_id, analysis_backend="current", limit=1)
+
+    assert result["analysis_model"] == "configured-visual-model"
+    assert analyzer.models == ["configured-visual-model"]
+    artifact = service._backend._get_read_storage().list_visual_artifacts(document_id=document_id)[0]
+    assert artifact["analysis_model"] == "configured-visual-model"
 
 
 def test_visual_backends_admin_api_lists_supported_ids(monkeypatch, tmp_path):
@@ -1760,6 +1868,7 @@ def test_group_low_confidence_not_indexed(tmp_path):
 
 def test_rebuild_continues_group_after_interruption(tmp_path):
     service = _service(tmp_path)
+    service.config.visual_analysis["pipeline_version"] = "visual-pipeline-v1"
     document_id, version_id = _ingest(service)
     storage = service._backend._get_storage(writable=True)
     storage.upsert_visual_artifact_group(
@@ -2219,6 +2328,7 @@ def test_group_more_than_max_pages_uses_text_merge_only(tmp_path):
 
 def test_group_not_merged_before_prepare_done_or_lookahead_passed(tmp_path):
     service = _service(tmp_path, visual_analysis={"group_merge_lookahead_pages": 2})
+    service.config.visual_analysis["pipeline_version"] = "visual-pipeline-v1"
     document_id, version_id = _ingest(service)
     storage = _seed_ready_group(service, document_id, version_id, "visual_group_unstable", pages=(5, 6))
     storage.upsert_visual_prepare_state(
@@ -2245,6 +2355,7 @@ def test_group_not_merged_before_prepare_done_or_lookahead_passed(tmp_path):
         model="gpt-5.5",
         prompt_version="visual-group-v1",
         analysis_backend="codex",
+        analysis_config=service.config,
     )
 
     assert outcome == ""
@@ -2254,6 +2365,7 @@ def test_group_not_merged_before_prepare_done_or_lookahead_passed(tmp_path):
 
 def test_group_merges_after_prepare_done(tmp_path):
     service = _service(tmp_path)
+    service.config.visual_analysis["pipeline_version"] = "visual-pipeline-v1"
     document_id, version_id = _ingest(service)
     storage = _seed_ready_group(service, document_id, version_id, "visual_group_done", pages=(5, 6))
     storage.upsert_visual_prepare_state(
@@ -2386,6 +2498,8 @@ def test_tile_large_single_page_table(tmp_path):
 
 def test_tile_resume_reuses_succeeded_tiles(tmp_path):
     service = _service(tmp_path)
+    service.config.visual_analysis["pipeline_version"] = "visual-pipeline-v1"
+    service.config.visual_analysis["use_current_model"] = False
     document_id, version_id = _ingest(service)
     candidate = VisualArtifactCandidate(
         **{
@@ -2683,6 +2797,114 @@ def test_visual_extractor_skips_toc_pages_but_keeps_strict_caption(tmp_path):
     caption_candidate = next(candidate for candidate in candidates if candidate.page == 2 and "Figure 5-34" in candidate.caption)
     assert caption_candidate.bbox["y0"] <= 130
     assert caption_candidate.bbox["y1"] >= 420
+
+
+def test_strict_caption_accepts_arm_amba_caption_styles():
+    assert is_strict_caption_block("Figure 1-1 Channel architecture of reads")
+    assert is_strict_caption_block("Figure 2-1 TVALID before TREADY handshake")
+    assert is_strict_caption_block("Fig. 2-3 Write address channel")
+    assert is_strict_caption_block("Table 2-1 Global signals")
+    assert is_strict_caption_block("图 1-1 通道结构")
+    assert is_strict_caption_block("表 2-1 全局信号")
+    assert is_strict_caption_block("Figure 1-1. Channel architecture of reads")
+    assert is_strict_caption_block("Figure 1-1: Channel architecture of reads")
+    assert is_strict_caption_block("Table 2-1.\nGlobal signals")
+    assert not is_strict_caption_block("Figure 1-1 shows how reads are issued.")
+    assert not is_strict_caption_block("Table 2-2 on page 2-3 lists global signals.")
+    assert not is_strict_caption_block("Figure 3-4 and Figure 3-5 show valid configurations.")
+    assert not is_strict_caption_block("Figure 3-6 to Figure 3-11 represent examples.")
+
+
+def test_visual_extractor_accepts_space_separated_caption(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "amba-caption.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    page.draw_rect(fitz.Rect(80, 120, 520, 420), color=(0, 0, 0))
+    page.insert_text((72, 455), "Figure 1-1 Channel architecture of reads")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    config = _config(tmp_path, ingest={"allowed_extensions": [".pdf"]})
+    document = KnowledgeDocument(
+        id="doc",
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        size=pdf_path.stat().st_size,
+        content_hash="hash",
+        status="ready",
+        version_id="v1",
+    )
+    extracted = ExtractedDocument(
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[DocumentPage(1, "Figure 1-1 Channel architecture of reads")],
+    )
+
+    candidates, _ = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        config,
+        start_page=1,
+        max_pages=1,
+    )
+
+    assert any("Figure 1-1 Channel architecture of reads" in candidate.caption for candidate in candidates)
+
+
+def test_visual_extractor_rejects_space_separated_body_reference_caption(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "amba-reference.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    page.draw_rect(fitz.Rect(80, 120, 520, 420), color=(0, 0, 0))
+    page.insert_text((72, 455), "Figure 1-1 shows how reads are issued.")
+    page.insert_text((72, 485), "Table 2-2 on page 2-3 lists global signals.")
+    page.insert_text((72, 515), "Figure 3-4 and Figure 3-5 show valid configurations.")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    config = _config(tmp_path, ingest={"allowed_extensions": [".pdf"]})
+    document = KnowledgeDocument(
+        id="doc",
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        size=pdf_path.stat().st_size,
+        content_hash="hash",
+        status="ready",
+        version_id="v1",
+    )
+    extracted = ExtractedDocument(
+        title="Doc",
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[
+            DocumentPage(
+                1,
+                "Figure 1-1 shows how reads are issued.\n"
+                "Table 2-2 on page 2-3 lists global signals.\n"
+                "Figure 3-4 and Figure 3-5 show valid configurations.",
+            )
+        ],
+    )
+
+    candidates, _ = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        config,
+        start_page=1,
+        max_pages=1,
+    )
+
+    captions = "\n".join(candidate.caption for candidate in candidates)
+    assert "shows how reads" not in captions
+    assert "on page 2-3" not in captions
+    assert "Figure 3-4 and Figure 3-5" not in captions
 
 
 def test_visual_extractor_rejects_body_figure_references(tmp_path):

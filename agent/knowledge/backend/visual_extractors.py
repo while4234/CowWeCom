@@ -14,9 +14,14 @@ from .storage import stable_visual_artifact_id
 from .visual_grouping import bbox_iou
 
 
-_CAPTION_PREFIX = r"(?:(?:Figure|Fig\.?|Table)\s+\d+(?:[-.]\d+)*|[图表]\s*\d+(?:[-.]\d+)*)"
+DEFAULT_VISUAL_PIPELINE_VERSION = "visual-pipeline-v2"
+_CAPTION_LABEL_PATTERN = r"(?:(?:Figure|Fig\.?|Table)\s+\d+(?:[-.]\d+)*|[图表]\s*\d+(?:[-.]\d+)*)"
+_CAPTION_PREFIX = rf"(?P<label>{_CAPTION_LABEL_PATTERN})"
 STRICT_CAPTION_LABEL_RE = re.compile(rf"^\s*{_CAPTION_PREFIX}\s*[.:：-]\s*$", re.IGNORECASE)
-STRICT_CAPTION_BLOCK_RE = re.compile(rf"^\s*{_CAPTION_PREFIX}\s*[.:：-]\s+(?P<title>\S.*)$", re.IGNORECASE)
+STRICT_CAPTION_BLOCK_RE = re.compile(
+    rf"^\s*{_CAPTION_PREFIX}(?:\s*[.:：-]\s*|\s+)(?P<title>\S.*)$",
+    re.IGNORECASE,
+)
 STRICT_CAPTION_RE = STRICT_CAPTION_BLOCK_RE
 VISUAL_KEYWORD_RE = re.compile(
     r"\b(?:timing|waveform|state\s*machine|bit\s*field|diagram|chart)\b|时序|状态机|流程图|位域",
@@ -51,7 +56,26 @@ _REFERENCE_CAPTION_VERBS = {
     "provide",
     "provides",
     "provided",
+    "explain",
+    "explains",
+    "explained",
+    "depict",
+    "depicts",
+    "depicted",
 }
+_REFERENCE_TITLE_START_RE = re.compile(
+    rf"^(?:on\s+pages?|in\s+pages?|and\s+(?:{_CAPTION_LABEL_PATTERN})|to\s+(?:{_CAPTION_LABEL_PATTERN}))\b",
+    re.IGNORECASE,
+)
+_REFERENCE_RANGE_OR_LIST_RE = re.compile(
+    rf"\b(?:{_CAPTION_LABEL_PATTERN})\s+(?:and|to)\s+(?:{_CAPTION_LABEL_PATTERN})\b",
+    re.IGNORECASE,
+)
+_REFERENCE_SENTENCE_VERB_RE = re.compile(
+    r"\b(?:show|shows|demonstrate|demonstrates|give|gives|list|lists|describe|describes|represent|represents|"
+    r"illustrate|illustrates|provide|provides|explain|explains|depict|depicts)\b",
+    re.IGNORECASE,
+)
 
 
 def normalize_caption_text(text: str) -> str:
@@ -102,8 +126,8 @@ def _normalize_caption_line(line: str) -> str:
 
 
 def _caption_line_looks_like_reference(line: str, title: str = "") -> bool:
-    lowered = _normalize_caption_line(line).lower()
-    if re.search(r"\b(?:figure|fig\.?|table)\s+\d+(?:[-.]\d+)*\s+to\s+(?:figure|fig\.?|table)\b", lowered):
+    normalized = _normalize_caption_line(line)
+    if _REFERENCE_RANGE_OR_LIST_RE.search(normalized):
         return True
     return _caption_title_looks_like_reference(title)
 
@@ -115,7 +139,13 @@ def _caption_title_looks_like_reference(title: str) -> bool:
     first_word_match = re.match(r"([A-Za-z]+)", text)
     if first_word_match and first_word_match.group(1).lower() in _REFERENCE_CAPTION_VERBS:
         return True
+    if _REFERENCE_TITLE_START_RE.search(text):
+        return True
+    if _REFERENCE_RANGE_OR_LIST_RE.search(text):
+        return True
     tokens = text.split()
+    if len(tokens) >= 9 and text.endswith(".") and _REFERENCE_SENTENCE_VERB_RE.search(text):
+        return True
     if len(tokens) >= 8:
         one_char_tokens = sum(1 for token in tokens if len(token) == 1 and token.isalnum())
         if one_char_tokens / max(1, len(tokens)) >= 0.55:
@@ -194,7 +224,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         padding = int(visual_config.get("crop_padding_px", 12))
         min_area_ratio = float(visual_config.get("candidate_min_area_ratio", 0.015))
         max_image_candidates = max(0, int(visual_config.get("max_image_candidates_per_page", 3) or 0))
-        pipeline_version = str(visual_config.get("pipeline_version") or "visual-pipeline-v1")
+        pipeline_version = str(visual_config.get("pipeline_version") or DEFAULT_VISUAL_PIPELINE_VERSION)
         candidates: List[VisualArtifactCandidate] = []
         page_texts = {page.page: page.text for page in extracted_document.pages}
 
@@ -401,7 +431,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             page_text,
             caption,
         )
-        pipeline_version = str(pipeline_version or "visual-pipeline-v1")
+        pipeline_version = str(pipeline_version or DEFAULT_VISUAL_PIPELINE_VERSION)
         context_hash = hashlib.sha256(
             "\n".join([pipeline_version, caption, context_before, context_after, page_text[:2000]]).encode("utf-8")
         ).hexdigest()

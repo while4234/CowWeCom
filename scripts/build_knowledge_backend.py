@@ -29,6 +29,11 @@ def main() -> int:
     parser.add_argument("paths", nargs="+", help="Document files to copy into the backend and index.")
     parser.add_argument("--title", default="", help="Optional title for a single input document.")
     parser.add_argument("--kb-id", default="", help="Override the configured default knowledge-base id.")
+    parser.add_argument("--visual", action="store_true", help="Run visual knowledge completion after each ingest.")
+    parser.add_argument("--visual-analysis-backend", default="current", help="Visual analysis backend, default: current.")
+    parser.add_argument("--visual-force-prepare", action="store_true", help="Reset and rescan visual prepare state first.")
+    parser.add_argument("--visual-max-steps", type=int, default=5000, help="Maximum visual build steps per document.")
+    parser.add_argument("--no-export", action="store_true", help="Skip export after visual completion.")
     args = parser.parse_args()
 
     previous_level = logger.level
@@ -71,6 +76,16 @@ def main() -> int:
             title = args.title if args.title and len(args.paths) == 1 else None
             result = service.ingest_upload_bytes(source.name, source.read_bytes(), title=title)
             result["input_path"] = str(source)
+            document = result.get("document") if isinstance(result, dict) else None
+            document_id = document.get("id") if isinstance(document, dict) else ""
+            if args.visual and result.get("status") == "succeeded" and document_id:
+                result["visual_completion"] = service.complete_visual_knowledge(
+                    document_id=document_id,
+                    analysis_backend=args.visual_analysis_backend or "current",
+                    force_prepare=args.visual_force_prepare,
+                    max_steps=args.visual_max_steps,
+                    export=not args.no_export,
+                )
             results.append(result)
         _write_manifest(config.data_dir, service)
 

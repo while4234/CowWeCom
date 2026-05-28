@@ -4952,12 +4952,9 @@ function renderVisualAnalysisBackendSelector(data) {
         select.disabled = true;
         return;
     }
-    const configuredDefault = (data && data.default_analysis_backend) || 'current';
     const available = backends.filter(item => item.available !== false);
     let defaultId = '';
-    if (available.some(item => item.id === configuredDefault)) {
-        defaultId = configuredDefault;
-    } else if (available.some(item => item.id === 'current')) {
+    if (available.some(item => item.id === 'current')) {
         defaultId = 'current';
     } else if (available[0]) {
         defaultId = available[0].id || 'current';
@@ -5111,7 +5108,11 @@ function uploadKnowledgeBackendFile(fileList) {
                 .then(statusData => {
                     const visual = (statusData && statusData.visual_analysis) || {};
                     if (documentIds.length && visual.enabled === true && visual.auto_build_after_upload === true) {
-                        startVisualBuildLoopQueue(documentIds);
+                        startVisualBuildLoopQueue(documentIds, {
+                            analysisBackend: 'current',
+                            force: false,
+                            retryFailed: false
+                        });
                     }
                 })
                 .catch(() => {});
@@ -5142,19 +5143,37 @@ function _knowledgeBackendDocumentById(documentId) {
     return (_knowledgeBackendDocuments || []).find(doc => doc.id === documentId) || null;
 }
 
-async function startVisualBuildLoop(documentId, force, retryFailed) {
+function _knowledgeBackendSourceDocumentIds() {
+    return (_knowledgeBackendDocuments || [])
+        .filter(doc => (doc.doc_type || 'document') !== 'llm_study' && doc.id)
+        .map(doc => doc.id);
+}
+
+async function startVisualBuildLoop(documentId, force, retryFailed, options) {
     if (_knowledgeBackendVisualRunning) return;
     const messageEl = document.getElementById('knowledge-backend-message');
+    const buildOptions = options || {};
     const selectedId = documentId || getSelectedKnowledgeBackendDocumentId();
     const sourceDoc = selectedId ? (_knowledgeBackendDocumentById(selectedId) || { id: selectedId }) : null;
     if (!sourceDoc || !sourceDoc.id) {
+        const sourceDocumentIds = _knowledgeBackendSourceDocumentIds();
+        if (sourceDocumentIds.length) {
+            await startVisualBuildLoopQueue(sourceDocumentIds, {
+                analysisBackend: buildOptions.analysisBackend || getSelectedVisualAnalysisBackend() || 'current',
+                force: !!force,
+                retryFailed: !!retryFailed
+            });
+            return;
+        }
         if (messageEl) messageEl.textContent = '请先上传或选择文档';
         return;
     }
     selectKnowledgeBackendDocument(sourceDoc.id);
     _knowledgeBackendVisualRunning = true;
     let runId = '';
-    const backend = getSelectedVisualAnalysisBackend();
+    const backend = buildOptions.analysisBackend || getSelectedVisualAnalysisBackend() || 'current';
+    const requestForce = buildOptions.force !== undefined ? !!buildOptions.force : !!force;
+    const requestRetryFailed = buildOptions.retryFailed !== undefined ? !!buildOptions.retryFailed : !!retryFailed;
     let totals = { processed: 0, succeeded: 0, low_confidence: 0, failed: 0, pending: 0, group_succeeded: 0, group_low_confidence: 0 };
     let changed = false;
     let lastPreparedPages = 0;
@@ -5169,10 +5188,10 @@ async function startVisualBuildLoop(documentId, force, retryFailed) {
                 body: JSON.stringify({
                     document_id: sourceDoc.id,
                     limit: 1,
-                    force: !!force,
+                    force: requestForce,
                     run_id: runId,
                     analysis_backend: backend,
-                    retry_failed: !!retryFailed
+                    retry_failed: requestRetryFailed
                 })
             });
             const data = await _knowledgeBackendJson(resp);
@@ -5189,7 +5208,14 @@ async function startVisualBuildLoop(documentId, force, retryFailed) {
             totals.group_succeeded += data.group_succeeded || 0;
             totals.group_low_confidence += data.group_low_confidence || 0;
             totals.pending = data.pending || 0;
-            changed = changed || ((data.processed || 0) > 0) || ((data.failed || 0) > 0) || ((data.low_confidence || 0) > 0);
+            changed = changed ||
+                ((data.processed || 0) > 0) ||
+                ((data.failed || 0) > 0) ||
+                ((data.low_confidence || 0) > 0) ||
+                ((data.group_processed || 0) > 0) ||
+                ((data.group_succeeded || 0) > 0) ||
+                ((data.group_low_confidence || 0) > 0) ||
+                ((data.group_failed || 0) > 0);
             updateVisualBuildProgress(data, totals, sourceDoc, data.analysis_backend || backend);
             if (messageEl) {
                 messageEl.textContent = `图表补全：已处理 ${totals.processed}，高置信入库 ${totals.succeeded}，低置信跳过 ${totals.low_confidence}，失败 ${totals.failed}，剩余 ${totals.pending}`;
@@ -5228,12 +5254,18 @@ async function startVisualBuildLoop(documentId, force, retryFailed) {
     }
 }
 
-async function startVisualBuildLoopQueue(documentIds) {
+async function startVisualBuildLoopQueue(documentIds, options) {
     const ids = [...new Set((documentIds || []).filter(Boolean))];
     if (!ids.length) return;
+    const buildOptions = options || {};
     _knowledgeBackendVisualQueue = _knowledgeBackendVisualQueue.then(async () => {
         for (const documentId of ids) {
-            await startVisualBuildLoop(documentId, false, false);
+            await startVisualBuildLoop(
+                documentId,
+                !!buildOptions.force,
+                !!buildOptions.retryFailed,
+                buildOptions
+            );
         }
     }).catch(err => {
         const messageEl = document.getElementById('knowledge-backend-message');

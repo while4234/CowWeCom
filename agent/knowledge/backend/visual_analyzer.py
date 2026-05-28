@@ -14,6 +14,7 @@ from common.log import logger
 
 from .models import KnowledgeChunk, KnowledgeDocument, SourceSpan, VisualAnalysisResult, VisualArtifactCandidate
 from .storage import stable_visual_chunk_id, stable_visual_group_chunk_id, stable_visual_group_span_id, stable_visual_span_id
+from .visual_extractors import DEFAULT_VISUAL_PIPELINE_VERSION
 
 
 SYSTEM_PROMPT = (
@@ -637,7 +638,7 @@ def visual_result_to_chunks(
 ) -> Tuple[List[KnowledgeChunk], List[SourceSpan]]:
     model = str(analysis_model or visual_config.get("model") or "gpt-5.5")
     prompt_version = str(visual_config.get("prompt_version") or "visual-v1")
-    pipeline_version = str(candidate.pipeline_version or visual_config.get("pipeline_version") or "visual-pipeline-v1")
+    pipeline_version = str(candidate.pipeline_version or visual_config.get("pipeline_version") or DEFAULT_VISUAL_PIPELINE_VERSION)
     section_path = "/".join(candidate.section_path) if candidate.section_path else ""
     processing_metadata = {
         key: result.processing.get(key)
@@ -753,7 +754,7 @@ def visual_group_result_to_chunks(
         "analysis_model": model,
         "analysis_backend": analysis_backend or normalize_visual_analysis_backend(visual_config.get("analysis_backend")),
         "prompt_version": prompt_version,
-        "pipeline_version": str(visual_config.get("pipeline_version") or "visual-pipeline-v1"),
+        "pipeline_version": str(visual_config.get("pipeline_version") or DEFAULT_VISUAL_PIPELINE_VERSION),
     }
     texts = _group_chunk_texts(group, members, result, document)
     chunks: List[KnowledgeChunk] = []

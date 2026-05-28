@@ -1299,20 +1299,29 @@ class KnowledgeStorage:
         )
         self.conn.commit()
 
-    def complete_visual_artifact_failed(self, artifact_id: str, error: str, analysis_backend: str = "") -> None:
+    def complete_visual_artifact_failed(
+        self,
+        artifact_id: str,
+        error: str,
+        analysis_backend: str = "",
+        model: str = "",
+        prompt_version: str = "",
+    ) -> None:
         now = _now()
         self.conn.execute(
             """
             UPDATE visual_artifacts
             SET analysis_status = 'failed',
                 retrievable = 0,
+                analysis_model = COALESCE(NULLIF(?, ''), analysis_model),
                 analysis_backend = COALESCE(NULLIF(?, ''), analysis_backend),
+                prompt_version = COALESCE(NULLIF(?, ''), prompt_version),
                 error = ?,
                 updated_at = ?,
                 analyzed_at = ?
             WHERE id = ?
             """,
-            (analysis_backend, str(error or ""), now, now, artifact_id),
+            (model, analysis_backend, prompt_version, str(error or ""), now, now, artifact_id),
         )
         self.conn.commit()
 
@@ -1728,20 +1737,29 @@ class KnowledgeStorage:
         self.conn.commit()
         self._mark_visual_group_not_retrievable(group_id)
 
-    def complete_visual_artifact_group_failed(self, group_id: str, error: str, analysis_backend: str = "") -> None:
+    def complete_visual_artifact_group_failed(
+        self,
+        group_id: str,
+        error: str,
+        analysis_backend: str = "",
+        model: str = "",
+        prompt_version: str = "",
+    ) -> None:
         now = _now()
         self.conn.execute(
             """
             UPDATE visual_artifact_groups
             SET status = 'failed',
                 retrievable = 0,
+                analysis_model = COALESCE(NULLIF(?, ''), analysis_model),
                 analysis_backend = COALESCE(NULLIF(?, ''), analysis_backend),
+                prompt_version = COALESCE(NULLIF(?, ''), prompt_version),
                 error = ?,
                 updated_at = ?,
                 analyzed_at = ?
             WHERE id = ?
             """,
-            (analysis_backend, str(error or ""), now, now, group_id),
+            (model, analysis_backend, prompt_version, str(error or ""), now, now, group_id),
         )
         self.conn.commit()
         self._mark_visual_group_not_retrievable(group_id)
