@@ -20,7 +20,7 @@ from common.log import logger
 from common.singleton import singleton
 from common.utils import compress_imgfile, fsize, split_string_by_utf8_length, convert_webp_to_png, remove_markdown_symbol
 from config import conf, subscribe_msg
-from voice.audio_convert import any_to_amr, split_audio
+from voice.audio_convert import split_audio_by_wecom_voice_limits
 
 MAX_UTF8_LEN = 2048
 
@@ -84,35 +84,45 @@ class WechatComAppChannel(ChatChannel):
                     time.sleep(0.5)  # 休眠0.5秒，防止发送过快乱序
             logger.info("[wechatcom] Do send text to {}: {}".format(receiver, reply_text))
         elif reply.type == ReplyType.VOICE:
+            files = []
+            file_path = str(reply.content or "")
             try:
                 media_ids = []
-                file_path = reply.content
-                amr_file = os.path.splitext(file_path)[0] + ".amr"
-                any_to_amr(file_path, amr_file)
-                duration, files = split_audio(amr_file, 60 * 1000)
+                duration, files = split_audio_by_wecom_voice_limits(file_path)
                 if len(files) > 1:
-                    logger.info("[wechatcom] voice too long {}s > 60s , split into {} parts".format(duration / 1000.0, len(files)))
+                    logger.info(
+                        "[wechatcom] voice too long %.1fs, split into %s parts",
+                        duration / 1000.0,
+                        len(files),
+                    )
                 for path in files:
-                    response = self.client.media.upload("voice", open(path, "rb"))
+                    with open(path, "rb") as voice_file:
+                        response = self.client.media.upload("voice", voice_file)
                     logger.debug("[wechatcom] upload voice response: {}".format(response))
                     media_ids.append(response["media_id"])
-            except ImportError as e:
+            except (ImportError, RuntimeError) as e:
                 logger.error("[wechatcom] voice conversion failed: {}".format(e))
-                logger.error("[wechatcom] please install pydub: pip install pydub")
-                return
+                return False
             except WeChatClientException as e:
                 logger.error("[wechatcom] upload voice failed: {}".format(e))
-                return
+                return False
             try:
-                os.remove(file_path)
-                if amr_file != file_path:
-                    os.remove(amr_file)
+                if file_path and os.path.exists(file_path):
+                    os.remove(file_path)
+                for path in files:
+                    if path and os.path.exists(path):
+                        os.remove(path)
             except Exception:
                 pass
-            for media_id in media_ids:
-                self.client.message.send_voice(self.agent_id, receiver, media_id)
-                time.sleep(1)
+            try:
+                for media_id in media_ids:
+                    self.client.message.send_voice(self.agent_id, receiver, media_id)
+                    time.sleep(1)
+            except WeChatClientException as e:
+                logger.error("[wechatcom] send voice failed: {}".format(e))
+                return False
             logger.info("[wechatcom] sendVoice={}, receiver={}".format(reply.content, receiver))
+            return True
         elif reply.type == ReplyType.IMAGE_URL:  # 从网络下载图片
             img_url = reply.content
             pic_res = requests.get(img_url, stream=True)

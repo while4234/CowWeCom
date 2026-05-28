@@ -94,6 +94,8 @@ class WecomBotMessage(ChatMessage):
         self.is_group = is_group
 
         msg_type = msg_body.get("msgtype")
+        self.source_msgtype = msg_type
+        self.input_is_voice = False
         from_info = msg_body.get("from", {}) or {}
         from_userid = from_info.get("userid", "")
         from_name = (
@@ -115,6 +117,8 @@ class WecomBotMessage(ChatMessage):
         elif msg_type == "voice":
             self.ctype = ContextType.TEXT
             self.content = msg_body.get("voice", {}).get("content", "")
+            self.source_msgtype = "voice"
+            self.input_is_voice = True
 
         elif msg_type == "image":
             self.ctype = ContextType.IMAGE

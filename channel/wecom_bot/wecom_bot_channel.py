@@ -32,6 +32,7 @@ from common.utils import expand_path
 from common.ws_client_compat import websocket_app_run_forever
 from config import conf
 from agent.user_profiles import safe_actor_slug
+from voice.audio_convert import split_audio_by_wecom_voice_limits
 
 WECOM_WS_URL = "wss://openws.work.weixin.qq.com"
 HEARTBEAT_INTERVAL = 30
@@ -156,6 +157,7 @@ def _save_config_patch(patch: dict) -> None:
 
 @singleton
 class WecomBotChannel(ChatChannel):
+    NOT_SUPPORT_REPLYTYPE = [ReplyType.IMAGE]
 
     def __init__(self):
         super().__init__()
@@ -478,6 +480,7 @@ class WecomBotChannel(ChatChannel):
                     req_id,
                     mention_user_ids=mention_user_ids,
                     mention_display_names=mention_display_names,
+                    context=context,
                 )
             self.produce(context)
 
@@ -674,7 +677,7 @@ class WecomBotChannel(ChatChannel):
     # Stream callback (for agent on_event)
     # ------------------------------------------------------------------
 
-    def _make_stream_callback(self, req_id: str, mention_user_ids=None, mention_display_names=None):
+    def _make_stream_callback(self, req_id: str, mention_user_ids=None, mention_display_names=None, context: Context = None):
         """Build an on_event callback that pushes agent stream deltas to wecom via stream message.
 
         All intermediate segments (thinking before tool calls) and the final answer
@@ -730,6 +733,12 @@ class WecomBotChannel(ChatChannel):
             state = self._stream_states.get(req_id)
             if not state:
                 return
+            if context and context.get("voice_stream_active"):
+                if event_type in {"agent_end", "error", "cancelled"} or (
+                    event_type == "message_end" and not data.get("tool_calls")
+                ):
+                    self._stream_states.pop(req_id, None)
+                return False
 
             if event_type == "turn_start":
                 state["current"] = ""
@@ -767,6 +776,10 @@ class WecomBotChannel(ChatChannel):
             context["channel_type"] = self.channel_type
         if "origin_ctype" not in context:
             context["origin_ctype"] = ctype
+        if getattr(context["msg"], "input_is_voice", False) or getattr(context["msg"], "source_msgtype", "") == "voice":
+            context["input_is_voice"] = True
+            context["source_msgtype"] = "voice"
+            context["origin_ctype"] = ContextType.VOICE
 
         cmsg = context["msg"]
 
@@ -1011,6 +1024,8 @@ class WecomBotChannel(ChatChannel):
                 )
                 time.sleep(0.3)
             return text_sent and self._send_file(reply.content, receiver, is_group, req_id)
+        elif reply.type == ReplyType.VOICE:
+            return self._send_voice(reply.content, receiver, is_group, req_id)
         elif reply.type == ReplyType.VIDEO or reply.type == ReplyType.VIDEO_URL:
             return self._send_file(reply.content, receiver, is_group, req_id, media_type="video")
         else:
@@ -1538,6 +1553,74 @@ class WecomBotChannel(ChatChannel):
                     media_type: {"media_id": media_id},
                 },
             })
+
+    def _send_voice(self, file_path: str, receiver: str, is_group: bool, req_id: str = None) -> bool:
+        """Send a WeCom voice message as AMR, split to platform limits."""
+        local_path = str(file_path or "").strip()
+        if local_path.startswith("file://"):
+            local_path = local_path[7:]
+        if not os.path.exists(local_path):
+            logger.error(f"[WeComBot] Voice file not found: {local_path}")
+            return False
+
+        segment_paths = []
+        try:
+            duration_ms, segment_paths = split_audio_by_wecom_voice_limits(local_path)
+            if len(segment_paths) > 1:
+                logger.info(
+                    "[WeComBot] Splitting voice into %s parts (duration=%.1fs)",
+                    len(segment_paths),
+                    duration_ms / 1000.0,
+                )
+            sent_any = False
+            for path in segment_paths:
+                media_id = self._upload_media(path, "voice")
+                if not media_id:
+                    logger.error("[WeComBot] Failed to upload voice")
+                    return False
+                if not self._send_voice_media(media_id, receiver, is_group, req_id):
+                    logger.error("[WeComBot] Failed to send voice media")
+                    return False
+                sent_any = True
+                if len(segment_paths) > 1:
+                    time.sleep(0.3)
+            return sent_any
+        except Exception as e:
+            logger.error(f"[WeComBot] Voice send failed: {e}")
+            return False
+        finally:
+            for path in segment_paths:
+                try:
+                    if path and os.path.exists(path):
+                        os.remove(path)
+                except OSError:
+                    pass
+            try:
+                if local_path and os.path.exists(local_path):
+                    os.remove(local_path)
+            except OSError:
+                pass
+
+    def _send_voice_media(self, media_id: str, receiver: str, is_group: bool, req_id: str = None) -> bool:
+        if req_id:
+            return self._ws_send({
+                "cmd": "aibot_respond_msg",
+                "headers": {"req_id": req_id},
+                "body": {
+                    "msgtype": "voice",
+                    "voice": {"media_id": media_id},
+                },
+            })
+        return self._ws_send({
+            "cmd": "aibot_send_msg",
+            "headers": {"req_id": self._gen_req_id()},
+            "body": {
+                "chatid": receiver,
+                "chat_type": 2 if is_group else 1,
+                "msgtype": "voice",
+                "voice": {"media_id": media_id},
+            },
+        })
 
     def _active_send_markdown(self, content: str, receiver: str, is_group: bool):
         """Proactively send markdown message (for scheduled tasks, no req_id)."""

@@ -31,6 +31,7 @@ class AgentEventHandler:
         self.turn_number = 0
         self._max_steps_notice_sent = False
         self.intermediate_texts = []
+        self.voice_streamer = None
     
     def handle_event(self, event):
         """
@@ -51,10 +52,15 @@ class AgentEventHandler:
         # Dispatch to specific handlers
         if event_type == "turn_start":
             self._handle_turn_start(data)
+            self._handle_voice_stream_event(event)
+        elif event_type == "reasoning_effort_decision":
+            self._handle_reasoning_effort_decision(data)
         elif event_type == "message_update":
             self._handle_message_update(data)
+            self._handle_voice_stream_event(event)
         elif event_type == "message_end":
             self._handle_message_end(data)
+            self._handle_voice_stream_event(event)
         elif event_type == "turn_end":
             self._handle_turn_end(data)
         elif event_type == "reasoning_update":
@@ -63,6 +69,8 @@ class AgentEventHandler:
             self._handle_tool_execution_start(data)
         elif event_type == "tool_execution_end":
             self._handle_tool_execution_end(data)
+        elif event_type in {"agent_end", "error", "cancelled"}:
+            self._handle_voice_stream_event(event)
         
         # Call original callback if provided
         callback_result = None
@@ -90,6 +98,27 @@ class AgentEventHandler:
         """Handle message update event (streaming content text)"""
         delta = data.get("delta", "")
         self.current_content += delta
+
+    def _handle_reasoning_effort_decision(self, data):
+        """Enable voice streaming after the local low-effort decision event."""
+        if self.voice_streamer or not self.context or not self.channel:
+            return
+        try:
+            from channel.voice_streamer import VoiceReplyStreamer
+
+            self.voice_streamer = VoiceReplyStreamer.try_create(self.context, self.channel, data)
+            if self.voice_streamer:
+                self.context["voice_stream_active"] = True
+        except Exception as e:
+            logger.debug(f"[AgentEventHandler] Failed to start voice streamer: {e}")
+
+    def _handle_voice_stream_event(self, event):
+        if not self.voice_streamer:
+            return
+        try:
+            self.voice_streamer.handle_event(event)
+        except Exception as e:
+            logger.warning(f"[AgentEventHandler] Voice stream event failed: {e}")
     
     def _handle_message_end(self, data):
         """Handle message end event"""
@@ -136,6 +165,8 @@ class AgentEventHandler:
         Skipped in SSE mode because thinking text is already streamed via on_event.
         """
         if self.context and self.context.get("on_event"):
+            return
+        if self.context and self.context.get("voice_stream_active"):
             return
 
         if self.channel:

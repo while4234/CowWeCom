@@ -147,6 +147,19 @@ class AgentStreamExecutor:
             except Exception as e:
                 logger.error(f"Event callback error: {e}")
 
+    def _reasoning_effort_event_payload(self) -> dict:
+        decision = self._reasoning_effort_decision
+        if not decision:
+            return {}
+        return {
+            "selected_effort": decision.selected_effort,
+            "source": decision.decision_source,
+            "local_rule": decision.local_rule,
+            "input_is_voice": bool(getattr(decision, "input_is_voice", False)),
+            "channel": str(getattr(self.model, "channel_type", "") or ""),
+            "session_id": str(getattr(self.model, "session_id", "") or ""),
+        }
+
     @staticmethod
     def _backend_display_name(backend: str) -> str:
         labels = {
@@ -784,6 +797,8 @@ class AgentStreamExecutor:
         self._reasoning_effort_decision = resolve_reasoning_effort_for_task(user_message, self.model)
         if self._reasoning_effort_decision is None and self._current_task_kind == "knowledge":
             self._reasoning_effort_decision = self._knowledge_reasoning_effort_decision()
+        if self._reasoning_effort_decision:
+            self._emit_event("reasoning_effort_decision", self._reasoning_effort_event_payload())
         self._project_optimizer_task_event_id = self._record_project_optimizer_task_start(user_message)
         thinking_label = " | 💭 thinking" if thinking_enabled else ""
         effort_label = ""

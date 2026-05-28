@@ -58,4 +58,8 @@ def create_voice(voice_type):
         from voice.minimax.minimax_voice import MinimaxVoice
 
         return MinimaxVoice()
+    elif voice_type in ("xai", "grok"):
+        from voice.xai.xai_voice import XaiVoice
+
+        return XaiVoice()
     raise RuntimeError

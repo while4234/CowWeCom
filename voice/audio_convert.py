@@ -1,7 +1,10 @@
 import shutil
 import wave
+import os
+import uuid
 
 from common.log import logger
+from config import conf
 
 try:
     import pysilk
@@ -120,6 +123,114 @@ def any_to_amr(any_path, amr_path):
     audio = audio.set_frame_rate(8000)  # only support 8000
     audio.export(amr_path, format="amr")
     return audio.duration_seconds * 1000
+
+
+def split_audio_by_wecom_voice_limits(
+    file_path,
+    output_dir=None,
+    max_seconds=None,
+    max_bytes=None,
+):
+    """Convert/split audio into AMR chunks accepted by WeCom voice messages."""
+    if not _pydub_available:
+        raise RuntimeError("pydub is required to prepare WeCom voice audio.")
+    max_seconds = _positive_number(max_seconds, conf().get("wecom_voice_max_seconds", 55), 55)
+    max_bytes = int(_positive_number(max_bytes, conf().get("wecom_voice_max_bytes", 1900000), 1900000))
+    max_segment_ms = int(max_seconds * 1000)
+    if max_segment_ms <= 0 or max_bytes <= 5:
+        raise RuntimeError("Invalid WeCom voice limits: max seconds and bytes must be positive.")
+
+    source_path = str(file_path or "").strip()
+    if not source_path or not os.path.exists(source_path):
+        raise RuntimeError("WeCom voice source file does not exist.")
+
+    output_dir = output_dir or os.path.dirname(os.path.abspath(source_path)) or "."
+    os.makedirs(output_dir, exist_ok=True)
+    file_prefix = os.path.splitext(os.path.basename(source_path))[0] or "wecom_voice"
+    unique_prefix = f"{file_prefix}-{uuid.uuid4().hex[:8]}"
+
+    try:
+        audio = AudioSegment.from_file(source_path, parameters=["-nostdin"])
+        audio = audio.set_frame_rate(8000).set_channels(1)
+    except Exception as exc:
+        raise RuntimeError("Failed to decode voice audio for WeCom AMR conversion.") from exc
+
+    total_ms = len(audio)
+    if total_ms <= 0:
+        raise RuntimeError("WeCom voice audio is empty.")
+
+    paths = []
+    start_ms = 0
+    segment_index = 1
+    try:
+        while start_ms < total_ms:
+            duration_ms = min(max_segment_ms, total_ms - start_ms)
+            path, actual_duration = _export_wecom_amr_segment(
+                audio,
+                output_dir,
+                unique_prefix,
+                segment_index,
+                start_ms,
+                duration_ms,
+                max_bytes,
+            )
+            paths.append(path)
+            start_ms += actual_duration
+            segment_index += 1
+        if not paths:
+            raise RuntimeError("WeCom voice audio did not produce any AMR segment.")
+        return total_ms, paths
+    except Exception:
+        for path in paths:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        raise
+
+
+def _export_wecom_amr_segment(audio, output_dir, prefix, index, start_ms, duration_ms, max_bytes):
+    min_duration_ms = 500
+    current_ms = max(min_duration_ms, int(duration_ms))
+    while current_ms >= min_duration_ms:
+        end_ms = min(len(audio), start_ms + current_ms)
+        if end_ms <= start_ms:
+            break
+        segment = audio[start_ms:end_ms]
+        path = os.path.join(output_dir, f"{prefix}-{index}.amr")
+        try:
+            segment.export(path, format="amr")
+        except Exception as exc:
+            _remove_quietly(path)
+            raise RuntimeError("Failed to export WeCom AMR voice segment.") from exc
+        size = os.path.getsize(path) if os.path.exists(path) else 0
+        if 5 < size <= max_bytes:
+            return path, end_ms - start_ms
+        _remove_quietly(path)
+        if size <= 5:
+            raise RuntimeError("WeCom AMR voice segment is empty after conversion.")
+        current_ms = current_ms // 2
+
+    raise RuntimeError("WeCom AMR voice segment exceeds size limit even after shortening.")
+
+
+def _positive_number(*values):
+    for value in values:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return 0.0
+
+
+def _remove_quietly(path):
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
 
 
 def sil_to_wav(silk_path, wav_path, rate: int = 24000):

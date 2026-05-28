@@ -394,6 +394,10 @@ class ChatChannel(Channel):
             context["channel_type"] = self.channel_type
         if "origin_ctype" not in context:
             context["origin_ctype"] = ctype
+        if context["origin_ctype"] == ContextType.VOICE or context.get("source_msgtype") == "voice":
+            context["input_is_voice"] = True
+            context["source_msgtype"] = "voice"
+            context["origin_ctype"] = ContextType.VOICE
         # context首次传入时，receiver是None，根据类型设置receiver
         first_in = "receiver" not in context
         # 群名匹配过程，设置session_id和receiver
@@ -636,6 +640,9 @@ class ChatChannel(Channel):
                 context["channel"] = e_context["channel"]
                 reply = super().build_reply_content(context.content, context)
             elif context.type == ContextType.VOICE:  # 语音消息
+                context["input_is_voice"] = True
+                context["source_msgtype"] = "voice"
+                context["origin_ctype"] = ContextType.VOICE
                 cmsg = context["msg"]
                 cmsg.prepare()
                 file_path = context.content

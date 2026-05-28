@@ -69,6 +69,7 @@ class ReasoningEffortDecision:
     main_model: str
     chat_scope: str = CHAT_SCOPE_PRIVATE
     local_rule: str = ""
+    input_is_voice: bool = False
 
     def usage_metadata(self) -> Dict[str, Any]:
         return {
@@ -79,6 +80,7 @@ class ReasoningEffortDecision:
             "reasoning_effort_main_model": self.main_model,
             "reasoning_effort_chat_scope": self.chat_scope,
             "reasoning_effort_local_rule": self.local_rule,
+            "reasoning_effort_input_is_voice": self.input_is_voice,
         }
 
 
@@ -93,11 +95,19 @@ def resolve_reasoning_effort_for_task(user_message: str, model_adapter: Any) -> 
     active_backend = get_current_backend()
     main_model = get_effective_model()
     chat_scope = _chat_scope(model_adapter)
+    input_is_voice = _model_input_is_voice(model_adapter)
     quality_effort = _configured_effort("reasoning_effort_policy_quality_effort", "xhigh", routed_only=True)
     default_effort = _configured_effort("reasoning_effort_policy_default_effort", "medium", routed_only=True)
+    low_effort = _configured_low_effort()
 
     task_id = uuid.uuid4().hex[:12]
-    local_effort, local_rule = classify_local_task(user_message, quality_effort, default_effort)
+    local_effort, local_rule = classify_local_task(
+        user_message,
+        quality_effort,
+        default_effort,
+        input_is_voice=input_is_voice,
+        low_effort=low_effort,
+    )
     if not local_effort:
         local_effort = quality_effort
         local_rule = "uncertain_default_quality"
@@ -111,12 +121,20 @@ def resolve_reasoning_effort_for_task(user_message: str, model_adapter: Any) -> 
         main_model=main_model,
         chat_scope=chat_scope,
         local_rule=local_rule,
+        input_is_voice=input_is_voice,
     )
     record_policy_decision(decision, model_adapter=model_adapter, user_message=user_message)
     return decision
 
 
-def classify_local_task(user_message: str, quality_effort: str = "xhigh", default_effort: str = "medium") -> Tuple[str, str]:
+def classify_local_task(
+    user_message: str,
+    quality_effort: str = "xhigh",
+    default_effort: str = "medium",
+    *,
+    input_is_voice: bool = False,
+    low_effort: str = "low",
+) -> Tuple[str, str]:
     """Return (effort, rule) for high-confidence local decisions."""
     text = _normalize_task_text(user_message)
     if not text:
@@ -129,6 +147,11 @@ def classify_local_task(user_message: str, quality_effort: str = "xhigh", defaul
     learned_quality_rule = _match_learned_rule(text, quality_effort)
     if learned_quality_rule:
         return quality_effort, learned_quality_rule
+
+    if input_is_voice:
+        low_rule = _match_low_voice_rule(text)
+        if low_rule:
+            return low_effort, low_rule
 
     medium_rule = _match_medium_rule(text)
     if medium_rule:
@@ -163,11 +186,12 @@ def record_policy_decision(
         "decision_status": "success",
         "reason": _safe_text(decision.reason, 160),
         "local_rule": _safe_text(decision.local_rule, 96),
+        "input_is_voice": bool(decision.input_is_voice),
         "channel_type": _safe_text(getattr(model_adapter, "channel_type", ""), 64),
         "session_hash": _hash_optional(getattr(model_adapter, "session_id", "")),
         "user_hash": _hash_optional(getattr(model_adapter, "user_id", "")),
         "message_hash": stable_metadata_hash(str(user_message or "")),
-        "message_features": _message_features(user_message),
+        "message_features": _message_features(user_message, input_is_voice=decision.input_is_voice),
     }
     record = {key: value for key, value in record.items() if value not in ("", None)}
 
@@ -489,6 +513,18 @@ def _match_medium_rule(text: str) -> str:
     return ""
 
 
+def _match_low_voice_rule(text: str) -> str:
+    if len(text) > 120:
+        return ""
+    features = _message_features(text, input_is_voice=True)
+    if features.get("has_code_signal") or features.get("has_url") or features.get("has_file_path_signal"):
+        return ""
+    medium_rule = _match_medium_rule(text)
+    if not medium_rule:
+        return ""
+    return f"low_{medium_rule}"
+
+
 def _match_learned_rule(text: str, effort: str) -> str:
     normalized_effort = str(effort or "").strip().lower()
     if normalized_effort not in ROUTED_EFFORTS:
@@ -535,6 +571,15 @@ def _configured_effort(key: str, default: str, *, routed_only: bool) -> str:
     return value if value in allowed else default
 
 
+def _configured_low_effort() -> str:
+    value = _configured_effort("reasoning_effort_policy_low_effort", "low", routed_only=False)
+    return value if value == "low" else "low"
+
+
+def _model_input_is_voice(model_adapter: Any) -> bool:
+    return bool(getattr(model_adapter, "input_is_voice", False))
+
+
 def _normalize_task_text(value: str) -> str:
     return " ".join(str(value or "").strip().split()).lower()
 
@@ -550,7 +595,7 @@ def _chat_scope(model_adapter: Any) -> str:
     return _normalize_chat_scope(getattr(model_adapter, "chat_scope", CHAT_SCOPE_PRIVATE))
 
 
-def _message_features(user_message: str) -> Dict[str, Any]:
+def _message_features(user_message: str, *, input_is_voice: bool = False) -> Dict[str, Any]:
     text = str(user_message or "")
     stripped = text.strip()
     lowered = stripped.lower()
@@ -563,6 +608,7 @@ def _message_features(user_message: str) -> Dict[str, Any]:
         "has_url": bool(re.search(r"https?://|www\.", lowered)),
         "has_file_path_signal": bool(re.search(r"([a-zA-Z]:\\|/[^/\s]+/|\\[^\\\s]+\\)", stripped)),
         "is_short": len(stripped) <= 80,
+        "input_is_voice": bool(input_is_voice),
     }
 
 
@@ -655,7 +701,10 @@ def _append_learning_sample(
         "selected_effort": decision.selected_effort,
         "local_rule": decision.local_rule,
         "message_hash": audit_record.get("message_hash") or stable_metadata_hash(text),
-        "message_features": audit_record.get("message_features") or _message_features(text),
+        "message_features": audit_record.get("message_features") or _message_features(
+            text,
+            input_is_voice=decision.input_is_voice,
+        ),
         "message_text": text,
     }
     try:

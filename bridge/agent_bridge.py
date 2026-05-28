@@ -827,6 +827,7 @@ class AgentBridge:
                 agent.model.channel_type = context.get("channel_type", "")
                 agent.model.session_id = conversation_id or session_id or ""
                 agent.model.is_group = bool(context.get("isgroup", False))
+                agent.model.input_is_voice = bool(context.get("input_is_voice", False))
                 if profile is not None:
                     agent.model.user_id = profile.actor_id
                     agent.model.user_label = profile.display_name
@@ -947,6 +948,8 @@ class AgentBridge:
                     # Return file reply based on file type
                     return self._create_file_reply(file_info, response, context)
             
+            if context and context.get("voice_stream_sent"):
+                return Reply(ReplyType.TEXT, "")
             return Reply(ReplyType.TEXT, response)
             
         except Exception as e:

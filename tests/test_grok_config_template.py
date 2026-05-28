@@ -18,6 +18,30 @@ class TestGrokConfigTemplate(unittest.TestCase):
     def test_bare_manual_code_compatibility_is_disabled_by_default(self):
         self.assertIs(self.template["grok_oauth_accept_bare_code"], False)
 
+    def test_template_exposes_grok_tts_and_voice_mode_defaults(self):
+        expected = {
+            "text_to_voice": "openai",
+            "grok_tts_voice_id": "eve",
+            "grok_tts_language": "zh",
+            "grok_tts_sample_rate": 24000,
+            "grok_tts_bit_rate": 128000,
+            "grok_tts_auto_speech_tags": False,
+            "grok_voice_mode_enabled": False,
+            "grok_voice_reply_channels": ["wechatcom_app", "wecom_bot"],
+            "grok_voice_streaming_enabled": True,
+            "grok_voice_require_low_reasoning": True,
+            "grok_voice_max_segment_chars": 120,
+            "grok_voice_min_segment_chars": 12,
+            "grok_voice_flush_idle_ms": 800,
+            "grok_voice_tts_queue_size": 4,
+            "wecom_voice_max_seconds": 55,
+            "wecom_voice_max_bytes": 1900000,
+            "reasoning_effort_policy_low_effort": "low",
+        }
+        for key, value in expected.items():
+            self.assertIn(key, self.template)
+            self.assertEqual(self.template[key], value)
+
 
 if __name__ == "__main__":
     unittest.main()
