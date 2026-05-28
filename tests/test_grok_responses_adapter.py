@@ -70,6 +70,20 @@ class TestGrokResponsesAdapter(unittest.TestCase):
         self.assertEqual(call["prompt_cache_key"], "session-123")
         self.assertEqual(call["reasoning"], {"effort": "high"})
 
+    def test_xai_responses_prefers_explicit_max_output_tokens(self):
+        client = _FakeResponsesClient()
+        bot = _FakeBot(client)
+
+        result = bot.call_with_tools(
+            [{"role": "user", "content": "hi"}],
+            stream=False,
+            max_tokens=300,
+            max_output_tokens=120,
+        )
+
+        self.assertEqual(result["choices"][0]["message"]["content"], "ok")
+        self.assertEqual(client.calls[0]["max_output_tokens"], 120)
+
     def test_unsupported_grok_model_drops_reasoning_and_service_tier(self):
         bot = _FakeBot(_FakeResponsesClient())
         payload, headers = bot._prepare_responses_request(

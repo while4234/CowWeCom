@@ -12,6 +12,7 @@ from channel.channel import Channel
 from channel.image_recognition import get_image_recognition_manager
 from common.agent_task_limits import resolve_agent_task_budget
 from common.agent_task_runtime import SessionRuntime, TaskPolicy
+from common.grok_voice_mode import is_grok_text_to_voice_provider
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common import memory
 from plugins import *
@@ -398,6 +399,8 @@ class ChatChannel(Channel):
             context["input_is_voice"] = True
             context["source_msgtype"] = "voice"
             context["origin_ctype"] = ContextType.VOICE
+        elif "input_is_voice" not in context:
+            context["input_is_voice"] = False
         # context首次传入时，receiver是None，根据类型设置receiver
         first_in = "receiver" not in context
         # 群名匹配过程，设置session_id和receiver
@@ -524,12 +527,31 @@ class ChatChannel(Channel):
                     context.get("session_id", ""),
                     context.content,
                 )
-            if "desire_rtype" not in context and conf().get("always_reply_voice") and ReplyType.VOICE not in self.NOT_SUPPORT_REPLYTYPE:
+            if (
+                "desire_rtype" not in context
+                and conf().get("always_reply_voice")
+                and self._legacy_text_to_voice_allowed(context)
+            ):
                 context["desire_rtype"] = ReplyType.VOICE
         elif context.type == ContextType.VOICE:
-            if "desire_rtype" not in context and conf().get("voice_reply_voice") and ReplyType.VOICE not in self.NOT_SUPPORT_REPLYTYPE:
+            if (
+                "desire_rtype" not in context
+                and conf().get("voice_reply_voice")
+                and self._legacy_text_to_voice_allowed(context)
+            ):
                 context["desire_rtype"] = ReplyType.VOICE
         return context
+
+    def _legacy_text_to_voice_allowed(self, context: Context) -> bool:
+        if ReplyType.VOICE in self.NOT_SUPPORT_REPLYTYPE:
+            return False
+        if is_grok_text_to_voice_provider():
+            logger.info(
+                "[chat_channel] legacy desire_rtype VOICE skipped for Grok/xAI provider; "
+                "controlled Grok voice streaming handles voice-origin replies"
+            )
+            return False
+        return True
 
     def _handle(self, context: Context):
         if context is None or not context.content:
@@ -710,7 +732,11 @@ class ChatChannel(Channel):
 
                 if reply.type == ReplyType.TEXT:
                     reply_text = reply.content
-                    if desire_rtype == ReplyType.VOICE and ReplyType.VOICE not in self.NOT_SUPPORT_REPLYTYPE:
+                    if (
+                        desire_rtype == ReplyType.VOICE
+                        and ReplyType.VOICE not in self.NOT_SUPPORT_REPLYTYPE
+                        and not is_grok_text_to_voice_provider()
+                    ):
                         reply = super().build_text_to_voice(reply.content)
                         return self._decorate_reply(context, reply)
                     if context.get("isgroup", False):

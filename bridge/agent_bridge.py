@@ -24,7 +24,17 @@ from config import conf
 from agent.access_control import get_resource_leases
 from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile, safe_actor_slug
 from common.capi_monthly_monitor import maybe_check_capi_monthly_after_task
-from common.llm_backend_router import get_current_backend, get_effective_chat_bot_type, get_effective_model
+from common.llm_backend_router import (
+    BACKEND_CAPI,
+    BACKEND_CAPI_MONTHLY,
+    BACKEND_CODEX,
+    get_codex_model,
+    get_current_backend,
+    get_effective_chat_bot_type,
+    get_effective_model,
+    get_effective_openai_api_config,
+    normalize_backend,
+)
 from models.openai_compatible_bot import OpenAICompatibleBot
 
 
@@ -101,6 +111,7 @@ class AgentLLMModel(LLMModel):
         self.bridge = bridge
         self.bot_type = bot_type
         self._bot = None
+        self._bot_backend = ""
         self._bot_model = None
         self.actor_role = ""
         self.is_admin = False
@@ -160,16 +171,52 @@ class AgentLLMModel(LLMModel):
     @property
     def bot(self):
         """Lazy load the bot, re-create when model or bot_type changes"""
-        from models.bot_factory import create_bot
         raw_model = get_effective_model()
         cur_bot_type = self._resolve_bot_type(raw_model)
         cur_model = self._resolve_model_for_bot_type(cur_bot_type)
-        if self._bot is None or self._bot_model != cur_model or getattr(self, '_bot_type', None) != cur_bot_type:
-            self._bot = create_bot(cur_bot_type)
+        return self._get_bot_for_route(cur_bot_type, cur_model, "")
+
+    def _resolve_request_route(self, request: LLMRequest):
+        backend = str(getattr(request, "backend", "") or "").strip()
+        if backend:
+            backend = normalize_backend(backend)
+            requested_model = str(getattr(request, "model", "") or "").strip()
+            if backend == BACKEND_CODEX:
+                return const.CODEX, requested_model or get_codex_model(), backend
+            routed = get_effective_openai_api_config(backend)
+            return const.OPENAI, requested_model or str(routed.get("model") or get_effective_model()), backend
+
+        raw_model = get_effective_model()
+        cur_bot_type = self._resolve_bot_type(raw_model)
+        return cur_bot_type, self._resolve_model_for_bot_type(cur_bot_type, getattr(request, "model", None)), ""
+
+    def _get_bot_for_route(self, cur_bot_type: str, cur_model: str, backend: str = ""):
+        if (
+            self._bot is None
+            or self._bot_model != cur_model
+            or getattr(self, "_bot_type", None) != cur_bot_type
+            or getattr(self, "_bot_backend", "") != backend
+        ):
+            self._bot = self._create_bot_for_route(cur_bot_type, backend)
             self._bot = add_openai_compatible_support(self._bot)
             self._bot_model = cur_model
             self._bot_type = cur_bot_type
+            self._bot_backend = backend
         return self._bot
+
+    @staticmethod
+    def _create_bot_for_route(cur_bot_type: str, backend: str = ""):
+        from models.bot_factory import create_bot
+
+        if backend in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY} and cur_bot_type in {const.OPENAI, const.CHATGPT, const.CUSTOM}:
+            from models.chatgpt.chat_gpt_bot import ChatGPTBot
+
+            return ChatGPTBot(backend_override=backend)
+        if backend in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY} and cur_bot_type == const.OPEN_AI:
+            from models.openai.open_ai_bot import OpenAIBot
+
+            return OpenAIBot(backend_override=backend)
+        return create_bot(cur_bot_type)
 
     def call(self, request: LLMRequest):
         """
@@ -178,18 +225,21 @@ class AgentLLMModel(LLMModel):
         try:
             # For non-streaming calls, we'll use the existing reply method
             # This is a simplified implementation
-            if hasattr(self.bot, 'call_with_tools'):
-                cur_bot_type = getattr(self, '_bot_type', None) or self._resolve_bot_type(get_effective_model())
+            cur_bot_type, cur_model, route_backend = self._resolve_request_route(request)
+            bot = self._get_bot_for_route(cur_bot_type, cur_model, route_backend)
+            if hasattr(bot, 'call_with_tools'):
                 # Use tool-enabled call if available
                 kwargs = {
                     'messages': request.messages,
                     'tools': getattr(request, 'tools', None),
                     'stream': False,
-                    'model': self._resolve_model_for_bot_type(cur_bot_type, getattr(request, 'model', None))
+                    'model': cur_model,
                 }
                 # Only pass max_tokens if it's explicitly set
                 if request.max_tokens is not None:
                     kwargs['max_tokens'] = request.max_tokens
+                if getattr(request, 'max_output_tokens', None) is not None:
+                    kwargs['max_output_tokens'] = request.max_output_tokens
                 request_timeout = getattr(request, 'request_timeout', None)
                 if request_timeout is not None:
                     kwargs['request_timeout'] = request_timeout
@@ -243,7 +293,7 @@ class AgentLLMModel(LLMModel):
 
                 self._record_project_optimizer_request(request, kwargs)
                 self._note_user_visible_model_call(request)
-                response = self.bot.call_with_tools(**kwargs)
+                response = bot.call_with_tools(**kwargs)
                 return self._format_response(response)
             else:
                 # Fallback to regular call
@@ -259,8 +309,9 @@ class AgentLLMModel(LLMModel):
         Call the model with streaming using COW's bot infrastructure
         """
         try:
-            if hasattr(self.bot, 'call_with_tools'):
-                cur_bot_type = getattr(self, '_bot_type', None) or self._resolve_bot_type(get_effective_model())
+            cur_bot_type, cur_model, route_backend = self._resolve_request_route(request)
+            bot = self._get_bot_for_route(cur_bot_type, cur_model, route_backend)
+            if hasattr(bot, 'call_with_tools'):
                 # Use tool-enabled streaming call if available
                 # Extract system prompt if present
                 system_prompt = getattr(request, 'system', None)
@@ -270,12 +321,14 @@ class AgentLLMModel(LLMModel):
                     'messages': request.messages,
                     'tools': getattr(request, 'tools', None),
                     'stream': True,
-                    'model': self._resolve_model_for_bot_type(cur_bot_type, getattr(request, 'model', None))
+                    'model': cur_model,
                 }
 
                 # Only pass max_tokens if explicitly set, let the bot use its default
                 if request.max_tokens is not None:
                     kwargs['max_tokens'] = request.max_tokens
+                if getattr(request, 'max_output_tokens', None) is not None:
+                    kwargs['max_output_tokens'] = request.max_output_tokens
                 request_timeout = getattr(request, 'request_timeout', None)
                 if request_timeout is not None:
                     kwargs['request_timeout'] = request_timeout
@@ -328,13 +381,13 @@ class AgentLLMModel(LLMModel):
 
                 self._record_project_optimizer_request(request, kwargs)
                 self._note_user_visible_model_call(request)
-                stream = self.bot.call_with_tools(**kwargs)
+                stream = bot.call_with_tools(**kwargs)
                 
                 # Convert stream format to our expected format
                 for chunk in stream:
                     yield self._format_stream_chunk(chunk)
             else:
-                bot_type = type(self.bot).__name__
+                bot_type = type(bot).__name__
                 raise NotImplementedError(f"Bot {bot_type} does not support call_with_tools. Please add the method.")
                 
         except Exception as e:

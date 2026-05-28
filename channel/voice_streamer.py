@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 from bridge.context import Context
 from bridge.reply import Reply, ReplyType
 from common.log import logger
+from common.grok_voice_mode import VOICE_MODE_CONVERSATION, VOICE_MODE_LOW_GATED
 from config import conf
 from integrations.hermes_xai.tts import XaiTtsError, generate_xai_tts
 
@@ -254,14 +255,22 @@ def voice_stream_enabled(context: Context, channel, decision: Dict[str, Any]) ->
         return False
     if not bool(conf().get("grok_voice_streaming_enabled", True)):
         return False
-    if not bool(conf().get("grok_voice_mode_enabled", False)):
+    if not bool(decision.get("enabled", False)):
         return False
     if context.get("input_is_voice") is not True:
         return False
-    selected_effort = str(decision.get("selected_effort") or "").strip().lower()
-    source = str(decision.get("source") or decision.get("decision_source") or "").strip().lower()
+    if str(decision.get("input_is_voice") or "").strip().lower() == "false":
+        return False
+    mode = str(decision.get("mode") or "").strip().lower()
+    source = str(decision.get("source") or "").strip().lower()
     local_rule = str(decision.get("local_rule") or "").strip()
-    if selected_effort != "low" or source != "local" or not local_rule.startswith("low_"):
+    if mode == VOICE_MODE_CONVERSATION:
+        if source != "conversation_mode":
+            return False
+    elif mode == VOICE_MODE_LOW_GATED:
+        if source != "local_low" or not local_rule.startswith("low_"):
+            return False
+    else:
         return False
     channel_type = str(context.get("channel_type") or getattr(channel, "channel_type", "") or "").strip()
     allowed_channels = _configured_channels(conf().get("grok_voice_reply_channels", ["wechatcom_app", "wecom_bot"]))

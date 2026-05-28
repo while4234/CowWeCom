@@ -55,6 +55,8 @@ class AgentEventHandler:
             self._handle_voice_stream_event(event)
         elif event_type == "reasoning_effort_decision":
             self._handle_reasoning_effort_decision(data)
+        elif event_type == "voice_mode_decision":
+            self._handle_voice_mode_decision(data)
         elif event_type == "message_update":
             self._handle_message_update(data)
             self._handle_voice_stream_event(event)
@@ -100,7 +102,13 @@ class AgentEventHandler:
         self.current_content += delta
 
     def _handle_reasoning_effort_decision(self, data):
-        """Enable voice streaming after the local low-effort decision event."""
+        """Backward compatible hook for old events carrying voice_mode."""
+        voice_mode = data.get("voice_mode") if isinstance(data, dict) else None
+        if isinstance(voice_mode, dict):
+            self._handle_voice_mode_decision(voice_mode)
+
+    def _handle_voice_mode_decision(self, data):
+        """Enable voice streaming after the full Grok voice-mode decision."""
         if self.voice_streamer or not self.context or not self.channel:
             return
         try:

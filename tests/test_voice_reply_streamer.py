@@ -32,10 +32,12 @@ def _context():
     return context
 
 
-def _decision(effort="low", rule="low_greeting"):
+def _decision(mode="low_gated", source="local_low", rule="low_greeting", enabled=True):
     return {
-        "selected_effort": effort,
-        "source": "local",
+        "enabled": enabled,
+        "mode": mode,
+        "selected_effort": "low",
+        "source": source,
         "local_rule": rule,
         "input_is_voice": True,
         "channel": "wechatcom_app",
@@ -52,11 +54,35 @@ def test_voice_stream_requires_voice_low_local_rule(monkeypatch):
     monkeypatch.setattr(voice_streamer, "conf", lambda: settings)
 
     assert voice_stream_enabled(_context(), FakeChannel(), _decision()) is True
-    assert voice_stream_enabled(_context(), FakeChannel(), _decision(effort="medium")) is False
+    assert voice_stream_enabled(_context(), FakeChannel(), _decision(source="disabled")) is False
 
     text_context = _context()
     text_context["input_is_voice"] = False
     assert voice_stream_enabled(text_context, FakeChannel(), _decision()) is False
+
+
+def test_voice_stream_conversation_mode_does_not_require_local_low(monkeypatch):
+    settings = {
+        "grok_voice_streaming_enabled": True,
+        "grok_voice_reply_channels": ["wechatcom_app"],
+    }
+    monkeypatch.setattr(voice_streamer, "conf", lambda: settings)
+
+    assert voice_stream_enabled(
+        _context(),
+        FakeChannel(),
+        _decision(mode="conversation", source="conversation_mode", rule="coding"),
+    ) is True
+
+
+def test_voice_stream_rejects_disallowed_channel(monkeypatch):
+    settings = {
+        "grok_voice_streaming_enabled": True,
+        "grok_voice_reply_channels": ["wecom_bot"],
+    }
+    monkeypatch.setattr(voice_streamer, "conf", lambda: settings)
+
+    assert voice_stream_enabled(_context(), FakeChannel(), _decision()) is False
 
 
 def test_streamer_defaults_reduce_native_voice_fragmenting(monkeypatch):

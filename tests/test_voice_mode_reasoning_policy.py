@@ -30,6 +30,10 @@ def test_text_input_keeps_existing_medium_behavior():
     assert rule == "greeting"
 
 
+def test_low_is_a_valid_routed_effort_for_voice_gate():
+    assert "low" in policy.ROUTED_EFFORTS
+
+
 def test_voice_short_simple_task_gets_low():
     model = SimpleNamespace(input_is_voice=True, channel_type="wecom_bot", session_id="s1")
 

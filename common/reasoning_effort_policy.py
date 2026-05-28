@@ -29,7 +29,7 @@ from config import conf
 
 
 VALID_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
-ROUTED_EFFORTS = {"medium", "xhigh"}
+ROUTED_EFFORTS = {"low", "medium", "xhigh"}
 DEFAULT_OPTIMIZE_EVERY = 50
 DEFAULT_LEARNING_SAMPLE_LIMIT = 120
 MAX_LEARNING_MESSAGE_CHARS = 1000

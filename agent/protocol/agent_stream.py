@@ -26,6 +26,10 @@ from common.llm_backend_router import (
     set_current_backend,
 )
 from common.llm_usage_tracker import normalize_usage, stable_metadata_hash
+from common.grok_voice_mode import (
+    append_voice_short_answer_prompt,
+    resolve_grok_voice_mode_decision,
+)
 from common.reasoning_effort_policy import (
     CHAT_SCOPE_GROUP,
     CHAT_SCOPE_PRIVATE,
@@ -123,6 +127,7 @@ class AgentStreamExecutor:
         self._tool_attempt_memory_snapshot = {}
         self._readonly_tool_result_cache = {}
         self._reasoning_effort_decision = None
+        self._voice_mode_decision = None
         self._project_optimizer_task_event_id = ""
         self._current_user_message = ""
         self._current_task_kind = "default"
@@ -151,7 +156,7 @@ class AgentStreamExecutor:
         decision = self._reasoning_effort_decision
         if not decision:
             return {}
-        return {
+        payload = {
             "selected_effort": decision.selected_effort,
             "source": decision.decision_source,
             "local_rule": decision.local_rule,
@@ -159,6 +164,15 @@ class AgentStreamExecutor:
             "channel": str(getattr(self.model, "channel_type", "") or ""),
             "session_id": str(getattr(self.model, "session_id", "") or ""),
         }
+        voice_mode_decision = getattr(self, "_voice_mode_decision", None)
+        if voice_mode_decision:
+            payload["voice_mode"] = voice_mode_decision.to_event_payload()
+        return payload
+
+    def _voice_mode_event_payload(self) -> dict:
+        if not self._voice_mode_decision:
+            return {}
+        return self._voice_mode_decision.to_event_payload()
 
     @staticmethod
     def _backend_display_name(backend: str) -> str:
@@ -782,6 +796,7 @@ class AgentStreamExecutor:
         self._readonly_tool_result_cache = {}
         self._current_user_message = str(user_message or "")
         self._current_task_kind = "knowledge" if is_knowledge_task(user_message) else "default"
+        self._voice_mode_decision = None
         self._used_knowledge_tool = False
         self._used_web_research_tool = False
         self._deep_evidence_insufficient = False
@@ -797,8 +812,13 @@ class AgentStreamExecutor:
         self._reasoning_effort_decision = resolve_reasoning_effort_for_task(user_message, self.model)
         if self._reasoning_effort_decision is None and self._current_task_kind == "knowledge":
             self._reasoning_effort_decision = self._knowledge_reasoning_effort_decision()
+        self._voice_mode_decision = resolve_grok_voice_mode_decision(
+            self.model,
+            self._reasoning_effort_decision,
+        )
         if self._reasoning_effort_decision:
             self._emit_event("reasoning_effort_decision", self._reasoning_effort_event_payload())
+        self._emit_event("voice_mode_decision", self._voice_mode_event_payload())
         self._project_optimizer_task_event_id = self._record_project_optimizer_task_start(user_message)
         thinking_label = " | 💭 thinking" if thinking_enabled else ""
         effort_label = ""
@@ -1258,10 +1278,21 @@ class AgentStreamExecutor:
             temperature=0,
             stream=True,
             tools=tools_schema,
-            system=self.system_prompt,  # Pass system prompt separately for Claude API
+            system=append_voice_short_answer_prompt(self.system_prompt, self._voice_mode_decision),
             cache_shape_metadata=cache_shape_metadata,
         )
-        if self._reasoning_effort_decision:
+        if self._voice_mode_decision and self._voice_mode_decision.enabled:
+            if self._voice_mode_decision.selected_model:
+                request.model = self._voice_mode_decision.selected_model
+            if self._voice_mode_decision.selected_backend:
+                request.backend = self._voice_mode_decision.selected_backend
+            if self._voice_mode_decision.max_output_tokens:
+                request.max_tokens = self._voice_mode_decision.max_output_tokens
+                request.max_output_tokens = self._voice_mode_decision.max_output_tokens
+            request.reasoning_effort = self._voice_mode_decision.selected_effort
+            request.reasoning_effort_locked = True
+            request.reasoning_effort_decision_source = self._voice_mode_decision.source
+        elif self._reasoning_effort_decision:
             request.reasoning_effort = self._reasoning_effort_decision.selected_effort
             request.reasoning_effort_locked = True
             request.reasoning_effort_decision_source = self._reasoning_effort_decision.decision_source
