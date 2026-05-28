@@ -495,6 +495,7 @@ CowWeCom/
 - KnowledgeStorage 视觉 chunk 追加改为安全幂等写入：重复写入同一 artifact 会先清旧视觉 chunk，普通文本 chunk 或其他文档/group 的同名 chunk 会自动改写新 ID，避免覆盖、孤儿 span 和重复 FTS。
 - 本地文档视觉 group 回归继续加固：覆盖成员重试后的旧 chunk/mapping 清理、stale member 批量清理、真实成员 retrievable 边界，以及缺失 source_pages 的元数据回填提示。
 - 本地文档视觉 group 的 legacy stale member 清理会同步修复受污染的 `source_pages`、重置检索状态并清理旧 group/page chunk，避免后续 group 分析被历史 page 污染为低置信。
+- 已刷新公共协议知识库 SQLite：UCIe 1.1、AMBA AXI v2.0 和 AXI4-Stream 的 PDF 普通文本 chunk 已用当前 sanitizer 重建，Figure/Table 周边图内信号、时序和表格碎片乱码抽检清零，三个协议验证报告均通过。
 
 ### 2026-05-27
 

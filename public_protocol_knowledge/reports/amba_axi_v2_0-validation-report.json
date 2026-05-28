@@ -28,8 +28,8 @@
       "ok": true,
       "detail": {
         "documents": 2,
-        "chunks": 202,
-        "source_spans": 202
+        "chunks": 201,
+        "source_spans": 201
       }
     },
     {
@@ -37,8 +37,8 @@
       "ok": true,
       "detail": {
         "documents": 2,
-        "chunks": 202,
-        "source_spans": 202
+        "chunks": 201,
+        "source_spans": 201
       }
     },
     {
@@ -46,24 +46,14 @@
       "ok": true,
       "detail": {
         "documents": 2,
-        "chunks": 202,
-        "source_spans": 202
+        "chunks": 201,
+        "source_spans": 201
       }
     },
     {
       "name": "ready_documents",
       "ok": true,
       "detail": 2
-    },
-    {
-      "name": "source_copy_exists:69fe4e2dea7bfbea0bd4067a",
-      "ok": true,
-      "detail": "D:\\CowAgent\\public_protocol_knowledge\\derived\\54ff88973374374fb1bef5e7\\amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md"
-    },
-    {
-      "name": "source_hash_matches:69fe4e2dea7bfbea0bd4067a",
-      "ok": true,
-      "detail": "AMBA AXI v2.0 - Codex Protocol Development Guide"
     },
     {
       "name": "source_copy_exists:54ff88973374374fb1bef5e7",
@@ -74,6 +64,16 @@
       "name": "source_hash_matches:54ff88973374374fb1bef5e7",
       "ok": true,
       "detail": "AMBA AXI Protocol Specification v2.0"
+    },
+    {
+      "name": "source_copy_exists:69fe4e2dea7bfbea0bd4067a",
+      "ok": true,
+      "detail": "D:\\CowAgent\\public_protocol_knowledge\\derived\\54ff88973374374fb1bef5e7\\amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md"
+    },
+    {
+      "name": "source_hash_matches:69fe4e2dea7bfbea0bd4067a",
+      "ok": true,
+      "detail": "AMBA AXI v2.0 - Codex Protocol Development Guide"
     },
     {
       "name": "query_hit:AXI VALID READY handshake",
@@ -131,7 +131,7 @@
         "resolved": true,
         "entity_id": "9e4b38de6df96621db4c5973",
         "canonical_name": "VALID",
-        "kb_id": null,
+        "kb_id": "amba_axi_v2_0",
         "aliases": [
           "VALID"
         ],
@@ -193,21 +193,21 @@
   "summary": {
     "counts": {
       "documents": 2,
-      "chunks": 202,
-      "source_spans": 202
+      "chunks": 201,
+      "source_spans": 201
     },
     "documents": [
-      {
-        "id": "69fe4e2dea7bfbea0bd4067a",
-        "title": "AMBA AXI v2.0 - Codex Protocol Development Guide",
-        "doc_type": "codex_analysis",
-        "source_path": "public_protocol_knowledge/derived/54ff88973374374fb1bef5e7/amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md"
-      },
       {
         "id": "54ff88973374374fb1bef5e7",
         "title": "AMBA AXI Protocol Specification v2.0",
         "doc_type": "document",
         "source_path": "public_protocol_knowledge/originals/3e59b3ad69aaa3e1_IHI0022C_amba_axi_v2_0_protocol_spec.pdf"
+      },
+      {
+        "id": "69fe4e2dea7bfbea0bd4067a",
+        "title": "AMBA AXI v2.0 - Codex Protocol Development Guide",
+        "doc_type": "codex_analysis",
+        "source_path": "public_protocol_knowledge/derived/54ff88973374374fb1bef5e7/amba-axi-v2.0---codex-protocol-development-guide-54ff8897-codex-analysis.md"
       }
     ],
     "resolved_terms": [
@@ -230,7 +230,7 @@
         "resolved": true,
         "entity_id": "9e4b38de6df96621db4c5973",
         "canonical_name": "VALID",
-        "kb_id": null,
+        "kb_id": "amba_axi_v2_0",
         "aliases": [
           "VALID"
         ],

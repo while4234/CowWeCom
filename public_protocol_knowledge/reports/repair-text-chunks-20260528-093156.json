@@ -1,0 +1,2805 @@
+{
+  "ok": true,
+  "mode": "dry-run",
+  "db_path": "D:\\CowAgent\\public_protocol_knowledge\\indexes\\kb.sqlite",
+  "backup_path": "",
+  "report_path": "D:\\CowAgent\\public_protocol_knowledge\\reports\\repair-text-chunks-20260528-093156.json",
+  "workspace_root": "D:\\CowAgent",
+  "data_dir": "D:\\CowAgent\\public_protocol_knowledge",
+  "started_at": 1779931916,
+  "finished_at": 1779931933,
+  "message": "",
+  "error": "",
+  "summary": {
+    "selected_documents": 2,
+    "processed": 1,
+    "repaired": 1,
+    "skipped": 1,
+    "failed": 0,
+    "old_text_chunks": 632,
+    "new_text_chunks": 575,
+    "preserved_visual_chunks": 0,
+    "old_total_chars": 858429,
+    "new_total_chars": 757699
+  },
+  "documents": [
+    {
+      "document_id": "192d2065ab81f4697eb6335d",
+      "title": "UCIe 1.1 - Codex Protocol Development Guide",
+      "kb_id": "ucie_1_1",
+      "source_path": "public_protocol_knowledge/derived/9c80c7e49f1cf343c0309aad/ucie-1.1---codex-protocol-development-guide-9c80c7e4-codex-analysis.md",
+      "resolved_source_path": "",
+      "dry_run": true,
+      "old_text_chunks": 0,
+      "preserved_visual_chunks": 0,
+      "new_text_chunks": 0,
+      "old_total_chars": 0,
+      "new_total_chars": 0,
+      "removed_noise_line_examples": [],
+      "sanitizer_report": {},
+      "normalized_visual_ordinals": 0,
+      "deleted_unreferenced_source_spans": 0,
+      "skipped": true,
+      "skipped_reason": "not_pdf",
+      "error": ""
+    },
+    {
+      "document_id": "9c80c7e49f1cf343c0309aad",
+      "title": "UCIe 1.1 Specification",
+      "kb_id": "ucie_1_1",
+      "source_path": "public_protocol_knowledge/originals/8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+      "resolved_source_path": "D:\\CowAgent\\public_protocol_knowledge\\originals\\8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+      "dry_run": true,
+      "old_text_chunks": 632,
+      "preserved_visual_chunks": 0,
+      "new_text_chunks": 575,
+      "old_total_chars": 858429,
+      "new_total_chars": 757699,
+      "removed_noise_line_examples": [
+        "rxcksb Physical Lane for sideband Clock Receiver",
+        "rxcksbRD Physical Lane for redundant sideband Clock Receiver",
+        "txcksb Physical Lane for sideband Clock Transmitter",
+        "txcksbRD Physical Lane for redundant sideband Clock Transmitter",
+        "Group 1: 25 - 30 4 12",
+        "Group 2: 31 - 37 4 16",
+        "Group 3: 38 - 44 4 24",
+        "Group 4: 45 - 55 4 32",
+        "P r ot o c ol L a ye r",
+        "7 6 5 4 3 2 1 0",
+        "128*N])^....^(DataByte [X + (256*256*N - 64*N)]))",
+        "Data B0[0] B0[1] B0[4]B0[2] B0[3] B0[5] B0[6] B0[7]",
+        "LANE 01234567 … 4 8 4 9 5 0 5 1 5 2 5 3 5 4 5 5 5 6 5 7 5 8 5 9 6 0 6 1 6 2 6 3",
+        "0 - 7 B 0 0B 0 1B 0 2B 0 3B 0 4B 0 5B 0 6B 0 7 … B 4 8B 4 9B 5 0B 5 1B 5 2B 5 3B 5 4B 5 5B 5 6B 5 7B 5 8B 5 9B 6 0B 6 1B 6 2B 6 3",
+        "8 - 15 B 6 4B 6 5B 6 6B 6 7B 6 8B 6 9B 7 0B 7 1 … B112 B113 B114 B115 B116 B117 B118 B119 B120 B121 B122 B123 B124 B125 B126 B127",
+        "Lane 01234567 … 1 6 1 7 1 8 1 9 2 0 2 1 2 2 2 3 2 4 2 5 2 6 2 7 2 8 2 9 3 0 3 1",
+        "0 - 7 B0 B1 B2 B3 B4 B5 B6 B7 … B 1 6B 1 7B 1 8B 1 9B 2 0B 2 1B 2 2B 2 3B 2 4B 2 5B 2 6B 2 7B 2 8B 2 9B 3 0B 3 1",
+        "8 - 15 B32 B33 B34 B35 B36 B37 B38 B39 … B 4 8B 4 9B 5 0B 5 1B 5 2B 5 3B 5 4B 5 5B 5 6B 5 7B 5 8B 5 9B 6 0B 6 1B 6 2B 6 3",
+        "16 - 23 B64 B65 B66 B67 B68 B69 B70 B71 … B 8 0B 8 1B 8 2B 8 3B 8 4B 8 5B 8 6B 8 7B 8 8B 8 9B 9 0B 9 1B 9 2B 9 3B 9 4B 9 5",
+        "48 - 55 B192 B193 B194 B195 B196 B197 B198 B199 … B"
+      ],
+      "sanitizer_report": {
+        "enabled": true,
+        "source_path": "D:\\CowAgent\\public_protocol_knowledge\\originals\\8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+        "pages": [
+          {
+            "page": 1,
+            "original_chars": 100,
+            "sanitized_chars": 102,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 2,
+            "original_chars": 7013,
+            "sanitized_chars": 6972,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 3,
+            "original_chars": 5535,
+            "sanitized_chars": 5535,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 4,
+            "original_chars": 5426,
+            "sanitized_chars": 5428,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 5,
+            "original_chars": 5403,
+            "sanitized_chars": 5409,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 6,
+            "original_chars": 5031,
+            "sanitized_chars": 5024,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 7,
+            "original_chars": 5159,
+            "sanitized_chars": 5158,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 8,
+            "original_chars": 4913,
+            "sanitized_chars": 4900,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 9,
+            "original_chars": 2804,
+            "sanitized_chars": 2807,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 10,
+            "original_chars": 5386,
+            "sanitized_chars": 5377,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 11,
+            "original_chars": 5987,
+            "sanitized_chars": 5987,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 12,
+            "original_chars": 5430,
+            "sanitized_chars": 5416,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 13,
+            "original_chars": 5280,
+            "sanitized_chars": 5279,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 14,
+            "original_chars": 5302,
+            "sanitized_chars": 5302,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 15,
+            "original_chars": 5716,
+            "sanitized_chars": 5713,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 16,
+            "original_chars": 6043,
+            "sanitized_chars": 6030,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 17,
+            "original_chars": 953,
+            "sanitized_chars": 956,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 18,
+            "original_chars": 1782,
+            "sanitized_chars": 1517,
+            "removed_blocks": 8,
+            "removed_lines": 18,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 19,
+            "original_chars": 1975,
+            "sanitized_chars": 1754,
+            "removed_blocks": 8,
+            "removed_lines": 17,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 20,
+            "original_chars": 1776,
+            "sanitized_chars": 1598,
+            "removed_blocks": 6,
+            "removed_lines": 13,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 21,
+            "original_chars": 2428,
+            "sanitized_chars": 2226,
+            "removed_blocks": 5,
+            "removed_lines": 13,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 22,
+            "original_chars": 2045,
+            "sanitized_chars": 1782,
+            "removed_blocks": 5,
+            "removed_lines": 16,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 23,
+            "original_chars": 1545,
+            "sanitized_chars": 924,
+            "removed_blocks": 16,
+            "removed_lines": 35,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 24,
+            "original_chars": 827,
+            "sanitized_chars": 827,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 25,
+            "original_chars": 2939,
+            "sanitized_chars": 2918,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 26,
+            "original_chars": 1731,
+            "sanitized_chars": 1660,
+            "removed_blocks": 1,
+            "removed_lines": 2,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 27,
+            "original_chars": 1438,
+            "sanitized_chars": 1092,
+            "removed_blocks": 12,
+            "removed_lines": 19,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 28,
+            "original_chars": 2167,
+            "sanitized_chars": 1627,
+            "removed_blocks": 23,
+            "removed_lines": 34,
+            "kept_caption_lines": 8
+          },
+          {
+            "page": 29,
+            "original_chars": 2316,
+            "sanitized_chars": 2079,
+            "removed_blocks": 3,
+            "removed_lines": 9,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 30,
+            "original_chars": 2609,
+            "sanitized_chars": 2224,
+            "removed_blocks": 5,
+            "removed_lines": 16,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 31,
+            "original_chars": 1659,
+            "sanitized_chars": 1491,
+            "removed_blocks": 10,
+            "removed_lines": 15,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 32,
+            "original_chars": 2029,
+            "sanitized_chars": 1446,
+            "removed_blocks": 35,
+            "removed_lines": 55,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 33,
+            "original_chars": 3732,
+            "sanitized_chars": 3493,
+            "removed_blocks": 9,
+            "removed_lines": 16,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 34,
+            "original_chars": 3141,
+            "sanitized_chars": 2897,
+            "removed_blocks": 5,
+            "removed_lines": 24,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 35,
+            "original_chars": 1642,
+            "sanitized_chars": 1468,
+            "removed_blocks": 6,
+            "removed_lines": 19,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 36,
+            "original_chars": 2277,
+            "sanitized_chars": 2274,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 37,
+            "original_chars": 3102,
+            "sanitized_chars": 2555,
+            "removed_blocks": 10,
+            "removed_lines": 29,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 38,
+            "original_chars": 4130,
+            "sanitized_chars": 4102,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 39,
+            "original_chars": 4205,
+            "sanitized_chars": 4181,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 40,
+            "original_chars": 3631,
+            "sanitized_chars": 3614,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 41,
+            "original_chars": 3190,
+            "sanitized_chars": 3113,
+            "removed_blocks": 4,
+            "removed_lines": 6,
+            "kept_caption_lines": 3
+          },
+          {
+            "page": 42,
+            "original_chars": 989,
+            "sanitized_chars": 986,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 43,
+            "original_chars": 1598,
+            "sanitized_chars": 1158,
+            "removed_blocks": 8,
+            "removed_lines": 14,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 44,
+            "original_chars": 4823,
+            "sanitized_chars": 4782,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 45,
+            "original_chars": 1428,
+            "sanitized_chars": 1220,
+            "removed_blocks": 10,
+            "removed_lines": 14,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 46,
+            "original_chars": 2288,
+            "sanitized_chars": 2065,
+            "removed_blocks": 3,
+            "removed_lines": 19,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 47,
+            "original_chars": 4739,
+            "sanitized_chars": 4565,
+            "removed_blocks": 4,
+            "removed_lines": 8,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 48,
+            "original_chars": 4424,
+            "sanitized_chars": 4267,
+            "removed_blocks": 4,
+            "removed_lines": 8,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 49,
+            "original_chars": 3639,
+            "sanitized_chars": 3621,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 1
+          },
+          {
+            "page": 50,
+            "original_chars": 1117,
+            "sanitized_chars": 874,
+            "removed_blocks": 5,
+            "removed_lines": 20,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 51,
+            "original_chars": 2672,
+            "sanitized_chars": 2662,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 52,
+            "original_chars": 437,
+            "sanitized_chars": 198,
+            "removed_blocks": 5,
+            "removed_lines": 20,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 53,
+            "original_chars": 476,
+            "sanitized_chars": 233,
+            "removed_blocks": 7,
+            "removed_lines": 28,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 54,
+            "original_chars": 448,
+            "sanitized_chars": 311,
+            "removed_blocks": 3,
+            "removed_lines": 11,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 55,
+            "original_chars": 3458,
+            "sanitized_chars": 3308,
+            "removed_blocks": 5,
+            "removed_lines": 10,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 56,
+            "original_chars": 1979,
+            "sanitized_chars": 1275,
+            "removed_blocks": 16,
+            "removed_lines": 44,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 57,
+            "original_chars": 3395,
+            "sanitized_chars": 3229,
+            "removed_blocks": 4,
+            "removed_lines": 10,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 58,
+            "original_chars": 1802,
+            "sanitized_chars": 745,
+            "removed_blocks": 77,
+            "removed_lines": 82,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 59,
+            "original_chars": 3577,
+            "sanitized_chars": 3351,
+            "removed_blocks": 16,
+            "removed_lines": 22,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 60,
+            "original_chars": 2658,
+            "sanitized_chars": 1794,
+            "removed_blocks": 46,
+            "removed_lines": 59,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 61,
+            "original_chars": 2259,
+            "sanitized_chars": 990,
+            "removed_blocks": 49,
+            "removed_lines": 75,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 62,
+            "original_chars": 2689,
+            "sanitized_chars": 2352,
+            "removed_blocks": 3,
+            "removed_lines": 20,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 63,
+            "original_chars": 2226,
+            "sanitized_chars": 1233,
+            "removed_blocks": 56,
+            "removed_lines": 66,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 64,
+            "original_chars": 1674,
+            "sanitized_chars": 747,
+            "removed_blocks": 56,
+            "removed_lines": 62,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 65,
+            "original_chars": 1275,
+            "sanitized_chars": 950,
+            "removed_blocks": 20,
+            "removed_lines": 24,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 66,
+            "original_chars": 3333,
+            "sanitized_chars": 2944,
+            "removed_blocks": 5,
+            "removed_lines": 23,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 67,
+            "original_chars": 1656,
+            "sanitized_chars": 1323,
+            "removed_blocks": 5,
+            "removed_lines": 41,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 68,
+            "original_chars": 3242,
+            "sanitized_chars": 2918,
+            "removed_blocks": 11,
+            "removed_lines": 48,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 69,
+            "original_chars": 2446,
+            "sanitized_chars": 1541,
+            "removed_blocks": 17,
+            "removed_lines": 98,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 70,
+            "original_chars": 2505,
+            "sanitized_chars": 2455,
+            "removed_blocks": 6,
+            "removed_lines": 8,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 71,
+            "original_chars": 4149,
+            "sanitized_chars": 4120,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 72,
+            "original_chars": 1964,
+            "sanitized_chars": 1768,
+            "removed_blocks": 5,
+            "removed_lines": 17,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 73,
+            "original_chars": 2444,
+            "sanitized_chars": 2358,
+            "removed_blocks": 7,
+            "removed_lines": 9,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 74,
+            "original_chars": 4059,
+            "sanitized_chars": 4033,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 75,
+            "original_chars": 3885,
+            "sanitized_chars": 3814,
+            "removed_blocks": 0,
+            "removed_lines": 1,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 76,
+            "original_chars": 721,
+            "sanitized_chars": 533,
+            "removed_blocks": 4,
+            "removed_lines": 12,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 77,
+            "original_chars": 888,
+            "sanitized_chars": 621,
+            "removed_blocks": 5,
+            "removed_lines": 17,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 78,
+            "original_chars": 1682,
+            "sanitized_chars": 1554,
+            "removed_blocks": 6,
+            "removed_lines": 12,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 79,
+            "original_chars": 3360,
+            "sanitized_chars": 1554,
+            "removed_blocks": 6,
+            "removed_lines": 202,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 80,
+            "original_chars": 2355,
+            "sanitized_chars": 2150,
+            "removed_blocks": 4,
+            "removed_lines": 22,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 81,
+            "original_chars": 2053,
+            "sanitized_chars": 1391,
+            "removed_blocks": 22,
+            "removed_lines": 37,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 82,
+            "original_chars": 1969,
+            "sanitized_chars": 1935,
+            "removed_blocks": 5,
+            "removed_lines": 8,
+            "kept_caption_lines": 5
+          },
+          {
+            "page": 83,
+            "original_chars": 2568,
+            "sanitized_chars": 2346,
+            "removed_blocks": 7,
+            "removed_lines": 28,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 84,
+            "original_chars": 1901,
+            "sanitized_chars": 1170,
+            "removed_blocks": 22,
+            "removed_lines": 86,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 85,
+            "original_chars": 1654,
+            "sanitized_chars": 1471,
+            "removed_blocks": 24,
+            "removed_lines": 26,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 86,
+            "original_chars": 598,
+            "sanitized_chars": 408,
+            "removed_blocks": 10,
+            "removed_lines": 16,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 87,
+            "original_chars": 1380,
+            "sanitized_chars": 1342,
+            "removed_blocks": 0,
+            "removed_lines": 1,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 88,
+            "original_chars": 1008,
+            "sanitized_chars": 616,
+            "removed_blocks": 39,
+            "removed_lines": 48,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 89,
+            "original_chars": 1440,
+            "sanitized_chars": 1358,
+            "removed_blocks": 0,
+            "removed_lines": 3,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 90,
+            "original_chars": 1052,
+            "sanitized_chars": 659,
+            "removed_blocks": 42,
+            "removed_lines": 48,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 91,
+            "original_chars": 1168,
+            "sanitized_chars": 1147,
+            "removed_blocks": 0,
+            "removed_lines": 1,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 92,
+            "original_chars": 1233,
+            "sanitized_chars": 1133,
+            "removed_blocks": 0,
+            "removed_lines": 3,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 93,
+            "original_chars": 615,
+            "sanitized_chars": 594,
+            "removed_blocks": 0,
+            "removed_lines": 1,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 94,
+            "original_chars": 1728,
+            "sanitized_chars": 942,
+            "removed_blocks": 46,
+            "removed_lines": 75,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 95,
+            "original_chars": 1100,
+            "sanitized_chars": 1022,
+            "removed_blocks": 9,
+            "removed_lines": 9,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 96,
+            "original_chars": 1916,
+            "sanitized_chars": 708,
+            "removed_blocks": 74,
+            "removed_lines": 116,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 97,
+            "original_chars": 1920,
+            "sanitized_chars": 1531,
+            "removed_blocks": 27,
+            "removed_lines": 46,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 98,
+            "original_chars": 1445,
+            "sanitized_chars": 1276,
+            "removed_blocks": 8,
+            "removed_lines": 17,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 99,
+            "original_chars": 1357,
+            "sanitized_chars": 1158,
+            "removed_blocks": 14,
+            "removed_lines": 23,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 100,
+            "original_chars": 523,
+            "sanitized_chars": 447,
+            "removed_blocks": 3,
+            "removed_lines": 4,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 101,
+            "original_chars": 1088,
+            "sanitized_chars": 1021,
+            "removed_blocks": 1,
+            "removed_lines": 2,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 102,
+            "original_chars": 3265,
+            "sanitized_chars": 3258,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 103,
+            "original_chars": 3317,
+            "sanitized_chars": 3044,
+            "removed_blocks": 8,
+            "removed_lines": 9,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 104,
+            "original_chars": 3554,
+            "sanitized_chars": 3546,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 105,
+            "original_chars": 3691,
+            "sanitized_chars": 3680,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 106,
+            "original_chars": 2328,
+            "sanitized_chars": 2053,
+            "removed_blocks": 10,
+            "removed_lines": 14,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 107,
+            "original_chars": 1471,
+            "sanitized_chars": 1266,
+            "removed_blocks": 4,
+            "removed_lines": 11,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 108,
+            "original_chars": 903,
+            "sanitized_chars": 849,
+            "removed_blocks": 1,
+            "removed_lines": 2,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 109,
+            "original_chars": 2544,
+            "sanitized_chars": 2543,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 110,
+            "original_chars": 3208,
+            "sanitized_chars": 3183,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 111,
+            "original_chars": 1662,
+            "sanitized_chars": 1655,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 112,
+            "original_chars": 1676,
+            "sanitized_chars": 1640,
+            "removed_blocks": 4,
+            "removed_lines": 5,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 113,
+            "original_chars": 3746,
+            "sanitized_chars": 3729,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 114,
+            "original_chars": 3991,
+            "sanitized_chars": 3969,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 115,
+            "original_chars": 3778,
+            "sanitized_chars": 3760,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 116,
+            "original_chars": 3848,
+            "sanitized_chars": 3827,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 117,
+            "original_chars": 3533,
+            "sanitized_chars": 3522,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 118,
+            "original_chars": 2136,
+            "sanitized_chars": 2126,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 119,
+            "original_chars": 3328,
+            "sanitized_chars": 3012,
+            "removed_blocks": 8,
+            "removed_lines": 81,
+            "kept_caption_lines": 5
+          },
+          {
+            "page": 120,
+            "original_chars": 3461,
+            "sanitized_chars": 3455,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 121,
+            "original_chars": 3823,
+            "sanitized_chars": 3804,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 122,
+            "original_chars": 1381,
+            "sanitized_chars": 1174,
+            "removed_blocks": 7,
+            "removed_lines": 14,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 123,
+            "original_chars": 1290,
+            "sanitized_chars": 1228,
+            "removed_blocks": 1,
+            "removed_lines": 2,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 124,
+            "original_chars": 3443,
+            "sanitized_chars": 3432,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 125,
+            "original_chars": 3335,
+            "sanitized_chars": 3325,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 126,
+            "original_chars": 3722,
+            "sanitized_chars": 3708,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 127,
+            "original_chars": 3426,
+            "sanitized_chars": 3417,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 128,
+            "original_chars": 3133,
+            "sanitized_chars": 3127,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 129,
+            "original_chars": 3359,
+            "sanitized_chars": 3348,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 130,
+            "original_chars": 3414,
+            "sanitized_chars": 3393,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 131,
+            "original_chars": 4168,
+            "sanitized_chars": 4135,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 132,
+            "original_chars": 3238,
+            "sanitized_chars": 3226,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 133,
+            "original_chars": 3251,
+            "sanitized_chars": 3242,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 134,
+            "original_chars": 2422,
+            "sanitized_chars": 1503,
+            "removed_blocks": 16,
+            "removed_lines": 77,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 135,
+            "original_chars": 3441,
+            "sanitized_chars": 3430,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 136,
+            "original_chars": 3727,
+            "sanitized_chars": 3708,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 137,
+            "original_chars": 3695,
+            "sanitized_chars": 3684,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 138,
+            "original_chars": 1701,
+            "sanitized_chars": 1690,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 139,
+            "original_chars": 2704,
+            "sanitized_chars": 2598,
+            "removed_blocks": 1,
+            "removed_lines": 2,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 140,
+            "original_chars": 778,
+            "sanitized_chars": 315,
+            "removed_blocks": 14,
+            "removed_lines": 31,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 141,
+            "original_chars": 2588,
+            "sanitized_chars": 2571,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 142,
+            "original_chars": 2122,
+            "sanitized_chars": 1792,
+            "removed_blocks": 13,
+            "removed_lines": 22,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 143,
+            "original_chars": 689,
+            "sanitized_chars": 506,
+            "removed_blocks": 6,
+            "removed_lines": 13,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 144,
+            "original_chars": 2485,
+            "sanitized_chars": 2491,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 145,
+            "original_chars": 1028,
+            "sanitized_chars": 753,
+            "removed_blocks": 23,
+            "removed_lines": 43,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 146,
+            "original_chars": 2431,
+            "sanitized_chars": 1953,
+            "removed_blocks": 11,
+            "removed_lines": 45,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 147,
+            "original_chars": 2288,
+            "sanitized_chars": 2191,
+            "removed_blocks": 10,
+            "removed_lines": 13,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 148,
+            "original_chars": 1552,
+            "sanitized_chars": 996,
+            "removed_blocks": 18,
+            "removed_lines": 47,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 149,
+            "original_chars": 2368,
+            "sanitized_chars": 2041,
+            "removed_blocks": 6,
+            "removed_lines": 27,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 150,
+            "original_chars": 554,
+            "sanitized_chars": 261,
+            "removed_blocks": 12,
+            "removed_lines": 28,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 151,
+            "original_chars": 1711,
+            "sanitized_chars": 1622,
+            "removed_blocks": 9,
+            "removed_lines": 13,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 152,
+            "original_chars": 2385,
+            "sanitized_chars": 1949,
+            "removed_blocks": 14,
+            "removed_lines": 40,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 153,
+            "original_chars": 946,
+            "sanitized_chars": 728,
+            "removed_blocks": 21,
+            "removed_lines": 34,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 154,
+            "original_chars": 1229,
+            "sanitized_chars": 1080,
+            "removed_blocks": 11,
+            "removed_lines": 18,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 155,
+            "original_chars": 1515,
+            "sanitized_chars": 1448,
+            "removed_blocks": 1,
+            "removed_lines": 2,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 156,
+            "original_chars": 1121,
+            "sanitized_chars": 700,
+            "removed_blocks": 33,
+            "removed_lines": 77,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 157,
+            "original_chars": 1300,
+            "sanitized_chars": 1181,
+            "removed_blocks": 5,
+            "removed_lines": 5,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 158,
+            "original_chars": 981,
+            "sanitized_chars": 567,
+            "removed_blocks": 11,
+            "removed_lines": 31,
+            "kept_caption_lines": 3
+          },
+          {
+            "page": 159,
+            "original_chars": 738,
+            "sanitized_chars": 417,
+            "removed_blocks": 12,
+            "removed_lines": 24,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 160,
+            "original_chars": 1186,
+            "sanitized_chars": 960,
+            "removed_blocks": 11,
+            "removed_lines": 15,
+            "kept_caption_lines": 3
+          },
+          {
+            "page": 161,
+            "original_chars": 1156,
+            "sanitized_chars": 1092,
+            "removed_blocks": 2,
+            "removed_lines": 4,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 162,
+            "original_chars": 1698,
+            "sanitized_chars": 1188,
+            "removed_blocks": 12,
+            "removed_lines": 31,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 163,
+            "original_chars": 1863,
+            "sanitized_chars": 1564,
+            "removed_blocks": 8,
+            "removed_lines": 18,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 164,
+            "original_chars": 1830,
+            "sanitized_chars": 1749,
+            "removed_blocks": 0,
+            "removed_lines": 1,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 165,
+            "original_chars": 2188,
+            "sanitized_chars": 2129,
+            "removed_blocks": 1,
+            "removed_lines": 2,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 166,
+            "original_chars": 2320,
+            "sanitized_chars": 2261,
+            "removed_blocks": 1,
+            "removed_lines": 2,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 167,
+            "original_chars": 2170,
+            "sanitized_chars": 2111,
+            "removed_blocks": 1,
+            "removed_lines": 2,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 168,
+            "original_chars": 3339,
+            "sanitized_chars": 1774,
+            "removed_blocks": 5,
+            "removed_lines": 174,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 169,
+            "original_chars": 2882,
+            "sanitized_chars": 1639,
+            "removed_blocks": 2,
+            "removed_lines": 163,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 170,
+            "original_chars": 2406,
+            "sanitized_chars": 1540,
+            "removed_blocks": 4,
+            "removed_lines": 100,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 171,
+            "original_chars": 2526,
+            "sanitized_chars": 2519,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 172,
+            "original_chars": 2151,
+            "sanitized_chars": 1830,
+            "removed_blocks": 10,
+            "removed_lines": 21,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 173,
+            "original_chars": 4711,
+            "sanitized_chars": 4614,
+            "removed_blocks": 3,
+            "removed_lines": 4,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 174,
+            "original_chars": 5369,
+            "sanitized_chars": 3198,
+            "removed_blocks": 3,
+            "removed_lines": 294,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 175,
+            "original_chars": 653,
+            "sanitized_chars": 591,
+            "removed_blocks": 1,
+            "removed_lines": 2,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 176,
+            "original_chars": 1059,
+            "sanitized_chars": 715,
+            "removed_blocks": 6,
+            "removed_lines": 39,
+            "kept_caption_lines": 5
+          },
+          {
+            "page": 177,
+            "original_chars": 1208,
+            "sanitized_chars": 858,
+            "removed_blocks": 11,
+            "removed_lines": 42,
+            "kept_caption_lines": 5
+          },
+          {
+            "page": 178,
+            "original_chars": 2302,
+            "sanitized_chars": 1715,
+            "removed_blocks": 13,
+            "removed_lines": 44,
+            "kept_caption_lines": 7
+          },
+          {
+            "page": 179,
+            "original_chars": 2832,
+            "sanitized_chars": 2607,
+            "removed_blocks": 7,
+            "removed_lines": 15,
+            "kept_caption_lines": 3
+          },
+          {
+            "page": 180,
+            "original_chars": 520,
+            "sanitized_chars": 251,
+            "removed_blocks": 4,
+            "removed_lines": 53,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 181,
+            "original_chars": 792,
+            "sanitized_chars": 317,
+            "removed_blocks": 5,
+            "removed_lines": 102,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 182,
+            "original_chars": 1282,
+            "sanitized_chars": 1261,
+            "removed_blocks": 0,
+            "removed_lines": 1,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 183,
+            "original_chars": 710,
+            "sanitized_chars": 648,
+            "removed_blocks": 1,
+            "removed_lines": 2,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 184,
+            "original_chars": 1658,
+            "sanitized_chars": 1269,
+            "removed_blocks": 7,
+            "removed_lines": 38,
+            "kept_caption_lines": 3
+          },
+          {
+            "page": 185,
+            "original_chars": 544,
+            "sanitized_chars": 464,
+            "removed_blocks": 1,
+            "removed_lines": 3,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 186,
+            "original_chars": 1039,
+            "sanitized_chars": 932,
+            "removed_blocks": 2,
+            "removed_lines": 4,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 187,
+            "original_chars": 1649,
+            "sanitized_chars": 1323,
+            "removed_blocks": 6,
+            "removed_lines": 29,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 188,
+            "original_chars": 2195,
+            "sanitized_chars": 1886,
+            "removed_blocks": 9,
+            "removed_lines": 71,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 189,
+            "original_chars": 2455,
+            "sanitized_chars": 1955,
+            "removed_blocks": 12,
+            "removed_lines": 20,
+            "kept_caption_lines": 5
+          },
+          {
+            "page": 190,
+            "original_chars": 2294,
+            "sanitized_chars": 1348,
+            "removed_blocks": 136,
+            "removed_lines": 137,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 191,
+            "original_chars": 2614,
+            "sanitized_chars": 2081,
+            "removed_blocks": 21,
+            "removed_lines": 54,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 192,
+            "original_chars": 2574,
+            "sanitized_chars": 1854,
+            "removed_blocks": 29,
+            "removed_lines": 62,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 193,
+            "original_chars": 2027,
+            "sanitized_chars": 1527,
+            "removed_blocks": 26,
+            "removed_lines": 48,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 194,
+            "original_chars": 1121,
+            "sanitized_chars": 789,
+            "removed_blocks": 11,
+            "removed_lines": 29,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 195,
+            "original_chars": 3509,
+            "sanitized_chars": 3491,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 196,
+            "original_chars": 2226,
+            "sanitized_chars": 1671,
+            "removed_blocks": 16,
+            "removed_lines": 33,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 197,
+            "original_chars": 1684,
+            "sanitized_chars": 1148,
+            "removed_blocks": 9,
+            "removed_lines": 25,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 198,
+            "original_chars": 1861,
+            "sanitized_chars": 1705,
+            "removed_blocks": 4,
+            "removed_lines": 10,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 199,
+            "original_chars": 1586,
+            "sanitized_chars": 1160,
+            "removed_blocks": 5,
+            "removed_lines": 18,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 200,
+            "original_chars": 2649,
+            "sanitized_chars": 2484,
+            "removed_blocks": 3,
+            "removed_lines": 9,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 201,
+            "original_chars": 2359,
+            "sanitized_chars": 1885,
+            "removed_blocks": 10,
+            "removed_lines": 28,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 202,
+            "original_chars": 1891,
+            "sanitized_chars": 1533,
+            "removed_blocks": 10,
+            "removed_lines": 26,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 203,
+            "original_chars": 2162,
+            "sanitized_chars": 1811,
+            "removed_blocks": 9,
+            "removed_lines": 23,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 204,
+            "original_chars": 2118,
+            "sanitized_chars": 1763,
+            "removed_blocks": 8,
+            "removed_lines": 30,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 205,
+            "original_chars": 1888,
+            "sanitized_chars": 1507,
+            "removed_blocks": 8,
+            "removed_lines": 30,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 206,
+            "original_chars": 2183,
+            "sanitized_chars": 1850,
+            "removed_blocks": 8,
+            "removed_lines": 30,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 207,
+            "original_chars": 2111,
+            "sanitized_chars": 1735,
+            "removed_blocks": 8,
+            "removed_lines": 30,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 208,
+            "original_chars": 1547,
+            "sanitized_chars": 1211,
+            "removed_blocks": 7,
+            "removed_lines": 22,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 209,
+            "original_chars": 2444,
+            "sanitized_chars": 2000,
+            "removed_blocks": 4,
+            "removed_lines": 30,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 210,
+            "original_chars": 1445,
+            "sanitized_chars": 668,
+            "removed_blocks": 6,
+            "removed_lines": 37,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 211,
+            "original_chars": 2161,
+            "sanitized_chars": 1713,
+            "removed_blocks": 2,
+            "removed_lines": 23,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 212,
+            "original_chars": 2255,
+            "sanitized_chars": 1547,
+            "removed_blocks": 4,
+            "removed_lines": 31,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 213,
+            "original_chars": 1404,
+            "sanitized_chars": 1141,
+            "removed_blocks": 3,
+            "removed_lines": 18,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 214,
+            "original_chars": 1587,
+            "sanitized_chars": 1446,
+            "removed_blocks": 2,
+            "removed_lines": 9,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 215,
+            "original_chars": 1586,
+            "sanitized_chars": 1445,
+            "removed_blocks": 2,
+            "removed_lines": 9,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 216,
+            "original_chars": 4072,
+            "sanitized_chars": 4048,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 217,
+            "original_chars": 2647,
+            "sanitized_chars": 2392,
+            "removed_blocks": 5,
+            "removed_lines": 8,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 218,
+            "original_chars": 3549,
+            "sanitized_chars": 3518,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 219,
+            "original_chars": 1247,
+            "sanitized_chars": 1240,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 220,
+            "original_chars": 3297,
+            "sanitized_chars": 2906,
+            "removed_blocks": 9,
+            "removed_lines": 25,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 221,
+            "original_chars": 3520,
+            "sanitized_chars": 3188,
+            "removed_blocks": 3,
+            "removed_lines": 14,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 222,
+            "original_chars": 2133,
+            "sanitized_chars": 1765,
+            "removed_blocks": 3,
+            "removed_lines": 32,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 223,
+            "original_chars": 535,
+            "sanitized_chars": 447,
+            "removed_blocks": 2,
+            "removed_lines": 4,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 224,
+            "original_chars": 1243,
+            "sanitized_chars": 716,
+            "removed_blocks": 27,
+            "removed_lines": 42,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 225,
+            "original_chars": 363,
+            "sanitized_chars": 285,
+            "removed_blocks": 1,
+            "removed_lines": 3,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 226,
+            "original_chars": 2107,
+            "sanitized_chars": 1960,
+            "removed_blocks": 7,
+            "removed_lines": 15,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 227,
+            "original_chars": 1097,
+            "sanitized_chars": 822,
+            "removed_blocks": 9,
+            "removed_lines": 12,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 228,
+            "original_chars": 2654,
+            "sanitized_chars": 2014,
+            "removed_blocks": 11,
+            "removed_lines": 38,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 229,
+            "original_chars": 1516,
+            "sanitized_chars": 1165,
+            "removed_blocks": 5,
+            "removed_lines": 17,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 230,
+            "original_chars": 2623,
+            "sanitized_chars": 2312,
+            "removed_blocks": 9,
+            "removed_lines": 20,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 231,
+            "original_chars": 2442,
+            "sanitized_chars": 2043,
+            "removed_blocks": 10,
+            "removed_lines": 27,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 232,
+            "original_chars": 3384,
+            "sanitized_chars": 3069,
+            "removed_blocks": 4,
+            "removed_lines": 17,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 233,
+            "original_chars": 2786,
+            "sanitized_chars": 2363,
+            "removed_blocks": 11,
+            "removed_lines": 32,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 234,
+            "original_chars": 2478,
+            "sanitized_chars": 2238,
+            "removed_blocks": 4,
+            "removed_lines": 16,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 235,
+            "original_chars": 2475,
+            "sanitized_chars": 2160,
+            "removed_blocks": 6,
+            "removed_lines": 17,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 236,
+            "original_chars": 1973,
+            "sanitized_chars": 1842,
+            "removed_blocks": 4,
+            "removed_lines": 10,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 237,
+            "original_chars": 1697,
+            "sanitized_chars": 1523,
+            "removed_blocks": 3,
+            "removed_lines": 9,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 238,
+            "original_chars": 2560,
+            "sanitized_chars": 2447,
+            "removed_blocks": 2,
+            "removed_lines": 8,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 239,
+            "original_chars": 2209,
+            "sanitized_chars": 2002,
+            "removed_blocks": 2,
+            "removed_lines": 8,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 240,
+            "original_chars": 2289,
+            "sanitized_chars": 1672,
+            "removed_blocks": 6,
+            "removed_lines": 30,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 241,
+            "original_chars": 2197,
+            "sanitized_chars": 1748,
+            "removed_blocks": 9,
+            "removed_lines": 30,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 242,
+            "original_chars": 1782,
+            "sanitized_chars": 1144,
+            "removed_blocks": 14,
+            "removed_lines": 45,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 243,
+            "original_chars": 2935,
+            "sanitized_chars": 2277,
+            "removed_blocks": 12,
+            "removed_lines": 36,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 244,
+            "original_chars": 1575,
+            "sanitized_chars": 1083,
+            "removed_blocks": 10,
+            "removed_lines": 33,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 245,
+            "original_chars": 2503,
+            "sanitized_chars": 1964,
+            "removed_blocks": 13,
+            "removed_lines": 39,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 246,
+            "original_chars": 1502,
+            "sanitized_chars": 1043,
+            "removed_blocks": 10,
+            "removed_lines": 35,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 247,
+            "original_chars": 2208,
+            "sanitized_chars": 1529,
+            "removed_blocks": 12,
+            "removed_lines": 45,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 248,
+            "original_chars": 1551,
+            "sanitized_chars": 952,
+            "removed_blocks": 12,
+            "removed_lines": 39,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 249,
+            "original_chars": 2892,
+            "sanitized_chars": 2727,
+            "removed_blocks": 3,
+            "removed_lines": 8,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 250,
+            "original_chars": 2611,
+            "sanitized_chars": 2092,
+            "removed_blocks": 9,
+            "removed_lines": 36,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 251,
+            "original_chars": 2702,
+            "sanitized_chars": 2300,
+            "removed_blocks": 10,
+            "removed_lines": 30,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 252,
+            "original_chars": 1752,
+            "sanitized_chars": 1187,
+            "removed_blocks": 13,
+            "removed_lines": 36,
+            "kept_caption_lines": 8
+          },
+          {
+            "page": 253,
+            "original_chars": 1760,
+            "sanitized_chars": 1138,
+            "removed_blocks": 13,
+            "removed_lines": 36,
+            "kept_caption_lines": 8
+          },
+          {
+            "page": 254,
+            "original_chars": 1106,
+            "sanitized_chars": 787,
+            "removed_blocks": 7,
+            "removed_lines": 18,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 255,
+            "original_chars": 1465,
+            "sanitized_chars": 1016,
+            "removed_blocks": 8,
+            "removed_lines": 23,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 256,
+            "original_chars": 1403,
+            "sanitized_chars": 1100,
+            "removed_blocks": 6,
+            "removed_lines": 18,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 257,
+            "original_chars": 1094,
+            "sanitized_chars": 796,
+            "removed_blocks": 6,
+            "removed_lines": 18,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 258,
+            "original_chars": 1928,
+            "sanitized_chars": 1675,
+            "removed_blocks": 4,
+            "removed_lines": 10,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 259,
+            "original_chars": 1829,
+            "sanitized_chars": 1384,
+            "removed_blocks": 7,
+            "removed_lines": 35,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 260,
+            "original_chars": 1237,
+            "sanitized_chars": 963,
+            "removed_blocks": 6,
+            "removed_lines": 22,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 261,
+            "original_chars": 2328,
+            "sanitized_chars": 1907,
+            "removed_blocks": 13,
+            "removed_lines": 30,
+            "kept_caption_lines": 8
+          },
+          {
+            "page": 262,
+            "original_chars": 1614,
+            "sanitized_chars": 1468,
+            "removed_blocks": 3,
+            "removed_lines": 8,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 263,
+            "original_chars": 1329,
+            "sanitized_chars": 1125,
+            "removed_blocks": 4,
+            "removed_lines": 14,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 264,
+            "original_chars": 3203,
+            "sanitized_chars": 2976,
+            "removed_blocks": 5,
+            "removed_lines": 15,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 265,
+            "original_chars": 1580,
+            "sanitized_chars": 1448,
+            "removed_blocks": 3,
+            "removed_lines": 9,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 266,
+            "original_chars": 1729,
+            "sanitized_chars": 1334,
+            "removed_blocks": 8,
+            "removed_lines": 27,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 267,
+            "original_chars": 1775,
+            "sanitized_chars": 1546,
+            "removed_blocks": 3,
+            "removed_lines": 14,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 268,
+            "original_chars": 1551,
+            "sanitized_chars": 1264,
+            "removed_blocks": 4,
+            "removed_lines": 16,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 269,
+            "original_chars": 1859,
+            "sanitized_chars": 1211,
+            "removed_blocks": 19,
+            "removed_lines": 47,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 270,
+            "original_chars": 1590,
+            "sanitized_chars": 1274,
+            "removed_blocks": 9,
+            "removed_lines": 29,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 271,
+            "original_chars": 695,
+            "sanitized_chars": 656,
+            "removed_blocks": 1,
+            "removed_lines": 2,
+            "kept_caption_lines": 3
+          },
+          {
+            "page": 272,
+            "original_chars": 2272,
+            "sanitized_chars": 1560,
+            "removed_blocks": 18,
+            "removed_lines": 52,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 273,
+            "original_chars": 2068,
+            "sanitized_chars": 1879,
+            "removed_blocks": 4,
+            "removed_lines": 9,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 274,
+            "original_chars": 2897,
+            "sanitized_chars": 2637,
+            "removed_blocks": 5,
+            "removed_lines": 17,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 275,
+            "original_chars": 2203,
+            "sanitized_chars": 1747,
+            "removed_blocks": 8,
+            "removed_lines": 30,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 276,
+            "original_chars": 1907,
+            "sanitized_chars": 1546,
+            "removed_blocks": 9,
+            "removed_lines": 30,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 277,
+            "original_chars": 2402,
+            "sanitized_chars": 1869,
+            "removed_blocks": 10,
+            "removed_lines": 35,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 278,
+            "original_chars": 1392,
+            "sanitized_chars": 1222,
+            "removed_blocks": 3,
+            "removed_lines": 10,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 279,
+            "original_chars": 2452,
+            "sanitized_chars": 2088,
+            "removed_blocks": 7,
+            "removed_lines": 17,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 280,
+            "original_chars": 2249,
+            "sanitized_chars": 2052,
+            "removed_blocks": 3,
+            "removed_lines": 12,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 281,
+            "original_chars": 1659,
+            "sanitized_chars": 1433,
+            "removed_blocks": 4,
+            "removed_lines": 12,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 282,
+            "original_chars": 1878,
+            "sanitized_chars": 1348,
+            "removed_blocks": 10,
+            "removed_lines": 35,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 283,
+            "original_chars": 1643,
+            "sanitized_chars": 1402,
+            "removed_blocks": 4,
+            "removed_lines": 12,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 284,
+            "original_chars": 2159,
+            "sanitized_chars": 2142,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 285,
+            "original_chars": 2020,
+            "sanitized_chars": 1248,
+            "removed_blocks": 14,
+            "removed_lines": 64,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 286,
+            "original_chars": 552,
+            "sanitized_chars": 288,
+            "removed_blocks": 4,
+            "removed_lines": 20,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 287,
+            "original_chars": 1860,
+            "sanitized_chars": 1647,
+            "removed_blocks": 10,
+            "removed_lines": 18,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 288,
+            "original_chars": 2843,
+            "sanitized_chars": 2682,
+            "removed_blocks": 4,
+            "removed_lines": 8,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 289,
+            "original_chars": 3667,
+            "sanitized_chars": 3384,
+            "removed_blocks": 3,
+            "removed_lines": 15,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 290,
+            "original_chars": 4285,
+            "sanitized_chars": 4043,
+            "removed_blocks": 3,
+            "removed_lines": 13,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 291,
+            "original_chars": 3318,
+            "sanitized_chars": 3165,
+            "removed_blocks": 2,
+            "removed_lines": 7,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 292,
+            "original_chars": 3554,
+            "sanitized_chars": 3542,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 293,
+            "original_chars": 2926,
+            "sanitized_chars": 2771,
+            "removed_blocks": 6,
+            "removed_lines": 22,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 294,
+            "original_chars": 909,
+            "sanitized_chars": 613,
+            "removed_blocks": 15,
+            "removed_lines": 28,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 295,
+            "original_chars": 2618,
+            "sanitized_chars": 2352,
+            "removed_blocks": 4,
+            "removed_lines": 16,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 296,
+            "original_chars": 4079,
+            "sanitized_chars": 4053,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 297,
+            "original_chars": 3067,
+            "sanitized_chars": 3039,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 298,
+            "original_chars": 535,
+            "sanitized_chars": 170,
+            "removed_blocks": 6,
+            "removed_lines": 20,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 299,
+            "original_chars": 799,
+            "sanitized_chars": 416,
+            "removed_blocks": 6,
+            "removed_lines": 27,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 300,
+            "original_chars": 458,
+            "sanitized_chars": 319,
+            "removed_blocks": 3,
+            "removed_lines": 11,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 301,
+            "original_chars": 1584,
+            "sanitized_chars": 1420,
+            "removed_blocks": 10,
+            "removed_lines": 14,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 302,
+            "original_chars": 4664,
+            "sanitized_chars": 4486,
+            "removed_blocks": 4,
+            "removed_lines": 8,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 303,
+            "original_chars": 3166,
+            "sanitized_chars": 2656,
+            "removed_blocks": 4,
+            "removed_lines": 17,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 304,
+            "original_chars": 3436,
+            "sanitized_chars": 3309,
+            "removed_blocks": 3,
+            "removed_lines": 5,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 305,
+            "original_chars": 3860,
+            "sanitized_chars": 3611,
+            "removed_blocks": 3,
+            "removed_lines": 8,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 306,
+            "original_chars": 3620,
+            "sanitized_chars": 3497,
+            "removed_blocks": 3,
+            "removed_lines": 5,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 307,
+            "original_chars": 4465,
+            "sanitized_chars": 4308,
+            "removed_blocks": 3,
+            "removed_lines": 6,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 308,
+            "original_chars": 3525,
+            "sanitized_chars": 3513,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 309,
+            "original_chars": 3243,
+            "sanitized_chars": 3152,
+            "removed_blocks": 5,
+            "removed_lines": 20,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 310,
+            "original_chars": 3124,
+            "sanitized_chars": 3048,
+            "removed_blocks": 6,
+            "removed_lines": 15,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 311,
+            "original_chars": 3540,
+            "sanitized_chars": 3520,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 312,
+            "original_chars": 1002,
+            "sanitized_chars": 930,
+            "removed_blocks": 1,
+            "removed_lines": 3,
+            "kept_caption_lines": 6
+          },
+          {
+            "page": 313,
+            "original_chars": 1987,
+            "sanitized_chars": 1800,
+            "removed_blocks": 8,
+            "removed_lines": 10,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 314,
+            "original_chars": 3720,
+            "sanitized_chars": 3701,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 315,
+            "original_chars": 3176,
+            "sanitized_chars": 2763,
+            "removed_blocks": 8,
+            "removed_lines": 23,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 316,
+            "original_chars": 4276,
+            "sanitized_chars": 4245,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 317,
+            "original_chars": 2934,
+            "sanitized_chars": 2916,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 318,
+            "original_chars": 1074,
+            "sanitized_chars": 334,
+            "removed_blocks": 9,
+            "removed_lines": 46,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 319,
+            "original_chars": 991,
+            "sanitized_chars": 507,
+            "removed_blocks": 8,
+            "removed_lines": 35,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 320,
+            "original_chars": 3036,
+            "sanitized_chars": 2746,
+            "removed_blocks": 22,
+            "removed_lines": 26,
+            "kept_caption_lines": 3
+          },
+          {
+            "page": 321,
+            "original_chars": 3111,
+            "sanitized_chars": 2224,
+            "removed_blocks": 7,
+            "removed_lines": 104,
+            "kept_caption_lines": 4
+          },
+          {
+            "page": 322,
+            "original_chars": 2280,
+            "sanitized_chars": 2288,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 323,
+            "original_chars": 3392,
+            "sanitized_chars": 2951,
+            "removed_blocks": 10,
+            "removed_lines": 59,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 324,
+            "original_chars": 3033,
+            "sanitized_chars": 3033,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 325,
+            "original_chars": 3533,
+            "sanitized_chars": 3519,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 326,
+            "original_chars": 3600,
+            "sanitized_chars": 3574,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 327,
+            "original_chars": 3562,
+            "sanitized_chars": 3538,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 328,
+            "original_chars": 973,
+            "sanitized_chars": 686,
+            "removed_blocks": 7,
+            "removed_lines": 21,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 329,
+            "original_chars": 1027,
+            "sanitized_chars": 677,
+            "removed_blocks": 6,
+            "removed_lines": 23,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 330,
+            "original_chars": 2846,
+            "sanitized_chars": 2840,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 331,
+            "original_chars": 1866,
+            "sanitized_chars": 1711,
+            "removed_blocks": 6,
+            "removed_lines": 8,
+            "kept_caption_lines": 2
+          },
+          {
+            "page": 332,
+            "original_chars": 3052,
+            "sanitized_chars": 3040,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 333,
+            "original_chars": 1271,
+            "sanitized_chars": 1275,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 334,
+            "original_chars": 2380,
+            "sanitized_chars": 2392,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 335,
+            "original_chars": 492,
+            "sanitized_chars": 500,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 336,
+            "original_chars": 1289,
+            "sanitized_chars": 1298,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 337,
+            "original_chars": 1080,
+            "sanitized_chars": 1111,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          },
+          {
+            "page": 338,
+            "original_chars": 475,
+            "sanitized_chars": 479,
+            "removed_blocks": 0,
+            "removed_lines": 0,
+            "kept_caption_lines": 0
+          }
+        ],
+        "removed_total_blocks": 2488,
+        "removed_total_lines": 7110
+      },
+      "normalized_visual_ordinals": 0,
+      "deleted_unreferenced_source_spans": 0,
+      "skipped": false,
+      "skipped_reason": "",
+      "error": "",
+      "resolved_attempts": [
+        "D:\\CowAgent\\public_protocol_knowledge\\originals\\8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+        "D:\\CowAgent\\public_protocol_knowledge\\originals\\8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+        "D:\\CowAgent\\public_protocol_knowledge\\public_protocol_knowledge\\originals\\8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf",
+        "D:\\CowAgent\\public_protocol_knowledge\\originals\\8a86e6986472db04_eetop.cn_UCIe_1p1_with_legal_disclaimer_July_10th_2023.pdf"
+      ]
+    }
+  ]
+}
