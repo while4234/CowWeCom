@@ -100,6 +100,42 @@ class TestGrokWebGray(unittest.TestCase):
 
         self._assert_no_secret_fields(test_payload)
 
+    def test_grok_manual_handler_can_finish_pending_loopback_callback(self):
+        import channel.web.web_channel as web_channel
+        from integrations.hermes_xai import auth
+
+        pending_auth = {
+            "logged_in": True,
+            "provider": "xai-oauth",
+            "base_url": "https://api.x.ai/v1",
+            "email": "",
+            "expires_at": 0,
+            "needs_reauth": False,
+        }
+        missing_state = auth.AuthError(
+            "Grok manual login requires the full callback URL or a query string with code and state.",
+            code="xai_state_missing",
+        )
+
+        with patch.object(web_channel, "_require_auth", return_value=None), \
+                patch.object(web_channel.web, "header", return_value=None), \
+                patch.object(web_channel.web, "data", return_value=b'{"callback_url":"?code=manual-only"}'), \
+                patch(
+                    "integrations.hermes_xai.auth.complete_xai_oauth_with_callback_url",
+                    side_effect=missing_state,
+                ) as manual_complete, \
+                patch(
+                    "integrations.hermes_xai.auth.complete_xai_oauth_with_pending_callback",
+                    return_value=pending_auth,
+                ) as pending_complete:
+            payload = json.loads(web_channel.GrokLoginManualHandler().POST())
+
+        self.assertEqual(payload["status"], "complete")
+        self.assertTrue(payload["logged_in"])
+        manual_complete.assert_called_once_with("?code=manual-only")
+        pending_complete.assert_called_once_with()
+        self._assert_no_secret_fields(payload)
+
 
 if __name__ == "__main__":
     unittest.main()

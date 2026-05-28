@@ -148,6 +148,30 @@ def complete_xai_oauth_with_callback_url(callback_url: str) -> dict:
     return _complete_current_login(callback)
 
 
+def complete_xai_oauth_with_pending_callback() -> dict:
+    """Complete the current OAuth flow from a loopback callback already received."""
+    with _login_lock:
+        session = _active_login
+        if session is None:
+            status = get_xai_oauth_status()
+            if status.get("logged_in"):
+                return status
+            raise AuthError(
+                "No active Grok login session. Start login again.",
+                code="xai_login_session_missing",
+            )
+        if session.status == "complete":
+            return get_xai_oauth_status()
+        if session.status == "failed":
+            raise AuthError(session.message or "Grok OAuth login failed.", code="xai_login_failed")
+        if not session.callback:
+            raise AuthError(
+                "Grok callback has not been received yet. Complete browser login, then retry.",
+                code="xai_callback_pending",
+            )
+        return _complete_login_session(session, session.callback)
+
+
 def poll_xai_oauth_login() -> dict:
     """Return the current loopback login session state without secrets."""
     global _active_login
@@ -167,7 +191,7 @@ def poll_xai_oauth_login() -> dict:
                 return {
                     "status": "complete",
                     "message": "",
-                    "auth": _complete_login_session(session, session.callback),
+                    "auth": complete_xai_oauth_with_pending_callback(),
                 }
             except AuthError as exc:
                 session.status = "failed"

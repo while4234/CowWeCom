@@ -102,6 +102,43 @@ class TestGrokAuth(unittest.TestCase):
         }
         return fake_response
 
+    def _assert_no_secret_fields(self, payload):
+        serialized = json.dumps(payload, ensure_ascii=False)
+        forbidden = (
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "refresh-secret",
+            "loopback-code",
+            "secret-code",
+            "code_verifier",
+            "Authorization",
+            "Bearer ",
+        )
+        for marker in forbidden:
+            self.assertNotIn(marker, serialized)
+
+    def test_start_login_payload_is_token_and_verifier_free(self):
+        fake_discovery = MagicMock()
+        fake_discovery.status_code = 200
+        fake_discovery.json.return_value = {
+            "issuer": auth.XAI_OAUTH_ISSUER,
+            "authorization_endpoint": "https://auth.x.ai/oauth2/auth",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+        }
+
+        with patch("integrations.hermes_xai.auth.requests.get", return_value=fake_discovery), \
+                patch(
+                    "integrations.hermes_xai.auth._start_callback_server",
+                    return_value=(None, None, auth._default_redirect_uri()),
+                ):
+            payload = auth.start_xai_oauth_login()
+
+        self.assertEqual(payload["state"], "pending")
+        self.assertNotIn("code_verifier", payload)
+        self.assertNotIn(auth._active_login.code_verifier, json.dumps(payload, ensure_ascii=False))
+        self._assert_no_secret_fields(payload)
+
     def test_manual_authorization_code_without_state_is_rejected_by_default(self):
         self._start_fake_login()
 
@@ -155,6 +192,27 @@ class TestGrokAuth(unittest.TestCase):
         request_data = post.call_args.kwargs["data"]
         self.assertEqual(request_data["code"], "secret-code")
         self.assertEqual(request_data["code_verifier"], "verifier")
+
+    def test_poll_login_completes_pending_loopback_callback_without_manual_paste(self):
+        self._start_fake_login(state="state-1")
+        auth._active_login.callback = {
+            "code": "loopback-code",
+            "state": "state-1",
+            "error": None,
+            "error_description": None,
+        }
+        fake_response = self._fake_token_response()
+
+        with patch("integrations.hermes_xai.auth.requests.post", return_value=fake_response) as post:
+            payload = auth.poll_xai_oauth_login()
+
+        self.assertEqual(payload["status"], "complete")
+        self.assertTrue(payload["auth"]["logged_in"])
+        request_data = post.call_args.kwargs["data"]
+        self.assertEqual(request_data["code"], "loopback-code")
+        self.assertEqual(request_data["redirect_uri"], auth._default_redirect_uri())
+        self.assertEqual(request_data["code_verifier"], "verifier")
+        self._assert_no_secret_fields(payload)
 
     def test_discovery_endpoint_must_be_https_xai_origin(self):
         bad_discoveries = [

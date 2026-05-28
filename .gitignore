@@ -33,6 +33,7 @@ secrets/
 workspace
 /memory/
 data/project-optimizer/
+data/auth/
 knowledge_backend/
 /knowledge/
 /workspace/knowledge/

@@ -97,6 +97,8 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
+Grok/xAI TTS 和企业微信语音发送需要 `pydub` 与系统 `ffmpeg`。`pydub` 已纳入 `requirements.txt`；部署新机器时还需要确认 `ffmpeg`/`ffprobe` 在 `PATH` 中，否则 TTS 可以生成音频文件但无法转换并上传为企业微信语音。
+
 Linux / macOS：
 
 ```bash
@@ -491,6 +493,7 @@ CowWeCom/
 
 ### 2026-05-28
 
+- Grok/xAI OAuth 灰度登录改为收到本机 loopback callback 后自动轮询完成，手动提交不完整 callback 时也会优先复用后端已收到的回调；本地 Grok OAuth 凭据目录纳入 Git 忽略；`pydub` 纳入基础部署依赖，并明确企业微信 TTS 语音还需要系统 `ffmpeg`。
 - 新增 Grok/xAI 原生账号 OAuth 登录、文字对话和 TTS 语音回复灰度接入：管理员可通过隐藏 `/grok` 页面登录账号并检查凭据；启用 `text_to_voice=xai`/`grok` 与企业微信 Grok 语音模式后，只有用户原始输入为语音且本地思考深度命中低档短任务时才会分段合成并发送 AMR 语音，复杂语音任务和所有文字输入仍按文本回复。
 - Windows Python 3.13 可选语音依赖补充 `audioop-lts`，修复 `pydub` 因标准库 `audioop` 移除而无法加载的问题，语音转换能力在重启后可正常初始化。
 - Agent 同轮重复工具调用结果进一步压缩：相同参数的重复 read/bash/edit 等工具仍保留首次完整结果，重复结果改为短引用，减少上下文膨胀和缓存扰动。

@@ -1,6 +1,10 @@
 /* Grok gray-login page. This page never displays tokens or authorization code. */
 
 const output = document.getElementById('output');
+let loginPollTimer = null;
+let loginPollAttempts = 0;
+const LOGIN_POLL_INTERVAL_MS = 1500;
+const LOGIN_POLL_MAX_ATTEMPTS = 120;
 
 function writeOutput(value) {
     output.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
@@ -39,6 +43,14 @@ async function refreshStatus() {
     writeOutput(status);
 }
 
+function stopLoginPolling() {
+    if (loginPollTimer) {
+        window.clearInterval(loginPollTimer);
+        loginPollTimer = null;
+    }
+    loginPollAttempts = 0;
+}
+
 async function startLogin() {
     const data = await requestJson('/api/grok/login/start', { method: 'POST', body: '{}' });
     const box = document.getElementById('login-box');
@@ -48,12 +60,37 @@ async function startLogin() {
     link.textContent = data.authorize_url || '';
     document.getElementById('login-message').textContent = data.message || '打开链接完成登录；如果浏览器无法访问本机 loopback，请复制最终 callback URL，或复制包含 code 和 state 的查询字符串到下方。';
     writeOutput({ status: data.status, redirect_uri: data.redirect_uri, manual_paste_supported: data.manual_paste_supported });
+    startLoginPolling();
 }
 
-async function pollLogin() {
+function startLoginPolling() {
+    stopLoginPolling();
+    loginPollTimer = window.setInterval(async () => {
+        loginPollAttempts += 1;
+        try {
+            const data = await pollLogin({ silent: true });
+            if (data.status === 'complete' || data.status === 'failed' || loginPollAttempts >= LOGIN_POLL_MAX_ATTEMPTS) {
+                stopLoginPolling();
+                if (loginPollAttempts >= LOGIN_POLL_MAX_ATTEMPTS && data.status !== 'complete') {
+                    writeOutput('Grok login is still pending. Click poll or paste the full callback URL/query string if needed.');
+                }
+            }
+        } catch (error) {
+            stopLoginPolling();
+            writeOutput(error.message || String(error));
+        }
+    }, LOGIN_POLL_INTERVAL_MS);
+}
+
+async function pollLogin(options = {}) {
     const data = await requestJson('/api/grok/login/poll');
-    writeOutput(data);
-    if (data.status === 'complete') await refreshStatus();
+    if (!options.silent || data.status !== 'pending') writeOutput(data);
+    if (data.status === 'complete') {
+        stopLoginPolling();
+        await refreshStatus();
+    }
+    if (data.status === 'failed') stopLoginPolling();
+    return data;
 }
 
 async function manualLogin() {
@@ -68,6 +105,7 @@ async function manualLogin() {
     });
     document.getElementById('callback-url').value = '';
     writeOutput(data);
+    stopLoginPolling();
     await refreshStatus();
 }
 
@@ -87,6 +125,7 @@ function setLoginInputsVisible(visible) {
         element.classList.toggle('hidden', !visible);
     });
     if (visible) return;
+    stopLoginPolling();
     document.getElementById('authorize-url').textContent = '';
     document.getElementById('authorize-url').removeAttribute('href');
     document.getElementById('login-message').textContent = '';

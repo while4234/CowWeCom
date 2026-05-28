@@ -41,6 +41,9 @@ python -m venv .venv
 .\.venv\Scripts\python.exe app.py
 ```
 
+For Grok/xAI TTS voice replies in WeCom, `requirements.txt` installs `pydub`,
+but the machine must also have `ffmpeg` and `ffprobe` available in `PATH`.
+
 The WeCom Bot connection is ready when the log includes:
 
 ```text

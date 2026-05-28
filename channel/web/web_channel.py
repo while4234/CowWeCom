@@ -961,6 +961,10 @@ def _safe_grok_error(exc: Exception) -> str:
         return "Grok manual login requires both code and state. Paste the full callback URL or query string."
     if code == "xai_state_mismatch":
         return "Grok manual login state did not match the active login session."
+    if code == "xai_callback_pending":
+        return "Grok callback has not been received yet. Complete browser login, then click the poll button."
+    if code == "xai_login_session_missing":
+        return "No active Grok login session. Start Grok login again."
     text = str(exc) or "Grok OAuth request failed"
     if "callback" in text.lower() or "code=" in text.lower():
         return "Grok OAuth callback validation failed"
@@ -1026,11 +1030,20 @@ class GrokLoginManualHandler:
             }, ensure_ascii=False)
 
         try:
-            from integrations.hermes_xai.auth import complete_xai_oauth_with_callback_url
+            from integrations.hermes_xai.auth import (
+                complete_xai_oauth_with_callback_url,
+                complete_xai_oauth_with_pending_callback,
+            )
 
             status = complete_xai_oauth_with_callback_url(callback_url)
             return json.dumps({"status": "complete", **status}, ensure_ascii=False)
         except Exception as e:
+            if getattr(e, "code", "") in {"xai_state_missing", "xai_callback_invalid"}:
+                try:
+                    status = complete_xai_oauth_with_pending_callback()
+                    return json.dumps({"status": "complete", **status}, ensure_ascii=False)
+                except Exception:
+                    pass
             logger.error(f"[GrokOAuth] manual login error: {_safe_grok_error(e)}")
             return json.dumps({"status": "error", "message": _safe_grok_error(e)}, ensure_ascii=False)
 
