@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -138,6 +141,83 @@ _FORMULA_FUNCTION_RE = re.compile(r"\b(?:ceil|floor|log|int|crc|vtf|sin|cos|tan|
 _FORMULA_ASSIGNMENT_RE = re.compile(r"(?:[A-Za-z][A-Za-z0-9_]*\s*(?:\([^)]{0,80}\))?\s*=|=\s*[^=\n]{2,})")
 _FORMULA_SYMBOL_RE = re.compile(r"[=+\-*/^(){}<>]")
 _SIGNAL_ROW_DIRECTION_RE = re.compile(r"\b(?:input|output|inout|source|destination|master|slave|write|read)\b", re.IGNORECASE)
+_SIGNAL_NAME_WITH_WIDTH_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\[[A-Za-z0-9_+\-*/():]+\])?$")
+_KNOWN_SIGNAL_WIDTH_RE = re.compile(
+    r"\b(?:AWLEN|ARLEN|TDATA|TSTRB|TKEEP|TID|TDEST|TUSER)\s*(?:\[[A-Za-z0-9_+\-*/():]+\])?",
+    re.IGNORECASE,
+)
+_SIGNAL_WIDTH_RE = re.compile(
+    r"\[[A-Za-z0-9_+\-*/()]+(?::[A-Za-z0-9_+\-*/()]+)?\]|\b\d+\s*(?:bits?|b)\b",
+    re.IGNORECASE,
+)
+_SIGNAL_DESCRIPTION_RE = re.compile(
+    r"\b(?:signal|signals|master|slave|payload|byte\s+qualifier|associated\s+with|data\s+stream|routing\s+information|"
+    r"user\s+defined|burst\s+length|description|direction)\b",
+    re.IGNORECASE,
+)
+_PYMUPDF_FIND_TABLES_SCRIPT = r"""
+import json
+import sys
+
+import fitz
+
+source_path = sys.argv[1]
+page_number = int(sys.argv[2])
+rects = []
+with fitz.open(source_path) as pdf:
+    page = pdf[page_number - 1]
+    finder = getattr(page, "find_tables", None)
+    if callable(finder):
+        found = finder()
+        tables = getattr(found, "tables", found)
+        for table in list(tables or []):
+            bbox = getattr(table, "bbox", None)
+            if bbox:
+                rects.append([float(value) for value in bbox])
+print(json.dumps(rects))
+"""
+
+
+class _FindTablesPolicy:
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        max_calls_per_document: int = 0,
+        max_pages_per_document: int = 0,
+        timeout_seconds: float = 0.0,
+        use_subprocess: bool = True,
+    ) -> None:
+        self.enabled = bool(enabled)
+        self.max_calls_per_document = max(0, int(max_calls_per_document or 0))
+        self.max_pages_per_document = max(0, int(max_pages_per_document or 0))
+        self.timeout_seconds = max(0.0, float(timeout_seconds or 0.0))
+        self.use_subprocess = bool(use_subprocess)
+        self.calls = 0
+
+    @classmethod
+    def from_config(cls, visual_config: Dict[str, Any]) -> "_FindTablesPolicy":
+        enabled = _config_bool(visual_config.get("pymupdf_find_tables_enabled"), False)
+        return cls(
+            enabled=enabled,
+            max_calls_per_document=int(visual_config.get("pymupdf_find_tables_max_calls_per_document") or 0),
+            max_pages_per_document=int(visual_config.get("pymupdf_find_tables_max_pages_per_document") or 0),
+            timeout_seconds=float(visual_config.get("pymupdf_find_tables_timeout_seconds") or 2.0),
+            use_subprocess=_config_bool(visual_config.get("pymupdf_find_tables_subprocess"), True),
+        )
+
+    @classmethod
+    def disabled(cls) -> "_FindTablesPolicy":
+        return cls(enabled=False)
+
+    def can_call(self) -> bool:
+        if not self.enabled:
+            return False
+        call_budget = self.max_calls_per_document or self.max_pages_per_document
+        return bool(call_budget > 0 and self.calls < call_budget)
+
+    def record_call(self) -> None:
+        self.calls += 1
 
 
 def normalize_caption_text(text: str) -> str:
@@ -328,6 +408,10 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             "skipped_toc_pages": 0,
             "find_tables_calls": 0,
             "find_tables_skipped": 0,
+            "find_tables_disabled": 0,
+            "find_tables_timeouts": 0,
+            "find_tables_errors": 0,
+            "find_tables_budget_exhausted": 0,
         }
         if source.suffix.lower() != ".pdf" or not source.is_file():
             return [], report
@@ -343,6 +427,7 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         min_area_ratio = float(visual_config.get("candidate_min_area_ratio", 0.015))
         max_image_candidates = max(0, int(visual_config.get("max_image_candidates_per_page", 3) or 0))
         pipeline_version = str(visual_config.get("pipeline_version") or DEFAULT_VISUAL_PIPELINE_VERSION)
+        find_tables_policy = _FindTablesPolicy.from_config(visual_config)
         candidates: List[VisualArtifactCandidate] = []
         page_texts = {page.page: page.text for page in extracted_document.pages}
 
@@ -361,7 +446,16 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
                     report["skipped_toc_pages"] += 1
                     continue
 
-                table_rects = self._table_rects(page, page_rect, text_blocks, page_text, report=report)
+                table_rects = self._table_rects(
+                    page,
+                    page_rect,
+                    text_blocks,
+                    page_text,
+                    report=report,
+                    source_path=source,
+                    page_number=page_index,
+                    find_tables_policy=find_tables_policy,
+                )
                 caption_candidates = self._caption_candidates(page_rect, text_blocks, table_rects)
                 page_candidates: List[VisualArtifactCandidate] = []
                 for rect, caption, artifact_type in caption_candidates:
@@ -542,21 +636,60 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
         page_text: str,
         *,
         report: Optional[Dict[str, Any]] = None,
+        source_path: Optional[Path] = None,
+        page_number: int = 0,
+        find_tables_policy: Optional["_FindTablesPolicy"] = None,
     ) -> List[Any]:
         if _is_toc_or_list_page(page_text):
             return []
         rects: List[Any] = []
         dense_rects = self._dense_table_block_rects(page_rect, blocks)
+        policy = find_tables_policy or _FindTablesPolicy.disabled()
         if _page_has_pymupdf_table_hints(blocks, page_text):
-            if report is not None:
-                report["find_tables_calls"] = int(report.get("find_tables_calls") or 0) + 1
-            rects.extend(self._pymupdf_table_rects(page))
+            if policy.can_call():
+                if report is not None:
+                    report["find_tables_calls"] = int(report.get("find_tables_calls") or 0) + 1
+                rects.extend(
+                    self._pymupdf_table_rects(
+                        page,
+                        source_path=source_path,
+                        page_number=page_number,
+                        timeout_seconds=policy.timeout_seconds,
+                        use_subprocess=policy.use_subprocess,
+                        report=report,
+                    )
+                )
+                policy.record_call()
+            elif report is not None:
+                reason = "find_tables_disabled" if not policy.enabled else "find_tables_budget_exhausted"
+                report[reason] = int(report.get(reason) or 0) + 1
         elif report is not None:
             report["find_tables_skipped"] = int(report.get("find_tables_skipped") or 0) + 1
         rects.extend(dense_rects)
         return _dedupe_rects(rects)
 
-    def _pymupdf_table_rects(self, page: Any) -> List[Any]:
+    def _pymupdf_table_rects(
+        self,
+        page: Any,
+        *,
+        source_path: Optional[Path] = None,
+        page_number: int = 0,
+        timeout_seconds: float = 0.0,
+        use_subprocess: bool = True,
+        report: Optional[Dict[str, Any]] = None,
+    ) -> List[Any]:
+        if use_subprocess and source_path is not None and page_number > 0:
+            return self._pymupdf_table_rects_subprocess(
+                source_path,
+                page_number,
+                timeout_seconds=timeout_seconds,
+                report=report,
+            )
+        if timeout_seconds > 0:
+            if report is not None:
+                report["find_tables_skipped"] = int(report.get("find_tables_skipped") or 0) + 1
+            logger.info("[KnowledgeBackend] skipping in-process PyMuPDF find_tables because it cannot be timed out safely")
+            return []
         finder = getattr(page, "find_tables", None)
         if not callable(finder):
             return []
@@ -577,6 +710,66 @@ class PyMuPDFVisualArtifactExtractor(VisualArtifactExtractor):
             try:
                 import fitz
 
+                rect = fitz.Rect(bbox)
+            except Exception:
+                continue
+            if rect.width > 1 and rect.height > 1:
+                rects.append(rect)
+        return rects
+
+    def _pymupdf_table_rects_subprocess(
+        self,
+        source_path: Path,
+        page_number: int,
+        *,
+        timeout_seconds: float,
+        report: Optional[Dict[str, Any]],
+    ) -> List[Any]:
+        timeout = max(0.1, float(timeout_seconds or 2.0))
+        command = [sys.executable, "-c", _PYMUPDF_FIND_TABLES_SCRIPT, str(source_path), str(int(page_number))]
+        try:
+            completed = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            if report is not None:
+                report["find_tables_timeouts"] = int(report.get("find_tables_timeouts") or 0) + 1
+            logger.info("[KnowledgeBackend] PyMuPDF find_tables timed out on page %s; using heuristic table candidates", page_number)
+            return []
+        except Exception as exc:
+            if report is not None:
+                report["find_tables_errors"] = int(report.get("find_tables_errors") or 0) + 1
+            logger.debug("[KnowledgeBackend] PyMuPDF find_tables subprocess failed on page %s: %s", page_number, exc)
+            return []
+        if completed.returncode != 0:
+            if report is not None:
+                report["find_tables_errors"] = int(report.get("find_tables_errors") or 0) + 1
+            logger.debug(
+                "[KnowledgeBackend] PyMuPDF find_tables subprocess returned %s on page %s",
+                completed.returncode,
+                page_number,
+            )
+            return []
+        output_lines = [line.strip() for line in str(completed.stdout or "").splitlines() if line.strip()]
+        try:
+            raw_rects = json.loads(output_lines[-1] if output_lines else "[]")
+        except json.JSONDecodeError:
+            if report is not None:
+                report["find_tables_errors"] = int(report.get("find_tables_errors") or 0) + 1
+            return []
+        try:
+            import fitz
+        except ImportError:
+            return []
+        rects = []
+        for bbox in raw_rects if isinstance(raw_rects, list) else []:
+            try:
                 rect = fitz.Rect(bbox)
             except Exception:
                 continue
@@ -993,6 +1186,19 @@ def _is_toc_or_list_page(page_text: str) -> bool:
     )
 
 
+def _config_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "on", "enabled", "yes", "y"}:
+        return True
+    if text in {"", "0", "false", "off", "disabled", "no", "n"}:
+        return False
+    return default
+
+
 def _looks_like_toc_entry(text: str) -> bool:
     value = str(text or "")
     dotted = bool(re.search(r"\.{5,}\s*\d+\s*$", value))
@@ -1088,9 +1294,9 @@ def _tableish_block_rects(blocks: List[Dict[str, Any]]) -> List[Any]:
     rects = []
     for block in blocks:
         text = str(block.get("text") or "")
-        if _text_has_formula_structure(text):
+        if _text_has_formula_structure(text) and not _block_has_signal_table_shape(text):
             continue
-        if _block_looks_table_like(text) or _block_text_dense_table_like(text) or _signal_list_rows(text) >= 2:
+        if _block_looks_table_like(text) or _block_text_dense_table_like(text) or _signal_list_rows(text) >= 2 or _block_has_signal_table_shape(text):
             x0, y0, x1, y1 = block["bbox"]
             rects.append(fitz.Rect(x0, y0, x1, y1))
     return rects
@@ -1099,6 +1305,8 @@ def _tableish_block_rects(blocks: List[Dict[str, Any]]) -> List[Any]:
 def _block_is_formula_negative(text: str, block: Dict[str, Any], tableish_rects: List[Any]) -> bool:
     value = str(text or "")
     if not value.strip():
+        return True
+    if _block_has_signal_table_shape(value):
         return True
     if _text_has_formula_structure(value) and not _line_looks_signal_list_row(value):
         return False
@@ -1122,6 +1330,8 @@ def _text_has_formula_structure(text: str) -> bool:
     compact = " ".join(str(text or "").split())
     if not compact:
         return False
+    if _block_has_signal_table_shape(compact):
+        return False
     symbol_count = len(_FORMULA_SYMBOL_RE.findall(compact))
     has_assignment = bool(_FORMULA_ASSIGNMENT_RE.search(compact))
     has_function = bool(_FORMULA_FUNCTION_RE.search(compact) or re.search(r"\b(?:log|ceil|floor|crc|vtf)\s*=", compact, re.IGNORECASE))
@@ -1138,8 +1348,7 @@ def _line_looks_signal_list_row(line: str) -> bool:
     text = str(line or "").strip()
     if not text:
         return False
-    if _text_has_formula_structure(text):
-        return False
+    text = re.sub(r"\s*\|\s*", " | ", text)
     tokens = text.split()
     if len(tokens) < 3:
         return False
@@ -1147,11 +1356,35 @@ def _line_looks_signal_list_row(line: str) -> bool:
     if header_hits >= 2:
         return True
     first = tokens[0].strip(",:;")
-    signal_name = bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\[[0-9:]+\])?", first))
-    bit_width = bool(re.search(r"\[[0-9]+(?::[0-9]+)?\]|\b\d+\s*(?:bits?|b)\b", text, re.IGNORECASE))
+    if first == "|" and len(tokens) > 1:
+        first = tokens[1].strip(",:;")
+    signal_name = bool(_SIGNAL_NAME_WITH_WIDTH_RE.fullmatch(first))
+    bit_width = bool(_SIGNAL_WIDTH_RE.search(text))
     direction = bool(_SIGNAL_ROW_DIRECTION_RE.search(text))
+    description = bool(_SIGNAL_DESCRIPTION_RE.search(text))
     natural_words = len(re.findall(r"[A-Za-z]{4,}", text))
-    return bool(signal_name and (direction or bit_width) and natural_words >= 1)
+    explicit_signal = bool(_KNOWN_SIGNAL_WIDTH_RE.search(text))
+    return bool(signal_name and (direction or bit_width or explicit_signal) and (description or natural_words >= 1))
+
+
+def _block_has_signal_table_shape(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    lines = [_normalize_signal_row_line(line) for line in value.splitlines() if _normalize_signal_row_line(line)]
+    if not lines:
+        lines = [_normalize_signal_row_line(value)]
+    if any(_line_looks_signal_list_row(line) for line in lines):
+        return True
+    if _KNOWN_SIGNAL_WIDTH_RE.search(value) and _SIGNAL_DESCRIPTION_RE.search(value):
+        return True
+    header_hits = len(TABLE_HEADER_RE.findall(value))
+    signal_hits = len(_KNOWN_SIGNAL_WIDTH_RE.findall(value))
+    return bool(header_hits >= 2 and signal_hits >= 1)
+
+
+def _normalize_signal_row_line(line: str) -> str:
+    return re.sub(r"[ \t]+", " ", str(line or "").replace("\u2022", " ").strip())
 
 
 def _block_looks_table_like(text: str) -> bool:

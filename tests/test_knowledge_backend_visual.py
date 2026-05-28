@@ -1,5 +1,6 @@
 import sqlite3
 import json
+from pathlib import Path
 
 import pytest
 
@@ -111,8 +112,9 @@ class FakeRangeExtractor(FakeExtractor):
             and candidate.version_id == document.version_id
             and start_page <= candidate.page <= end_page
         ]
+        pages_scanned = min(self.pages_per_call, max_pages)
         return list(candidates), {
-            "pages_scanned": self.pages_per_call,
+            "pages_scanned": pages_scanned,
             "candidates": len(candidates),
             "find_tables_calls": 1,
             "find_tables_skipped": max(0, max_pages - 1),
@@ -375,6 +377,15 @@ def _pdf_document(pdf_path, *, document_id="doc", title="Doc", version_id="v1"):
         status="ready",
         version_id=version_id,
     )
+
+
+def _public_protocol_pdf(name_part):
+    root = Path(__file__).resolve().parents[1]
+    originals = root / "public_protocol_knowledge" / "originals"
+    matches = sorted(originals.glob(f"*{name_part}*.pdf"))
+    if not matches:
+        pytest.skip(f"public protocol PDF not available: {name_part}")
+    return matches[0]
 
 
 def _upsert_visual_group(storage, document_id, version_id, group_id, source_pages=None, *, status="pending", retrievable=0):
@@ -1177,6 +1188,69 @@ def test_visual_build_continues_when_prepare_scans_pages_without_candidates(tmp_
     assert second["processed"] == 1
     assert second["succeeded"] == 1
     assert service.search("late_candidate_visualfact", limit=5)
+
+
+def test_visual_prepare_sub_batches_large_request_and_checkpoints(tmp_path):
+    service = _service(
+        tmp_path,
+        visual_analysis={
+            "prepare_pages_per_request": 1000,
+            "visual_prepare_sub_batch_pages": 2,
+        },
+    )
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    storage.conn.execute(
+        "UPDATE documents SET metadata = ? WHERE id = ?",
+        (json.dumps({"page_count": 5}), document_id),
+    )
+    storage.conn.commit()
+    candidates = [_candidate(document_id, version_id, 2), _candidate(document_id, version_id, 5)]
+    extractor = FakeRangeExtractor(candidates, pages_per_call=2)
+    service._visual_extractor = extractor
+
+    result = service.prepare_visual_artifacts(document_id=document_id, force=True, max_pages=1000)
+    state = storage.get_visual_prepare_state(document_id, version_id)
+
+    assert result["prepare"]["status"] == "done"
+    assert result["prepare"]["prepared_pages"] == 5
+    assert result["prepare"]["prepared_artifacts"] == 2
+    assert state["status"] == "done"
+    assert state["next_page"] == 6
+    assert extractor.calls == [(1, 2), (3, 2), (5, 1)]
+
+
+def test_visual_prepare_sub_batch_failure_persists_failed_state(tmp_path):
+    class FailingSecondBatchExtractor(FakeRangeSequenceExtractor):
+        def extract_candidates_for_page_range(self, document, extracted_document, storage, config, start_page, max_pages):
+            if start_page >= 3:
+                raise RuntimeError("forced batch failure")
+            return super().extract_candidates_for_page_range(document, extracted_document, storage, config, start_page, max_pages)
+
+    service = _service(
+        tmp_path,
+        visual_analysis={
+            "prepare_pages_per_request": 1000,
+            "visual_prepare_sub_batch_pages": 2,
+        },
+    )
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    storage.conn.execute(
+        "UPDATE documents SET metadata = ? WHERE id = ?",
+        (json.dumps({"page_count": 5}), document_id),
+    )
+    storage.conn.commit()
+    service._visual_extractor = FailingSecondBatchExtractor([(2, [_candidate(document_id, version_id, 1)])])
+
+    result = service.prepare_visual_artifacts(document_id=document_id, force=True, max_pages=1000)
+    state = storage.get_visual_prepare_state(document_id, version_id)
+
+    assert state["status"] == "failed"
+    assert state["prepared_pages"] == 2
+    assert state["prepared_artifacts"] == 1
+    assert "forced batch failure" in state["error"]
+    assert result["errors"]
 
 
 def test_force_build_does_not_claim_same_artifact_twice_in_one_batch(tmp_path):
@@ -2633,10 +2707,99 @@ def test_signal_table_pdf_does_not_create_formula_candidate(tmp_path):
         max_pages=1,
     )
 
-    assert report["find_tables_calls"] >= 1
+    assert report["find_tables_calls"] == 0
+    assert report["find_tables_disabled"] >= 1
     assert any(candidate.artifact_type == "table" for candidate in candidates)
     assert not any(candidate.artifact_type == "formula" for candidate in candidates)
     assert all(candidate.bbox["page_width"] > 0 and candidate.bbox["page_height"] > 0 for candidate in candidates)
+
+
+def test_amba_axi_signal_table_pages_do_not_create_formula_candidates():
+    source = _public_protocol_pdf("IHI0022C_amba_axi")
+    fitz = pytest.importorskip("fitz")
+    with fitz.open(str(source)) as pdf:
+        pages = [DocumentPage(page, pdf[page - 1].get_text("text")) for page in (26, 29)]
+    document = _pdf_document(source, document_id="amba_axi_signal_doc", version_id="amba-axi-signal-v1")
+    extracted = ExtractedDocument(
+        title=document.title,
+        source_path=str(source),
+        mime_type="application/pdf",
+        pages=pages,
+    )
+
+    candidates, _report = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        _config(Path(source).parent, ingest={"allowed_extensions": [".pdf"]}),
+        start_page=26,
+        max_pages=4,
+    )
+
+    formula_pages = {candidate.page for candidate in candidates if candidate.artifact_type == "formula"}
+    assert 26 not in formula_pages
+    assert 29 not in formula_pages
+
+
+def test_axi4_stream_signal_rows_do_not_create_formula_candidates():
+    source = _public_protocol_pdf("IHI0051A_amba4_axi4_stream")
+    fitz = pytest.importorskip("fitz")
+    with fitz.open(str(source)) as pdf:
+        pages = [DocumentPage(page, pdf[page - 1].get_text("text")) for page in (18, 24)]
+    document = _pdf_document(source, document_id="axi4_stream_signal_doc", version_id="axi4-stream-signal-v1")
+    extracted = ExtractedDocument(
+        title=document.title,
+        source_path=str(source),
+        mime_type="application/pdf",
+        pages=pages,
+    )
+
+    page18, _ = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        _config(Path(source).parent, ingest={"allowed_extensions": [".pdf"]}),
+        start_page=18,
+        max_pages=1,
+    )
+    page24, _ = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        _config(Path(source).parent, ingest={"allowed_extensions": [".pdf"]}),
+        start_page=24,
+        max_pages=1,
+    )
+
+    assert not any(candidate.artifact_type == "formula" for candidate in page18)
+    assert not any(candidate.artifact_type == "formula" for candidate in page24)
+
+
+def test_ucie_formula_pages_still_create_formula_candidates():
+    source = _public_protocol_pdf("UCIe_1p1")
+    fitz = pytest.importorskip("fitz")
+    pages_to_check = (73, 99, 161, 162, 178, 189)
+    with fitz.open(str(source)) as pdf:
+        pages = [DocumentPage(page, pdf[page - 1].get_text("text")) for page in pages_to_check]
+    document = _pdf_document(source, document_id="ucie_formula_doc", version_id="ucie-formula-v1")
+    extractor = PyMuPDFVisualArtifactExtractor()
+
+    for page in pages_to_check:
+        extracted = ExtractedDocument(
+            title=document.title,
+            source_path=str(source),
+            mime_type="application/pdf",
+            pages=[next(item for item in pages if item.page == page)],
+        )
+        candidates, _report = extractor.extract_candidates_for_page_range(
+            document,
+            extracted,
+            None,
+            _config(Path(source).parent, ingest={"allowed_extensions": [".pdf"]}),
+            start_page=page,
+            max_pages=1,
+        )
+        assert any(candidate.artifact_type == "formula" for candidate in candidates), page
 
 
 def test_formula_pdf_still_creates_candidate_with_page_size(tmp_path):
@@ -2703,6 +2866,94 @@ def test_pymupdf_find_tables_precheck_skips_plain_pages(tmp_path):
     assert candidates == []
     assert report["find_tables_calls"] == 0
     assert report["find_tables_skipped"] == 1
+
+
+def test_pymupdf_find_tables_is_budgeted_when_enabled(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "budgeted-tables.pdf"
+    pdf = fitz.open()
+    for page_number in range(2):
+        page = pdf.new_page(width=600, height=800)
+        page.insert_text((72, 72), f"Table {page_number + 1}-1. Signal List")
+        page.insert_text((72, 120), "Signal Direction Description")
+        for index in range(8):
+            page.insert_text((72, 150 + index * 24), f"SIG_{page_number}_{index}[3:0] input Description_{index}")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    document = _pdf_document(pdf_path, document_id="budgeted_tables_doc", version_id="budgeted-tables-v1")
+    extracted = ExtractedDocument(
+        title=document.title,
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[
+            DocumentPage(1, "Table 1-1. Signal List\nSignal Direction Description\nSIG_0_0[3:0] input Description_0"),
+            DocumentPage(2, "Table 2-1. Signal List\nSignal Direction Description\nSIG_1_0[3:0] input Description_0"),
+        ],
+    )
+
+    candidates, report = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        _config(
+            tmp_path,
+            ingest={"allowed_extensions": [".pdf"]},
+            visual_analysis={
+                "pymupdf_find_tables_enabled": True,
+                "pymupdf_find_tables_max_calls_per_document": 1,
+                "pymupdf_find_tables_timeout_seconds": 2,
+            },
+        ),
+        start_page=1,
+        max_pages=2,
+    )
+
+    assert report["find_tables_calls"] == 1
+    assert report["find_tables_budget_exhausted"] >= 1
+    assert any(candidate.artifact_type == "table" for candidate in candidates)
+
+
+def test_pymupdf_find_tables_zero_budget_uses_heuristics(tmp_path):
+    fitz = pytest.importorskip("fitz")
+    pdf_path = tmp_path / "zero-budget-tables.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page(width=600, height=800)
+    page.insert_text((72, 72), "Table 1-1. Signal List")
+    page.insert_text((72, 120), "Signal Direction Description")
+    for index in range(8):
+        page.insert_text((72, 150 + index * 24), f"SIG_{index}[3:0] input Description_{index}")
+    pdf.save(pdf_path)
+    pdf.close()
+
+    document = _pdf_document(pdf_path, document_id="zero_budget_tables_doc", version_id="zero-budget-tables-v1")
+    extracted = ExtractedDocument(
+        title=document.title,
+        source_path=str(pdf_path),
+        mime_type="application/pdf",
+        pages=[DocumentPage(1, "Table 1-1. Signal List\nSignal Direction Description\nSIG_0[3:0] input Description_0")],
+    )
+
+    candidates, report = PyMuPDFVisualArtifactExtractor().extract_candidates_for_page_range(
+        document,
+        extracted,
+        None,
+        _config(
+            tmp_path,
+            ingest={"allowed_extensions": [".pdf"]},
+            visual_analysis={
+                "pymupdf_find_tables_enabled": True,
+                "pymupdf_find_tables_max_calls_per_document": 0,
+                "pymupdf_find_tables_max_pages_per_document": 0,
+            },
+        ),
+        start_page=1,
+        max_pages=1,
+    )
+
+    assert report["find_tables_calls"] == 0
+    assert report["find_tables_budget_exhausted"] >= 1
+    assert any(candidate.artifact_type == "table" for candidate in candidates)
 
 
 def test_low_confidence_formula_result_is_not_retrievable(tmp_path):

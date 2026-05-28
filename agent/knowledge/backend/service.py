@@ -87,6 +87,12 @@ DEFAULT_VISUAL_ANALYSIS_CONFIG: Dict[str, Any] = {
     "dense_text_retry_threshold": 0.72,
     "max_image_candidates_per_page": 3,
     "candidate_min_area_ratio": 0.015,
+    "visual_prepare_sub_batch_pages": 10,
+    "pymupdf_find_tables_enabled": False,
+    "pymupdf_find_tables_max_calls_per_document": 25,
+    "pymupdf_find_tables_max_pages_per_document": 25,
+    "pymupdf_find_tables_timeout_seconds": 2.0,
+    "pymupdf_find_tables_subprocess": True,
     "include_page_context": True,
     "context_before_chars": 1200,
     "context_after_chars": 1200,
@@ -248,6 +254,24 @@ class KnowledgeBackendConfig:
                 "dense_text_retry_threshold": float(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_DENSE_TEXT_RETRY_THRESHOLD") or 0.72),
                 "candidate_min_area_ratio": float(
                     os.environ.get("KNOWLEDGE_BACKEND_VISUAL_CANDIDATE_MIN_AREA_RATIO") or 0.015
+                ),
+                "visual_prepare_sub_batch_pages": int(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PREPARE_SUB_BATCH_PAGES") or 10
+                ),
+                "pymupdf_find_tables_enabled": parse_knowledge_backend_enabled(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PYMUPDF_FIND_TABLES_ENABLED")
+                ),
+                "pymupdf_find_tables_max_calls_per_document": int(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PYMUPDF_FIND_TABLES_MAX_CALLS_PER_DOCUMENT") or 25
+                ),
+                "pymupdf_find_tables_max_pages_per_document": int(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PYMUPDF_FIND_TABLES_MAX_PAGES_PER_DOCUMENT") or 25
+                ),
+                "pymupdf_find_tables_timeout_seconds": float(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PYMUPDF_FIND_TABLES_TIMEOUT_SECONDS") or 2.0
+                ),
+                "pymupdf_find_tables_subprocess": parse_knowledge_backend_enabled(
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_PYMUPDF_FIND_TABLES_SUBPROCESS", "true")
                 ),
                 "include_page_context": parse_knowledge_backend_enabled(
                     os.environ.get("KNOWLEDGE_BACKEND_VISUAL_INCLUDE_PAGE_CONTEXT", "true")
@@ -640,7 +664,9 @@ class KnowledgeBackendService:
         errors: List[str] = []
         visual_config = self.config.visual_analysis or {}
         pipeline_version = str(visual_config.get("pipeline_version") or DEFAULT_VISUAL_PIPELINE_VERSION)
-        pages_per_request = max(1, int(max_pages or visual_config.get("prepare_pages_per_request") or 3))
+        requested_pages = max(1, int(max_pages or visual_config.get("prepare_pages_per_request") or 3))
+        sub_batch_pages = max(1, int(visual_config.get("visual_prepare_sub_batch_pages") or 10))
+        pages_per_request = min(requested_pages, sub_batch_pages)
         for document in documents:
             try:
                 source = _resolve_document_source_path(document, self.config)
@@ -650,15 +676,6 @@ class KnowledgeBackendService:
                     document_id=document.id,
                     pipeline_version=pipeline_version,
                     force=force,
-                )
-                state = storage.get_visual_prepare_state(document.id, document.version_id)
-                extracted = _extracted_document_for_visual_prepare(
-                    storage,
-                    document,
-                    source,
-                    start_page=1 if state is None else int(state.get("next_page") or 1),
-                    max_pages=pages_per_request,
-                    total_pages=total_pages,
                 )
                 state = storage.get_visual_prepare_state(document.id, document.version_id)
                 if force or state is None:
@@ -677,66 +694,113 @@ class KnowledgeBackendService:
                     )
                 if state.get("status") == "done" and not force:
                     continue
-                start_page = max(1, int(state.get("next_page") or 1))
-                if start_page > max(1, total_pages):
-                    storage.update_visual_prepare_state(
+                find_tables_budget = int(
+                    visual_config.get("pymupdf_find_tables_max_calls_per_document")
+                    or visual_config.get("pymupdf_find_tables_max_pages_per_document")
+                    or 0
+                )
+                document_find_tables_calls = 0
+                document_pages_remaining = requested_pages
+                while document_pages_remaining > 0:
+                    state = storage.get_visual_prepare_state(document.id, document.version_id) or state
+                    if state.get("status") == "done" and not force:
+                        break
+                    start_page = max(1, int(state.get("next_page") or 1))
+                    if start_page > max(1, total_pages):
+                        storage.update_visual_prepare_state(
+                            document.id,
+                            document.version_id,
+                            status="done",
+                            total_pages=total_pages,
+                            next_page=total_pages + 1,
+                        )
+                        break
+                    batch_pages = min(pages_per_request, document_pages_remaining)
+                    if total_pages > 1:
+                        batch_pages = min(batch_pages, max(1, total_pages - start_page + 1))
+                    storage.update_visual_prepare_state(document.id, document.version_id, status="running", error="")
+                    extracted = _extracted_document_for_visual_prepare(
+                        storage,
+                        document,
+                        source,
+                        start_page=start_page,
+                        max_pages=batch_pages,
+                        total_pages=total_pages,
+                    )
+                    if hasattr(self._visual_extractor, "extract_candidates_for_page_range"):
+                        batch_config = self.config
+                        if parse_knowledge_backend_enabled(visual_config.get("pymupdf_find_tables_enabled")) and find_tables_budget > 0:
+                            remaining_find_tables = max(0, find_tables_budget - document_find_tables_calls)
+                            batch_visual_config = dict(batch_config.visual_analysis or {})
+                            if remaining_find_tables <= 0:
+                                batch_visual_config["pymupdf_find_tables_enabled"] = False
+                            else:
+                                batch_visual_config["pymupdf_find_tables_max_calls_per_document"] = remaining_find_tables
+                                batch_visual_config["pymupdf_find_tables_max_pages_per_document"] = remaining_find_tables
+                            batch_config = replace(batch_config, visual_analysis=batch_visual_config)
+                        candidates, prepare_report = self._visual_extractor.extract_candidates_for_page_range(
+                            document,
+                            extracted,
+                            storage,
+                            batch_config,
+                            start_page=start_page,
+                            max_pages=batch_pages,
+                        )
+                    else:
+                        candidates = self._visual_extractor.extract_candidates(document, extracted, storage, self.config)
+                        prepare_report = {"pages_scanned": batch_pages}
+                    for candidate in candidates:
+                        if not getattr(candidate, "pipeline_version", ""):
+                            candidate = VisualArtifactCandidate(**{**candidate.to_dict(), "pipeline_version": pipeline_version})
+                        storage.upsert_visual_artifact(candidate)
+                        prepared += 1
+                    for key, value in (prepare_report or {}).items():
+                        if key.startswith("find_tables"):
+                            prepare_report_totals[str(key)] = prepare_report_totals.get(str(key), 0) + int(value or 0)
+                    document_find_tables_calls += int((prepare_report or {}).get("find_tables_calls") or 0)
+                    scanned_pages = max(0, int((prepare_report or {}).get("pages_scanned") or 0))
+                    if scanned_pages <= 0:
+                        storage.update_visual_prepare_state(
+                            document.id,
+                            document.version_id,
+                            total_pages=total_pages,
+                            next_page=total_pages + 1,
+                            status="done",
+                            error="",
+                            pipeline_version=pipeline_version,
+                        )
+                        break
+                    prepared_pages_delta += scanned_pages
+                    prepared_artifacts_delta += len(candidates)
+                    scanned_pages_delta += scanned_pages
+                    document_pages_remaining -= scanned_pages
+                    next_page = start_page + scanned_pages
+                    prepared_pages = min(total_pages, int(state.get("prepared_pages") or 0) + scanned_pages)
+                    prepared_artifacts = int(state.get("prepared_artifacts") or 0) + len(candidates)
+                    done = next_page > total_pages
+                    state = storage.update_visual_prepare_state(
                         document.id,
                         document.version_id,
-                        status="done",
                         total_pages=total_pages,
-                        next_page=total_pages + 1,
+                        next_page=min(total_pages + 1, max(1, next_page)),
+                        prepared_pages=prepared_pages,
+                        prepared_artifacts=prepared_artifacts,
+                        status="done" if done else "pending",
+                        error="",
+                        pipeline_version=pipeline_version,
                     )
-                    continue
-                storage.update_visual_prepare_state(document.id, document.version_id, status="running", error="")
-                if hasattr(self._visual_extractor, "extract_candidates_for_page_range"):
-                    candidates, prepare_report = self._visual_extractor.extract_candidates_for_page_range(
-                        document,
-                        extracted,
-                        storage,
-                        self.config,
-                        start_page=start_page,
-                        max_pages=pages_per_request,
+                    if candidates:
+                        candidate_pages = [int(candidate.page) for candidate in candidates]
+                        group_window = (min(candidate_pages), max(candidate_pages))
+                    else:
+                        group_window = (max(1, start_page - 2), min(total_pages, next_page + 2))
+                    VisualArtifactGrouper(storage).update_groups_for_document(
+                        document.id,
+                        document.version_id,
+                        page_window=group_window,
                     )
-                else:
-                    candidates = self._visual_extractor.extract_candidates(document, extracted, storage, self.config)
-                    prepare_report = {"pages_scanned": total_pages}
-                for candidate in candidates:
-                    if not getattr(candidate, "pipeline_version", ""):
-                        candidate = VisualArtifactCandidate(**{**candidate.to_dict(), "pipeline_version": pipeline_version})
-                    storage.upsert_visual_artifact(candidate)
-                    prepared += 1
-                for key in ("find_tables_calls", "find_tables_skipped"):
-                    if key in prepare_report:
-                        prepare_report_totals[key] = prepare_report_totals.get(key, 0) + int(prepare_report.get(key) or 0)
-                scanned_pages = max(0, int(prepare_report.get("pages_scanned") or 0))
-                prepared_pages_delta += scanned_pages
-                prepared_artifacts_delta += len(candidates)
-                scanned_pages_delta += scanned_pages
-                next_page = start_page + scanned_pages
-                prepared_pages = min(total_pages, int(state.get("prepared_pages") or 0) + scanned_pages)
-                prepared_artifacts = int(state.get("prepared_artifacts") or 0) + len(candidates)
-                done = next_page > total_pages or scanned_pages <= 0
-                storage.update_visual_prepare_state(
-                    document.id,
-                    document.version_id,
-                    total_pages=total_pages,
-                    next_page=min(total_pages + 1, max(1, next_page)),
-                    prepared_pages=prepared_pages,
-                    prepared_artifacts=prepared_artifacts,
-                    status="done" if done else "pending",
-                    error="",
-                    pipeline_version=pipeline_version,
-                )
-                if candidates:
-                    candidate_pages = [int(candidate.page) for candidate in candidates]
-                    group_window = (min(candidate_pages), max(candidate_pages))
-                else:
-                    group_window = (max(1, start_page - 2), min(total_pages, next_page + 2))
-                VisualArtifactGrouper(storage).update_groups_for_document(
-                    document.id,
-                    document.version_id,
-                    page_window=group_window,
-                )
+                    if done:
+                        break
             except Exception as exc:
                 message = f"{document.id}: {exc}"
                 logger.warning("[KnowledgeBackend] visual artifact prepare failed: %s", message)
@@ -2617,11 +2681,14 @@ def parse_knowledge_backend_enabled(raw: Any) -> bool:
 def _normalize_visual_analysis_config(raw: Mapping[str, Any]) -> Dict[str, Any]:
     config = dict(DEFAULT_VISUAL_ANALYSIS_CONFIG)
     config.update(dict(raw or {}))
-    for key in ("enabled", "auto_build_after_upload", "use_current_model", "index_low_confidence", "include_page_context", "unstructured_enabled", "high_res_retry_enabled", "tile_large_artifacts", "group_model_merge_enabled"):
+    for key in ("enabled", "auto_build_after_upload", "use_current_model", "index_low_confidence", "include_page_context", "unstructured_enabled", "high_res_retry_enabled", "tile_large_artifacts", "group_model_merge_enabled", "pymupdf_find_tables_enabled", "pymupdf_find_tables_subprocess"):
         config[key] = parse_knowledge_backend_enabled(config.get(key))
-    for key in ("max_items_per_request", "prepare_pages_per_request", "page_render_dpi", "high_res_page_render_dpi", "crop_padding_px", "max_image_long_edge", "max_image_long_edge_high_res", "tile_overlap_px", "max_image_candidates_per_page", "context_before_chars", "context_after_chars", "group_model_merge_max_pages", "group_merge_lookahead_pages"):
+    for key in ("max_items_per_request", "prepare_pages_per_request", "page_render_dpi", "high_res_page_render_dpi", "crop_padding_px", "max_image_long_edge", "max_image_long_edge_high_res", "tile_overlap_px", "max_image_candidates_per_page", "visual_prepare_sub_batch_pages", "context_before_chars", "context_after_chars", "group_model_merge_max_pages", "group_merge_lookahead_pages"):
         config[key] = int(config.get(key) or DEFAULT_VISUAL_ANALYSIS_CONFIG[key])
-    for key in ("min_confidence", "min_ocr_confidence", "min_structure_confidence", "min_semantic_confidence", "candidate_min_area_ratio", "large_artifact_area_ratio", "dense_text_retry_threshold"):
+    for key in ("pymupdf_find_tables_max_calls_per_document", "pymupdf_find_tables_max_pages_per_document"):
+        value = config.get(key)
+        config[key] = int(DEFAULT_VISUAL_ANALYSIS_CONFIG[key] if value is None or value == "" else value)
+    for key in ("min_confidence", "min_ocr_confidence", "min_structure_confidence", "min_semantic_confidence", "candidate_min_area_ratio", "large_artifact_area_ratio", "dense_text_retry_threshold", "pymupdf_find_tables_timeout_seconds"):
         config[key] = float(config.get(key) or DEFAULT_VISUAL_ANALYSIS_CONFIG[key])
     config["model"] = str(config.get("model") or "gpt-5.5")
     config["reasoning_effort"] = str(config.get("reasoning_effort") or "xhigh")
