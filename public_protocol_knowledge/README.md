@@ -48,7 +48,7 @@ workspace knowledge directory:
 For this project, protocol documents are exported under:
 
 ```text
-~/cow/knowledge/protocols/<kb_id>/
+~/cow/knowledge/documents/<kb_id>/
 ```
 
 This split keeps the parsed protocol index portable with the project while
@@ -68,6 +68,11 @@ python scripts/export_knowledge_backend_docs.py
 
 The export step is deterministic after an index exists. It reads
 `indexes/kb.sqlite` and writes Markdown pages to `~/cow/knowledge`.
+The current canonical Web document path is `knowledge/documents/<kb_id>/`.
+After pulling the repaired public protocol index on an existing machine, delete
+any legacy `~/cow/knowledge/protocols/` export after refreshing the document
+library; otherwise the Web console can still list stale Markdown even though
+knowledge retrieval is already using the updated SQLite index.
 
 If the target machine uses a different Agent workspace, configure:
 
@@ -103,7 +108,7 @@ python scripts/generate_knowledge_backend_llm_docs.py
 
 This is a one-time operation per protocol version unless the original protocol
 file changes or you want to regenerate with a different model/prompt. The
-script writes a Markdown study page to `~/cow/knowledge/protocols/<kb_id>/`,
+script writes a Markdown study page to `~/cow/knowledge/documents/<kb_id>/`,
 stores a portable copy under `public_protocol_knowledge/derived/`, indexes that derived
 copy as `doc_type=llm_study`, and writes a validation report under
 `public_protocol_knowledge/reports/`.
