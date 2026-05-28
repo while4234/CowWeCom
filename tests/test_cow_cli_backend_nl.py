@@ -213,6 +213,64 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertIsNone(plugin.execute("如何切换到 CAPI 后端？", session_id="test"))
 
+    def test_voice_mode_natural_commands_use_local_hot_switch(self):
+        plugin = _load_cow_cli_plugin()
+
+        self.assertEqual(plugin._parse_command("关闭语音模式"), ("voice", "off"))
+        self.assertEqual(plugin._parse_command("开启语音模式"), ("voice", "on"))
+        self.assertEqual(plugin._parse_command("语音模式状态"), ("voice", "status"))
+
+    def test_bill_clarification_does_not_hit_ledger_query_fast_path(self):
+        plugin = _load_cow_cli_plugin()
+
+        self.assertIsNone(plugin._parse_command("今天这个账单是中转api额度卡"))
+        self.assertIsNone(plugin._parse_command("这个账单是中转api额度卡"))
+        self.assertIsNotNone(plugin._parse_command("今天账单"))
+
+    def test_voice_mode_hot_switch_updates_runtime_and_config(self):
+        from config import conf
+
+        plugin = _load_cow_cli_plugin()
+        config_path = Path(self.tmp.name) / "config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "grok_voice_mode_enabled": True,
+                    "grok_voice_reply_enabled": True,
+                    "grok_voice_conversation_mode_enabled": True,
+                    "grok_voice_streaming_enabled": True,
+                    "grok_voice_force_voice_for_voice_input_in_conversation_mode": True,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        previous = {
+            key: conf().get(key)
+            for key in (
+                "grok_voice_mode_enabled",
+                "grok_voice_reply_enabled",
+                "grok_voice_conversation_mode_enabled",
+                "grok_voice_streaming_enabled",
+                "grok_voice_force_voice_for_voice_input_in_conversation_mode",
+            )
+        }
+        try:
+            with patch.object(plugin, "_project_config_path", return_value=str(config_path)):
+                result = plugin._cmd_voice("off", None)
+
+            self.assertIn("无需重启", result)
+            file_config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertFalse(file_config["grok_voice_mode_enabled"])
+            self.assertFalse(conf()["grok_voice_mode_enabled"])
+            self.assertFalse(conf()["grok_voice_streaming_enabled"])
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    conf().pop(key, None)
+                else:
+                    conf()[key] = value
+
     def test_execute_current_backend_quota_uses_codex_fast_path(self):
         plugin = _load_cow_cli_plugin()
 

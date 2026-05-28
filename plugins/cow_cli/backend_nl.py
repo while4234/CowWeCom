@@ -343,6 +343,10 @@ def _quota_backend_command(normalized: str, compact: str) -> Optional[str]:
         return None
 
     has_quota_request = any(marker in compact or marker in normalized for marker in _QUOTA_REQUEST_MARKERS)
+    if quota_card_requested and not (
+        capi_requested or codex_requested or monthly_requested or current_backend_requested or has_quota_request
+    ):
+        return None
     if _looks_like_quota_analysis_request(normalized, compact):
         return None
     if _looks_like_informational_request(normalized, compact) and not has_quota_request:

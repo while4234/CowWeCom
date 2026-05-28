@@ -664,13 +664,28 @@ def amount_cents_value(value: object) -> int | None:
 
 
 def payload_amount_cents(payload: dict[str, Any]) -> int | None:
+    raw_text_amount = extract_amount_cents_from_text(normalize_text(payload.get("raw_text")))
+    if _should_prefer_raw_text_amount(payload, raw_text_amount):
+        return raw_text_amount
+
     amount_cents = amount_cents_value(payload.get("amount_cents"))
     if amount_cents is not None:
         return amount_cents
     amount = amount_to_cents(payload.get("amount"))
     if amount is not None:
         return amount
-    return extract_amount_cents_from_text(normalize_text(payload.get("raw_text")))
+    return raw_text_amount
+
+
+def _should_prefer_raw_text_amount(payload: dict[str, Any], raw_text_amount: int | None) -> bool:
+    if raw_text_amount is None:
+        return False
+    if normalize_text(payload.get("source_type")).lower() != "image":
+        return False
+    answer_text = normalize_text(payload.get("answer_text"))
+    if answer_text and answer_text_has_explicit_amount(answer_text):
+        return False
+    return True
 
 
 def mask_order_no(value: object) -> str | None:

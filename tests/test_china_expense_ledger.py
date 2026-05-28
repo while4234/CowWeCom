@@ -137,6 +137,30 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
         explicit = ledger.fields_from_answer_text("金额是 100")
         self.assertEqual(explicit["amount_cents"], 10000)
 
+    def test_image_payload_prefers_exact_raw_text_amount_over_rounded_model_amount(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                result = ledger.record_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "source_type": "image",
+                        "raw_text": "卖家已发货 待确认收货 成交价 ¥99.88 约100元 订单编号 3303779739048007681",
+                        "amount_cents": 10000,
+                        "direction": "expense",
+                        "order_platform": "闲鱼",
+                        "payment_app": "支付宝",
+                        "item_name": "中转API额度卡",
+                        "category": "AI工具",
+                    },
+                )
+
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["transaction"]["amount_cents"], 9988)
+            finally:
+                conn.close()
+
     def test_record_accepts_model_normalized_occurred_at(self):
         with tempfile.TemporaryDirectory() as tmp:
             conn = self.open_temp_db(Path(tmp))
@@ -745,6 +769,40 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
                 self.assertEqual(confirmed["transaction"]["order_platform"], "闲鱼")
                 self.assertEqual(confirmed["transaction"]["category"], "AI工具")
                 self.assertEqual(confirmed["transaction"]["item_name"], "中转API的token")
+            finally:
+                conn.close()
+
+    def test_bill_confirmation_keeps_exact_raw_amount_when_model_amount_was_rounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                first = ledger.analyze_bill_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "record_id": "image-rounded",
+                        "source_type": "image",
+                        "raw_text": "闲鱼 卖家已发货 待确认收货 成交价 ¥99.88 约100元 订单编号 3303779739048007681",
+                        "amount_cents": 10000,
+                    },
+                )
+                self.assertEqual(first["status"], "needs_clarification")
+
+                answer_fields = ledger.fields_from_answer_text("这个账单是中转api额度卡")
+                self.assertNotIn("amount_cents", answer_fields)
+                confirmed = ledger.confirm_bill_context(
+                    conn,
+                    {
+                        **answer_fields,
+                        "context_id": first["context_id"],
+                    },
+                )
+
+                self.assertTrue(confirmed["ok"])
+                self.assertEqual(confirmed["status"], "confirmed")
+                self.assertEqual(confirmed["transaction"]["amount_cents"], 9988)
+                self.assertEqual(confirmed["transaction"]["category"], "AI工具")
             finally:
                 conn.close()
 

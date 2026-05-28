@@ -39,7 +39,7 @@ KNOWN_COMMANDS = {
     "help", "version", "status", "logs",
     "start", "stop", "restart",
     "skill", "context", "config",
-    "knowledge", "memory", "backend", "updates", "ledger", "tokens",
+    "knowledge", "memory", "backend", "voice", "updates", "ledger", "tokens",
     "install-browser",
 }
 
@@ -68,6 +68,7 @@ COMMAND_ACCESS = {
     "knowledge": ACCESS_PUBLIC,
     "memory": ACCESS_PUBLIC,
     "backend": ACCESS_PUBLIC,
+    "voice": ACCESS_ADMIN,
     "updates": ACCESS_ADMIN,
     "ledger": ACCESS_PUBLIC,
     "tokens": ACCESS_PUBLIC,
@@ -394,6 +395,10 @@ class CowCliPlugin(Plugin):
         if update_command is not None:
             return update_command
 
+        voice_command = self._parse_voice_mode_natural_command(content)
+        if voice_command is not None:
+            return voice_command
+
         ledger_command = self._parse_ledger_natural_command(content)
         if ledger_command is not None:
             return ledger_command
@@ -439,6 +444,28 @@ class CowCliPlugin(Plugin):
             return "updates", self._encode_project_update_args(text, "today")
         return None
 
+    def _parse_voice_mode_natural_command(self, content: str):
+        text = str(content or "").strip()
+        if not text or text.startswith("/") or text.lower().startswith("cow "):
+            return None
+        normalized = text.lower()
+        compact = re.sub(r"[\s,，。?!？！:：\"'`“”‘’()（）\[\]【】<>《》]+", "", normalized)
+        has_voice_context = any(
+            marker in compact or marker in normalized
+            for marker in ("语音模式", "语音回复", "语音对话", "grok语音", "voice mode", "voicemode", "grokvoice")
+        )
+        if not has_voice_context:
+            return None
+        off_markers = ("关闭", "关掉", "停用", "禁用", "不要", "别开", "off", "disable", "turnoff")
+        on_markers = ("开启", "打开", "启用", "恢复", "切到", "切换到", "on", "enable", "turnon")
+        if any(marker in compact or marker in normalized for marker in off_markers):
+            return "voice", "off"
+        if any(marker in compact or marker in normalized for marker in on_markers):
+            return "voice", "on"
+        if any(marker in compact or marker in normalized for marker in ("状态", "当前", "现在", "是否", "是不是", "status", "show")):
+            return "voice", "status"
+        return None
+
     def _parse_ledger_natural_command(self, content: str):
         text = str(content or "").strip()
         if not text or text.startswith("/") or text.lower().startswith("cow "):
@@ -451,10 +478,23 @@ class CowCliPlugin(Plugin):
         if not period:
             return None
         has_query_intent = any(marker in compact or marker in normalized for marker in _LEDGER_QUERY_INTENT_MARKERS)
+        if not has_query_intent and self._looks_like_bill_clarification(normalized, compact):
+            return None
         if not has_query_intent and not self._looks_like_ledger_period_summary(normalized, compact):
             return None
         mode = "query" if any(marker in compact for marker in ("明细", "记录", "列表")) else "summary"
         return "ledger", self._encode_ledger_args(period, mode)
+
+    @staticmethod
+    def _looks_like_bill_clarification(normalized: str, compact: str) -> bool:
+        subject_markers = ("这个账单", "这张账单", "这笔账单", "这个订单", "这张订单", "这笔订单", "这个消费", "这笔消费")
+        answer_markers = ("是", "买的是", "属于", "分类", "归到", "记到")
+        has_subject = any(marker in compact or marker in normalized for marker in subject_markers)
+        has_answer = any(marker in compact or marker in normalized for marker in answer_markers)
+        if has_subject and has_answer:
+            return True
+        item_markers = ("中转api", "api额度", "额度卡", "apitoken", "api token", "api key", "apikey")
+        return has_subject and any(marker in compact or marker in normalized for marker in item_markers)
 
     @staticmethod
     def _looks_like_ledger_period_summary(normalized: str, compact: str) -> bool:
@@ -762,6 +802,9 @@ class CowCliPlugin(Plugin):
             return ACCESS_PUBLIC if sub in {"", "stats", "status", "list", "tree"} else ACCESS_ADMIN
         if cmd == "backend":
             return self._backend_access_level(args)
+        if cmd == "voice":
+            sub = self._first_arg(args)
+            return ACCESS_PUBLIC if sub in {"", "status", "show"} else ACCESS_ADMIN
         return COMMAND_ACCESS.get(cmd, ACCESS_ADMIN)
 
     @staticmethod
@@ -1254,6 +1297,11 @@ class CowCliPlugin(Plugin):
                 ("backend", "capi-monthly", "/backend capi-monthly：切到 CAPI 月卡"),
                 ("backend", "auto reset", "/backend auto reset：重置后端自动切换"),
             ]),
+            ("语音", [
+                ("voice", "", "/voice：查看语音模式状态"),
+                ("voice", "on", "/voice on：热开启语音模式"),
+                ("voice", "off", "/voice off：热关闭语音模式"),
+            ]),
             ("上下文", [
                 ("context", "", "/context：查看当前对话上下文"),
                 ("context", "clear", "/context clear：清除当前对话上下文"),
@@ -1610,6 +1658,78 @@ class CowCliPlugin(Plugin):
             "  /backend quota capi-monthly",
         ])
 
+    def _cmd_voice(self, args: str, e_context, **_) -> str:
+        from config import conf
+
+        parts = args.strip().split()
+        sub = parts[0].lower() if parts else "status"
+        if sub in {"", "status", "show"}:
+            return self._voice_mode_status()
+        if sub not in {"on", "off", "enable", "disable"}:
+            return "\n".join([
+                "Usage:",
+                "  /voice",
+                "  /voice on",
+                "  /voice off",
+            ])
+
+        enabled = sub in {"on", "enable"}
+        updates = {
+            "grok_voice_mode_enabled": enabled,
+            "grok_voice_reply_enabled": enabled,
+            "grok_voice_conversation_mode_enabled": enabled,
+            "grok_voice_streaming_enabled": enabled,
+            "grok_voice_force_voice_for_voice_input_in_conversation_mode": enabled,
+        }
+        if enabled and not conf().get("grok_voice_reply_channels"):
+            updates["grok_voice_reply_channels"] = ["wechatcom_app", "wecom_bot"]
+
+        error = self._persist_runtime_config_updates(updates)
+        if error:
+            return f"语音模式内存已切换，但写入 config.json 失败: {error}"
+
+        status = "开启" if enabled else "关闭"
+        return f"语音模式已{status}，已热切换，无需重启。"
+
+    def _voice_mode_status(self) -> str:
+        from config import conf
+
+        cfg = conf()
+        enabled = bool(cfg.get("grok_voice_conversation_mode_enabled") or cfg.get("grok_voice_mode_enabled"))
+        streaming = bool(cfg.get("grok_voice_streaming_enabled", True))
+        channels = cfg.get("grok_voice_reply_channels", [])
+        if isinstance(channels, (list, tuple, set)):
+            channels_text = ", ".join(str(item) for item in channels)
+        else:
+            channels_text = str(channels or "")
+        return "\n".join([
+            f"语音模式: {'开启' if enabled else '关闭'}",
+            f"流式语音: {'开启' if streaming else '关闭'}",
+            f"允许通道: {channels_text or '未配置'}",
+        ])
+
+    def _persist_runtime_config_updates(self, updates: dict) -> str:
+        from config import conf
+
+        config_path = self._project_config_path()
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                file_config = json.load(f)
+            file_config.update(updates)
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(file_config, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            conf().update(updates)
+            return str(e)
+        conf().update(updates)
+        logger.info(f"[CowCli] runtime config hot update: {updates}")
+        return ""
+
+    @staticmethod
+    def _project_config_path() -> str:
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        return os.path.join(project_root, "config.json")
+
     def _backend_quota(self) -> str:
         from common.codex_quota_query import format_codex_quota_snapshot_text, query_codex_quota_json
         from common.llm_backend_router import record_codex_quota_check
@@ -1795,6 +1915,11 @@ class CowCliPlugin(Plugin):
         "agent_max_steps",
         "knowledge",
         "enable_thinking",
+        "grok_voice_mode_enabled",
+        "grok_voice_reply_enabled",
+        "grok_voice_conversation_mode_enabled",
+        "grok_voice_streaming_enabled",
+        "grok_voice_force_voice_for_voice_input_in_conversation_mode",
     }
 
     _CONFIG_READABLE = _CONFIG_WRITABLE | {"channel_type"}

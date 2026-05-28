@@ -150,6 +150,40 @@ def test_streamer_speaks_segments_before_final_text(monkeypatch, tmp_path):
     assert [item[0] for item in channel.sent] == [ReplyType.VOICE, ReplyType.VOICE]
 
 
+def test_streamer_skips_segment_when_runtime_voice_is_disabled(monkeypatch, tmp_path):
+    settings = {
+        "grok_voice_streaming_enabled": True,
+        "grok_voice_mode_enabled": True,
+        "grok_voice_reply_channels": ["wechatcom_app"],
+        "grok_voice_max_segment_chars": 20,
+        "grok_voice_min_segment_chars": 2,
+    }
+    monkeypatch.setattr(voice_streamer, "conf", lambda: settings)
+
+    generated = []
+
+    def fake_tts(text):
+        path = tmp_path / "voice.mp3"
+        path.write_bytes(b"audio")
+        generated.append(text)
+        settings["grok_voice_streaming_enabled"] = False
+        return str(path)
+
+    monkeypatch.setattr(voice_streamer, "generate_xai_tts", fake_tts)
+    context = _context()
+    channel = FakeChannel()
+    streamer = VoiceReplyStreamer.try_create(context, channel, _decision())
+    try:
+        streamer._speak_segment("你好")
+
+        assert generated == ["你好"]
+        assert channel.sent == []
+        assert context["suppress_final_text_when_voice_stream"] is False
+        assert "voice_stream_sent" not in context
+    finally:
+        streamer.finish(timeout=0.2)
+
+
 def test_streamer_all_voice_failures_leave_final_text_fallback(monkeypatch, tmp_path):
     settings = {
         "grok_voice_streaming_enabled": True,

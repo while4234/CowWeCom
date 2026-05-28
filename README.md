@@ -499,7 +499,7 @@ CowWeCom/
 - Grok/xAI 图片/视频生成加固：xAI 返回 URL 只允许公开 HTTPS 下载，逐跳校验 redirect、DNS、Content-Type 和大小上限，生成文件统一落到 `tmp/grok_media/`，发送成功、失败或 fallback 后清理本次生成文件。
 - Grok/xAI 视频生成接入 PR 4：新增文生视频、单图生视频、多图参考视频、`VIDEO_CREATE` 前缀和 `grok-video-generation` 后台 Skill；WeCom Bot 现在优先识别 `video_create_prefix`，不再被图片前缀吞掉。
 - Grok/xAI 企业微信语音回复改为“双模式”规则：低延迟 low 模式与语音会话模式分开说明；语音会话模式允许企业微信应用/WeCom Bot 中语音输入优先语音回复，文字输入和个人微信仍不新增语音发送。
-- Agent 和本地工具体验继续收口：同轮重复工具调用结果改成短引用，本机 token 用量查询支持用户别名合并，账单截图识别优先保留截图中的精确金额。
+- Agent 和本地工具体验继续收口：同轮重复工具调用结果改成短引用，本机 token 用量查询支持用户别名合并，语音模式支持 `/voice on|off` 热切换，账单截图识别优先保留截图中的精确金额，账单补充说明不再误走本地查询/额度查询快路径。
 - 本地文档与公共协议知识库继续加固：视觉 chunk/source span、PDF caption、公式/大表候选、prepare checkpoint 和旧 ordinary chunk 去污染闭环收紧；UCIe、AMBA AXI、AXI4-Stream 公共知识库 SQLite 已刷新，Web Markdown 库拉取后需重新导出。
 
 ### 2026-05-27

@@ -62,6 +62,9 @@ class VoiceReplyStreamer:
         if event_type == "turn_start":
             self._reset_buffer()
             return
+        if event_type in {"message_update", "message_end"} and not voice_stream_runtime_enabled():
+            self._disable_stream("runtime_config_disabled")
+            return
         if event_type == "message_update":
             delta = str(data.get("delta") or "")
             if delta:
@@ -189,8 +192,14 @@ class VoiceReplyStreamer:
 
     def _speak_segment(self, text: str) -> None:
         audio_path = ""
+        if not voice_stream_runtime_enabled():
+            self._disable_stream("runtime_config_disabled_before_tts")
+            return
         try:
             audio_path = generate_xai_tts(text)
+            if not voice_stream_runtime_enabled():
+                self._disable_stream("runtime_config_disabled_after_tts")
+                return
             sent = self._send_voice_segment(audio_path)
             if sent is not False:
                 self._voice_segments_sent += 1
@@ -204,7 +213,26 @@ class VoiceReplyStreamer:
             logger.warning("[VoiceStreamer] voice segment failed, falling back to text: %s", exc)
         self._fallback_segment(text)
 
+    def _disable_stream(self, reason: str) -> None:
+        with self._lock:
+            self._cancel_idle_timer_locked()
+            self._buffer = ""
+        self.context["suppress_final_text_when_voice_stream"] = False
+        self._stop.set()
+        try:
+            while True:
+                self._queue.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            pass
+        logger.info("[VoiceStreamer] stopped by runtime config: %s", reason)
+
     def _fallback_segment(self, text: str) -> None:
+        if not voice_stream_runtime_enabled():
+            return
         if self._voice_segments_sent <= 0:
             self._pending_text_fallbacks.append(text)
             return
@@ -253,7 +281,7 @@ class VoiceReplyStreamer:
 def voice_stream_enabled(context: Context, channel, decision: Dict[str, Any]) -> bool:
     if not context or not channel or not isinstance(decision, dict):
         return False
-    if not bool(conf().get("grok_voice_streaming_enabled", True)):
+    if not voice_stream_runtime_enabled():
         return False
     if not bool(decision.get("enabled", False)):
         return False
@@ -275,6 +303,37 @@ def voice_stream_enabled(context: Context, channel, decision: Dict[str, Any]) ->
     channel_type = str(context.get("channel_type") or getattr(channel, "channel_type", "") or "").strip()
     allowed_channels = _configured_channels(conf().get("grok_voice_reply_channels", ["wechatcom_app", "wecom_bot"]))
     return channel_type in allowed_channels
+
+
+def voice_stream_runtime_enabled() -> bool:
+    cfg = conf()
+    if not _config_bool(cfg.get("grok_voice_streaming_enabled"), True):
+        return False
+    mode_values = [
+        cfg.get(key)
+        for key in (
+            "grok_voice_conversation_mode_enabled",
+            "grok_voice_mode_enabled",
+            "grok_voice_reply_enabled",
+        )
+        if key in cfg
+    ]
+    if not mode_values:
+        return True
+    return any(_config_bool(value, False) for value in mode_values)
+
+
+def _config_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _configured_channels(value) -> set:
