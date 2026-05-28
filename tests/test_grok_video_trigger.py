@@ -7,7 +7,16 @@ from bridge.context import Context, ContextType
 from bridge.reply import ReplyType
 from channel.channel import Channel
 from channel.chat_channel import ChatChannel
+from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
 from models.grok.grok_bot import GrokBot
+
+
+def _singleton_class(factory):
+    for cell in factory.__closure__ or []:
+        value = cell.cell_contents
+        if isinstance(value, type):
+            return value
+    raise AssertionError("singleton class not found")
 
 
 def test_grok_bot_video_create_returns_local_video_reply(monkeypatch, tmp_path):
@@ -27,6 +36,7 @@ def test_grok_bot_video_create_returns_local_video_reply(monkeypatch, tmp_path):
 
     assert reply.type == ReplyType.VIDEO
     assert reply.content == str(video_path)
+    assert reply.cleanup_after_send is True
     assert calls[0][0] == "make a red kite video"
 
 
@@ -116,6 +126,81 @@ def test_video_prefix_is_checked_before_image_prefix(monkeypatch):
 
     assert context.type == ContextType.VIDEO_CREATE
     assert context.content == "让城市动起来"
+
+
+def _wecom_msg():
+    return SimpleNamespace(
+        input_is_voice=False,
+        source_msgtype="text",
+        is_group=False,
+        from_user_id="u1",
+        from_user_nickname="User",
+        other_user_id="u1",
+        other_user_nickname="User",
+        to_user_id="bot",
+        actual_user_id="u1",
+        actual_user_nickname="User",
+    )
+
+
+def test_wecom_bot_video_prefix_creates_video_context(monkeypatch):
+    fake_conf = MagicMock()
+    fake_conf.get.side_effect = lambda key, default=None: {
+        "video_create_prefix": ["生成视频"],
+        "image_create_prefix": ["画图"],
+    }.get(key, default)
+    monkeypatch.setattr("channel.wecom_bot.wecom_bot_channel.conf", lambda: fake_conf)
+
+    channel_cls = _singleton_class(WecomBotChannel)
+    channel = object.__new__(channel_cls)
+    channel.channel_type = "wecom_bot"
+
+    context = channel._compose_context(
+        ContextType.TEXT,
+        "生成视频：一只猫跑步",
+        msg=_wecom_msg(),
+        isgroup=False,
+        no_need_at=True,
+    )
+
+    assert context.type == ContextType.VIDEO_CREATE
+    assert context.content == "一只猫跑步"
+    assert context["receiver"] == "u1"
+    assert context["session_id"] == "u1"
+    assert context["_visible_task_summary"] == "一只猫跑步"
+
+
+def test_wecom_bot_image_prefix_and_plain_text_still_work(monkeypatch):
+    fake_conf = MagicMock()
+    fake_conf.get.side_effect = lambda key, default=None: {
+        "video_create_prefix": ["生成视频"],
+        "image_create_prefix": ["画图"],
+    }.get(key, default)
+    monkeypatch.setattr("channel.wecom_bot.wecom_bot_channel.conf", lambda: fake_conf)
+
+    channel_cls = _singleton_class(WecomBotChannel)
+    channel = object.__new__(channel_cls)
+    channel.channel_type = "wecom_bot"
+
+    image_context = channel._compose_context(
+        ContextType.TEXT,
+        "画图：一只猫",
+        msg=_wecom_msg(),
+        isgroup=False,
+        no_need_at=True,
+    )
+    text_context = channel._compose_context(
+        ContextType.TEXT,
+        "普通文本",
+        msg=_wecom_msg(),
+        isgroup=False,
+        no_need_at=True,
+    )
+
+    assert image_context.type == ContextType.IMAGE_CREATE
+    assert image_context.content == "一只猫"
+    assert text_context.type == ContextType.TEXT
+    assert text_context.content == "普通文本"
 
 
 def test_grok_video_uses_recent_image_count(monkeypatch, tmp_path):

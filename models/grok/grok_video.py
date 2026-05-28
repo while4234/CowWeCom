@@ -67,7 +67,13 @@ def generate_reply(prompt: str, context=None, provider: Optional[XAIVideoGenProv
         )
     except XaiVideoGenError as exc:
         return Reply(ReplyType.ERROR, str(exc))
-    return Reply(ReplyType.VIDEO, video_path)
+    reply = Reply(ReplyType.VIDEO, video_path)
+    reply.cleanup_after_send = True
+    reply.generated_media_path = video_path
+    if context is not None:
+        context["cleanup_after_send"] = True
+        context["generated_media_paths"] = [video_path]
+    return reply
 
 
 def _extract_prompt_and_image_refs(prompt: str, context=None) -> tuple[str, list[str], int, Optional[int]]:

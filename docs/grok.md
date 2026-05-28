@@ -81,16 +81,29 @@ PR5 支持只读导入 Hermes 的 xAI OAuth 登录态：
 | `grok_tts_sample_rate` | `24000` | TTS 输出采样率。 |
 | `grok_tts_bit_rate` | `128000` | TTS 输出码率。 |
 | `grok_tts_auto_speech_tags` | `false` | 是否自动补充 speech tags。 |
-| `grok_voice_mode_enabled` | `true` | Grok 语音模式总开关。 |
-| `grok_voice_reply_channels` | `["wechatcom_app", "wecom_bot"]` | 允许语音回复的渠道。 |
+| `grok_voice_reply_enabled` | `true` | 低延迟 low 语音回复开关；不影响语音会话模式单独开启。 |
+| `grok_voice_mode_enabled` | `true` | 低延迟 low 语音模式兼容开关。 |
+| `grok_voice_conversation_mode_enabled` | `true` | 语音会话模式：企业微信应用 / WeCom Bot 中“语音输入 -> 语音回复”。 |
+| `grok_voice_reply_channels` | `["wechatcom_app", "wecom_bot"]` | 允许 Grok 语音回复的渠道；不要加入个人微信。 |
 | `grok_voice_streaming_enabled` | `true` | 是否按模型增量流式切段 TTS。 |
 | `grok_voice_require_low_reasoning` | `true` | 非会话模式下要求 low reasoning 才语音回复。 |
+| `grok_voice_require_low_reasoning_when_not_conversation_mode` | `true` | 低延迟模式保持 low reasoning 门槛；语音会话模式不使用该门槛。 |
+| `grok_voice_force_voice_for_voice_input_in_conversation_mode` | `true` | 语音会话模式中，允许语音输入优先语音回复。 |
+| `grok_voice_force_reasoning_effort` | `low` | 语音会话模式强制低延迟 effort。 |
+| `grok_voice_low_latency_backend` | `""` | 可选低延迟后端覆盖；空值沿用当前后端。 |
+| `grok_voice_low_latency_model` | `""` | 可选低延迟模型覆盖；空值沿用当前模型。 |
+| `grok_voice_max_output_tokens` | `220` | 语音模式短回复 token 上限。 |
+| `grok_voice_short_answer_prompt_enabled` | `true` | 语音会话模式是否追加短回复提示。 |
 | `grok_voice_max_segment_chars` | `180` | 单段 TTS 最大字符数。 |
 | `grok_voice_min_segment_chars` | `18` | 单段 TTS 最小字符数。 |
 | `grok_voice_flush_idle_ms` | `1500` | 增量空闲多久后 flush 一段。 |
 | `grok_voice_tts_queue_size` | `4` | 单会话 TTS 队列大小。 |
 | `wecom_voice_max_seconds` | `55` | 企业微信单条语音最大秒数。 |
 | `wecom_voice_max_bytes` | `1900000` | 企业微信单条语音最大字节数。 |
+| `wecom_voice_normalize_enabled` | `true` | 转 AMR 前启用响度归一化。 |
+| `wecom_voice_normalize_target_dbfs` | `-18.0` | 响度归一化目标。 |
+| `wecom_voice_normalize_headroom_db` | `1.0` | 归一化预留余量。 |
+| `wecom_voice_amr_bitrate` | `12.2k` | 企业微信 AMR-NB 码率。 |
 | `reasoning_effort_policy_low_effort` | `low` | 本地低推理策略命中时使用的 effort。 |
 | `text_to_image` | `dall-e-2` | 设为 `grok` 或 `xai` 时使用 Grok 图片生成。 |
 | `grok_image_model` | `grok-imagine-image` | Grok 图片生成模型。 |
@@ -120,17 +133,21 @@ PR5 支持只读导入 Hermes 的 xAI OAuth 登录态：
 
 ## 语音模式规则
 
-Grok 语音回复必须遵守以下规则：
+Grok 语音回复分为两种模式：
 
-- 只有用户原始输入是语音，并且本地思考深度策略直接命中 low，才会语音回复。
-- 文字输入不会语音回复。
-- 语音输入但复杂任务不会语音回复，会走文本回复。
-- 语音失败会回退文本。
-- 语音会话模式开启时，允许“发送语音均回复语音”，同时强制低延迟、短回复和 low reasoning。
-- 语音模式下发送语音均回复语音。
-- 个人微信不支持新增语音发送。
+- 低延迟 low 语音模式：用户原始输入是语音，且本地思考深度策略直接命中 low 时，才优先语音回复；语音输入但复杂任务默认走文本回复。
+- 语音会话模式：开启 `grok_voice_conversation_mode_enabled` 后，在 `wechatcom_app` 和 `wecom_bot` 中允许“用户发语音 -> 机器人语音回复”。语音模式下发送语音均回复语音，同时强制低延迟、短回复和 low reasoning。
 
-企业微信语音回复只在 `wechatcom_app` 和 `wecom_bot` 中启用。旧配置 `voice_reply_voice` 默认保持关闭，避免文字输入被意外转成语音。
+两种模式都必须遵守以下边界：
+
+- 只对 `input_is_voice=True` 生效，文字输入不会语音回复。
+- 企业微信语音回复只在 `wechatcom_app` 和 `wecom_bot` 中启用，个人微信不支持新增语音发送。
+- 个人微信当前不新增语音发送能力；即使收到个人微信语音，也不会因为 Grok 配置新增发语音。
+- TTS、AMR 转码、上传或发送失败时必须回退文本。
+- 已成功发送至少一段语音流后，才会抑制最终完整文本；没有语音段成功时最终文本必须发送。
+- 临时 TTS / AMR 文件会在发送流程结束后清理。
+
+旧配置 `voice_reply_voice` 默认保持关闭，避免文字输入被意外转成语音。
 
 ## 企业微信语音限制
 
@@ -152,6 +169,8 @@ Grok 语音回复必须遵守以下规则：
 - 使用同一套 Grok OAuth / API key 凭据。
 - xAI 返回 b64 或 URL 后，CowWeCom 先保存成本地文件，再发送本地图片。
 - 不直接向用户发送远端 URL。
+- URL 下载只允许公开 HTTPS 地址，并会逐跳校验 redirect、DNS 解析结果和 Content-Type，拒绝 localhost、内网、link-local 与云 metadata 地址。
+- 生成图片保存在 `tmp/grok_media/`，发送成功或失败后都会按 cleanup 标记清理。
 
 视频生成：
 
@@ -163,6 +182,8 @@ Grok 语音回复必须遵守以下规则：
 - 生成可能耗时，任务有 timeout，不会无限轮询。
 - 成功后下载成本地 MP4，再发送 `ReplyType.VIDEO`。
 - 渠道不支持视频时会 fallback 为文件或明确文本提示，不会静默失败。
+- 视频下载同样只允许公开 HTTPS 地址；`application/octet-stream` 只有通过 MP4 magic bytes 校验时才会接受。
+- 生成视频保存在 `tmp/grok_media/`，WeCom Bot / 企业微信应用发送成功、上传失败或 fallback 为文件后都会清理本次生成的 MP4。
 
 引用图片但上下文无图时，系统会提示先发送或引用图片。
 
@@ -204,7 +225,8 @@ PR5 覆盖并建议人工确认：
 | 普通文本输入 | 文本回复正常。 |
 | 文字“你好” | 不语音回复。 |
 | WeCom Bot 语音简单问题 | low，语音分段回复。 |
-| WeCom Bot 语音复杂问题 | 文本回复。 |
+| WeCom Bot 语音复杂问题，未开语音会话模式 | 文本回复。 |
+| WeCom Bot / 企业微信应用语音复杂问题，已开语音会话模式 | 语音分段回复，失败时回退文本。 |
 | 企业微信应用语音简单问题 | low，语音分段回复。 |
 | 个人微信文字 | 原行为不变。 |
 | 个人微信语音 | 不新增发语音。 |

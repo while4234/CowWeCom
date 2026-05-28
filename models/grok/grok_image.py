@@ -24,4 +24,10 @@ def generate_reply(prompt: str, context=None, provider: Optional[XAIImageGenProv
         image_path = (provider or XAIImageGenProvider()).generate(prompt)
     except XaiImageGenError as exc:
         return Reply(ReplyType.ERROR, str(exc))
-    return Reply(ReplyType.IMAGE, image_path)
+    reply = Reply(ReplyType.IMAGE, image_path)
+    reply.cleanup_after_send = True
+    reply.generated_media_path = image_path
+    if context is not None:
+        context["cleanup_after_send"] = True
+        context["generated_media_paths"] = [image_path]
+    return reply

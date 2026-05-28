@@ -1,5 +1,7 @@
 tiktoken>=0.3.2 # openai calculate token
 pytest>=8.0 # local validation and regression tests
+web.py # Grok/Web channel regression tests
+pycryptodome # WeCom/WechatCom crypto imports in channel tests
 
 #voice
 pydub>=0.25.1 # need ffmpeg
@@ -11,8 +13,8 @@ elevenlabs==1.0.3 # elevenlabs TTS
 #install plugin
 dulwich
 
-# xunfei spark
-websocket-client==1.2.0
+# xunfei spark / wecom bot websocket mode
+websocket-client>=1.4.0
 
 # google
 google-generativeai

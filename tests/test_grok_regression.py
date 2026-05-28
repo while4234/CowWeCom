@@ -33,6 +33,7 @@ def test_grok_media_and_voice_defaults_are_offline_safe():
     assert template["grok_video_model"] == "grok-imagine-video"
     assert template["text_to_voice"] == "openai"
     assert template["voice_reply_voice"] is False
+    assert template["grok_voice_conversation_mode_enabled"] is True
     assert template["grok_voice_reply_channels"] == ["wechatcom_app", "wecom_bot"]
     assert template["wecom_voice_max_seconds"] == 55
     assert template["wecom_voice_max_bytes"] == 1900000
@@ -45,6 +46,10 @@ def test_docs_grok_covers_required_pr5_user_guidance():
         "http://127.0.0.1:56121/callback",
         "个人微信当前不新增语音发送能力",
         "语音模式下发送语音均回复语音",
+        "只对 `input_is_voice=True` 生效",
+        "已成功发送至少一段语音流后，才会抑制最终完整文本",
+        "URL 下载只允许公开 HTTPS 地址",
+        "tmp/grok_media/",
         "不写回 Hermes auth store",
         "manual paste",
         "AMR",
@@ -69,15 +74,28 @@ def test_docs_grok_covers_required_pr5_user_guidance():
         "grok_tts_bit_rate",
         "grok_tts_auto_speech_tags",
         "grok_voice_mode_enabled",
+        "grok_voice_reply_enabled",
+        "grok_voice_conversation_mode_enabled",
         "grok_voice_reply_channels",
         "grok_voice_streaming_enabled",
         "grok_voice_require_low_reasoning",
+        "grok_voice_require_low_reasoning_when_not_conversation_mode",
+        "grok_voice_force_voice_for_voice_input_in_conversation_mode",
+        "grok_voice_force_reasoning_effort",
+        "grok_voice_low_latency_backend",
+        "grok_voice_low_latency_model",
+        "grok_voice_max_output_tokens",
+        "grok_voice_short_answer_prompt_enabled",
         "grok_voice_max_segment_chars",
         "grok_voice_min_segment_chars",
         "grok_voice_flush_idle_ms",
         "grok_voice_tts_queue_size",
         "wecom_voice_max_seconds",
         "wecom_voice_max_bytes",
+        "wecom_voice_normalize_enabled",
+        "wecom_voice_normalize_target_dbfs",
+        "wecom_voice_normalize_headroom_db",
+        "wecom_voice_amr_bitrate",
         "reasoning_effort_policy_low_effort",
         "text_to_image",
         "grok_image_model",

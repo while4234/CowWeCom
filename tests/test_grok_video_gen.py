@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from integrations.hermes_xai import video_gen
+from integrations.hermes_xai import media_download, video_gen
 from integrations.hermes_xai.auth import AuthError
 
 
@@ -41,10 +41,33 @@ def _oauth_creds(token="token"):
     }
 
 
+def _patch_public_dns(monkeypatch):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        address = str(host)
+        if address.replace(".", "").isdigit() or ":" in address:
+            return [(None, None, None, "", (address, port))]
+        return [(None, None, None, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr(media_download.socket, "getaddrinfo", fake_getaddrinfo)
+
+
+def _patch_video_download(monkeypatch, body=MP4_BYTES, content_type="video/mp4", calls=None):
+    def fake_safe_download(url, *, prefix, suffix, allowed_content_types, max_bytes, timeout):
+        if calls is not None:
+            calls.append((url, (timeout, timeout), True, False))
+        assert content_type in allowed_content_types
+        path = media_download.new_generated_media_path(prefix, suffix or ".mp4")
+        Path(path).write_bytes(body)
+        return path
+
+    monkeypatch.setattr(video_gen, "safe_download_to_file", fake_safe_download)
+
+
 def test_provider_submits_polls_and_downloads_local_mp4(monkeypatch, tmp_path):
     resolver_calls = []
     post_calls = []
     get_calls = []
+    download_calls = []
 
     def fake_resolver(force_refresh=False):
         resolver_calls.append(force_refresh)
@@ -66,6 +89,7 @@ def test_provider_submits_polls_and_downloads_local_mp4(monkeypatch, tmp_path):
     monkeypatch.setattr(video_gen, "resolve_xai_http_credentials", fake_resolver)
     monkeypatch.setattr(video_gen.requests, "post", fake_post)
     monkeypatch.setattr(video_gen.requests, "get", fake_get)
+    _patch_video_download(monkeypatch, calls=download_calls)
     monkeypatch.setattr(video_gen.time, "sleep", lambda seconds: None)
 
     path = video_gen.XAIVideoGenProvider().generate("make a calm ocean video", poll_interval_seconds=0.01)
@@ -85,6 +109,7 @@ def test_provider_submits_polls_and_downloads_local_mp4(monkeypatch, tmp_path):
     assert Path(path).read_bytes() == MP4_BYTES
     assert path.endswith(".mp4")
     assert not path.startswith(("http://", "https://"))
+    assert download_calls == [("https://cdn.x.ai/out.mp4", (120.0, 120.0), True, False)]
 
 
 def test_provider_sends_single_and_multi_image_payloads_as_data_uri(monkeypatch, tmp_path):
@@ -104,12 +129,9 @@ def test_provider_sends_single_and_multi_image_payloads_as_data_uri(monkeypatch,
     monkeypatch.setattr(
         video_gen.requests,
         "get",
-        lambda url, **kwargs: (
-            FakeResponse(payload={"status": "done", "video": {"url": "https://cdn.x.ai/out.mp4"}})
-            if "/videos/req" in url
-            else FakeResponse(body=MP4_BYTES, headers={"Content-Type": "video/mp4"})
-        ),
+        lambda url, **kwargs: FakeResponse(payload={"status": "done", "video": {"url": "https://cdn.x.ai/out.mp4"}}),
     )
+    _patch_video_download(monkeypatch)
 
     provider = video_gen.XAIVideoGenProvider()
     provider.generate("animate one", image_url=str(image_a))
@@ -154,6 +176,7 @@ def test_provider_retries_submit_and_poll_once_after_401(monkeypatch, tmp_path):
     monkeypatch.setattr(video_gen, "resolve_xai_http_credentials", fake_resolver)
     monkeypatch.setattr(video_gen.requests, "post", fake_post)
     monkeypatch.setattr(video_gen.requests, "get", fake_get)
+    _patch_video_download(monkeypatch)
 
     path = video_gen.XAIVideoGenProvider().generate("retry video")
 
@@ -161,6 +184,28 @@ def test_provider_retries_submit_and_poll_once_after_401(monkeypatch, tmp_path):
     assert resolver_force_flags == [False, True, False, True]
     assert post_tokens == ["Bearer old", "Bearer fresh"]
     assert poll_tokens == ["Bearer old", "Bearer fresh"]
+
+
+def test_safe_download_accepts_octet_stream_only_when_mp4_magic_matches(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _patch_public_dns(monkeypatch)
+    monkeypatch.setattr(
+        media_download.requests,
+        "get",
+        lambda *args, **kwargs: FakeResponse(body=MP4_BYTES, headers={"Content-Type": "application/octet-stream"}),
+    )
+
+    path = media_download.safe_download_to_file(
+        "https://cdn.x.ai/out.bin",
+        prefix="octet_test",
+        suffix=".mp4",
+        allowed_content_types={"video/mp4", "application/octet-stream"},
+        max_bytes=1024,
+        timeout=5,
+    )
+
+    assert Path(path).read_bytes() == MP4_BYTES
+    assert path.endswith(".mp4")
 
 
 @pytest.mark.parametrize("status", ["failed", "error", "expired", "cancelled"])

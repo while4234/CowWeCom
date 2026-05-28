@@ -7,7 +7,11 @@ import pytest
 from agent.protocol.agent_stream import AgentStreamExecutor
 from agent.protocol.models import LLMModel
 from bridge.context import Context, ContextType
+from bridge.reply import Reply, ReplyType
+from channel import chat_channel as chat_channel_module
+from channel import voice_streamer
 from channel.chat_channel import ChatChannel
+from channel.voice_streamer import VoiceReplyStreamer
 from common import grok_voice_mode
 from common.grok_voice_mode import append_voice_short_answer_prompt, resolve_grok_voice_mode_decision
 
@@ -68,6 +72,28 @@ class _CaptureStreamModel(LLMModel):
         yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
 
 
+class _NoopPluginManager:
+    def emit_event(self, event):
+        return event
+
+
+class _VoiceStreamChannel:
+    channel_type = "wechatcom_app"
+
+    def __init__(self, voice_success=True):
+        self.voice_success = voice_success
+        self.sent = []
+
+    def _send(self, reply, context):
+        self.sent.append((reply.type, reply.content))
+        if reply.type == ReplyType.VOICE:
+            return self.voice_success
+        return True
+
+    def _decorate_reply(self, context, reply):
+        return reply
+
+
 def _run_capture_request(model, monkeypatch):
     monkeypatch.setattr(
         "agent.protocol.agent_stream.resolve_reasoning_effort_for_task",
@@ -87,6 +113,34 @@ def _run_capture_request(model, monkeypatch):
     assert executor.run_stream("hello") == "ok"
     assert len(model.requests) == 1
     return model.requests[0]
+
+
+def _stream_context(channel_type="wechatcom_app"):
+    context = Context(ContextType.TEXT, "hello")
+    context["input_is_voice"] = True
+    context["channel_type"] = channel_type
+    context["session_id"] = "s1"
+    context["receiver"] = "u1"
+    return context
+
+
+def _conversation_decision(channel_type="wechatcom_app"):
+    return {
+        "enabled": True,
+        "mode": "conversation",
+        "source": "conversation_mode",
+        "local_rule": "coding",
+        "input_is_voice": True,
+        "channel": channel_type,
+    }
+
+
+def _send_reply_channel(monkeypatch):
+    channel = object.__new__(ChatChannel)
+    sent = []
+    channel._send = lambda reply, context: sent.append((reply.type, reply.content)) or True
+    monkeypatch.setattr(chat_channel_module, "PluginManager", lambda: _NoopPluginManager())
+    return channel, sent
 
 
 def test_text_input_conversation_mode_stays_text(voice_settings):
@@ -239,6 +293,59 @@ def test_disallowed_channel_stays_text(voice_settings):
 
     assert decision.enabled is False
     assert decision.reason == "channel_not_allowed"
+
+
+def test_personal_wechat_voice_input_conversation_mode_stays_text(voice_settings):
+    voice_settings["grok_voice_conversation_mode_enabled"] = True
+
+    decision = resolve_grok_voice_mode_decision(_model(input_is_voice=True, channel_type="weixin"), _reasoning("low"))
+
+    assert decision.enabled is False
+    assert decision.reason == "channel_not_allowed"
+
+
+def test_wecom_bot_voice_input_conversation_mode_is_allowed(voice_settings):
+    voice_settings["grok_voice_conversation_mode_enabled"] = True
+
+    decision = resolve_grok_voice_mode_decision(_model(input_is_voice=True, channel_type="wecom_bot"), _reasoning("xhigh", rule="coding"))
+
+    assert decision.enabled is True
+    assert decision.mode == "conversation"
+
+
+def test_tts_failure_falls_back_to_final_text(voice_settings, monkeypatch):
+    voice_settings["grok_voice_conversation_mode_enabled"] = True
+    voice_settings["grok_voice_streaming_enabled"] = True
+    monkeypatch.setattr(voice_streamer, "conf", lambda: voice_settings)
+    monkeypatch.setattr(
+        voice_streamer,
+        "generate_xai_tts",
+        lambda text: (_ for _ in ()).throw(RuntimeError("tts down")),
+    )
+    context = _stream_context()
+    streamer = VoiceReplyStreamer.try_create(context, _VoiceStreamChannel(), _conversation_decision())
+
+    streamer.handle_event({"type": "message_update", "data": {"delta": "你好。"}})
+    streamer.handle_event({"type": "message_end", "data": {"tool_calls": []}})
+
+    assert "voice_stream_sent" not in context
+    context["channel_type"] = "web"
+    channel, sent = _send_reply_channel(monkeypatch)
+    assert channel._send_reply(context, Reply(ReplyType.TEXT, "你好。")) is True
+    assert sent == [(ReplyType.TEXT, "你好。")]
+
+
+def test_successful_voice_stream_suppresses_final_text_only_after_segment_sent(monkeypatch):
+    context = _stream_context(channel_type="web")
+    channel, sent = _send_reply_channel(monkeypatch)
+
+    assert channel._send_reply(context, Reply(ReplyType.TEXT, "fallback")) is True
+    assert sent == [(ReplyType.TEXT, "fallback")]
+
+    sent.clear()
+    context["voice_stream_sent"] = True
+    assert channel._send_reply(context, Reply(ReplyType.TEXT, "final")) is True
+    assert sent == []
 
 
 def test_legacy_always_reply_voice_is_isolated_from_grok_tts(voice_settings):

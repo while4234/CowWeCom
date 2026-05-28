@@ -4,9 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from bridge.context import Context, ContextType
-from bridge.reply import ReplyType
+from bridge.reply import Reply, ReplyType
 from channel.channel import Channel
 from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
+from integrations.hermes_xai.media_download import new_generated_media_path
 from models.grok.grok_bot import GrokBot
 
 
@@ -35,6 +36,7 @@ def test_grok_bot_image_create_returns_local_image_reply(monkeypatch, tmp_path):
     assert reply.type == ReplyType.IMAGE
     assert reply.content == str(image_path)
     assert not reply.content.startswith(("http://", "https://"))
+    assert reply.cleanup_after_send is True
 
 
 def test_default_agent_mode_image_create_shortcuts_to_grok_image(monkeypatch):
@@ -106,3 +108,49 @@ def test_wecom_bot_sends_local_image_reply(monkeypatch, tmp_path):
     assert upload_calls == [(str(source), "image")]
     assert sent_payloads[0]["body"]["msgtype"] == "image"
     assert sent_payloads[0]["body"]["image"]["media_id"] == "mid"
+
+
+def _wecom_context():
+    context = Context(ContextType.TEXT, "")
+    context["receiver"] = "chat"
+    context["isgroup"] = False
+    return context
+
+
+def test_wecom_bot_generated_image_is_deleted_after_success(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    source = new_generated_media_path("xai_test", ".png")
+    tmp_path.__class__(source).write_bytes(b"\x89PNG\r\n\x1a\nimage")
+
+    channel_cls = _singleton_class(WecomBotChannel)
+    channel = object.__new__(channel_cls)
+    reply = Reply(ReplyType.IMAGE, source)
+    reply.cleanup_after_send = True
+
+    monkeypatch.setattr(channel, "_reply_mention_target", lambda context: ([], []))
+    monkeypatch.setattr(channel, "_ensure_image_format", lambda path: path)
+    monkeypatch.setattr(channel, "_upload_media", lambda path, media_type: "mid")
+    monkeypatch.setattr(channel, "_ws_send", lambda payload: True)
+    monkeypatch.setattr(channel, "_gen_req_id", lambda: "rid")
+
+    assert channel.send(reply, _wecom_context()) is True
+    assert not tmp_path.__class__(source).exists()
+
+
+def test_wecom_bot_generated_image_is_deleted_after_upload_failure(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    source = new_generated_media_path("xai_test", ".png")
+    tmp_path.__class__(source).write_bytes(b"\x89PNG\r\n\x1a\nimage")
+
+    channel_cls = _singleton_class(WecomBotChannel)
+    channel = object.__new__(channel_cls)
+    reply = Reply(ReplyType.IMAGE, source)
+    reply.cleanup_after_send = True
+
+    monkeypatch.setattr(channel, "_reply_mention_target", lambda context: ([], []))
+    monkeypatch.setattr(channel, "_ensure_image_format", lambda path: path)
+    monkeypatch.setattr(channel, "_upload_media", lambda path, media_type: "")
+    monkeypatch.setattr(channel, "_send_text", lambda *args, **kwargs: True)
+
+    assert channel.send(reply, _wecom_context()) is False
+    assert not tmp_path.__class__(source).exists()

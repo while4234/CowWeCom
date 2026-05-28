@@ -15,6 +15,7 @@ from common.agent_task_runtime import SessionRuntime, TaskPolicy
 from common.grok_voice_mode import is_grok_text_to_voice_provider
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common import memory
+from integrations.hermes_xai.media_download import cleanup_generated_reply_media
 from plugins import *
 
 try:
@@ -796,11 +797,17 @@ class ChatChannel(Channel):
                     text_sent = self._send(text_reply, context)
                     # 短暂延迟后发送图片
                     time.sleep(0.3)
-                    media_sent = self._send(reply, context)
+                    media_sent = self._send_with_generated_media_cleanup(reply, context)
                     return text_sent is not False and media_sent is not False
                 else:
-                    return self._send(reply, context)
+                    return self._send_with_generated_media_cleanup(reply, context)
         return False
+
+    def _send_with_generated_media_cleanup(self, reply: Reply, context: Context):
+        try:
+            return self._send(reply, context)
+        finally:
+            cleanup_generated_reply_media(reply)
     
     @staticmethod
     def _clean_media_reference(value) -> str:

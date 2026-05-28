@@ -10,10 +10,8 @@ credentials to PR 1's Grok OAuth resolver.
 from __future__ import annotations
 
 import base64
-import datetime
 import os
 import re
-import uuid
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import urlparse
 
@@ -23,6 +21,7 @@ from common.log import logger
 from config import conf
 
 from .auth import AuthError, DEFAULT_XAI_OAUTH_BASE_URL
+from .media_download import new_generated_media_path, safe_download_to_file
 from .xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
 
 
@@ -65,11 +64,7 @@ _TOKEN_FIELD_RE = re.compile(
     r"(?i)\b(access_token|refresh_token|authorization_code|code|code_verifier)\b\s*[:=]\s*['\"]?[^'\"\s,;}]+"  # noqa: E501
 )
 _URL_RE = re.compile(r"https?://[^\s'\"<>]+")
-_URL_IMAGE_CONTENT_TYPES = {
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/jpg": ".jpg",
-}
+_URL_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
 _MAGIC_EXTENSIONS = (
     (b"\x89PNG\r\n\x1a\n", ".png"),
     (b"\xff\xd8\xff", ".jpg"),
@@ -256,38 +251,19 @@ def _save_b64_image(b64_data: str, *, prefix: str) -> str:
 
 
 def _save_url_image(url: str, *, prefix: str, timeout: float, max_bytes: int = _MAX_IMAGE_BYTES) -> str:
-    response = requests.get(url, timeout=timeout, stream=True)
-    response.raise_for_status()
-
-    content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-    chunks = []
-    bytes_read = 0
-    for chunk in response.iter_content(chunk_size=64 * 1024):
-        if not chunk:
-            continue
-        bytes_read += len(chunk)
-        if bytes_read > max_bytes:
-            raise ValueError(f"Downloaded image exceeds {max_bytes // (1024 * 1024)}MB cap.")
-        chunks.append(chunk)
-
-    raw = b"".join(chunks)
-    if not raw:
-        raise ValueError("Downloaded image is empty.")
-
-    extension = _URL_IMAGE_CONTENT_TYPES.get(content_type) or _extension_from_magic(raw) or ".png"
-    path = _new_image_path(prefix, extension)
-    with open(path, "wb") as handle:
-        handle.write(raw)
-    return path
+    return safe_download_to_file(
+        url,
+        prefix=prefix,
+        suffix=None,
+        allowed_content_types=_URL_IMAGE_CONTENT_TYPES,
+        max_bytes=max_bytes,
+        timeout=timeout,
+    )
 
 
 def _new_image_path(prefix: str, extension: str) -> str:
-    output_dir = os.path.abspath(os.path.join(os.getcwd(), "tmp"))
-    os.makedirs(output_dir, exist_ok=True)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_prefix = re.sub(r"[^a-zA-Z0-9_.-]+", "_", prefix or "xai_image").strip("._") or "xai_image"
-    filename = f"{safe_prefix}_{ts}_{uuid.uuid4().hex[:8]}{extension}"
-    return os.path.join(output_dir, filename)
+    return new_generated_media_path(safe_prefix, extension)
 
 
 def _extension_from_magic(raw: bytes) -> str:

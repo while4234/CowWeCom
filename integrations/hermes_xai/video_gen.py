@@ -10,7 +10,6 @@ MP4 download plus Grok OAuth refresh handling.
 from __future__ import annotations
 
 import base64
-import datetime
 import mimetypes
 import os
 import re
@@ -25,6 +24,7 @@ from common.log import logger
 from config import conf
 
 from .auth import AuthError, DEFAULT_XAI_OAUTH_BASE_URL
+from .media_download import safe_download_to_file
 from .xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
 
 
@@ -66,11 +66,7 @@ _MAGIC_IMAGE_MIMES = (
     (b"GIF87a", "image/gif"),
     (b"GIF89a", "image/gif"),
 )
-_VIDEO_CONTENT_TYPES = {
-    "video/mp4": ".mp4",
-    "application/mp4": ".mp4",
-    "video/quicktime": ".mov",
-}
+_VIDEO_CONTENT_TYPES = {"video/mp4", "application/octet-stream"}
 
 
 class XaiVideoGenError(RuntimeError):
@@ -392,38 +388,14 @@ def _extract_video_url(body: Dict[str, Any]) -> str:
 
 
 def _save_url_video(url: str, *, prefix: str, timeout: float, max_bytes: int = _MAX_VIDEO_BYTES) -> str:
-    response = requests.get(url, timeout=timeout, stream=True)
-    response.raise_for_status()
-    content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-    extension = _VIDEO_CONTENT_TYPES.get(content_type) or _extension_from_url(url) or ".mp4"
-    path = _new_video_path(prefix, extension)
-    bytes_read = 0
-    with open(path, "wb") as handle:
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
-            if not chunk:
-                continue
-            bytes_read += len(chunk)
-            if bytes_read > max_bytes:
-                raise ValueError(f"Downloaded video exceeds {max_bytes // (1024 * 1024)}MB cap.")
-            handle.write(chunk)
-    if bytes_read <= 0:
-        raise ValueError("Downloaded video is empty.")
-    return path
-
-
-def _extension_from_url(url: str) -> str:
-    path = urlparse(url).path
-    ext = os.path.splitext(path)[1].lower()
-    return ext if ext in {".mp4", ".mov"} else ""
-
-
-def _new_video_path(prefix: str, extension: str) -> str:
-    output_dir = os.path.abspath(os.path.join(os.getcwd(), "tmp"))
-    os.makedirs(output_dir, exist_ok=True)
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_prefix = re.sub(r"[^a-zA-Z0-9_.-]+", "_", prefix or "xai_video").strip("._") or "xai_video"
-    filename = f"{safe_prefix}_{ts}_{uuid.uuid4().hex[:8]}{extension}"
-    return os.path.join(output_dir, filename)
+    return safe_download_to_file(
+        url,
+        prefix=prefix,
+        suffix=".mp4",
+        allowed_content_types=_VIDEO_CONTENT_TYPES,
+        max_bytes=max_bytes,
+        timeout=timeout,
+    )
 
 
 def _assert_local_video(path: str) -> None:

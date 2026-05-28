@@ -30,6 +30,13 @@ dependencies = [
     "audioop-lts>=0.2.2; python_version >= '3.13'",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "web.py",
+    "pycryptodome",
+]
+
 [project.scripts]
 cow = "cli.cli:main"
 

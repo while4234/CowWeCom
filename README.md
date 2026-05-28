@@ -496,9 +496,9 @@ CowWeCom/
 ### 2026-05-28
 
 - Grok/xAI 原生账号能力继续扩展：OAuth 灰度登录、文字对话、TTS、图片生成和视频生成复用同一登录态；PR 5 补齐 [docs/grok.md](docs/grok.md)、Hermes auth 只读导入、Web 状态脱敏和核心回归测试。
-- Grok/xAI 图片生成接入 PR 3：新增 `grok-image-generation` Skill，普通生图默认仍走 Codex，明确点名 Grok/xAI 时才切到 xAI；后台 worker 固定从项目根读取 Grok 登录态，避免运行时 skill 目录误判“未登录”。
-- Grok/xAI 视频生成接入 PR 4：新增文生视频、单图生视频、多图参考视频、`VIDEO_CREATE` 前缀和 `grok-video-generation` 后台 Skill；xAI 返回视频会先下载为本地 MP4，再通过 `ReplyType.VIDEO` 发送，WeCom Bot、企业微信应用和个人微信视频发送都有明确发送或兜底。
-- Grok/xAI 企业微信语音回复改为“双模式”规则：语音会话模式可独立启用并强制低延迟流式语音回复，普通文字输入不会被旧 `text_to_voice=xai/grok` 配置误转语音；AMR 转换默认使用更稳定的切段、响度归一化和 `12.2k` 码率。
+- Grok/xAI 图片/视频生成加固：xAI 返回 URL 只允许公开 HTTPS 下载，逐跳校验 redirect、DNS、Content-Type 和大小上限，生成文件统一落到 `tmp/grok_media/`，发送成功、失败或 fallback 后清理本次生成文件。
+- Grok/xAI 视频生成接入 PR 4：新增文生视频、单图生视频、多图参考视频、`VIDEO_CREATE` 前缀和 `grok-video-generation` 后台 Skill；WeCom Bot 现在优先识别 `video_create_prefix`，不再被图片前缀吞掉。
+- Grok/xAI 企业微信语音回复改为“双模式”规则：低延迟 low 模式与语音会话模式分开说明；语音会话模式允许企业微信应用/WeCom Bot 中语音输入优先语音回复，文字输入和个人微信仍不新增语音发送。
 - Agent 和本地工具体验继续收口：同轮重复工具调用结果改成短引用，本机 token 用量查询支持用户别名合并，账单截图识别优先保留截图中的精确金额。
 - 本地文档与公共协议知识库继续加固：视觉 chunk/source span、PDF caption、公式/大表候选、prepare checkpoint 和旧 ordinary chunk 去污染闭环收紧；UCIe、AMBA AXI、AXI4-Stream 公共知识库 SQLite 已刷新，Web Markdown 库拉取后需重新导出。
 

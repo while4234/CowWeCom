@@ -1,11 +1,8 @@
 # -*- coding=utf-8 -*-
-import io
 import os
 import sys
-import tempfile
 import time
 
-import requests
 import web
 from wechatpy.enterprise import create_reply, parse_message
 from wechatpy.enterprise.crypto import WeChatCrypto
@@ -21,9 +18,18 @@ from common.log import logger
 from common.singleton import singleton
 from common.utils import compress_imgfile, fsize, split_string_by_utf8_length, convert_webp_to_png, remove_markdown_symbol
 from config import conf, subscribe_msg
+from integrations.hermes_xai.media_download import (
+    cleanup_generated_reply_media,
+    remove_file_quietly,
+    safe_download_to_file,
+)
 from voice.audio_convert import split_audio_by_wecom_voice_limits
 
 MAX_UTF8_LEN = 2048
+REMOTE_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
+REMOTE_VIDEO_CONTENT_TYPES = {"video/mp4", "application/octet-stream"}
+MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_REMOTE_VIDEO_BYTES = 512 * 1024 * 1024
 
 
 @singleton
@@ -126,31 +132,64 @@ class WechatComAppChannel(ChatChannel):
             return True
         elif reply.type == ReplyType.IMAGE_URL:  # 从网络下载图片
             img_url = reply.content
-            pic_res = requests.get(img_url, stream=True)
-            image_storage = io.BytesIO()
-            for block in pic_res.iter_content(1024):
-                image_storage.write(block)
-            sz = fsize(image_storage)
-            if sz >= 10 * 1024 * 1024:
-                logger.info("[wechatcom] image too large, ready to compress, sz={}".format(sz))
-                image_storage = compress_imgfile(image_storage, 10 * 1024 * 1024 - 1)
-                logger.info("[wechatcom] image compressed, sz={}".format(fsize(image_storage)))
-            image_storage.seek(0)
-            if ".webp" in img_url:
-                try:
-                    image_storage = convert_webp_to_png(image_storage)
-                except Exception as e:
-                    logger.error(f"Failed to convert image: {e}")
-                    return
+            download_path = ""
+            download_handle = None
+            image_storage = None
             try:
-                response = self.client.media.upload("image", image_storage)
-                logger.debug("[wechatcom] upload image response: {}".format(response))
-            except WeChatClientException as e:
-                logger.error("[wechatcom] upload image failed: {}".format(e))
-                return
+                download_path = safe_download_to_file(
+                    img_url,
+                    prefix="wechatcom_img",
+                    suffix=None,
+                    allowed_content_types=REMOTE_IMAGE_CONTENT_TYPES,
+                    max_bytes=MAX_REMOTE_IMAGE_BYTES,
+                    timeout=30.0,
+                )
+                download_handle = open(download_path, "rb")
+                image_storage = download_handle
+                sz = fsize(image_storage)
+                if sz >= 10 * 1024 * 1024:
+                    logger.info("[wechatcom] image too large, ready to compress, sz={}".format(sz))
+                    compressed_storage = compress_imgfile(image_storage, 10 * 1024 * 1024 - 1)
+                    download_handle.close()
+                    download_handle = None
+                    image_storage = compressed_storage
+                    logger.info("[wechatcom] image compressed, sz={}".format(fsize(image_storage)))
+                image_storage.seek(0)
+                if os.path.splitext(download_path)[1].lower() == ".webp":
+                    try:
+                        converted_storage = convert_webp_to_png(image_storage)
+                        if download_handle is not None:
+                            download_handle.close()
+                            download_handle = None
+                        image_storage = converted_storage
+                    except Exception as e:
+                        logger.error(f"Failed to convert image: {e}")
+                        return False
+                try:
+                    response = self.client.media.upload("image", image_storage)
+                    logger.debug("[wechatcom] upload image response: {}".format(response))
+                except WeChatClientException as e:
+                    logger.error("[wechatcom] upload image failed: {}".format(e))
+                    return False
 
-            self.client.message.send_image(self.agent_id, receiver, response["media_id"])
-            logger.info("[wechatcom] sendImage url={}, receiver={}".format(img_url, receiver))
+                self.client.message.send_image(self.agent_id, receiver, response["media_id"])
+                logger.info("[wechatcom] sendImage remote, receiver={}".format(receiver))
+                return True
+            except Exception as e:
+                logger.error("[wechatcom] failed to download image: {}".format(e))
+                return False
+            finally:
+                try:
+                    if image_storage and hasattr(image_storage, "close"):
+                        image_storage.close()
+                except Exception:
+                    pass
+                try:
+                    if download_handle is not None:
+                        download_handle.close()
+                except Exception:
+                    pass
+                remove_file_quietly(download_path)
         elif reply.type == ReplyType.IMAGE:  # 从文件读取图片
             image_storage = reply.content
             close_after_upload = False
@@ -164,9 +203,15 @@ class WechatComAppChannel(ChatChannel):
                 sz = fsize(image_storage)
                 if sz >= 10 * 1024 * 1024:
                     logger.info("[wechatcom] image too large, ready to compress, sz={}".format(sz))
-                    image_storage = compress_imgfile(image_storage, 10 * 1024 * 1024 - 1)
+                    compressed_storage = compress_imgfile(image_storage, 10 * 1024 * 1024 - 1)
+                    if close_after_upload:
+                        try:
+                            image_storage.close()
+                        except Exception:
+                            pass
+                    image_storage = compressed_storage
+                    close_after_upload = True
                     logger.info("[wechatcom] image compressed, sz={}".format(fsize(image_storage)))
-                    close_after_upload = False
                 image_storage.seek(0)
                 try:
                     response = self.client.media.upload("image", image_storage)
@@ -183,8 +228,12 @@ class WechatComAppChannel(ChatChannel):
                         image_storage.close()
                     except Exception:
                         pass
+                cleanup_generated_reply_media(reply)
         elif reply.type in (ReplyType.VIDEO, ReplyType.VIDEO_URL):
-            return self._send_video(reply.content, receiver)
+            try:
+                return self._send_video(reply.content, receiver)
+            finally:
+                cleanup_generated_reply_media(reply)
 
         logger.warning("[wechatcom] unsupported reply type: {}".format(reply.type))
         try:
@@ -238,23 +287,18 @@ class WechatComAppChannel(ChatChannel):
         if source.startswith("file://"):
             source = source[7:]
         if source.startswith(("http://", "https://")):
-            suffix = os.path.splitext(source.split("?", 1)[0])[1] or ".mp4"
-            fd, tmp_path = tempfile.mkstemp(prefix="wechatcom_video_", suffix=suffix)
-            os.close(fd)
             try:
-                response = requests.get(source, timeout=120, stream=True)
-                response.raise_for_status()
-                with open(tmp_path, "wb") as handle:
-                    for chunk in response.iter_content(1024 * 1024):
-                        if chunk:
-                            handle.write(chunk)
+                tmp_path = safe_download_to_file(
+                    source,
+                    prefix="wechatcom_video",
+                    suffix=".mp4",
+                    allowed_content_types=REMOTE_VIDEO_CONTENT_TYPES,
+                    max_bytes=MAX_REMOTE_VIDEO_BYTES,
+                    timeout=120.0,
+                )
                 return tmp_path, tmp_path
             except Exception as e:
                 logger.error("[wechatcom] failed to download video: {}".format(e))
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
                 return "", ""
         return source, ""
 

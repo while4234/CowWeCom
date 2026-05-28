@@ -18,7 +18,6 @@ import time
 from types import SimpleNamespace
 import uuid
 
-import requests
 import websocket
 
 from bridge.context import Context, ContextType
@@ -32,6 +31,11 @@ from common.utils import expand_path
 from common.ws_client_compat import websocket_app_run_forever
 from config import conf
 from agent.user_profiles import safe_actor_slug
+from integrations.hermes_xai.media_download import (
+    cleanup_generated_reply_media,
+    remove_file_quietly,
+    safe_download_to_file,
+)
 from voice.audio_convert import split_audio_by_wecom_voice_limits
 
 WECOM_WS_URL = "wss://openws.work.weixin.qq.com"
@@ -40,6 +44,10 @@ SUBSCRIBE_ACK_TIMEOUT = 20
 MEDIA_CHUNK_SIZE = 512 * 1024  # 512KB per chunk (before base64 encoding)
 MARKDOWN_TEXT_CHUNK_LIMIT = 3500
 LONG_REPLY_PART_DELAY_SECONDS = 0.2
+REMOTE_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
+REMOTE_VIDEO_CONTENT_TYPES = {"video/mp4", "application/octet-stream"}
+MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_REMOTE_VIDEO_BYTES = 512 * 1024 * 1024
 
 
 def _wecom_group_actor_id(channel_type: str, chat_id: str) -> str:
@@ -825,12 +833,17 @@ class WecomBotChannel(ChatChannel):
         context["receiver"] = cmsg.other_user_id
 
         if ctype == ContextType.TEXT:
-            img_match_prefix = check_prefix(content, conf().get("image_create_prefix"))
-            if img_match_prefix:
-                content = content.replace(img_match_prefix, "", 1)
-                context.type = ContextType.IMAGE_CREATE
+            video_match_prefix = check_prefix(content, conf().get("video_create_prefix", []))
+            if video_match_prefix:
+                content = self._strip_create_prefix(content, video_match_prefix)
+                context.type = ContextType.VIDEO_CREATE
             else:
-                context.type = ContextType.TEXT
+                img_match_prefix = check_prefix(content, conf().get("image_create_prefix"))
+                if img_match_prefix:
+                    content = self._strip_create_prefix(content, img_match_prefix)
+                    context.type = ContextType.IMAGE_CREATE
+                else:
+                    context.type = ContextType.TEXT
             content = content.strip()
             context["_visible_task_summary"] = content
             if cmsg.is_group and context.type == ContextType.TEXT:
@@ -839,6 +852,10 @@ class WecomBotChannel(ChatChannel):
                 context.content = content
 
         return context
+
+    @staticmethod
+    def _strip_create_prefix(content: str, prefix: str) -> str:
+        return str(content or "").replace(str(prefix or ""), "", 1).lstrip(" \t:：,，")
 
     @staticmethod
     def _format_group_member_query(context: Context, content: str) -> str:
@@ -1010,7 +1027,10 @@ class WecomBotChannel(ChatChannel):
                 mention_display_names=mention_display_names,
             )
         elif reply.type in (ReplyType.IMAGE_URL, ReplyType.IMAGE):
-            return self._send_image(reply.content, receiver, is_group, req_id)
+            try:
+                return self._send_image(reply.content, receiver, is_group, req_id)
+            finally:
+                cleanup_generated_reply_media(reply)
         elif reply.type == ReplyType.FILE:
             text_sent = True
             if hasattr(reply, "text_content") and reply.text_content:
@@ -1027,7 +1047,10 @@ class WecomBotChannel(ChatChannel):
         elif reply.type == ReplyType.VOICE:
             return self._send_voice(reply.content, receiver, is_group, req_id)
         elif reply.type == ReplyType.VIDEO or reply.type == ReplyType.VIDEO_URL:
-            return self._send_file(reply.content, receiver, is_group, req_id, media_type="video")
+            try:
+                return self._send_file(reply.content, receiver, is_group, req_id, media_type="video")
+            finally:
+                cleanup_generated_reply_media(reply)
         else:
             logger.warning(f"[WecomBot] Unsupported reply type: {reply.type}, falling back to text")
             return self._send_text(
@@ -1361,29 +1384,31 @@ class WecomBotChannel(ChatChannel):
         return ([user_id] if user_id else []), ([display_name] if display_name else [])
 
     def _send_image(self, img_path_or_url: str, receiver: str, is_group: bool, req_id: str = None):
+        transient_paths = []
+        try:
+            return self._send_image_impl(img_path_or_url, receiver, is_group, req_id, transient_paths)
+        finally:
+            for path in transient_paths:
+                remove_file_quietly(path)
+
+    def _send_image_impl(self, img_path_or_url: str, receiver: str, is_group: bool, req_id: str, transient_paths: list):
         """Send image reply. Converts to JPG/PNG and compresses if >2MB."""
-        local_path = img_path_or_url
+        local_path = str(img_path_or_url or "").strip()
         if local_path.startswith("file://"):
             local_path = local_path[7:]
 
         if local_path.startswith(("http://", "https://")):
             try:
-                resp = requests.get(local_path, timeout=30)
-                resp.raise_for_status()
-                ct = resp.headers.get("Content-Type", "")
-                if "jpeg" in ct or "jpg" in ct:
-                    ext = ".jpg"
-                elif "webp" in ct:
-                    ext = ".webp"
-                elif "gif" in ct:
-                    ext = ".gif"
-                else:
-                    ext = ".png"
-                tmp_path = f"/tmp/wecom_img_{uuid.uuid4().hex[:8]}{ext}"
-                with open(tmp_path, "wb") as f:
-                    f.write(resp.content)
-                logger.info(f"[WecomBot] Image downloaded: size={len(resp.content)}, "
-                            f"content-type={ct}, path={tmp_path}")
+                tmp_path = safe_download_to_file(
+                    local_path,
+                    prefix="wecom_img",
+                    suffix=None,
+                    allowed_content_types=REMOTE_IMAGE_CONTENT_TYPES,
+                    max_bytes=MAX_REMOTE_IMAGE_BYTES,
+                    timeout=30.0,
+                )
+                transient_paths.append(tmp_path)
+                logger.info("[WecomBot] Image downloaded safely: path=%s", tmp_path)
                 local_path = tmp_path
             except Exception as e:
                 logger.error(f"[WecomBot] Failed to download image for sending: {e}")
@@ -1395,16 +1420,22 @@ class WecomBotChannel(ChatChannel):
             return False
 
         max_image_size = 2 * 1024 * 1024  # 2MB limit for image upload
-        local_path = self._ensure_image_format(local_path)
-        if not local_path:
+        formatted_path = self._ensure_image_format(local_path)
+        if not formatted_path:
             self._send_text("[Image format conversion failed]", receiver, is_group, req_id)
             return False
+        if formatted_path != local_path:
+            transient_paths.append(formatted_path)
+        local_path = formatted_path
 
         if os.path.getsize(local_path) > max_image_size:
-            local_path = self._compress_image(local_path, max_image_size)
-            if not local_path:
+            compressed_path = self._compress_image(local_path, max_image_size)
+            if not compressed_path:
                 self._send_text("[Image too large]", receiver, is_group, req_id)
                 return False
+            if compressed_path != local_path:
+                transient_paths.append(compressed_path)
+            local_path = compressed_path
 
         file_size = os.path.getsize(local_path)
         logger.info(f"[WecomBot] Uploading image: path={local_path}, size={file_size} bytes")
@@ -1506,19 +1537,34 @@ class WecomBotChannel(ChatChannel):
 
     def _send_file(self, file_path: str, receiver: str, is_group: bool,
                    req_id: str = None, media_type: str = "file"):
+        transient_paths = []
+        try:
+            return self._send_file_impl(file_path, receiver, is_group, req_id, media_type, transient_paths)
+        finally:
+            for path in transient_paths:
+                remove_file_quietly(path)
+
+    def _send_file_impl(self, file_path: str, receiver: str, is_group: bool,
+                        req_id: str, media_type: str, transient_paths: list):
         """Send file/video reply by uploading media first."""
-        local_path = file_path
+        local_path = str(file_path or "").strip()
         if local_path.startswith("file://"):
             local_path = local_path[7:]
 
         if local_path.startswith(("http://", "https://")):
+            if media_type != "video":
+                logger.error("[WecomBot] Refusing remote file URL; only local files are accepted")
+                return False
             try:
-                resp = requests.get(local_path, timeout=60)
-                resp.raise_for_status()
-                ext = os.path.splitext(local_path)[1] or ".bin"
-                tmp_path = f"/tmp/wecom_file_{uuid.uuid4().hex[:8]}{ext}"
-                with open(tmp_path, "wb") as f:
-                    f.write(resp.content)
+                tmp_path = safe_download_to_file(
+                    local_path,
+                    prefix="wecom_video",
+                    suffix=".mp4",
+                    allowed_content_types=REMOTE_VIDEO_CONTENT_TYPES,
+                    max_bytes=MAX_REMOTE_VIDEO_BYTES,
+                    timeout=60.0,
+                )
+                transient_paths.append(tmp_path)
                 local_path = tmp_path
             except Exception as e:
                 logger.error(f"[WecomBot] Failed to download file for sending: {e}")
