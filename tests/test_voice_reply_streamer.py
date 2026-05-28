@@ -59,6 +59,23 @@ def test_voice_stream_requires_voice_low_local_rule(monkeypatch):
     assert voice_stream_enabled(text_context, FakeChannel(), _decision()) is False
 
 
+def test_streamer_defaults_reduce_native_voice_fragmenting(monkeypatch):
+    settings = {
+        "grok_voice_streaming_enabled": True,
+        "grok_voice_mode_enabled": True,
+        "grok_voice_reply_channels": ["wechatcom_app"],
+    }
+    monkeypatch.setattr(voice_streamer, "conf", lambda: settings)
+
+    streamer = VoiceReplyStreamer.try_create(_context(), FakeChannel(), _decision())
+    try:
+        assert streamer.max_chars == 180
+        assert streamer.min_chars == 18
+        assert streamer.idle_seconds == 1.5
+    finally:
+        streamer.finish(timeout=0.2)
+
+
 def test_streamer_speaks_segments_before_final_text(monkeypatch, tmp_path):
     settings = {
         "grok_voice_streaming_enabled": True,

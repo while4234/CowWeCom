@@ -29,9 +29,9 @@ class VoiceReplyStreamer:
         self.decision = dict(decision or {})
         self.session_id = str(context.get("session_id") or "")
         self.channel_type = str(context.get("channel_type") or getattr(channel, "channel_type", "") or "")
-        self.max_chars = _positive_int(conf().get("grok_voice_max_segment_chars"), 120)
-        self.min_chars = min(self.max_chars, _positive_int(conf().get("grok_voice_min_segment_chars"), 12))
-        self.idle_seconds = max(0.1, _positive_int(conf().get("grok_voice_flush_idle_ms"), 800) / 1000.0)
+        self.max_chars = _positive_int(conf().get("grok_voice_max_segment_chars"), 180)
+        self.min_chars = min(self.max_chars, _positive_int(conf().get("grok_voice_min_segment_chars"), 18))
+        self.idle_seconds = max(0.1, _positive_int(conf().get("grok_voice_flush_idle_ms"), 1500) / 1000.0)
         self.queue_size = _positive_int(conf().get("grok_voice_tts_queue_size"), 4)
         self._buffer = ""
         self._text_parts = []

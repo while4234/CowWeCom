@@ -43,6 +43,8 @@ python -m venv .venv
 
 For Grok/xAI TTS voice replies in WeCom, `requirements.txt` installs `pydub`,
 but the machine must also have `ffmpeg` and `ffprobe` available in `PATH`.
+Native voice bubbles stay on WeCom AMR; defaults now normalize loudness, use
+`12.2k` AMR, and reduce Grok TTS stream fragmentation for steadier playback.
 
 The WeCom Bot connection is ready when the log includes:
 

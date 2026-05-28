@@ -2,6 +2,7 @@ import shutil
 import wave
 import os
 import uuid
+import math
 
 from common.log import logger
 from config import conf
@@ -18,6 +19,18 @@ except ImportError:
     logger.debug("import pydub failed, voice conversion features will not be supported.")
     AudioSegment = None
     _pydub_available = False
+
+WECOM_AMR_DEFAULT_BITRATE = "12.2k"
+WECOM_AMR_BITRATES = {
+    "4.75k",
+    "5.15k",
+    "5.90k",
+    "6.70k",
+    "7.40k",
+    "7.95k",
+    "10.2k",
+    "12.2k",
+}
 
 sil_supports = [8000, 12000, 16000, 24000, 32000, 44100, 48000]  # slk转wav时，支持的采样率
 
@@ -120,8 +133,8 @@ def any_to_amr(any_path, amr_path):
     if any_path.endswith(".sil") or any_path.endswith(".silk") or any_path.endswith(".slk"):
         raise NotImplementedError("Not support file type: {}".format(any_path))
     audio = AudioSegment.from_file(any_path)
-    audio = audio.set_frame_rate(8000)  # only support 8000
-    audio.export(amr_path, format="amr")
+    audio = _prepare_wecom_voice_audio(audio)
+    audio.export(amr_path, format="amr", bitrate=_wecom_amr_bitrate())
     return audio.duration_seconds * 1000
 
 
@@ -151,7 +164,7 @@ def split_audio_by_wecom_voice_limits(
 
     try:
         audio = AudioSegment.from_file(source_path, parameters=["-nostdin"])
-        audio = audio.set_frame_rate(8000).set_channels(1)
+        audio = _prepare_wecom_voice_audio(audio)
     except Exception as exc:
         raise RuntimeError("Failed to decode voice audio for WeCom AMR conversion.") from exc
 
@@ -162,6 +175,7 @@ def split_audio_by_wecom_voice_limits(
     paths = []
     start_ms = 0
     segment_index = 1
+    amr_bitrate = _wecom_amr_bitrate()
     try:
         while start_ms < total_ms:
             duration_ms = min(max_segment_ms, total_ms - start_ms)
@@ -173,6 +187,7 @@ def split_audio_by_wecom_voice_limits(
                 start_ms,
                 duration_ms,
                 max_bytes,
+                amr_bitrate,
             )
             paths.append(path)
             start_ms += actual_duration
@@ -189,7 +204,7 @@ def split_audio_by_wecom_voice_limits(
         raise
 
 
-def _export_wecom_amr_segment(audio, output_dir, prefix, index, start_ms, duration_ms, max_bytes):
+def _export_wecom_amr_segment(audio, output_dir, prefix, index, start_ms, duration_ms, max_bytes, amr_bitrate):
     min_duration_ms = 500
     current_ms = max(min_duration_ms, int(duration_ms))
     while current_ms >= min_duration_ms:
@@ -199,7 +214,7 @@ def _export_wecom_amr_segment(audio, output_dir, prefix, index, start_ms, durati
         segment = audio[start_ms:end_ms]
         path = os.path.join(output_dir, f"{prefix}-{index}.amr")
         try:
-            segment.export(path, format="amr")
+            segment.export(path, format="amr", bitrate=amr_bitrate)
         except Exception as exc:
             _remove_quietly(path)
             raise RuntimeError("Failed to export WeCom AMR voice segment.") from exc
@@ -212,6 +227,76 @@ def _export_wecom_amr_segment(audio, output_dir, prefix, index, start_ms, durati
         current_ms = current_ms // 2
 
     raise RuntimeError("WeCom AMR voice segment exceeds size limit even after shortening.")
+
+
+def _prepare_wecom_voice_audio(audio):
+    audio = audio.set_channels(1)
+    audio = _normalize_wecom_voice_audio(audio)
+    return audio.set_frame_rate(8000)
+
+
+def _normalize_wecom_voice_audio(audio):
+    if not _config_bool(conf().get("wecom_voice_normalize_enabled", True), True):
+        return audio
+    target_dbfs = _bounded_number(conf().get("wecom_voice_normalize_target_dbfs", -18.0), -18.0, -35.0, -6.0)
+    headroom_db = _bounded_number(conf().get("wecom_voice_normalize_headroom_db", 1.0), 1.0, 0.1, 12.0)
+    loudness_dbfs = _audio_level_dbfs(audio, "dBFS")
+    peak_dbfs = _audio_level_dbfs(audio, "max_dBFS")
+    if loudness_dbfs is None and peak_dbfs is None:
+        return audio
+    gain_db = target_dbfs - loudness_dbfs if loudness_dbfs is not None else -headroom_db - peak_dbfs
+    try:
+        if abs(gain_db) >= 0.1:
+            audio = audio.apply_gain(gain_db)
+        peak_dbfs = _audio_level_dbfs(audio, "max_dBFS")
+        peak_gain_db = -headroom_db - peak_dbfs if peak_dbfs is not None else 0
+        if peak_gain_db < -0.1:
+            audio = audio.apply_gain(peak_gain_db)
+        return audio
+    except Exception as exc:
+        logger.warning("[VoiceConvert] WeCom voice normalization skipped: %s", exc)
+        return audio
+
+
+def _audio_level_dbfs(audio, attr_name):
+    try:
+        value = float(getattr(audio, attr_name))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _wecom_amr_bitrate():
+    bitrate = str(conf().get("wecom_voice_amr_bitrate", WECOM_AMR_DEFAULT_BITRATE) or "").strip().lower()
+    if bitrate in WECOM_AMR_BITRATES:
+        return bitrate
+    logger.warning("[VoiceConvert] Invalid wecom_voice_amr_bitrate=%r, using %s", bitrate, WECOM_AMR_DEFAULT_BITRATE)
+    return WECOM_AMR_DEFAULT_BITRATE
+
+
+def _config_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _bounded_number(value, default, minimum, maximum):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < minimum:
+        return minimum
+    if parsed > maximum:
+        return maximum
+    return parsed
 
 
 def _positive_number(*values):
