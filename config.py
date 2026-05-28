@@ -164,6 +164,7 @@ available_setting = {
     "grok_api_base": "https://api.x.ai/v1",  # xAI API base; OAuth bearer is only sent to xAI origins
     "grok_auth_file": "",  # Grok OAuth auth store; defaults to data/auth/grok_auth.json
     "grok_auth_prefer_oauth": True,  # Prefer Web OAuth tokens before API key fallback
+    "grok_gray_enabled": False,  # Show Grok in normal Web model provider selection only for gray testing
     "grok_import_hermes_auth": False,  # Reserved for future read-only Hermes auth import
     "grok_wire_api": "responses",  # Grok uses Responses API
     "grok_api_key": "",  # Fallback xAI API key when OAuth is unavailable

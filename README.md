@@ -182,7 +182,7 @@ http://127.0.0.1:9899
 
 CAPI 额度卡/月卡查询依赖 `llm_backend.providers.capi` 和 `llm_backend.providers.capi_monthly` 下的专用 key。更新部署后请检查本机 `CAPI_API_KEY`、`CAPI_MONTHLY_API_KEY`，或在 ignored 的 `config.json` 中配置 `llm_backend.providers.capi.api_key`、`llm_backend.providers.capi_monthly.api_key`；不要把真实 key 写入 `config-template.json` 或提交到 Git。
 
-Grok/xAI 可以使用 Web 管理接口完成原生账号 OAuth 登录，推荐设置 `bot_type` 为 `grok` 或 `xai`，`grok_model` 默认为 `grok-4.3`。OAuth token 默认写入 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。Web 状态接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token 或 callback code。
+Grok/xAI 目前作为灰度能力接入：管理员可访问 `/grok` 完成原生账号 OAuth 登录，但普通配置页默认不展示 Grok，也不会因为登录 token 改变当前真实聊天后端。需要灰度切换时再手动设置 `bot_type` 为 `grok` 或 `xai`；如需在普通模型配置面板展示 Grok，可显式开启 `grok_gray_enabled=true`。OAuth token 默认写入 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。Web 状态接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token 或 callback code。
 
 ## 微信接入
 
@@ -491,7 +491,7 @@ CowWeCom/
 
 ### 2026-05-28
 
-- 新增 Grok/xAI 原生账号 OAuth 登录与文字对话接入：Web API 可发起、轮询、手动完成登录，`bot_type=grok` 或 `xai` 会走 xAI Responses API，并在无 `XAI_API_KEY` 时优先使用本地 OAuth auth store。
+- 新增 Grok/xAI 原生账号 OAuth 登录与文字对话灰度接入：管理员可通过隐藏 `/grok` 页面登录账号并检查凭据；普通配置页默认不展示 Grok，不会影响当前真实后端，只有手动设置 `bot_type=grok`/`xai` 或开启 `grok_gray_enabled` 后才进入灰度切换。
 - Windows Python 3.13 可选语音依赖补充 `audioop-lts`，修复 `pydub` 因标准库 `audioop` 移除而无法加载的问题，语音转换能力在重启后可正常初始化。
 - Agent 同轮重复工具调用结果进一步压缩：相同参数的重复 read/bash/edit 等工具仍保留首次完整结果，重复结果改为短引用，减少上下文膨胀和缓存扰动。
 - KnowledgeStorage 视觉 chunk/source span 完整性继续收口：视觉结果追加、删除和 reset 避免覆盖普通 chunk 与共享 span，并清理无人引用的图谱证据引用。

@@ -840,6 +840,7 @@ class WebChannel(ChatChannel):
             '/poll', 'PollHandler',
             '/stream', 'StreamHandler',
             '/chat', 'ChatHandler',
+            '/grok', 'GrokPageHandler',
             '/config', 'ConfigHandler',
             '/api/channels', 'ChannelsHandler',
             '/api/grok/status', 'GrokStatusHandler',
@@ -1156,6 +1157,16 @@ class ChatHandler:
         return html
 
 
+class GrokPageHandler:
+    def GET(self):
+        _require_auth()
+        web.header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        web.header('Pragma', 'no-cache')
+        file_path = os.path.join(os.path.dirname(__file__), 'grok.html')
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return f.read()
+
+
 class ConfigHandler:
 
     _RECOMMENDED_MODELS = [
@@ -1326,6 +1337,12 @@ class ConfigHandler:
             return value
         return value[:4] + "*" * (len(value) - 8) + value[-4:]
 
+    def _visible_provider_models(self, local_config):
+        providers = OrderedDict(self.PROVIDER_MODELS)
+        if not local_config.get("grok_gray_enabled", False):
+            providers.pop("grok", None)
+        return providers
+
     def GET(self):
         _require_auth()
         web.header('Content-Type', 'application/json; charset=utf-8')
@@ -1334,9 +1351,10 @@ class ConfigHandler:
             use_agent = local_config.get("agent", True)
             title = "CowAgent" if use_agent else "AI Assistant"
 
+            visible_provider_models = self._visible_provider_models(local_config)
             api_bases = {}
             api_keys_masked = {}
-            for pid, pinfo in self.PROVIDER_MODELS.items():
+            for pid, pinfo in visible_provider_models.items():
                 base_key = pinfo.get("api_base_key")
                 if base_key:
                     api_bases[base_key] = local_config.get(base_key, pinfo["api_base_default"])
@@ -1346,7 +1364,7 @@ class ConfigHandler:
                     api_keys_masked[key_field] = self._mask_key(raw) if raw else ""
 
             providers = {}
-            for pid, p in self.PROVIDER_MODELS.items():
+            for pid, p in visible_provider_models.items():
                 providers[pid] = {
                     "label": p["label"],
                     "models": p["models"],
@@ -1384,6 +1402,7 @@ class ConfigHandler:
                 "providers": providers,
                 "llm_backend": backend_status,
                 "web_password_masked": masked_pwd,
+                "grok_gray_enabled": bool(local_config.get("grok_gray_enabled", False)),
             }, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Error getting config: {e}")
@@ -1417,7 +1436,7 @@ class ConfigHandler:
                     "agent_complex_planning_max_steps",
                 ):
                     value = int(value)
-                if key in ("use_linkai", "enable_thinking", "grok_auth_prefer_oauth"):
+                if key in ("use_linkai", "enable_thinking", "grok_auth_prefer_oauth", "grok_gray_enabled"):
                     value = bool(value)
                 local_config[key] = value
                 applied[key] = value
