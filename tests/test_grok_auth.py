@@ -29,6 +29,7 @@ class TestGrokAuth(unittest.TestCase):
         self.fake_conf.get.side_effect = lambda key, default=None: {
             "grok_auth_file": self.auth_file,
             "grok_api_base": "https://api.x.ai/v1",
+            "grok_oauth_accept_bare_code": False,
         }.get(key, default)
         self.conf_patch = patch("integrations.hermes_xai.auth.conf", return_value=self.fake_conf)
         self.conf_patch.start()
@@ -74,9 +75,9 @@ class TestGrokAuth(unittest.TestCase):
                 with self.assertRaises(auth.AuthError):
                     auth._parse_callback_url(callback_url)
 
-    def test_manual_authorization_code_uses_active_session_state(self):
+    def _start_fake_login(self, state="expected-state"):
         auth._active_login = auth._LoginSession(
-            state="expected-state",
+            state=state,
             nonce="nonce",
             code_verifier="verifier",
             code_challenge="challenge",
@@ -89,6 +90,8 @@ class TestGrokAuth(unittest.TestCase):
             authorize_url="https://auth.x.ai/oauth2/auth",
             created_at=time.time(),
         )
+
+    def _fake_token_response(self):
         access_token = _jwt_with_exp(time.time() + 3600)
         fake_response = MagicMock()
         fake_response.status_code = 200
@@ -97,6 +100,24 @@ class TestGrokAuth(unittest.TestCase):
             "refresh_token": "refresh-secret",
             "expires_in": 3600,
         }
+        return fake_response
+
+    def test_manual_authorization_code_without_state_is_rejected_by_default(self):
+        self._start_fake_login()
+
+        with self.assertRaises(auth.AuthError) as ctx:
+            auth.complete_xai_oauth_with_callback_url("manual-code-from-grok-build")
+
+        self.assertEqual(ctx.exception.code, "xai_state_missing")
+
+    def test_manual_authorization_code_uses_active_session_state_when_enabled(self):
+        self.fake_conf.get.side_effect = lambda key, default=None: {
+            "grok_auth_file": self.auth_file,
+            "grok_api_base": "https://api.x.ai/v1",
+            "grok_oauth_accept_bare_code": True,
+        }.get(key, default)
+        self._start_fake_login()
+        fake_response = self._fake_token_response()
 
         with patch("integrations.hermes_xai.auth.requests.post", return_value=fake_response) as post:
             status = auth.complete_xai_oauth_with_callback_url("manual-code-from-grok-build")
@@ -112,6 +133,28 @@ class TestGrokAuth(unittest.TestCase):
 
         self.assertEqual(parsed["code"], "secret-code")
         self.assertEqual(parsed["state"], "state-1")
+
+    def test_manual_callback_query_without_state_is_rejected(self):
+        self._start_fake_login()
+
+        with self.assertRaises(auth.AuthError) as ctx:
+            auth.complete_xai_oauth_with_callback_url("?code=secret-code")
+
+        self.assertEqual(ctx.exception.code, "xai_state_missing")
+
+    def test_full_callback_url_state_match_succeeds(self):
+        self._start_fake_login(state="state-1")
+        fake_response = self._fake_token_response()
+
+        with patch("integrations.hermes_xai.auth.requests.post", return_value=fake_response) as post:
+            status = auth.complete_xai_oauth_with_callback_url(
+                "http://127.0.0.1:56121/callback?code=secret-code&state=state-1"
+            )
+
+        self.assertTrue(status["logged_in"])
+        request_data = post.call_args.kwargs["data"]
+        self.assertEqual(request_data["code"], "secret-code")
+        self.assertEqual(request_data["code_verifier"], "verifier")
 
     def test_discovery_endpoint_must_be_https_xai_origin(self):
         bad_discoveries = [

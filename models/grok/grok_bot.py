@@ -38,7 +38,7 @@ class GrokBot(Bot, OpenAICompatibleBot):
         }
 
     def _resolve_model(self):
-        model = conf().get("grok_model") or conf().get("model") or DEFAULT_GROK_MODEL
+        model = conf().get("grok_model") or DEFAULT_GROK_MODEL
         if str(model).strip().lower() in {const.GROK, const.XAI}:
             return DEFAULT_GROK_MODEL
         return model
@@ -57,6 +57,19 @@ class GrokBot(Bot, OpenAICompatibleBot):
             "provider": creds.get("provider") or const.GROK,
             "auth_mode": creds.get("auth_mode") or "",
         }
+
+    def call_with_tools(self, messages, tools=None, stream=False, **kwargs):
+        kwargs = dict(kwargs)
+        # Agent callers may carry the global model setting. Native Grok requests
+        # must always use grok_model so xAI never receives a non-Grok model.
+        kwargs["model"] = self._resolve_model()
+        return OpenAICompatibleBot.call_with_tools(
+            self,
+            messages=messages,
+            tools=tools,
+            stream=stream,
+            **kwargs,
+        )
 
     def _responses_api_base(self, api_base):
         return (api_base or "https://api.x.ai/v1").rstrip("/")

@@ -956,6 +956,11 @@ class AuthLogoutHandler:
 
 
 def _safe_grok_error(exc: Exception) -> str:
+    code = str(getattr(exc, "code", "") or "")
+    if code == "xai_state_missing":
+        return "Grok manual login requires both code and state. Paste the full callback URL or query string."
+    if code == "xai_state_mismatch":
+        return "Grok manual login state did not match the active login session."
     text = str(exc) or "Grok OAuth request failed"
     if "callback" in text.lower() or "code=" in text.lower():
         return "Grok OAuth callback validation failed"
@@ -1017,7 +1022,7 @@ class GrokLoginManualHandler:
         if not callback_url:
             return json.dumps({
                 "status": "error",
-                "message": "callback_url or authorization_code required",
+                "message": "callback URL or query string with code and state required",
             }, ensure_ascii=False)
 
         try:

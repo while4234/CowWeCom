@@ -1,9 +1,10 @@
 # encoding:utf-8
 
 import os
+import json
 import sys
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -34,6 +35,70 @@ class TestGrokWebGray(unittest.TestCase):
         )
 
         self.assertIn("grok", providers)
+
+    def _assert_no_secret_fields(self, payload):
+        serialized = json.dumps(payload, ensure_ascii=False)
+        forbidden = (
+            "access_token",
+            "refresh_token",
+            "authorization_code",
+            "secret-code",
+            "code_verifier",
+            "Authorization",
+            "Bearer ",
+        )
+        for marker in forbidden:
+            self.assertNotIn(marker, serialized)
+
+    def test_grok_status_start_and_test_do_not_return_tokens_or_codes(self):
+        import channel.web.web_channel as web_channel
+
+        with patch.object(web_channel, "_require_auth", return_value=None), \
+                patch.object(web_channel.web, "header", return_value=None), \
+                patch(
+                    "integrations.hermes_xai.auth.get_xai_oauth_status",
+                    return_value={
+                        "logged_in": True,
+                        "provider": "xai-oauth",
+                        "base_url": "https://api.x.ai/v1",
+                        "email": "",
+                        "expires_at": 0,
+                        "needs_reauth": False,
+                    },
+                ):
+            status_payload = json.loads(web_channel.GrokStatusHandler().GET())
+
+        self._assert_no_secret_fields(status_payload)
+
+        with patch.object(web_channel, "_require_auth", return_value=None), \
+                patch.object(web_channel.web, "header", return_value=None), \
+                patch(
+                    "integrations.hermes_xai.auth.start_xai_oauth_login",
+                    return_value={
+                        "authorize_url": "https://auth.x.ai/oauth2/auth?<redacted>",
+                        "state": "pending",
+                        "redirect_uri": "http://127.0.0.1:56121/callback",
+                        "manual_paste_supported": True,
+                    },
+                ):
+            start_payload = json.loads(web_channel.GrokLoginStartHandler().POST())
+
+        self._assert_no_secret_fields(start_payload)
+
+        with patch.object(web_channel, "_require_auth", return_value=None), \
+                patch.object(web_channel.web, "header", return_value=None), \
+                patch(
+                    "integrations.hermes_xai.xai_http.resolve_xai_http_credentials",
+                    return_value={
+                        "api_key": "access_token_secret",
+                        "provider": "xai-oauth",
+                        "auth_mode": "oauth_pkce",
+                        "base_url": "https://api.x.ai/v1",
+                    },
+                ):
+            test_payload = json.loads(web_channel.GrokTestHandler().POST())
+
+        self._assert_no_secret_fields(test_payload)
 
 
 if __name__ == "__main__":

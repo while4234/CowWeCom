@@ -108,7 +108,8 @@ class AgentLLMModel(LLMModel):
 
     @property
     def model(self):
-        return get_effective_model()
+        raw_model = get_effective_model()
+        return self._resolve_model_for_bot_type(self._resolve_bot_type(raw_model))
 
     @model.setter
     def model(self, value):
@@ -146,12 +147,23 @@ class AgentLLMModel(LLMModel):
                 return btype
         return const.OPENAI
 
+    @staticmethod
+    def _is_grok_bot_type(bot_type: str) -> bool:
+        return str(bot_type or "").strip().lower() in {const.GROK, const.XAI}
+
+    def _resolve_model_for_bot_type(self, cur_bot_type: str, requested_model: Optional[str] = None) -> str:
+        if self._is_grok_bot_type(cur_bot_type):
+            model = conf().get("grok_model") or const.GROK_4_3
+            return str(model or const.GROK_4_3).strip() or const.GROK_4_3
+        return requested_model or get_effective_model()
+
     @property
     def bot(self):
         """Lazy load the bot, re-create when model or bot_type changes"""
         from models.bot_factory import create_bot
-        cur_model = self.model
-        cur_bot_type = self._resolve_bot_type(cur_model)
+        raw_model = get_effective_model()
+        cur_bot_type = self._resolve_bot_type(raw_model)
+        cur_model = self._resolve_model_for_bot_type(cur_bot_type)
         if self._bot is None or self._bot_model != cur_model or getattr(self, '_bot_type', None) != cur_bot_type:
             self._bot = create_bot(cur_bot_type)
             self._bot = add_openai_compatible_support(self._bot)
@@ -167,12 +179,13 @@ class AgentLLMModel(LLMModel):
             # For non-streaming calls, we'll use the existing reply method
             # This is a simplified implementation
             if hasattr(self.bot, 'call_with_tools'):
+                cur_bot_type = getattr(self, '_bot_type', None) or self._resolve_bot_type(get_effective_model())
                 # Use tool-enabled call if available
                 kwargs = {
                     'messages': request.messages,
                     'tools': getattr(request, 'tools', None),
                     'stream': False,
-                    'model': getattr(request, 'model', None) or self.model
+                    'model': self._resolve_model_for_bot_type(cur_bot_type, getattr(request, 'model', None))
                 }
                 # Only pass max_tokens if it's explicitly set
                 if request.max_tokens is not None:
@@ -247,6 +260,7 @@ class AgentLLMModel(LLMModel):
         """
         try:
             if hasattr(self.bot, 'call_with_tools'):
+                cur_bot_type = getattr(self, '_bot_type', None) or self._resolve_bot_type(get_effective_model())
                 # Use tool-enabled streaming call if available
                 # Extract system prompt if present
                 system_prompt = getattr(request, 'system', None)
@@ -256,7 +270,7 @@ class AgentLLMModel(LLMModel):
                     'messages': request.messages,
                     'tools': getattr(request, 'tools', None),
                     'stream': True,
-                    'model': getattr(request, 'model', None) or self.model
+                    'model': self._resolve_model_for_bot_type(cur_bot_type, getattr(request, 'model', None))
                 }
 
                 # Only pass max_tokens if explicitly set, let the bot use its default

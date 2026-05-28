@@ -1,6 +1,8 @@
 {
   "channel_type": "wecom_bot",
+  "bot_type": "",
   "model": "deepseek-v4-flash",
+  "_grok_enable_note": "To enable Grok Chat set bot_type to grok or xai and keep grok_model as the xAI model, for example: {\"bot_type\":\"grok\",\"grok_model\":\"grok-4.3\"}.",
   "deepseek_api_key": "",
   "deepseek_api_base": "https://api.deepseek.com/v1",
   "qianfan_api_key": "",
@@ -18,6 +20,7 @@
   "grok_api_base": "https://api.x.ai/v1",
   "grok_auth_file": "",
   "grok_auth_prefer_oauth": true,
+  "grok_oauth_accept_bare_code": false,
   "grok_gray_enabled": false,
   "grok_import_hermes_auth": false,
   "grok_wire_api": "responses",

@@ -164,6 +164,7 @@ available_setting = {
     "grok_api_base": "https://api.x.ai/v1",  # xAI API base; OAuth bearer is only sent to xAI origins
     "grok_auth_file": "",  # Grok OAuth auth store; defaults to data/auth/grok_auth.json
     "grok_auth_prefer_oauth": True,  # Prefer Web OAuth tokens before API key fallback
+    "grok_oauth_accept_bare_code": False,  # Optional legacy manual paste: accept bare authorization code only with active PKCE login
     "grok_gray_enabled": False,  # Show Grok in normal Web model provider selection only for gray testing
     "grok_import_hermes_auth": False,  # Reserved for future read-only Hermes auth import
     "grok_wire_api": "responses",  # Grok uses Responses API
@@ -180,7 +181,7 @@ available_setting = {
     "proxy": "",  # openai使用的代理
     # chatgpt模型， 当use_azure_chatgpt为true时，其名称为Azure上model deployment名称
     "model": "gpt-3.5-turbo",  # 可选择: gpt-4o, pt-4o-mini, gpt-4-turbo, claude-3-sonnet, wenxin, moonshot, qwen-turbo, xunfei, glm-4, minimax, gemini等模型，全部可选模型详见common/const.py文件
-    "bot_type": "",  # 可选配置，使用兼容openai格式的三方服务时候，需填"openai"或"custom"（custom模式下切换模型不会自动切换bot_type）。bot具体名称详见common/const.py文件，如不填根据model名称判断
+    "bot_type": "",  # 可选配置；启用 Grok 时填 "grok" 或 "xai" 并用 grok_model 控制 xAI 模型；兼容 OpenAI 三方服务可填 "openai" 或 "custom"。如不填根据 model 名称判断
     "use_azure_chatgpt": False,  # 是否使用azure的chatgpt
     "azure_deployment_id": "",  # azure 模型部署名称
     "azure_api_version": "",  # azure api版本

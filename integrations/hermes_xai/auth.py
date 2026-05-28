@@ -368,7 +368,20 @@ def _complete_current_login(callback: Dict[str, Any]) -> dict:
                 code="xai_login_session_missing",
             )
         if callback.get("manual_code") and not callback.get("state"):
+            if not _accept_bare_manual_code():
+                raise AuthError(
+                    "Grok manual login requires the full callback URL or a query string with code and state.",
+                    code="xai_state_missing",
+                )
+            if session.status != "pending" or not session.code_verifier:
+                raise AuthError(
+                    "No active Grok login session. Start login again.",
+                    code="xai_login_session_missing",
+                )
             callback = dict(callback)
+            # Optional legacy path for Grok Build's bare-code screen. It is
+            # safe only while bound to the current in-memory PKCE session; never
+            # log the pasted code or code_verifier.
             callback["state"] = session.state
         return _complete_login_session(session, callback)
 
@@ -378,11 +391,12 @@ def _complete_login_session(session: _LoginSession, callback: Dict[str, Any]) ->
 
     if session.status == "complete":
         return get_xai_oauth_status()
-    if callback.get("error"):
-        detail = str(callback.get("error_description") or callback.get("error") or "authorization failed")
-        raise AuthError(f"xAI authorization failed: {detail}", code="xai_authorization_failed")
+    if not callback.get("state"):
+        raise AuthError("xAI authorization failed: missing state.", code="xai_state_missing")
     if callback.get("state") != session.state:
         raise AuthError("xAI authorization failed: state mismatch.", code="xai_state_mismatch")
+    if callback.get("error"):
+        raise AuthError("xAI authorization failed. Please retry login.", code="xai_authorization_failed")
     code = str(callback.get("code") or "").strip()
     if not code:
         raise AuthError("xAI authorization failed: missing authorization code.", code="xai_code_missing")
@@ -601,6 +615,10 @@ def _parse_callback_query(query: str) -> Dict[str, Any]:
         "error": params.get("error", [None])[0],
         "error_description": params.get("error_description", [None])[0],
     }
+
+
+def _accept_bare_manual_code() -> bool:
+    return bool(conf().get("grok_oauth_accept_bare_code", False))
 
 
 def _shutdown_callback_server(server: Optional[ThreadingHTTPServer], thread: Optional[threading.Thread]) -> None:
