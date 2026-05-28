@@ -10,6 +10,7 @@ never be written here.
 import hashlib
 import json
 import os
+import re
 import threading
 from collections import deque
 from datetime import datetime, timezone
@@ -169,6 +170,7 @@ def get_cache_usage_report(limit: int = 50) -> Dict[str, Any]:
     tool_compacted_result_count = sum(_to_int(r.get("tool_compacted_result_count")) for r in records)
 
     user_aliases = _user_aliases(records)
+    user_aliases.update(_configured_user_aliases(records))
     user_labels = _known_user_labels(records)
     by_model: Dict[str, Dict[str, Any]] = {}
     by_user: Dict[str, Dict[str, Any]] = {}
@@ -526,6 +528,89 @@ def _configured_user_labels() -> Dict[str, str]:
     return labels
 
 
+def _configured_user_aliases(records: List[Dict[str, Any]]) -> Dict[str, str]:
+    pairs = _configured_user_alias_pairs()
+    if not pairs:
+        return {}
+
+    known_hashes = {
+        _safe_text(record.get("user_hash"))
+        for record in records
+        if _safe_text(record.get("user_hash"))
+    }
+    label_hashes: Dict[str, set] = {}
+    totals: Dict[str, int] = {}
+    for record in records:
+        user_hash = _safe_text(record.get("user_hash"))
+        if not user_hash:
+            continue
+        totals[user_hash] = totals.get(user_hash, 0) + _to_int(record.get("total_tokens"))
+        label = _safe_text(record.get("user_label"), max_len=160)
+        if label and not _looks_internal_user_label(label):
+            label_hashes.setdefault(label.casefold(), set()).add(user_hash)
+
+    aliases: Dict[str, str] = {}
+    for alias, canonical in pairs:
+        canonical_hashes = _resolve_alias_hashes(canonical, known_hashes, label_hashes)
+        canonical_hash = _choose_alias_canonical(canonical_hashes, totals)
+        if not canonical_hash:
+            continue
+        for alias_hash in _resolve_alias_hashes(alias, known_hashes, label_hashes):
+            if alias_hash and alias_hash != canonical_hash:
+                aliases[alias_hash] = canonical_hash
+    return aliases
+
+
+def _configured_user_alias_pairs() -> List[tuple[str, str]]:
+    try:
+        from config import conf
+    except Exception:
+        return []
+
+    aliases = conf().get("llm_usage_user_aliases", {}) or {}
+    pairs: List[tuple[str, str]] = []
+    if isinstance(aliases, dict):
+        for alias, canonical in aliases.items():
+            alias_text = _safe_text(alias, max_len=160)
+            canonical_text = _safe_text(canonical, max_len=160)
+            if alias_text and canonical_text:
+                pairs.append((alias_text, canonical_text))
+    elif isinstance(aliases, list):
+        for item in aliases:
+            if not isinstance(item, dict):
+                continue
+            alias_text = _safe_text(item.get("alias"), max_len=160)
+            canonical_text = _safe_text(item.get("canonical"), max_len=160)
+            if alias_text and canonical_text:
+                pairs.append((alias_text, canonical_text))
+    return pairs
+
+
+def _resolve_alias_hashes(value: str, known_hashes: set, label_hashes: Dict[str, set]) -> set:
+    text = _safe_text(value, max_len=160)
+    if not text:
+        return set()
+    hashes = set(label_hashes.get(text.casefold(), set()))
+    if text in known_hashes or _looks_like_usage_hash(text):
+        hashes.add(text)
+    hashes.add(_hash_value(text))
+    if ":" not in text:
+        for prefix in ("weixin:", "wecom_bot:"):
+            hashes.add(_hash_value(f"{prefix}{text}"))
+    return hashes
+
+
+def _choose_alias_canonical(candidates: set, totals: Dict[str, int]) -> str:
+    if not candidates:
+        return ""
+    return sorted(candidates, key=lambda item: (totals.get(item, 0), item), reverse=True)[0]
+
+
+def _looks_like_usage_hash(value: Any) -> bool:
+    text = _safe_text(value)
+    return bool(re.fullmatch(r"[0-9a-f]{16}", text))
+
+
 def _user_key(record: Dict[str, Any], aliases: Optional[Dict[str, str]] = None) -> str:
     key = str(
         record.get("user_hash")
@@ -537,12 +622,12 @@ def _user_key(record: Dict[str, Any], aliases: Optional[Dict[str, str]] = None) 
 
 
 def _record_user_label(record: Dict[str, Any], labels: Dict[str, str], user_key: str) -> str:
+    if labels.get(user_key):
+        return labels[user_key]
     for key_name in ("user_hash", "session_hash"):
         key = _safe_text(record.get(key_name))
         if key and labels.get(key):
             return labels[key]
-    if labels.get(user_key):
-        return labels[user_key]
     label = _safe_text(record.get("user_label"), max_len=160)
     if label and not _looks_internal_user_label(label):
         return label

@@ -135,6 +135,7 @@ available_setting = {
     "llm_usage_tracking": True,  # Persist token/cache usage counters for the web dashboard
     "llm_usage_history_limit": 2000,  # Max local usage records to keep
     "llm_usage_user_labels": {},  # Optional usage-dashboard display labels keyed by actor id, raw id, or telemetry hash
+    "llm_usage_user_aliases": {},  # Optional usage-dashboard merge aliases: alias id/hash/label -> canonical id/hash/label
     "project_optimizer_evidence_enabled": True,  # Local-only evidence for CowWeCom project optimization
     "project_optimizer_raw_capture_enabled": True,  # Store raw model/user inputs locally until optimizer consumes them
     "project_optimizer_preserve_temp_scripts": True,  # Snapshot tmp/workspace scripts into ignored optimizer archive
@@ -196,7 +197,7 @@ available_setting = {
     "image_recognition_followup_wait_seconds": 6,
     "image_recognition_workers": 2,
     "image_recognition_max_tokens": 700,
-    "image_recognition_prompt": "Identify this image for a later chat follow-up. Keep it natural and short. Mention the main subject, visible action or scene, important text/OCR, and uncertainty if needed. Do not use report headings or formal sections unless the image itself is a document where key text matters.",
+    "image_recognition_prompt": "Identify this image for a later chat follow-up. Keep it natural and short. Mention the main subject, visible action or scene, important text/OCR, and uncertainty if needed. Do not use report headings or formal sections unless the image itself is a document where key text matters. If it is a bill, payment receipt, or order detail, extract the visible date, exact amount, platform, merchant, item, and payment method. Preserve the exact amount and decimal places shown in the screenshot; do not estimate or round it to an integer. If unclear, say it is uncertain instead of guessing.",
     "single_chat_reply_prefix": "[bot] ",  # 私聊时自动回复的前缀，用于区分真人
     "single_chat_reply_suffix": "",  # 私聊时自动回复的后缀，\n 可以换行
     "group_chat_prefix": ["@bot"],  # 群聊时包含该前缀则会触发机器人回复

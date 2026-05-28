@@ -637,14 +637,14 @@ def extract_amount_cents_from_text(raw_text: str) -> int | None:
     if not text:
         return None
     preferred_patterns = (
-        r"(?:实付款|实付金额|实际支付|支付金额|订单金额|付款金额|金额)\s*[:：]?\s*[¥￥]?\s*(-?\d+(?:\.\d+)?)",
+        r"(?:实付款|实付金额|实付|实际支付|支付金额|订单金额|付款金额|成交价|合计|金额)\s*[:：]?\s*[¥￥]?\s*(-?\d+(?:\.\d+)?)",
         r"[¥￥]\s*(-?\d+(?:\.\d+)?)",
         r"(-?\d+(?:\.\d+)?)\s*(?:元|CNY|人民币)",
     )
     for pattern in preferred_patterns:
         matches = re.findall(pattern, text, flags=re.IGNORECASE)
         if matches:
-            return amount_to_cents(matches[-1])
+            return amount_to_cents(matches[0])
     numbers = re.findall(r"-?\d+(?:\.\d+)?", text)
     money_like = [number for number in numbers if "." in number or len(number) <= 5]
     if money_like:
@@ -1128,7 +1128,7 @@ def fields_from_answer_text(answer_text: str) -> dict[str, Any]:
             remainder = remainder.replace(marker, "")
         if not re.sub(r"[，,。；;：:\s]+", "", remainder):
             return fields
-    amount = extract_amount_cents_from_text(text)
+    amount = extract_amount_cents_from_text(text) if answer_text_has_explicit_amount(text) else None
     if amount is not None:
         fields["amount_cents"] = amount
     category = next(
@@ -1182,6 +1182,19 @@ def fields_from_answer_text(answer_text: str) -> dict[str, Any]:
         if inferred_category:
             fields["category"] = inferred_category
     return fields
+
+
+def answer_text_has_explicit_amount(text: str) -> bool:
+    compact = normalize_text(text)
+    if not compact:
+        return False
+    if re.fullmatch(r"[¥￥]?\s*-?\d+(?:\.\d+)?\s*(?:元|块|块钱|CNY|人民币)?", compact, flags=re.IGNORECASE):
+        return True
+    amount_markers = (
+        "金额", "价钱", "价格", "实付", "付款", "支付", "成交价", "合计", "改成", "更正为",
+        "¥", "￥",
+    )
+    return contains_any(compact, amount_markers)
 
 
 def bill_missing_fields(payload: dict[str, Any], transaction: dict[str, Any] | None = None) -> list[str]:

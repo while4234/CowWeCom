@@ -107,6 +107,10 @@ _LEDGER_PERIOD_LABELS = {
 }
 _TOKEN_USAGE_LOCAL_MARKERS = ("本机", "本地", "本项目", "local", "cowagent", "cowwechat", "cowwecom")
 _TOKEN_USAGE_QUERY_MARKERS = ("查", "查询", "统计", "汇总", "看一下", "看下", "多少", "用了", "用量", "消耗")
+_TOKEN_USAGE_DETAIL_MARKERS = (
+    "每个用户", "每位用户", "每个人", "每人", "各用户", "分用户",
+    "分别", "明细", "详细", "排名", "per-user", "by user",
+)
 _TOKEN_USAGE_EXCLUDED_CONTEXT = (
     "后端",
     "额度",
@@ -221,7 +225,11 @@ class CowCliPlugin(Plugin):
     def _should_remember_for_agent_followup(cmd: str, args: str) -> bool:
         parts = str(args or "").strip().split(None, 1)
         first = parts[0].lower() if parts else ""
-        return (cmd == "updates" and first == "summary") or (cmd == "skill" and first == "answer")
+        return (
+            (cmd == "updates" and first == "summary")
+            or (cmd == "skill" and first == "answer")
+            or cmd == "tokens"
+        )
 
     @classmethod
     def _direct_social_target(cls, text: str) -> str:
@@ -522,7 +530,9 @@ class CowCliPlugin(Plugin):
             return None
         if not any(marker in compact or marker in normalized for marker in _TOKEN_USAGE_QUERY_MARKERS):
             return None
-        return "tokens", self._token_usage_period_from_text(normalized, compact)
+        period = self._token_usage_period_from_text(normalized, compact)
+        detail = any(marker in compact or marker in normalized for marker in _TOKEN_USAGE_DETAIL_MARKERS)
+        return "tokens", f"{period} details" if detail else period
 
     @staticmethod
     def _token_usage_period_from_text(normalized: str, compact: str) -> str:
@@ -846,6 +856,7 @@ class CowCliPlugin(Plugin):
 
     def _cmd_tokens(self, args: str, e_context: EventContext, session_id: str = "", **_) -> str:
         period = self._token_usage_arg_period(args)
+        detail_requested = self._token_usage_args_request_detail(args)
         is_admin = self._is_admin_context(e_context)
         if self._token_usage_args_request_all_users(args) and not is_admin:
             return self._permission_denied_text("tokens --all-users")
@@ -868,7 +879,7 @@ class CowCliPlugin(Plugin):
                 logger.warning(f"[CowCli] local token usage query failed: {exc}")
                 return f"本地 token 用量查询失败: {str(exc)[:1000]}"
 
-        return self._format_token_usage_reply(snapshots, scope_all)
+        return self._format_token_usage_reply(snapshots, scope_all, show_user_details=scope_all or detail_requested)
 
     @staticmethod
     def _token_usage_arg_period(args: str) -> str:
@@ -885,6 +896,16 @@ class CowCliPlugin(Plugin):
         raw = str(args or "").strip().lower()
         parts = {part.strip() for part in re.split(r"[\s,，]+", raw) if part.strip()}
         return bool(parts & {"--all-users", "all-users", "users", "所有用户", "全员"})
+
+    @staticmethod
+    def _token_usage_args_request_detail(args: str) -> bool:
+        raw = str(args or "").strip().lower()
+        compact = re.sub(r"[\s,，。?!？！；;:\"'`“”‘’（）()\[\]【】<>《》]+", "", raw)
+        parts = {part.strip() for part in re.split(r"[\s,，]+", raw) if part.strip()}
+        return bool(
+            parts & {"details", "detail", "users", "per-user", "by-user", "明细", "详细", "分别"}
+            or any(marker in compact for marker in _TOKEN_USAGE_DETAIL_MARKERS)
+        )
 
     @staticmethod
     def _project_root() -> str:
@@ -933,8 +954,10 @@ class CowCliPlugin(Plugin):
             "--period",
             period,
             "--source",
-            "auto",
+            "llm-cache",
         ]
+        for alias, canonical in self._token_usage_user_aliases():
+            command.extend(["--user-alias", f"{alias}={canonical}"])
         if scope_all:
             command.append("--all")
         else:
@@ -962,7 +985,32 @@ class CowCliPlugin(Plugin):
             raise RuntimeError("token_usage.py returned an invalid payload")
         return payload
 
-    def _format_token_usage_reply(self, snapshots: list, scope_all: bool) -> str:
+    @staticmethod
+    def _token_usage_user_aliases() -> list:
+        try:
+            from config import conf
+
+            aliases = conf().get("llm_usage_user_aliases", {}) or {}
+        except Exception:
+            aliases = {}
+        pairs = []
+        if isinstance(aliases, dict):
+            for alias, canonical in aliases.items():
+                alias_text = str(alias or "").strip()
+                canonical_text = str(canonical or "").strip()
+                if alias_text and canonical_text:
+                    pairs.append((alias_text, canonical_text))
+        elif isinstance(aliases, list):
+            for item in aliases:
+                if not isinstance(item, dict):
+                    continue
+                alias_text = str(item.get("alias") or "").strip()
+                canonical_text = str(item.get("canonical") or "").strip()
+                if alias_text and canonical_text:
+                    pairs.append((alias_text, canonical_text))
+        return pairs
+
+    def _format_token_usage_reply(self, snapshots: list, scope_all: bool, show_user_details: bool = False) -> str:
         lines = [
             "本地 CowAgent/CowWechat token 用量",
             "统计口径：本机运行日志，按北京时间自然日/自然月；不是 CAPI/Codex 后台额度。",
@@ -977,7 +1025,14 @@ class CowCliPlugin(Plugin):
             summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
             lines.extend(["", f"{label}", *self._format_token_usage_summary_lines(summary)])
             if scope_all and isinstance(payload.get("users"), dict):
-                lines.append(f"- 已记录用户数: {len(payload.get('users') or {})}")
+                identified_user_count = self._token_usage_identified_user_count(payload.get("users") or {})
+                unattributed_count = max(len(payload.get("users") or {}) - identified_user_count, 0)
+                count_label = "历史有用量用户数" if str(payload.get("period") or "") == "all" else f"{label}有用量用户数"
+                lines.append(f"- {count_label}: {identified_user_count}")
+                if unattributed_count:
+                    lines.append(f"- 未归属/系统身份数: {unattributed_count}")
+                if show_user_details:
+                    lines.extend(self._format_token_usage_user_lines(payload.get("users") or {}))
             source = payload.get("source")
             if source:
                 lines.append(f"- 来源: {source}")
@@ -997,6 +1052,81 @@ class CowCliPlugin(Plugin):
             f"- 缓存命中: {cls._format_int(cached_tokens)} ({cache_rate:.1f}%)",
             f"- 推理 tokens: {cls._format_int(summary.get('reasoning_tokens'))}",
         ]
+
+    @classmethod
+    def _format_token_usage_user_lines(cls, users: dict, limit: int = 20) -> list:
+        if not users:
+            return []
+        rows = []
+        unattributed = {
+            "events": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cached_tokens": 0,
+            "reasoning_tokens": 0,
+        }
+        for uhash, payload in users.items():
+            if not isinstance(payload, dict):
+                continue
+            label = str(payload.get("display_name") or "").strip()
+            if not label or cls._token_usage_is_system_identity(label, payload):
+                for key in unattributed:
+                    unattributed[key] += int(payload.get(key) or 0)
+                continue
+            rows.append((int(payload.get("total_tokens") or 0), label, payload))
+        rows.sort(key=lambda item: item[0], reverse=True)
+        lines = ["- 用户明细:"]
+        for _, label, payload in rows[:limit]:
+            lines.append(
+                "  - "
+                f"{label}: 请求 {cls._format_int(payload.get('events'))}，"
+                f"输入 {cls._format_int(payload.get('input_tokens'))}，"
+                f"输出 {cls._format_int(payload.get('output_tokens'))}，"
+                f"总计 {cls._format_int(payload.get('total_tokens'))}，"
+                f"缓存 {cls._format_int(payload.get('cached_tokens'))}，"
+                f"推理 {cls._format_int(payload.get('reasoning_tokens'))}"
+            )
+        if len(rows) > limit:
+            lines.append(f"  - 其余 {len(rows) - limit} 个低用量身份已省略。")
+        if unattributed["events"]:
+            lines.append(
+                "  - "
+                f"未归属/系统: 请求 {cls._format_int(unattributed.get('events'))}，"
+                f"输入 {cls._format_int(unattributed.get('input_tokens'))}，"
+                f"输出 {cls._format_int(unattributed.get('output_tokens'))}，"
+                f"总计 {cls._format_int(unattributed.get('total_tokens'))}，"
+                f"缓存 {cls._format_int(unattributed.get('cached_tokens'))}，"
+                f"推理 {cls._format_int(unattributed.get('reasoning_tokens'))}"
+            )
+        return lines
+
+    @classmethod
+    def _token_usage_identified_user_count(cls, users: dict) -> int:
+        return sum(
+            1
+            for payload in users.values()
+            if (
+                isinstance(payload, dict)
+                and str(payload.get("display_name") or "").strip()
+                and not cls._token_usage_is_system_identity(
+                    str(payload.get("display_name") or "").strip(),
+                    payload,
+                )
+            )
+        )
+
+    @staticmethod
+    def _token_usage_is_system_identity(label: str, payload: dict) -> bool:
+        lowered = str(label or "").strip().lower()
+        if any(marker in lowered for marker in ("benchmark", "wecom-user-image", "system", "test-user")):
+            return True
+        channels = payload.get("by_channel") if isinstance(payload, dict) else {}
+        if isinstance(channels, dict) and channels:
+            channel_names = {str(name).lower() for name in channels}
+            if channel_names <= {"voice_mode_benchmark", "unknown", "web"} and not lowered:
+                return True
+        return False
 
     @staticmethod
     def _format_int(value) -> str:

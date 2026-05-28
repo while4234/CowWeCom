@@ -124,6 +124,59 @@ class TestTokenUsageTrackerSkill(unittest.TestCase):
             self.assertEqual(summary["events"], 2)
             self.assertEqual(summary["input_tokens"], 500)
 
+    def test_summary_merges_configured_user_aliases_by_display_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "token-usage-tracker"
+            cache_file = root / "llm_cache_usage.jsonl"
+            cache_file.write_text(
+                "\n".join(
+                    json.dumps(record)
+                    for record in [
+                        {
+                            "timestamp": "2026-05-22T03:36:27+00:00",
+                            "user_hash": "canonicalhash123",
+                            "user_label": "LiuHao",
+                            "prompt_tokens": 100,
+                            "completion_tokens": 20,
+                            "total_tokens": 120,
+                        },
+                        {
+                            "timestamp": "2026-05-22T03:37:27+00:00",
+                            "user_hash": "aliashash1234567",
+                            "user_label": "Rondo0323",
+                            "prompt_tokens": 200,
+                            "completion_tokens": 30,
+                            "total_tokens": 230,
+                        },
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            args = token_usage.build_parser().parse_args([
+                "summary",
+                "--all",
+                "--source",
+                "llm-cache",
+                "--data-dir",
+                str(data_dir),
+                "--llm-cache-file",
+                str(cache_file),
+                "--user-alias",
+                "Rondo0323=LiuHao",
+            ])
+            events, source, _ = token_usage.events_for_summary(token_usage.get_data_dir(args), args)
+            summary = token_usage.summarize_events(events)
+            meta = token_usage.user_meta_from_events(events)
+
+            self.assertEqual(source, "llm-cache")
+            self.assertEqual({event["user_hash"] for event in events}, {"canonicalhash123"})
+            self.assertEqual(summary["events"], 2)
+            self.assertEqual(summary["total_tokens"], 350)
+            self.assertEqual(meta["canonicalhash123"]["display_name"], "LiuHao")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -285,6 +285,42 @@ class TestLLMUsageTracker(unittest.TestCase):
 
         self.assertEqual(report["users"][0]["user_label"], "wechat-display-name")
 
+    def test_cache_report_merges_configured_user_aliases(self):
+        records = [
+            {
+                "timestamp": "2026-05-22T01:00:00+00:00",
+                "model": "gpt-5.5",
+                "channel_type": "wecom_bot",
+                "user_hash": "aaaaaaaaaaaaaaaa",
+                "user_label": "LiuHao",
+                "prompt_tokens": 1000,
+                "completion_tokens": 100,
+                "total_tokens": 1100,
+            },
+            {
+                "timestamp": "2026-05-22T01:01:00+00:00",
+                "model": "gpt-5.5",
+                "channel_type": "weixin",
+                "user_hash": "bbbbbbbbbbbbbbbb",
+                "user_label": "Rondo0323",
+                "prompt_tokens": 3000,
+                "completion_tokens": 200,
+                "total_tokens": 3200,
+            },
+        ]
+
+        with (
+            patch.object(llm_usage_tracker, "_read_records", return_value=records),
+            patch.object(llm_usage_tracker, "_configured_user_alias_pairs", return_value=[("Rondo0323", "LiuHao")]),
+        ):
+            report = get_cache_usage_report(limit=10)
+
+        self.assertEqual(len(report["users"]), 1)
+        self.assertEqual(report["users"][0]["user_key"], "aaaaaaaaaaaaaaaa")
+        self.assertEqual(report["users"][0]["user_label"], "LiuHao")
+        self.assertEqual(report["users"][0]["total_tokens"], 4300)
+        self.assertEqual(report["users"][0]["requests"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -694,6 +694,10 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertEqual(plugin._parse_command("查询本地 CowAgent token 用量"), ("tokens", "today"))
         self.assertEqual(plugin._parse_command("统计本地 CowWechat 本月 token 用量"), ("tokens", "month"))
         self.assertEqual(
+            plugin._parse_command("查询今日本机每个用户消耗 token 的详细记录"),
+            ("tokens", "today details"),
+        )
+        self.assertEqual(
             parse_backend_natural_command("查询当前后端 token 使用量"),
             ("backend", "quota-current"),
         )
@@ -718,7 +722,17 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
                     "cached_tokens": 100,
                     "reasoning_tokens": 20,
                 },
-                "users": {"userhash12345678": {}},
+                "users": {
+                    "userhash12345678": {
+                        "display_name": "LiuHao",
+                        "events": 2,
+                        "input_tokens": total,
+                        "output_tokens": 10,
+                        "total_tokens": total + 10,
+                        "cached_tokens": 100,
+                        "reasoning_tokens": 20,
+                    },
+                },
             }
             return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
 
@@ -729,10 +743,13 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertIn("北京时间", result)
         self.assertIn("今日", result)
         self.assertIn("累计", result)
+        self.assertIn("用户明细", result)
+        self.assertIn("LiuHao", result)
         self.assertEqual(len(calls), 2)
         for argv, kwargs in calls:
             self.assertEqual(argv[0], sys.executable)
             self.assertIn("token_usage.py", argv[1])
+            self.assertIn("llm-cache", argv)
             self.assertEqual(kwargs["env"]["PYTHONUTF8"], "1")
             self.assertIn("COW_WORKSPACE", kwargs["env"])
 

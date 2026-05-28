@@ -124,6 +124,19 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_bill_amount_prefers_exact_deal_price_over_later_rounded_summary(self):
+        self.assertEqual(ledger.extract_amount_cents_from_text("成交价 99.88 元，约 100 元"), 9988)
+        self.assertEqual(ledger.extract_amount_cents_from_text("成交价 ¥99.88 订单编号 123456789"), 9988)
+        self.assertEqual(ledger.extract_amount_cents_from_text("支付金额 ¥99.88"), 9988)
+
+    def test_bill_confirmation_does_not_override_amount_without_explicit_amount_marker(self):
+        fields = ledger.fields_from_answer_text("这是一个咸鱼账单，我买的是 100G 中转API的token")
+
+        self.assertNotIn("amount_cents", fields)
+
+        explicit = ledger.fields_from_answer_text("金额是 100")
+        self.assertEqual(explicit["amount_cents"], 10000)
+
     def test_record_accepts_model_normalized_occurred_at(self):
         with tempfile.TemporaryDirectory() as tmp:
             conn = self.open_temp_db(Path(tmp))

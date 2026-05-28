@@ -402,6 +402,13 @@ def add_read_source_args(parser: argparse.ArgumentParser) -> None:
         "--llm-cache-file",
         help="Override CowAgent llm_cache_usage.jsonl path. Default: <workspace>/data/llm_cache_usage.jsonl",
     )
+    parser.add_argument(
+        "--user-alias",
+        action="append",
+        default=[],
+        metavar="ALIAS=CANONICAL",
+        help="Merge usage for ALIAS into CANONICAL by user hash, raw id, or display label. May be repeated.",
+    )
 
 
 def print_json(obj: object) -> None:
@@ -479,14 +486,142 @@ def events_for_summary(data_dir: Path, args: argparse.Namespace) -> tuple[list[d
     cache_path = str(get_llm_cache_path(args)) if source in ("auto", "llm-cache", "both") else None
 
     if source == "token-tracker":
-        return token_events, "token-tracker", None
+        return apply_user_aliases(token_events, args), "token-tracker", None
     if source == "llm-cache":
-        return cache_events, "llm-cache", cache_path
+        return apply_user_aliases(cache_events, args), "llm-cache", cache_path
     if source == "both":
-        return token_events + cache_events, "both", cache_path
+        return apply_user_aliases(token_events + cache_events, args), "both", cache_path
     if token_events:
-        return token_events, "token-tracker", None
-    return cache_events, "llm-cache" if cache_events else "auto", cache_path
+        return apply_user_aliases(token_events, args), "token-tracker", None
+    return apply_user_aliases(cache_events, args), "llm-cache" if cache_events else "auto", cache_path
+
+
+def apply_user_aliases(events: list[dict], args: argparse.Namespace) -> list[dict]:
+    pairs = configured_user_alias_pairs(args)
+    if not pairs:
+        return events
+
+    known_hashes = {str(event.get("user_hash") or "") for event in events if event.get("user_hash")}
+    hashes_by_label: dict[str, set[str]] = {}
+    totals_by_hash: dict[str, int] = {}
+    labels_by_hash: dict[str, str] = {}
+    for event in events:
+        uhash = str(event.get("user_hash") or "")
+        if not uhash:
+            continue
+        totals_by_hash[uhash] = totals_by_hash.get(uhash, 0) + to_int(event.get("total_tokens"))
+        label = str(event.get("display_name") or "").strip()
+        if label:
+            hashes_by_label.setdefault(label.casefold(), set()).add(uhash)
+            labels_by_hash.setdefault(uhash, label)
+
+    alias_map: dict[str, str] = {}
+    canonical_labels: dict[str, str] = {}
+    for alias, canonical in pairs:
+        canonical_hashes = resolve_alias_hashes(canonical, known_hashes, hashes_by_label)
+        canonical_hash = choose_alias_canonical(canonical_hashes, totals_by_hash)
+        if not canonical_hash:
+            continue
+        canonical_label = canonical_label_for(canonical, canonical_hash, labels_by_hash)
+        if canonical_label:
+            canonical_labels[canonical_hash] = canonical_label
+        for alias_hash in resolve_alias_hashes(alias, known_hashes, hashes_by_label):
+            if alias_hash and alias_hash != canonical_hash:
+                alias_map[alias_hash] = canonical_hash
+
+    if not alias_map:
+        return events
+    merged: list[dict] = []
+    for event in events:
+        uhash = str(event.get("user_hash") or "")
+        canonical_hash = alias_map.get(uhash)
+        if not canonical_hash:
+            merged.append(event)
+            continue
+        item = dict(event)
+        item["user_hash"] = canonical_hash
+        if canonical_labels.get(canonical_hash):
+            item["display_name"] = canonical_labels[canonical_hash]
+        merged.append(item)
+    return merged
+
+
+def configured_user_alias_pairs(args: argparse.Namespace) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for raw in list(getattr(args, "user_alias", []) or []):
+        pairs.extend(parse_user_aliases(raw))
+    env_value = os.getenv("COW_LLM_USAGE_USER_ALIASES")
+    if env_value:
+        pairs.extend(parse_user_aliases(env_value))
+    return pairs
+
+
+def parse_user_aliases(raw: object) -> list[tuple[str, str]]:
+    if isinstance(raw, dict):
+        return [
+            (str(alias).strip(), str(canonical).strip())
+            for alias, canonical in raw.items()
+            if str(alias).strip() and str(canonical).strip()
+        ]
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return parse_user_aliases(parsed)
+    if isinstance(parsed, list):
+        pairs = []
+        for item in parsed:
+            if isinstance(item, dict):
+                alias = str(item.get("alias") or "").strip()
+                canonical = str(item.get("canonical") or "").strip()
+                if alias and canonical:
+                    pairs.append((alias, canonical))
+            else:
+                pairs.extend(parse_user_aliases(item))
+        return pairs
+    pairs = []
+    for part in re.split(r"[,;，；]+", text):
+        if "=" not in part:
+            continue
+        alias, canonical = part.split("=", 1)
+        alias = alias.strip()
+        canonical = canonical.strip()
+        if alias and canonical:
+            pairs.append((alias, canonical))
+    return pairs
+
+
+def resolve_alias_hashes(value: str, known_hashes: set[str], hashes_by_label: dict[str, set[str]]) -> set[str]:
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    hashes = set(hashes_by_label.get(text.casefold(), set()))
+    if text in known_hashes or re.fullmatch(r"[0-9a-f]{16}", text):
+        hashes.add(text)
+    hashes.add(user_hash(text))
+    if ":" not in text:
+        for prefix in ("weixin:", "wecom_bot:"):
+            hashes.add(user_hash(f"{prefix}{text}"))
+    return hashes
+
+
+def choose_alias_canonical(candidates: set[str], totals_by_hash: dict[str, int]) -> str:
+    if not candidates:
+        return ""
+    return sorted(candidates, key=lambda item: (totals_by_hash.get(item, 0), item), reverse=True)[0]
+
+
+def canonical_label_for(canonical: str, canonical_hash: str, labels_by_hash: dict[str, str]) -> str:
+    label = labels_by_hash.get(canonical_hash)
+    if label:
+        return label
+    if not re.fullmatch(r"[0-9a-f]{16}", str(canonical or "")):
+        return str(canonical or "").strip()
+    return ""
 
 
 def events_for_user_from_list(events: list[dict], uhash: str) -> list[dict]:
