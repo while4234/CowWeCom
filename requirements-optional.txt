@@ -3,6 +3,7 @@ pytest>=8.0 # local validation and regression tests
 
 #voice
 pydub>=0.25.1 # need ffmpeg
+audioop-lts>=0.2.2; python_version >= "3.13" # pydub audioop compatibility on Python 3.13+
 gTTS>=2.3.1 # google text to speech
 edge-tts # edge-tts
 elevenlabs==1.0.3 # elevenlabs TTS
@@ -24,7 +25,7 @@ python-pptx
 
 # browser tool
 playwright
-browser-use>=0.1.40
+browser-use==0.1.40 # later releases require aiohttp versions incompatible with the main service pin
 agentmesh-sdk[full]
 
 # image / QR / HTML analysis helpers
