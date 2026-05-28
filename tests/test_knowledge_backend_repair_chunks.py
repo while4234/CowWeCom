@@ -2,6 +2,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from agent.knowledge.backend import KnowledgeBackendConfig
 from agent.knowledge.backend.models import (
     DocumentPage,
@@ -127,6 +129,33 @@ def _visual_chunk(document, text="High-confidence visual summary."):
 def _visual_span(document, text="High-confidence visual summary."):
     return SourceSpan(
         id=f"span-{document.id}-visual",
+        document_id=document.id,
+        version_id=document.version_id,
+        source_file=document.source_path,
+        page_start=2,
+        page_end=2,
+        text=text,
+    )
+
+
+def _visual_chunk_with_ids(document, chunk_id, span_id, artifact_id, text="Visual append text"):
+    return KnowledgeChunk(
+        id=chunk_id,
+        document_id=document.id,
+        ordinal=99,
+        page_start=2,
+        page_end=2,
+        text=text,
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[span_id],
+        metadata={"source": "visual_analysis", "visual_scope": "page", "visual_artifact_id": artifact_id},
+    )
+
+
+def _visual_span_with_id(document, span_id, text="Visual append text"):
+    return SourceSpan(
+        id=span_id,
         document_id=document.id,
         version_id=document.version_id,
         source_file=document.source_path,
@@ -1034,6 +1063,230 @@ def test_save_document_commit_true_rolls_back_partial_writes_on_failure(tmp_path
         assert storage.get_source_span(old_span.id) is not None
         assert storage.get_source_span(new_span.id) is None
         assert not storage.list_entities(["ForcedFailure"])
+    finally:
+        storage.close()
+
+
+def test_append_visual_chunks_repeated_same_artifact_is_idempotent_without_orphans_or_duplicate_fts(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-visual-repeat", _pdf(tmp_path, "visual-repeat.pdf"))
+    artifact_id = "artifact-visual-repeat"
+    visual_chunk = _visual_chunk_with_ids(document, "chunk1", "span1", artifact_id, text="repeat visual text")
+    visual_span = _visual_span_with_id(document, "span1", text="repeat visual span")
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document, [], source_spans=[])
+        storage.upsert_visual_artifact(_visual_candidate(document, artifact_id=artifact_id))
+
+        first_ids = storage.append_visual_chunks(document.id, document.version_id, artifact_id, [visual_chunk], [visual_span])
+        second_ids = storage.append_visual_chunks(document.id, document.version_id, artifact_id, [visual_chunk], [visual_span])
+
+        assert first_ids == ["chunk1"]
+        assert second_ids == ["chunk1"]
+        chunk = storage.list_chunks(document.id)[0]
+        assert chunk.id == "chunk1"
+        assert chunk.source_span_ids == ["span1"]
+        assert storage.get_source_span("span1") is not None
+        assert storage.get_source_span("span1-repair-1") is None
+        with sqlite3.connect(str(db_path)) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM chunks WHERE id = 'chunk1'").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM source_spans WHERE id = 'span1'").fetchone()[0] == 1
+            assert conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM source_spans s
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM chunks c, json_each(c.source_span_ids) j
+                  WHERE j.value = s.id
+                )
+                """
+            ).fetchone()[0] == 0
+            if storage.fts5_available:
+                assert conn.execute("SELECT COUNT(*) FROM chunks_fts WHERE chunk_id = 'chunk1'").fetchone()[0] == 1
+            assert conn.execute(
+                "SELECT COUNT(*) FROM visual_artifact_chunks WHERE artifact_id = ? AND chunk_id = 'chunk1'",
+                (artifact_id,),
+            ).fetchone()[0] == 1
+    finally:
+        storage.close()
+
+
+def test_append_visual_chunks_remaps_conflict_without_overwriting_ordinary_chunk(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-visual-ordinary-conflict", _pdf(tmp_path, "visual-ordinary-conflict.pdf"))
+    ordinary_span = _ordinary_span(document, text="ordinary span text")
+    ordinary_chunk = KnowledgeChunk(
+        id="shared-chunk-id",
+        document_id=document.id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text="ordinary stable text",
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[ordinary_span.id],
+        metadata={"kind": "ordinary"},
+    )
+    artifact_id = "artifact-ordinary-conflict"
+    visual_span = _visual_span_with_id(document, "visual-span-shared-chunk", text="visual span text")
+    visual_chunk = _visual_chunk_with_ids(
+        document,
+        "shared-chunk-id",
+        visual_span.id,
+        artifact_id,
+        text="visual remapped text",
+    )
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document, [ordinary_chunk], source_spans=[ordinary_span])
+        storage.upsert_visual_artifact(_visual_candidate(document, artifact_id=artifact_id))
+
+        chunk_ids = storage.append_visual_chunks(document.id, document.version_id, artifact_id, [visual_chunk], [visual_span])
+
+        assert chunk_ids == ["shared-chunk-id-repair-1"]
+        chunks = {chunk.id: chunk for chunk in storage.list_chunks(document.id)}
+        assert chunks["shared-chunk-id"].text == "ordinary stable text"
+        assert chunks["shared-chunk-id"].source_span_ids == [ordinary_span.id]
+        assert chunks["shared-chunk-id"].metadata == {"kind": "ordinary"}
+        assert chunks["shared-chunk-id-repair-1"].text == "visual remapped text"
+        assert chunks["shared-chunk-id-repair-1"].source_span_ids == [visual_span.id]
+        assert storage.get_source_span(ordinary_span.id) is not None
+        assert storage.get_source_span(visual_span.id) is not None
+        with sqlite3.connect(str(db_path)) as conn:
+            assert conn.execute(
+                "SELECT chunk_id FROM visual_artifact_chunks WHERE artifact_id = ?",
+                (artifact_id,),
+            ).fetchall() == [("shared-chunk-id-repair-1",)]
+            if storage.fts5_available:
+                ordinary_fts = conn.execute(
+                    "SELECT text FROM chunks_fts WHERE chunk_id = 'shared-chunk-id'",
+                ).fetchall()
+                assert ordinary_fts == [("ordinary stable text",)]
+    finally:
+        storage.close()
+
+
+def test_append_visual_chunks_remaps_conflict_with_other_document_chunk(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    doc_a = _document("doc-chunk-conflict-a", _pdf(tmp_path, "chunk-conflict-a.pdf"))
+    doc_b = _document("doc-chunk-conflict-b", _pdf(tmp_path, "chunk-conflict-b.pdf"))
+    span_a = _ordinary_span(doc_a, text="doc a span text")
+    chunk_a = KnowledgeChunk(
+        id="shared-chunk-id",
+        document_id=doc_a.id,
+        ordinal=1,
+        page_start=1,
+        page_end=1,
+        text="doc a ordinary text",
+        kb_id=doc_a.kb_id,
+        version_id=doc_a.version_id,
+        source_span_ids=[span_a.id],
+    )
+    artifact_id = "artifact-doc-b-conflict"
+    visual_span = _visual_span_with_id(doc_b, "span-doc-b-visual", text="doc b visual span")
+    visual_chunk = _visual_chunk_with_ids(doc_b, "shared-chunk-id", visual_span.id, artifact_id, text="doc b visual text")
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(doc_a, [chunk_a], source_spans=[span_a])
+        storage.save_document(doc_b, [], source_spans=[])
+        storage.upsert_visual_artifact(_visual_candidate(doc_b, artifact_id=artifact_id))
+
+        chunk_ids = storage.append_visual_chunks(doc_b.id, doc_b.version_id, artifact_id, [visual_chunk], [visual_span])
+
+        assert chunk_ids == ["shared-chunk-id-repair-1"]
+        assert storage.list_chunks(doc_a.id)[0].id == "shared-chunk-id"
+        assert storage.list_chunks(doc_a.id)[0].text == "doc a ordinary text"
+        doc_b_chunks = storage.list_chunks(doc_b.id)
+        assert [chunk.id for chunk in doc_b_chunks] == ["shared-chunk-id-repair-1"]
+        with sqlite3.connect(str(db_path)) as conn:
+            assert conn.execute(
+                "SELECT chunk_id FROM visual_artifact_chunks WHERE artifact_id = ?",
+                (artifact_id,),
+            ).fetchall() == [("shared-chunk-id-repair-1",)]
+    finally:
+        storage.close()
+
+
+def test_append_visual_chunks_rolls_back_source_spans_when_chunk_insert_fails(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-visual-chunk-rollback", _pdf(tmp_path, "visual-chunk-rollback.pdf"))
+    artifact_id = "artifact-chunk-rollback"
+    visual_span = _visual_span_with_id(document, "span-rollback-visual", text="rollback span")
+    visual_chunk = _visual_chunk_with_ids(document, "chunk-rollback-visual", visual_span.id, artifact_id, text=None)
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document, [], source_spans=[])
+        storage.upsert_visual_artifact(_visual_candidate(document, artifact_id=artifact_id))
+
+        with pytest.raises(sqlite3.IntegrityError):
+            storage.append_visual_chunks(document.id, document.version_id, artifact_id, [visual_chunk], [visual_span])
+
+        assert storage.get_source_span(visual_span.id) is None
+        with sqlite3.connect(str(db_path)) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM chunks WHERE id = ?", (visual_chunk.id,)).fetchone()[0] == 0
+            assert conn.execute(
+                "SELECT COUNT(*) FROM visual_artifact_chunks WHERE chunk_id = ?",
+                (visual_chunk.id,),
+            ).fetchone()[0] == 0
+            if storage.fts5_available:
+                assert conn.execute("SELECT COUNT(*) FROM chunks_fts WHERE chunk_id = ?", (visual_chunk.id,)).fetchone()[0] == 0
+    finally:
+        storage.close()
+
+
+def test_append_visual_group_chunks_rolls_back_when_member_mapping_fails(tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-visual-group-rollback", _pdf(tmp_path, "visual-group-rollback.pdf"))
+    group_id = "group-rollback"
+    member_id = "member-artifact-fail"
+    group_span = _visual_span_with_id(document, "span-group-rollback", text="group rollback span")
+    group_chunk = KnowledgeChunk(
+        id="chunk-group-rollback",
+        document_id=document.id,
+        ordinal=99,
+        page_start=1,
+        page_end=2,
+        text="group rollback chunk",
+        kb_id=document.kb_id,
+        version_id=document.version_id,
+        source_span_ids=[group_span.id],
+        metadata={"source": "visual_analysis", "visual_scope": "group", "visual_group_id": group_id},
+    )
+    storage = KnowledgeStorage(db_path)
+    try:
+        storage.save_document(document, [], source_spans=[])
+        storage.conn.execute(
+            """
+            CREATE TRIGGER fail_visual_group_member_mapping
+            BEFORE INSERT ON visual_artifact_chunks
+            WHEN NEW.artifact_id = 'member-artifact-fail'
+            BEGIN
+              SELECT RAISE(ABORT, 'forced visual group mapping failure');
+            END
+            """
+        )
+        storage.conn.commit()
+
+        with pytest.raises(sqlite3.IntegrityError, match="forced visual group mapping failure"):
+            storage.append_visual_group_chunks(
+                document.id,
+                document.version_id,
+                group_id,
+                [member_id],
+                [group_chunk],
+                [group_span],
+            )
+
+        assert storage.get_source_span(group_span.id) is None
+        with sqlite3.connect(str(db_path)) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM chunks WHERE id = ?", (group_chunk.id,)).fetchone()[0] == 0
+            assert conn.execute(
+                "SELECT COUNT(*) FROM visual_artifact_chunks WHERE chunk_id = ?",
+                (group_chunk.id,),
+            ).fetchone()[0] == 0
+            if storage.fts5_available:
+                assert conn.execute("SELECT COUNT(*) FROM chunks_fts WHERE chunk_id = ?", (group_chunk.id,)).fetchone()[0] == 0
     finally:
         storage.close()
 

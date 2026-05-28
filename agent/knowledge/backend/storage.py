@@ -154,6 +154,9 @@ class KnowledgeStorage:
             raise
 
     def _rollback_save_document_savepoint(self, savepoint_name: str) -> None:
+        self._rollback_savepoint(savepoint_name)
+
+    def _rollback_savepoint(self, savepoint_name: str) -> None:
         try:
             self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
         except Exception:
@@ -728,6 +731,131 @@ class KnowledgeStorage:
             ids,
         ).fetchall()
         return {row["id"] for row in rows if row["id"]}
+
+    def _all_chunk_ids(self) -> Set[str]:
+        rows = self.conn.execute("SELECT id FROM chunks").fetchall()
+        return {row["id"] for row in rows if row["id"]}
+
+    def _existing_chunk_ids(self, chunk_ids: Iterable[str]) -> Set[str]:
+        ids = [chunk_id for chunk_id in dict.fromkeys(chunk_ids) if chunk_id]
+        if not ids:
+            return set()
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.conn.execute(f"SELECT id FROM chunks WHERE id IN ({placeholders})", ids).fetchall()
+        return {row["id"] for row in rows if row["id"]}
+
+    def _chunk_ids_for_artifact(self, artifact_id: str) -> Set[str]:
+        if not artifact_id:
+            return set()
+        rows = self.conn.execute(
+            "SELECT chunk_id FROM visual_artifact_chunks WHERE artifact_id = ?",
+            (artifact_id,),
+        ).fetchall()
+        return {row["chunk_id"] for row in rows if row["chunk_id"]}
+
+    def _visual_artifact_chunk_owners(self, chunk_ids: Iterable[str]) -> Dict[str, Set[str]]:
+        ids = [chunk_id for chunk_id in dict.fromkeys(chunk_ids) if chunk_id]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.conn.execute(
+            f"SELECT artifact_id, chunk_id FROM visual_artifact_chunks WHERE chunk_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        owners: Dict[str, Set[str]] = {}
+        for row in rows:
+            owners.setdefault(row["chunk_id"], set()).add(row["artifact_id"])
+        return owners
+
+    def _existing_chunk_rows(self, chunk_ids: Iterable[str]) -> Dict[str, sqlite3.Row]:
+        ids = [chunk_id for chunk_id in dict.fromkeys(chunk_ids) if chunk_id]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.conn.execute(
+            f"SELECT id, document_id, source_span_ids, metadata FROM chunks WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        return {row["id"]: row for row in rows if row["id"]}
+
+    def _delete_existing_visual_chunks_for_same_artifact_if_idempotent(
+        self,
+        artifact_id: str,
+        chunks: List[KnowledgeChunk],
+    ) -> Set[str]:
+        incoming_ids = [chunk.id for chunk in chunks if chunk.id]
+        existing_rows = self._existing_chunk_rows(incoming_ids)
+        if not existing_rows:
+            return set()
+        owner_rows = self._visual_artifact_chunk_owners(existing_rows)
+        direct_artifact_chunk_ids = self._chunk_ids_for_artifact(artifact_id)
+        delete_ids: List[str] = []
+        span_ids: List[str] = []
+        for chunk_id, row in existing_rows.items():
+            owners = owner_rows.get(chunk_id, set())
+            metadata = _loads(row["metadata"])
+            if not self._is_idempotent_visual_chunk_for_artifact(
+                chunk_id,
+                artifact_id,
+                metadata,
+                owners,
+                direct_artifact_chunk_ids,
+            ):
+                continue
+            delete_ids.append(chunk_id)
+            span_ids.extend(_loads(row["source_span_ids"]) or [])
+        if delete_ids:
+            self._delete_chunks_and_unreferenced_source_spans(delete_ids, span_ids, commit=False)
+        return set(existing_rows) - set(delete_ids)
+
+    def _is_idempotent_visual_chunk_for_artifact(
+        self,
+        chunk_id: str,
+        artifact_id: str,
+        metadata: Any,
+        owners: Set[str],
+        direct_artifact_chunk_ids: Set[str],
+    ) -> bool:
+        if not artifact_id or chunk_id not in direct_artifact_chunk_ids:
+            return False
+        if not isinstance(metadata, dict) or metadata.get("source") != "visual_analysis":
+            return False
+        scope = str(metadata.get("visual_scope") or "")
+        if scope == "group":
+            return str(metadata.get("visual_group_id") or "") == artifact_id
+        if scope == "page":
+            return str(metadata.get("visual_artifact_id") or "") == artifact_id
+        return owners == {artifact_id}
+
+    def _remap_incoming_chunk_id_conflicts(
+        self,
+        chunks: List[KnowledgeChunk],
+        protected_chunk_ids: Set[str],
+    ) -> List[KnowledgeChunk]:
+        seen: Set[str] = set()
+        incoming_ids = [chunk.id for chunk in chunks]
+        if not protected_chunk_ids and all(incoming_ids) and len(set(incoming_ids)) == len(incoming_ids):
+            return chunks
+        used_chunk_ids = self._all_chunk_ids()
+        remapped: List[KnowledgeChunk] = []
+        for chunk in chunks:
+            chunk_id = chunk.id
+            if chunk_id and chunk_id not in protected_chunk_ids and chunk_id not in seen:
+                remapped.append(chunk)
+                seen.add(chunk_id)
+                used_chunk_ids.add(chunk_id)
+                continue
+            base_id = chunk_id or f"visual-chunk-{uuid.uuid4().hex}"
+            index = 1
+            while True:
+                candidate = f"{base_id}-repair-{index}"
+                if candidate not in used_chunk_ids and candidate not in seen:
+                    break
+                index += 1
+            remapped.append(replace(chunk, id=candidate))
+            seen.add(candidate)
+            used_chunk_ids.add(candidate)
+        return remapped
 
     def _delete_chunks_and_unreferenced_source_spans(
         self,
@@ -1739,6 +1867,29 @@ class KnowledgeStorage:
         chunks: Iterable[KnowledgeChunk],
         spans: Iterable[SourceSpan],
     ) -> List[str]:
+        savepoint_name = f"append_visual_chunks_{uuid.uuid4().hex}"
+        self.conn.execute(f"SAVEPOINT {savepoint_name}")
+        try:
+            chunk_ids = self._append_visual_chunks_impl(document_id, version_id, artifact_id, chunks, spans)
+        except Exception:
+            self._rollback_savepoint(savepoint_name)
+            raise
+        try:
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return chunk_ids
+
+    def _append_visual_chunks_impl(
+        self,
+        document_id: str,
+        version_id: str,
+        artifact_id: str,
+        chunks: Iterable[KnowledgeChunk],
+        spans: Iterable[SourceSpan],
+    ) -> List[str]:
         chunks = list(chunks)
         spans = list(spans)
         if not chunks:
@@ -1749,6 +1900,7 @@ class KnowledgeStorage:
         for offset, chunk in enumerate(chunks):
             appended.append(replace(chunk, ordinal=next_ordinal + offset, version_id=chunk.version_id or version_id))
 
+        protected_chunk_ids = self._delete_existing_visual_chunks_for_same_artifact_if_idempotent(artifact_id, appended)
         existing_span_ids = self._existing_source_span_ids(span.id for span in spans)
         if existing_span_ids:
             appended, spans, _, _ = self._remap_incoming_source_span_conflicts(
@@ -1758,6 +1910,8 @@ class KnowledgeStorage:
                 [],
                 existing_span_ids,
             )
+        protected_chunk_ids |= self._existing_chunk_ids(chunk.id for chunk in appended)
+        appended = self._remap_incoming_chunk_id_conflicts(appended, protected_chunk_ids)
 
         self.conn.executemany(
             """
@@ -1789,7 +1943,7 @@ class KnowledgeStorage:
         )
         self.conn.executemany(
             """
-            INSERT OR REPLACE INTO chunks(
+            INSERT INTO chunks(
                 id, document_id, ordinal, page_start, page_end, text,
                 kb_id, version_id, section_path, clause_title, source_span_ids, entities, metadata
             )
@@ -1816,7 +1970,7 @@ class KnowledgeStorage:
         )
         self.conn.executemany(
             """
-            INSERT OR REPLACE INTO visual_artifact_chunks(artifact_id, chunk_id)
+            INSERT OR IGNORE INTO visual_artifact_chunks(artifact_id, chunk_id)
             VALUES (?, ?)
             """,
             [(artifact_id, chunk.id) for chunk in appended],
@@ -1824,6 +1978,10 @@ class KnowledgeStorage:
         if self.fts5_available:
             document = self.get_document(document_id)
             title = document.title if document else ""
+            chunk_ids = [chunk.id for chunk in appended if chunk.id]
+            if chunk_ids:
+                placeholders = ",".join("?" for _ in chunk_ids)
+                self.conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN ({placeholders})", chunk_ids)
             self.conn.executemany(
                 """
                 INSERT INTO chunks_fts(text, chunk_id, document_id, kb_id, title, section_path)
@@ -1834,7 +1992,6 @@ class KnowledgeStorage:
                     for chunk in appended
                 ],
             )
-        self.conn.commit()
         return [chunk.id for chunk in appended]
 
     def append_visual_group_chunks(
@@ -1846,17 +2003,28 @@ class KnowledgeStorage:
         chunks: Iterable[KnowledgeChunk],
         spans: Iterable[SourceSpan],
     ) -> List[str]:
-        chunk_ids = self.append_visual_chunks(document_id, version_id, group_id, chunks, spans)
-        artifact_ids = [artifact_id for artifact_id in artifact_ids if artifact_id]
-        if chunk_ids and artifact_ids:
-            self.conn.executemany(
-                """
-                INSERT OR REPLACE INTO visual_artifact_chunks(artifact_id, chunk_id)
-                VALUES (?, ?)
-                """,
-                [(artifact_id, chunk_id) for artifact_id in artifact_ids for chunk_id in chunk_ids],
-            )
+        savepoint_name = f"append_visual_group_chunks_{uuid.uuid4().hex}"
+        self.conn.execute(f"SAVEPOINT {savepoint_name}")
+        try:
+            chunk_ids = self._append_visual_chunks_impl(document_id, version_id, group_id, chunks, spans)
+            artifact_ids = [artifact_id for artifact_id in artifact_ids if artifact_id]
+            if chunk_ids and artifact_ids:
+                self.conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO visual_artifact_chunks(artifact_id, chunk_id)
+                    VALUES (?, ?)
+                    """,
+                    [(artifact_id, chunk_id) for artifact_id in artifact_ids for chunk_id in chunk_ids],
+                )
+        except Exception:
+            self._rollback_savepoint(savepoint_name)
+            raise
+        try:
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
             self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
         return chunk_ids
 
     def delete_visual_chunks_for_artifact(self, artifact_id: str) -> None:
