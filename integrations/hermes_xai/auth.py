@@ -239,6 +239,9 @@ def save_xai_oauth_tokens(
             "last_refresh": now,
             "tokens": token_state,
         })
+        profile = _profile_from_tokens(token_state)
+        if profile:
+            state["profile"] = profile
         if discovery:
             state["discovery"] = _sanitize_discovery(discovery)
         providers[PROVIDER_ID] = state
@@ -853,6 +856,12 @@ def _validate_id_token_nonce(id_token: str, expected_nonce: str) -> None:
     nonce = str(payload.get("nonce") or "").strip() if payload else ""
     if nonce and nonce != expected_nonce:
         raise AuthError("xAI authorization failed: nonce mismatch.", code="xai_nonce_mismatch")
+
+
+def _profile_from_tokens(tokens: Dict[str, Any]) -> Dict[str, str]:
+    payload = _jwt_payload(str(tokens.get("id_token") or ""))
+    email = str(payload.get("email") or "").strip() if payload else ""
+    return {"email": email} if email else {}
 
 
 def _jwt_payload(access_token: str) -> Dict[str, Any]:

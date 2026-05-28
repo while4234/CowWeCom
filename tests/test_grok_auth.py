@@ -154,6 +154,29 @@ class TestGrokAuth(unittest.TestCase):
         self.assertNotIn("refresh-secret", serialized)
         self.assertNotIn("code", serialized)
 
+    def test_status_includes_email_from_id_token_when_available(self):
+        auth.save_xai_oauth_tokens(
+            {
+                "access_token": _jwt_with_exp(time.time() + 3600),
+                "refresh_token": "refresh-secret",
+                "id_token": _jwt_with_payload({"email": "user@example.com"}),
+                "expires_in": 3600,
+            },
+            discovery={
+                "issuer": auth.XAI_OAUTH_ISSUER,
+                "authorization_endpoint": "https://auth.x.ai/oauth2/auth",
+                "token_endpoint": "https://auth.x.ai/oauth2/token",
+            },
+            redirect_uri=auth._default_redirect_uri(),
+        )
+
+        status = auth.get_xai_oauth_status()
+
+        self.assertEqual(status["email"], "user@example.com")
+        serialized = json.dumps(status, ensure_ascii=False)
+        self.assertNotIn("id_token", serialized)
+        self.assertNotIn("refresh-secret", serialized)
+
     def test_resolve_credentials_refreshes_expiring_token_and_writes_back(self):
         auth.save_xai_oauth_tokens(
             {

@@ -29,11 +29,13 @@ async function requestJson(url, options = {}) {
 
 async function refreshStatus() {
     const status = await requestJson('/api/grok/status');
-    setText('status-line', status.logged_in ? '已登录' : (status.needs_reauth ? '需要重新登录' : '未登录'));
+    const loggedIn = Boolean(status.logged_in);
+    setText('status-line', loggedIn ? '已登录' : (status.needs_reauth ? '需要重新登录' : '未登录'));
     setText('provider', status.provider);
     setText('base-url', status.base_url);
-    setText('email', status.email);
+    setText('email', loggedIn ? (status.email || 'xAI 未返回') : '-');
     setText('expires-at', formatExpires(status.expires_at));
+    setLoginInputsVisible(!loggedIn);
     writeOutput(status);
 }
 
@@ -78,6 +80,17 @@ async function logout() {
     const data = await requestJson('/api/grok/logout', { method: 'POST', body: '{}' });
     writeOutput(data);
     await refreshStatus();
+}
+
+function setLoginInputsVisible(visible) {
+    document.querySelectorAll('.login-only').forEach(element => {
+        element.classList.toggle('hidden', !visible);
+    });
+    if (visible) return;
+    document.getElementById('authorize-url').textContent = '';
+    document.getElementById('authorize-url').removeAttribute('href');
+    document.getElementById('login-message').textContent = '';
+    document.getElementById('callback-url').value = '';
 }
 
 function bind(id, handler) {

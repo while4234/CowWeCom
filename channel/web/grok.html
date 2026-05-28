@@ -58,10 +58,10 @@
 
         <section class="mt-5 rounded-lg border border-white/10 bg-neutral-900 p-5">
             <div class="flex flex-wrap gap-3">
-                <button id="login-btn" class="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600">
+                <button id="login-btn" class="login-only rounded-lg bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600">
                     <i class="fas fa-right-to-bracket mr-2"></i>开始 Grok 登录
                 </button>
-                <button id="poll-btn" class="rounded-lg border border-white/10 px-4 py-2 text-sm hover:bg-white/10">
+                <button id="poll-btn" class="login-only rounded-lg border border-white/10 px-4 py-2 text-sm hover:bg-white/10">
                     <i class="fas fa-satellite-dish mr-2"></i>轮询登录结果
                 </button>
                 <button id="test-btn" class="rounded-lg border border-white/10 px-4 py-2 text-sm hover:bg-white/10">
@@ -79,7 +79,7 @@
             </div>
         </section>
 
-        <section class="mt-5 rounded-lg border border-white/10 bg-neutral-900 p-5">
+        <section id="manual-box" class="login-only mt-5 rounded-lg border border-white/10 bg-neutral-900 p-5">
             <label for="callback-url" class="text-sm font-medium">Manual paste callback URL or code</label>
             <textarea id="callback-url" rows="3" class="mt-2 w-full rounded-lg border border-white/10 bg-neutral-950 p-3 text-sm text-neutral-100 outline-none focus:border-emerald-500" placeholder="http://127.0.0.1:56121/callback?code=...&state=... 或 Grok Build 页面显示的授权码"></textarea>
             <button id="manual-btn" class="mt-3 rounded-lg border border-white/10 px-4 py-2 text-sm hover:bg-white/10">
