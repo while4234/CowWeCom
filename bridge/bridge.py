@@ -66,6 +66,11 @@ class Bridge(object):
 
             if model_type and isinstance(model_type, str):
                 lowered_model_type = model_type.lower()
+                if lowered_model_type.startswith("grok") or lowered_model_type == const.XAI:
+                    self.btype["chat"] = const.GROK
+
+            if model_type and isinstance(model_type, str):
+                lowered_model_type = model_type.lower()
                 if lowered_model_type == const.QIANFAN or lowered_model_type.startswith("ernie"):
                     self.btype["chat"] = const.QIANFAN
 

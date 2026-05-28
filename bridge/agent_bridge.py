@@ -92,6 +92,7 @@ class AgentLLMModel(LLMModel):
         ("gemini", const.GEMINI), ("glm", const.ZHIPU_AI), ("claude", const.CLAUDEAPI),
         ("moonshot", const.MOONSHOT), ("kimi", const.MOONSHOT),
         ("doubao", const.DOUBAO), ("deepseek", const.DEEPSEEK),
+        ("grok", const.GROK), ("xai", const.GROK),
         ("ernie", const.QIANFAN),
     ]
 

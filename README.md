@@ -182,6 +182,8 @@ http://127.0.0.1:9899
 
 CAPI 额度卡/月卡查询依赖 `llm_backend.providers.capi` 和 `llm_backend.providers.capi_monthly` 下的专用 key。更新部署后请检查本机 `CAPI_API_KEY`、`CAPI_MONTHLY_API_KEY`，或在 ignored 的 `config.json` 中配置 `llm_backend.providers.capi.api_key`、`llm_backend.providers.capi_monthly.api_key`；不要把真实 key 写入 `config-template.json` 或提交到 Git。
 
+Grok/xAI 可以使用 Web 管理接口完成原生账号 OAuth 登录，推荐设置 `bot_type` 为 `grok` 或 `xai`，`grok_model` 默认为 `grok-4.3`。OAuth token 默认写入 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。Web 状态接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token 或 callback code。
+
 ## 微信接入
 
 个人微信通道使用：
@@ -489,12 +491,11 @@ CowWeCom/
 
 ### 2026-05-28
 
+- 新增 Grok/xAI 原生账号 OAuth 登录与文字对话接入：Web API 可发起、轮询、手动完成登录，`bot_type=grok` 或 `xai` 会走 xAI Responses API，并在无 `XAI_API_KEY` 时优先使用本地 OAuth auth store。
 - Windows Python 3.13 可选语音依赖补充 `audioop-lts`，修复 `pydub` 因标准库 `audioop` 移除而无法加载的问题，语音转换能力在重启后可正常初始化。
 - Agent 同轮重复工具调用结果进一步压缩：相同参数的重复 read/bash/edit 等工具仍保留首次完整结果，重复结果改为短引用，减少上下文膨胀和缓存扰动。
-- KnowledgeStorage 视觉 chunk 的 source span 完整性继续收口：追加视觉结果时不再覆盖既有 span，视觉删除和 reset 只清理无人引用的 span，并同步维护图谱证据引用。
-- KnowledgeStorage 视觉 chunk 追加改为安全幂等写入：重复写入同一 artifact 会先清旧视觉 chunk，普通文本 chunk 或其他文档/group 的同名 chunk 会自动改写新 ID，避免覆盖、孤儿 span 和重复 FTS。
-- 本地文档视觉 group 回归继续加固：覆盖成员重试后的旧 chunk/mapping 清理、stale member 批量清理、真实成员 retrievable 边界，以及缺失 source_pages 的元数据回填提示。
-- 本地文档视觉 group 的 legacy stale member 清理会同步修复受污染的 `source_pages`、重置检索状态并清理旧 group/page chunk，避免后续 group 分析被历史 page 污染为低置信。
+- KnowledgeStorage 视觉 chunk/source span 完整性继续收口：视觉结果追加、删除和 reset 避免覆盖普通 chunk 与共享 span，并清理无人引用的图谱证据引用。
+- 本地文档视觉 group 回归继续加固：覆盖成员重试、stale member 批量清理、真实成员检索边界、缺失 source_pages 回填，以及 legacy 污染状态修复。
 - 已刷新公共协议知识库 SQLite：UCIe 1.1、AMBA AXI v2.0 和 AXI4-Stream 的 PDF 普通文本 chunk 已用当前 sanitizer 重建，Figure/Table 周边图内信号、时序和表格碎片乱码抽检清零，三个协议验证报告均通过。
 
 ### 2026-05-27

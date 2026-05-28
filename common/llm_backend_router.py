@@ -562,6 +562,8 @@ def resolve_configured_chat_bot_type(model_name: Optional[str] = None) -> str:
         return const.DOUBAO
     if lowered.startswith("deepseek"):
         return const.DEEPSEEK
+    if lowered.startswith("grok") or lowered == const.XAI:
+        return const.GROK
     if lowered == const.QIANFAN or lowered.startswith("ernie"):
         return const.QIANFAN
     if model_type in [const.MODELSCOPE]:

@@ -57,7 +57,7 @@ class ChatGPTSession(Session):
 def num_tokens_from_messages(messages, model):
     """Returns the number of tokens used by a list of messages."""
 
-    if model in ["wenxin", "xunfei"] or model.startswith(const.GEMINI):
+    if model in ["wenxin", "xunfei", const.GROK, const.XAI] or model.startswith(const.GEMINI) or model.startswith("grok"):
         return num_tokens_by_character(messages)
 
     import tiktoken

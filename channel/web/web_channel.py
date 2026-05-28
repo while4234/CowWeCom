@@ -842,6 +842,12 @@ class WebChannel(ChatChannel):
             '/chat', 'ChatHandler',
             '/config', 'ConfigHandler',
             '/api/channels', 'ChannelsHandler',
+            '/api/grok/status', 'GrokStatusHandler',
+            '/api/grok/login/start', 'GrokLoginStartHandler',
+            '/api/grok/login/poll', 'GrokLoginPollHandler',
+            '/api/grok/login/manual', 'GrokLoginManualHandler',
+            '/api/grok/logout', 'GrokLogoutHandler',
+            '/api/grok/test', 'GrokTestHandler',
             '/api/weixin/qrlogin', 'WeixinQrHandler',
             '/api/feishu/register', 'FeishuRegisterHandler',
             '/api/tools', 'ToolsHandler',
@@ -946,6 +952,110 @@ class AuthLogoutHandler:
         web.header('Content-Type', 'application/json; charset=utf-8')
         web.setcookie("cow_auth_token", "", expires=-1, path="/")
         return json.dumps({"status": "success"})
+
+
+def _safe_grok_error(exc: Exception) -> str:
+    text = str(exc) or "Grok OAuth request failed"
+    if "callback" in text.lower() or "code=" in text.lower():
+        return "Grok OAuth callback validation failed"
+    return text
+
+
+class GrokStatusHandler:
+    def GET(self):
+        _require_auth()
+        web.header('Content-Type', 'application/json; charset=utf-8')
+        try:
+            from integrations.hermes_xai.auth import get_xai_oauth_status
+
+            return json.dumps(get_xai_oauth_status(), ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[GrokOAuth] status API error: {_safe_grok_error(e)}")
+            return json.dumps({"logged_in": False, "needs_reauth": True, "message": _safe_grok_error(e)})
+
+
+class GrokLoginStartHandler:
+    def POST(self):
+        _require_auth()
+        web.header('Content-Type', 'application/json; charset=utf-8')
+        try:
+            from integrations.hermes_xai.auth import start_xai_oauth_login
+
+            payload = start_xai_oauth_login()
+            response = dict(payload)
+            response["status"] = "pending"
+            return json.dumps(response, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[GrokOAuth] login start error: {_safe_grok_error(e)}")
+            return json.dumps({"status": "error", "message": _safe_grok_error(e)}, ensure_ascii=False)
+
+
+class GrokLoginPollHandler:
+    def GET(self):
+        _require_auth()
+        web.header('Content-Type', 'application/json; charset=utf-8')
+        try:
+            from integrations.hermes_xai.auth import poll_xai_oauth_login
+
+            return json.dumps(poll_xai_oauth_login(), ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[GrokOAuth] login poll error: {_safe_grok_error(e)}")
+            return json.dumps({"status": "failed", "message": _safe_grok_error(e)}, ensure_ascii=False)
+
+
+class GrokLoginManualHandler:
+    def POST(self):
+        _require_auth()
+        web.header('Content-Type', 'application/json; charset=utf-8')
+        try:
+            body = json.loads(web.data() or b"{}")
+        except Exception:
+            return json.dumps({"status": "error", "message": "Invalid request"}, ensure_ascii=False)
+
+        callback_url = str(body.get("callback_url") or "").strip()
+        if not callback_url:
+            return json.dumps({"status": "error", "message": "callback_url required"}, ensure_ascii=False)
+
+        try:
+            from integrations.hermes_xai.auth import complete_xai_oauth_with_callback_url
+
+            status = complete_xai_oauth_with_callback_url(callback_url)
+            return json.dumps({"status": "complete", **status}, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[GrokOAuth] manual login error: {_safe_grok_error(e)}")
+            return json.dumps({"status": "error", "message": _safe_grok_error(e)}, ensure_ascii=False)
+
+
+class GrokLogoutHandler:
+    def POST(self):
+        _require_auth()
+        web.header('Content-Type', 'application/json; charset=utf-8')
+        try:
+            from integrations.hermes_xai.auth import logout_xai_oauth
+
+            return json.dumps({"status": "success", **logout_xai_oauth()}, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[GrokOAuth] logout error: {_safe_grok_error(e)}")
+            return json.dumps({"status": "error", "message": _safe_grok_error(e)}, ensure_ascii=False)
+
+
+class GrokTestHandler:
+    def POST(self):
+        _require_auth()
+        web.header('Content-Type', 'application/json; charset=utf-8')
+        try:
+            from integrations.hermes_xai.xai_http import resolve_xai_http_credentials
+
+            creds = resolve_xai_http_credentials()
+            return json.dumps({
+                "status": "success",
+                "provider": creds.get("provider"),
+                "auth_mode": creds.get("auth_mode"),
+                "base_url": creds.get("base_url"),
+            }, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[GrokOAuth] test API error: {_safe_grok_error(e)}")
+            return json.dumps({"status": "error", "message": _safe_grok_error(e)}, ensure_ascii=False)
 
 
 class MessageHandler:
@@ -1056,6 +1166,7 @@ class ConfigHandler:
         const.GPT_54, const.GPT_54_MINI, const.GPT_54_NANO, const.GPT_5, const.GPT_41, const.GPT_4o,
         const.GLM_5_1, const.GLM_5_TURBO, const.GLM_5, const.GLM_4_7,
         const.QWEN36_PLUS, const.QWEN35_PLUS, const.QWEN3_MAX,
+        const.GROK_4_3, const.GROK_4, const.GROK_3_MINI,
         const.DOUBAO_SEED_2_PRO, const.DOUBAO_SEED_2_CODE,
         const.KIMI_K2_6, const.KIMI_K2_5, const.KIMI_K2,
         const.ERNIE_5_1, const.ERNIE_5, const.ERNIE_X1_1, const.ERNIE_45_TURBO_128K, const.ERNIE_45_TURBO_32K,
@@ -1120,6 +1231,14 @@ class ConfigHandler:
             "api_base_default": None,
             "api_base_placeholder": "",
             "models": ["gpt-5.5", const.GPT_54, const.GPT_54_MINI, const.GPT_5, const.GPT_41],
+        }),
+        ("grok", {
+            "label": "Grok",
+            "api_key_field": "grok_api_key",
+            "api_base_key": "grok_api_base",
+            "api_base_default": "https://api.x.ai/v1",
+            "api_base_placeholder": _PLACEHOLDER_V1,
+            "models": [const.GROK_4_3, const.GROK_4, const.GROK_3_MINI],
         }),
         ("zhipu", {
             "label": "智谱AI",
@@ -1190,10 +1309,11 @@ class ConfigHandler:
     EDITABLE_KEYS = {
         "model", "bot_type", "use_linkai",
         "open_ai_api_base", "deepseek_api_base", "qianfan_api_base", "claude_api_base", "gemini_api_base",
-        "zhipu_ai_api_base", "moonshot_base_url", "ark_base_url", "custom_api_base",
+        "zhipu_ai_api_base", "moonshot_base_url", "ark_base_url", "custom_api_base", "grok_api_base",
         "open_ai_api_key", "deepseek_api_key", "qianfan_api_key", "claude_api_key", "gemini_api_key",
         "zhipu_ai_api_key", "dashscope_api_key", "moonshot_api_key",
-        "ark_api_key", "minimax_api_key", "linkai_api_key", "custom_api_key",
+        "ark_api_key", "minimax_api_key", "linkai_api_key", "custom_api_key", "grok_api_key",
+        "grok_model", "grok_wire_api", "grok_auth_file", "grok_auth_prefer_oauth",
         "agent_max_context_tokens", "agent_max_context_turns", "agent_max_steps",
         "agent_development_max_steps", "agent_complex_planning_max_steps",
         "enable_thinking", "web_password",
@@ -1297,7 +1417,7 @@ class ConfigHandler:
                     "agent_complex_planning_max_steps",
                 ):
                     value = int(value)
-                if key in ("use_linkai", "enable_thinking"):
+                if key in ("use_linkai", "enable_thinking", "grok_auth_prefer_oauth"):
                     value = bool(value)
                 local_config[key] = value
                 applied[key] = value

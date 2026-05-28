@@ -1795,6 +1795,7 @@ class CowCliPlugin(Plugin):
             ("claude", const.CLAUDEAPI),
             ("moonshot", const.MOONSHOT), ("kimi", const.MOONSHOT),
             ("doubao", const.DOUBAO), ("deepseek", const.DEEPSEEK),
+            ("grok", const.GROK), ("xai", const.GROK),
             ("ernie", const.QIANFAN),
         ]
         if not model_name:

@@ -10,10 +10,12 @@ This includes: OpenAI, LinkAI, Azure OpenAI, and many third-party providers.
 import hashlib
 import json
 import requests
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from common.log import logger
 from common.llm_usage_tracker import record_usage
 from agent.protocol.message_utils import drop_orphaned_tool_results_openai
+from integrations.hermes_xai.model_metadata import grok_supports_reasoning_effort
+from integrations.hermes_xai.schema_sanitizer import sanitize_xai_tools
 from models.openai.openai_http_client import OpenAIHTTPClient, OpenAIHTTPError
 from models.openai.responses_api_adapter import (
     build_responses_payload,
@@ -233,6 +235,55 @@ class OpenAICompatibleBot:
         return options
 
     @staticmethod
+    def _is_xai_api_config(api_config: Optional[Dict[str, Any]], api_base: Optional[str] = None) -> bool:
+        """Return True for native Grok/xAI requests."""
+        api_config = api_config or {}
+        provider = str(api_config.get("provider") or "").strip().lower()
+        base = str(api_base or api_config.get("api_base") or "").strip().lower()
+        return provider in {"grok", "xai", "xai-oauth"} or "api.x.ai" in base
+
+    @staticmethod
+    def _xai_session_id(metadata: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(metadata, dict):
+            return ""
+        return str(metadata.get("session_id") or "").strip()
+
+    def _prepare_responses_request(
+        self,
+        payload: Dict[str, Any],
+        *,
+        api_config: Optional[Dict[str, Any]],
+        api_base: Optional[str],
+        cache_metadata: Optional[Dict[str, Any]],
+    ) -> Tuple[Dict[str, Any], Dict[str, str]]:
+        """Apply provider-specific Responses adjustments."""
+        prepared = dict(payload)
+        extra_headers: Dict[str, str] = {}
+        if not self._is_xai_api_config(api_config, api_base):
+            prepared.update(
+                self._build_prompt_cache_options(
+                    prepared.get("model"),
+                    cache_metadata,
+                )
+            )
+            return prepared, extra_headers
+
+        prepared.pop("service_tier", None)
+        if not grok_supports_reasoning_effort(prepared.get("model")):
+            prepared.pop("reasoning", None)
+
+        session_id = self._xai_session_id(cache_metadata)
+        if session_id:
+            prepared["prompt_cache_key"] = session_id
+            extra_headers["x-grok-conv-id"] = session_id
+
+        if prepared.get("tools"):
+            prepared["tools"], removed = sanitize_xai_tools(prepared["tools"])
+            if removed:
+                logger.debug("[Grok] Sanitized %s unsupported tool schema field(s)", removed)
+        return prepared, extra_headers
+
+    @staticmethod
     def _cache_key_part(value: Any) -> str:
         text = str(value or "").strip().lower()
         safe = []
@@ -318,11 +369,13 @@ class OpenAICompatibleBot:
         api_base: str,
         timeout: Optional[float],
         payload: Dict[str, Any],
+        extra_headers: Optional[Dict[str, str]] = None,
     ):
         events = client.responses(
             api_key=api_key,
             api_base=self._responses_api_base(api_base),
             timeout=timeout,
+            extra_headers=extra_headers,
             stream=True,
             **payload,
         )
@@ -338,6 +391,7 @@ class OpenAICompatibleBot:
                         api_key=api_key,
                         api_base=self._responses_api_base(api_base),
                         timeout=timeout,
+                        extra_headers=extra_headers,
                         stream=True,
                         **fallback_payload,
                     )
@@ -371,11 +425,11 @@ class OpenAICompatibleBot:
                     store=self._resolve_response_store(),
                     reasoning_effort=params.get("reasoning_effort"),
                 )
-                responses_payload.update(
-                    self._build_prompt_cache_options(
-                        responses_payload.get("model"),
-                        cache_metadata,
-                    )
+                responses_payload, extra_headers = self._prepare_responses_request(
+                    responses_payload,
+                    api_config=api_config,
+                    api_base=api_base,
+                    cache_metadata=cache_metadata,
                 )
                 self._record_project_optimizer_provider_payload(
                     responses_payload,
@@ -388,6 +442,7 @@ class OpenAICompatibleBot:
                     api_base=api_base,
                     timeout=timeout,
                     payload=responses_payload,
+                    extra_headers=extra_headers,
                 )
                 result = chat_chunks_to_chat_completion(
                     responses_stream_events_to_chat_chunks(events),
@@ -464,11 +519,11 @@ class OpenAICompatibleBot:
                     store=self._resolve_response_store(),
                     reasoning_effort=params.get("reasoning_effort"),
                 )
-                responses_payload.update(
-                    self._build_prompt_cache_options(
-                        responses_payload.get("model"),
-                        cache_metadata,
-                    )
+                responses_payload, extra_headers = self._prepare_responses_request(
+                    responses_payload,
+                    api_config=api_config,
+                    api_base=api_base,
+                    cache_metadata=cache_metadata,
                 )
                 self._record_project_optimizer_provider_payload(
                     responses_payload,
@@ -481,6 +536,7 @@ class OpenAICompatibleBot:
                     api_base=api_base,
                     timeout=timeout,
                     payload=responses_payload,
+                    extra_headers=extra_headers,
                 )
                 recorded_usage = False
                 for chunk in responses_stream_events_to_chat_chunks(events):

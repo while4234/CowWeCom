@@ -33,6 +33,10 @@ def create_bot(bot_type):
         from models.codex.codex_bot import CodexBot
         return CodexBot()
 
+    elif bot_type in (const.GROK, const.XAI):
+        from models.grok.grok_bot import GrokBot
+        return GrokBot()
+
     elif bot_type == const.OPEN_AI:
         # OpenAI 官方对话模型API
         from models.openai.open_ai_bot import OpenAIBot

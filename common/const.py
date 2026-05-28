@@ -18,6 +18,8 @@ DEEPSEEK = "deepseek"
 CUSTOM = "custom"  # custom OpenAI-compatible API, bot_type won't auto-switch on model change
 MODELSCOPE = "modelscope"
 CODEX = "codex"
+GROK = "grok"
+XAI = "xai"
 
 # 模型列表
 # Claude (Anthropic)
@@ -155,6 +157,11 @@ DOUBAO_SEED_2_MINI = "doubao-seed-2-0-mini-260215"
 QWEN3_235B_A22B_INSTRUCT_2507 = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 QWEN3_5_27B = "Qwen/Qwen3.5-27B"
 
+# xAI Grok
+GROK_4_3 = "grok-4.3"
+GROK_4 = "grok-4"
+GROK_3_MINI = "grok-3-mini"
+
 # 其他模型
 WEN_XIN = "wenxin"
 WEN_XIN_4 = "wenxin-4"
@@ -212,6 +219,9 @@ MODEL_LIST = [
 
               # Qwen (通义千问)
               QWEN36_PLUS, QWEN35_PLUS, QWEN3_MAX, QWEN_MAX, QWEN_PLUS, QWEN_TURBO, QWEN_LONG,
+
+              # xAI Grok
+              GROK_4_3, GROK_4, GROK_3_MINI, GROK, XAI,
 
               # Doubao (豆包)
               DOUBAO, DOUBAO_SEED_2_CODE, DOUBAO_SEED_2_PRO, DOUBAO_SEED_2_LITE, DOUBAO_SEED_2_MINI,
