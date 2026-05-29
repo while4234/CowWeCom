@@ -536,7 +536,7 @@ CowWeCom/
 - 新增管理员专用 `/grok-direct image|video` 直出模式，原始 prompt 直接提交 Grok 后台任务；Web 端命令菜单同步 CowCli 管理员命令并补充 720p/10s 示例，直出图片硬跳过本地提示词润色，图生视频可复用可解析消息图片或同会话最近图片作为参考图，未明确数量时只取最近 1 张，明确“参考上面 N 张”时最多取最近 7 张；普通 Grok 视频和直出视频都后台执行，视频任务可并行生成，参考图默认跟随图片比例；自然语言“生成视频 720p 10s ...”会识别分辨率和时长，视频生成不做本地提示词润色。
 - Grok 图片后端补齐单图图生图：`image_url` 不再被 Grok runtime 拒绝，支持本地路径、`file://`、HTTP/HTTPS URL 和 data URI，未显式尺寸/比例时按参考图推断；自然语言图生图默认继续启用短提示词优化，`prompt_enhancement=false` 会端到端跳过润色。
 - Grok 视频后台任务在视频已生成但投递失败后，不再在 CowAgent 重启时重复发送 “Grok video generation finished” 完成通知；投递失败状态现在作为终态保留，启动恢复只处理真正未完成的排队/运行中任务。
-- 新增独立 Discord 通道：Web 控制台可填写 Bot Token、Guild ID、唯一 Admin User ID 和允许频道；Discord 原生 Slash Commands 覆盖聊天内 CowCli 命令，并提供 `/imagine`、`/video`、`/image-to-video` 快捷入口，支持 Grok 生图、文生视频和图生视频，后台任务完成后可回发到原频道。
+- 新增独立 Discord 通道：Web 控制台「通道」页的接入下拉框会展示 Discord，可填写 Bot Token、Guild ID、唯一 Admin User ID 和允许频道；Discord 原生 Slash Commands 覆盖聊天内 CowCli 命令，并提供 `/imagine`、`/video`、`/image-to-video` 快捷入口，支持 Grok 生图、文生视频和图生视频，后台任务完成后可回发到原频道。
 - Agent 上下文聚焦和纯进度快照识别更稳：类似 `Feature list完成90% tc_list完成30%` 的工作进度汇报不会触发公共协议知识库自动检索或协议问答路径；后续“没有/不用/好的”等回复会优先绑定最近 BOT 提问，避免旧协议问答串扰；私聊图片识别新增默认关闭的非账单主动回复开关，只缓存识图信息，账单自动记账仍会回执。
 
 ### 2026-05-28

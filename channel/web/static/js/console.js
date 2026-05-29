@@ -3445,7 +3445,7 @@ let channelRoleOptions = {
     admin_actor_id: '',
     default_role: 'admin',
 };
-const CONNECTABLE_CHANNEL_NAMES = new Set(['weixin', 'wecom_bot']);
+const CONNECTABLE_CHANNEL_NAMES = new Set(['weixin', 'wecom_bot', 'discord']);
 
 function isWeixinChannelName(name) {
     return name === 'weixin' || String(name || '').startsWith('weixin_');

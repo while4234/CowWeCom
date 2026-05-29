@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -223,6 +224,15 @@ class WebAdminPrivacyTest(unittest.TestCase):
         self.assertIn("discord_allowed_channel_ids", keys)
         token_field = next(field for field in discord_def["fields"] if field["key"] == "discord_bot_token")
         self.assertEqual(token_field["type"], "secret")
+
+    def test_console_allows_discord_in_connect_dropdown(self):
+        console_js = Path(__file__).resolve().parents[1] / "channel" / "web" / "static" / "js" / "console.js"
+        content = console_js.read_text(encoding="utf-8")
+
+        match = re.search(r"CONNECTABLE_CHANNEL_NAMES\s*=\s*new Set\(\[([^\]]+)\]\)", content)
+
+        self.assertIsNotNone(match)
+        self.assertIn("'discord'", match.group(1))
 
 
 if __name__ == "__main__":
