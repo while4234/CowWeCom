@@ -23,7 +23,7 @@ from config import conf
 
 JobStatus = str
 JOB_STATE_FILE = "job_state.json"
-RECOVERABLE_STATUSES = {"queued", "running", "delivery_failed"}
+RECOVERABLE_STATUSES = {"queued", "running"}
 RESTART_RECOVERY_ERROR = (
     "Grok video generation was interrupted because CowAgent restarted. "
     "Please send the video request again."
