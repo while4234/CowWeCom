@@ -25,6 +25,7 @@ from config import conf
 
 from .auth import AuthError, DEFAULT_XAI_OAUTH_BASE_URL
 from .media_download import safe_download_to_file
+from .proxy import xai_request_kwargs, xai_request_proxies
 from .xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
 
 
@@ -281,6 +282,7 @@ class XAIVideoGenProvider:
             },
             json=payload,
             timeout=60,
+            **xai_request_kwargs(),
         )
 
     def _get_status(self, request_id: str, *, force_refresh: bool):
@@ -289,6 +291,7 @@ class XAIVideoGenProvider:
             f"{creds['base_url']}/videos/{request_id}",
             headers=_xai_headers(creds["api_key"]),
             timeout=30,
+            **xai_request_kwargs(),
         )
 
     def _resolve_credentials(self, *, force_refresh: bool) -> Dict[str, str]:
@@ -457,6 +460,10 @@ def _extract_video_url(body: Dict[str, Any]) -> str:
 
 
 def _save_url_video(url: str, *, prefix: str, timeout: float, max_bytes: int = _MAX_VIDEO_BYTES) -> str:
+    download_kwargs = {}
+    proxies = xai_request_proxies()
+    if proxies:
+        download_kwargs["proxies"] = proxies
     return safe_download_to_file(
         url,
         prefix=prefix,
@@ -464,6 +471,7 @@ def _save_url_video(url: str, *, prefix: str, timeout: float, max_bytes: int = _
         allowed_content_types=_VIDEO_CONTENT_TYPES,
         max_bytes=max_bytes,
         timeout=timeout,
+        **download_kwargs,
     )
 
 

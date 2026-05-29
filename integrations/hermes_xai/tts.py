@@ -16,6 +16,7 @@ from common.log import logger
 from config import conf
 
 from .auth import AuthError, DEFAULT_XAI_OAUTH_BASE_URL
+from .proxy import xai_request_kwargs
 from .xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
 
 
@@ -156,6 +157,7 @@ def _post_tts(text: str, options: Dict[str, Any], *, force_refresh: bool) -> req
         },
         json=payload,
         timeout=options["timeout"],
+        **xai_request_kwargs(),
     )
 
 

@@ -1499,7 +1499,7 @@ class ConfigHandler:
         "open_ai_api_key", "deepseek_api_key", "qianfan_api_key", "claude_api_key", "gemini_api_key",
         "zhipu_ai_api_key", "dashscope_api_key", "moonshot_api_key",
         "ark_api_key", "minimax_api_key", "linkai_api_key", "custom_api_key", "grok_api_key",
-        "grok_model", "grok_wire_api", "grok_auth_file", "grok_auth_prefer_oauth",
+        "grok_model", "grok_wire_api", "grok_proxy", "grok_auth_file", "grok_auth_prefer_oauth",
         "grok_gray_enabled", "grok_import_hermes_auth", "grok_import_hermes_auth_overwrite",
         "agent_max_context_tokens", "agent_max_context_turns", "agent_max_steps",
         "agent_development_max_steps", "agent_complex_planning_max_steps",

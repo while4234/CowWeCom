@@ -76,6 +76,7 @@ class TestGrokConfigTemplate(unittest.TestCase):
         expected_keys = {
             "grok_model",
             "grok_api_base",
+            "grok_proxy",
             "grok_auth_file",
             "grok_auth_prefer_oauth",
             "grok_import_hermes_auth",

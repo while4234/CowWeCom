@@ -291,6 +291,12 @@ class GrokVideoGenerationJobManager:
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         env.setdefault("COWWECHAT_ROOT", str(Path(__file__).resolve().parents[3]))
+        try:
+            from integrations.hermes_xai.proxy import apply_xai_proxy_env
+
+            apply_xai_proxy_env(env)
+        except Exception as exc:
+            logger.debug("[GrokVideoGenerationJobManager] xAI proxy env sync skipped: %s", exc)
         completed = subprocess.run(
             [sys.executable, self.script_path, json.dumps(job.args, ensure_ascii=False)],
             cwd=os.path.dirname(self.script_path),

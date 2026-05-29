@@ -29,6 +29,8 @@ from common.log import logger
 from common.utils import expand_path
 from config import conf, get_root
 
+from .proxy import xai_request_kwargs
+
 
 AUTH_STORE_VERSION = 1
 PROVIDER_ID = "xai-oauth"
@@ -930,6 +932,7 @@ def _xai_oauth_exchange_code_for_tokens(
             headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
             data=data,
             timeout=max(20.0, timeout_seconds),
+            **xai_request_kwargs(),
         )
     except Exception as exc:
         raise AuthError(f"xAI token exchange failed: {exc}", code="xai_token_exchange_failed") from exc
@@ -972,6 +975,7 @@ def _refresh_xai_oauth_tokens(
                 "refresh_token": refresh_token,
             },
             timeout=max(20.0, timeout_seconds),
+            **xai_request_kwargs(),
         )
     except Exception as exc:
         raise AuthError(f"xAI token refresh failed: {exc}", code="xai_refresh_failed") from exc
@@ -1010,6 +1014,7 @@ def _xai_oauth_discovery(timeout_seconds: float = 15.0) -> Dict[str, str]:
             XAI_OAUTH_DISCOVERY_URL,
             headers={"Accept": "application/json"},
             timeout=max(5.0, timeout_seconds),
+            **xai_request_kwargs(),
         )
     except Exception as exc:
         raise AuthError(f"xAI OIDC discovery failed: {exc}", code="xai_discovery_failed") from exc

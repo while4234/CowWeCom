@@ -21,6 +21,7 @@ def test_grok_defaults_are_present_but_do_not_enable_text_bot():
     assert template["grok_auth_prefer_oauth"] is True
     assert template["grok_oauth_accept_bare_code"] is False
     assert template["grok_api_key"] == ""
+    assert template["grok_proxy"] == ""
     assert template["grok_auth_file"] == ""
 
 
@@ -62,6 +63,7 @@ def test_docs_grok_covers_required_pr5_user_guidance():
     required_config_keys = [
         "grok_model",
         "grok_api_base",
+        "grok_proxy",
         "grok_auth_file",
         "grok_auth_prefer_oauth",
         "grok_import_hermes_auth",

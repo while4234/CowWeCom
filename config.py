@@ -163,6 +163,7 @@ available_setting = {
     "custom_api_base": "",  # custom OpenAI-compatible provider api base (used when bot_type is "custom")
     "grok_model": "grok-4.3",  # xAI Grok model used when bot_type is "grok" or "xai"
     "grok_api_base": "https://api.x.ai/v1",  # xAI API base; OAuth bearer is only sent to xAI origins
+    "grok_proxy": "",  # 可选：Grok/xAI HTTP 代理，例如 http://127.0.0.1:7897；为空时可复用 proxy/discord_proxy
     "grok_auth_file": "",  # Grok OAuth auth store; defaults to data/auth/grok_auth.json
     "grok_auth_prefer_oauth": True,  # Prefer Web OAuth tokens before API key fallback
     "grok_oauth_accept_bare_code": False,  # Optional legacy manual paste: accept bare authorization code only with active PKCE login
@@ -773,6 +774,7 @@ def load_config():
         "gemini_api_base": "GEMINI_API_BASE",
         "grok_api_key": "XAI_API_KEY",
         "grok_api_base": "XAI_BASE_URL",
+        "grok_proxy": "GROK_PROXY",
         "minimax_api_key": "MINIMAX_API_KEY",
         "minimax_api_base": "MINIMAX_API_BASE",
         "deepseek_api_key": "DEEPSEEK_API_KEY",

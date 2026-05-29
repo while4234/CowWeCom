@@ -9,7 +9,7 @@ import os
 import re
 import socket
 import tempfile
-from typing import Iterable, Optional
+from typing import Dict, Iterable, Optional
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -61,6 +61,7 @@ def safe_download_to_file(
     allowed_content_types: Iterable[str],
     max_bytes: int,
     timeout: float,
+    proxies: Optional[Dict[str, str]] = None,
 ) -> str:
     """Download a public HTTPS media URL into ``tmp/grok_media`` safely."""
     allowed = _normalize_allowed_content_types(allowed_content_types)
@@ -70,7 +71,7 @@ def safe_download_to_file(
     current_url = str(url or "").strip()
     for _ in range(MAX_REDIRECTS + 1):
         validate_public_https_url(current_url)
-        response = _get_without_redirects(current_url, timeout)
+        response = _get_without_redirects(current_url, timeout, proxies=proxies)
         status_code = int(getattr(response, "status_code", 200) or 200)
         if status_code in _REDIRECT_STATUSES:
             location = (getattr(response, "headers", {}) or {}).get("Location")
@@ -155,14 +156,16 @@ def is_generated_media_path(path: str) -> bool:
     return _is_inside_generated_media_dir(_strip_file_scheme(path))
 
 
-def _get_without_redirects(url: str, timeout: float):
+def _get_without_redirects(url: str, timeout: float, *, proxies: Optional[Dict[str, str]] = None):
     try:
-        return requests.get(
-            url,
-            timeout=(float(timeout), float(timeout)),
-            stream=True,
-            allow_redirects=False,
-        )
+        kwargs = {
+            "timeout": (float(timeout), float(timeout)),
+            "stream": True,
+            "allow_redirects": False,
+        }
+        if proxies:
+            kwargs["proxies"] = proxies
+        return requests.get(url, **kwargs)
     except requests.Timeout as exc:
         raise MediaDownloadError("Media download timed out.") from exc
     except requests.RequestException as exc:

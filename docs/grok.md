@@ -69,6 +69,7 @@ PR5 支持只读导入 Hermes 的 xAI OAuth 登录态：
 | --- | --- | --- |
 | `grok_model` | `grok-4.3` | Grok Chat 模型。 |
 | `grok_api_base` | `https://api.x.ai/v1` | xAI API base；OAuth token 不得发往非 xAI 域名。 |
+| `grok_proxy` | `""` | 可选 Grok/xAI HTTP 代理，例如 `http://127.0.0.1:7897`；OAuth discovery、token 交换、Chat、TTS、图片/视频生成和媒体下载都会复用。为空时会继续复用全局 `proxy` 或 `discord_proxy`。 |
 | `grok_auth_file` | `""` | CowWeCom Grok auth store 路径；空值使用 `data/auth/grok_auth.json`。 |
 | `grok_auth_prefer_oauth` | `true` | 优先使用 OAuth 登录态。 |
 | `grok_import_hermes_auth` | `true` | CowWeCom auth store 缺失时只读导入 Hermes `providers.xai-oauth`。 |
@@ -127,6 +128,7 @@ PR5 支持只读导入 Hermes 的 xAI OAuth 登录态：
 {
   "bot_type": "grok",
   "grok_model": "grok-4.3",
+  "grok_proxy": "http://127.0.0.1:7897",
   "grok_auth_prefer_oauth": true
 }
 ```

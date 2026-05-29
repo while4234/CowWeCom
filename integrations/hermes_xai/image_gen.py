@@ -25,6 +25,7 @@ from config import conf
 
 from .auth import AuthError, DEFAULT_XAI_OAUTH_BASE_URL
 from .media_download import new_generated_media_path, safe_download_to_file
+from .proxy import xai_request_kwargs, xai_request_proxies
 from .xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
 
 
@@ -248,6 +249,7 @@ class XAIImageGenProvider:
             },
             json=payload,
             timeout=options["timeout"],
+            **xai_request_kwargs(),
         )
 
     def _save_response_image(self, result: Dict[str, Any], options: Dict[str, Any]) -> str:
@@ -313,6 +315,10 @@ def _save_b64_image(b64_data: str, *, prefix: str) -> str:
 
 
 def _save_url_image(url: str, *, prefix: str, timeout: float, max_bytes: int = _MAX_IMAGE_BYTES) -> str:
+    download_kwargs = {}
+    proxies = xai_request_proxies()
+    if proxies:
+        download_kwargs["proxies"] = proxies
     return safe_download_to_file(
         url,
         prefix=prefix,
@@ -320,6 +326,7 @@ def _save_url_image(url: str, *, prefix: str, timeout: float, max_bytes: int = _
         allowed_content_types=_URL_IMAGE_CONTENT_TYPES,
         max_bytes=max_bytes,
         timeout=timeout,
+        **download_kwargs,
     )
 
 

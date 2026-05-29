@@ -169,9 +169,20 @@ class TestGrokWebGray(unittest.TestCase):
     def test_grok_web_config_can_toggle_gray_and_import_flags(self):
         import channel.web.web_channel as web_channel
 
+        self.assertIn("grok_proxy", web_channel.ConfigHandler.EDITABLE_KEYS)
         self.assertIn("grok_gray_enabled", web_channel.ConfigHandler.EDITABLE_KEYS)
         self.assertIn("grok_import_hermes_auth", web_channel.ConfigHandler.EDITABLE_KEYS)
         self.assertIn("grok_import_hermes_auth_overwrite", web_channel.ConfigHandler.EDITABLE_KEYS)
+
+    def test_grok_login_page_reports_start_errors_without_empty_link(self):
+        script = open(
+            os.path.join(os.path.dirname(__file__), "..", "channel", "web", "static", "js", "grok.js"),
+            encoding="utf-8",
+        ).read()
+
+        self.assertIn("data.status === 'error'", script)
+        self.assertIn("Grok login did not return an authorization link.", script)
+        self.assertIn("link.removeAttribute('href')", script)
 
     def test_backend_profile_id_accepts_custom_backend_names(self):
         from channel.web.web_channel import ConfigHandler

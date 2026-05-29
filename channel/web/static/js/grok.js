@@ -37,6 +37,7 @@ async function requestJson(url, options = {}) {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.message || `HTTP ${response.status}`);
+    if (data && data.status === 'error') throw new Error(data.message || 'Grok request failed');
     return data;
 }
 
@@ -61,15 +62,30 @@ function stopLoginPolling() {
 }
 
 async function startLogin() {
-    const data = await requestJson('/api/grok/login/start', { method: 'POST', body: '{}' });
     const box = document.getElementById('login-box');
     const link = document.getElementById('authorize-url');
+    const messageElement = document.getElementById('login-message');
     box.classList.remove('hidden');
-    link.href = data.authorize_url || '#';
-    link.textContent = data.authorize_url || '';
-    document.getElementById('login-message').textContent = data.message || '打开链接完成登录；如果浏览器无法访问本机 loopback，请复制最终 callback URL，或复制包含 code 和 state 的查询字符串到下方。';
-    writeOutput({ status: data.status, redirect_uri: data.redirect_uri, manual_paste_supported: data.manual_paste_supported });
-    startLoginPolling();
+    link.removeAttribute('href');
+    link.textContent = '';
+    messageElement.textContent = '正在请求 Grok 登录链接...';
+    try {
+        const data = await requestJson('/api/grok/login/start', { method: 'POST', body: '{}' });
+        if (!data.authorize_url) throw new Error(data.message || 'Grok login did not return an authorization link.');
+        link.href = data.authorize_url;
+        link.textContent = data.authorize_url;
+        messageElement.textContent = data.message || '打开链接完成登录；如果浏览器无法访问本机 loopback，请复制最终 callback URL，或复制包含 code 和 state 的查询字符串到下方。';
+        writeOutput({
+            status: data.status,
+            redirect_uri: data.redirect_uri,
+            manual_paste_supported: data.manual_paste_supported,
+        });
+        startLoginPolling();
+    } catch (error) {
+        const message = error.message || String(error);
+        messageElement.textContent = message;
+        writeOutput(message);
+    }
 }
 
 function startLoginPolling() {

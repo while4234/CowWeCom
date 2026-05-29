@@ -8,11 +8,12 @@ from common import const
 from common.log import logger
 from config import conf, load_config
 from integrations.hermes_xai.auth import AuthError
+from integrations.hermes_xai.proxy import resolve_xai_proxy_url
 from integrations.hermes_xai.xai_http import resolve_xai_http_credentials
 from models.bot import Bot
 from models.chatgpt.chat_gpt_session import ChatGPTSession
 from models.openai_compatible_bot import OpenAICompatibleBot
-from models.openai.openai_http_client import OpenAIHTTPError
+from models.openai.openai_http_client import OpenAIHTTPClient, OpenAIHTTPError
 from models.openai.openai_compat import wrap_http_error
 from models.session_manager import SessionManager
 
@@ -78,6 +79,9 @@ class GrokBot(Bot, OpenAICompatibleBot):
 
     def _responses_api_base(self, api_base):
         return (api_base or "https://api.x.ai/v1").rstrip("/")
+
+    def _get_http_client(self):
+        return OpenAIHTTPClient(proxy=resolve_xai_proxy_url() or None)
 
     def reply(self, query, context=None):
         if context.type == ContextType.VIDEO_CREATE:
