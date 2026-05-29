@@ -46,7 +46,7 @@ def write_repository_fixture(root):
 
 def write_nsfw_repository_fixture(root):
     (root / "grok" / "NSFW").mkdir(parents=True)
-    (root / "grok" / "SFW").mkdir()
+    (root / "grok" / "Background").mkdir()
     (root / "general").mkdir()
     (root / "grok" / "NSFW" / "pose.txt").write_text(
         "\n".join(
@@ -59,8 +59,17 @@ def write_nsfw_repository_fixture(root):
         + "\n",
         encoding="utf-8",
     )
-    (root / "grok" / "SFW" / "lighting.txt").write_text("safe portrait lighting\n", encoding="utf-8")
+    (root / "grok" / "Background" / "lighting.txt").write_text("safe portrait lighting\n", encoding="utf-8")
     (root / "general" / "fallback.txt").write_text("general cinematic fallback\n", encoding="utf-8")
+
+
+def write_korean_repository_fixture(root):
+    (root / "grok" / "States").mkdir(parents=True)
+    (root / "grok" / "Styling").mkdir()
+    (root / "general").mkdir()
+    (root / "grok" / "States" / "Nationality-Race.txt").write_text("korean\n", encoding="utf-8")
+    (root / "grok" / "Styling" / "portrait.txt").write_text("Nordic blonde runway styling\n", encoding="utf-8")
+    (root / "general" / "fallback.txt").write_text("wide cinematic frame\n", encoding="utf-8")
 
 
 def write_nsfw_repository_skill(root):
@@ -71,8 +80,16 @@ def write_nsfw_repository_skill(root):
     return skill_dir
 
 
-def assert_standalone_nsfw_priority_with_complement(result):
-    fragments = result["fragments"]
+def assert_standalone_nsfw_priority_with_complement(
+    result,
+    *,
+    allowed_supplement_texts=frozenset({"safe portrait lighting", "general cinematic fallback"}),
+):
+    fragments = [
+        fragment
+        for fragment in result["fragments"]
+        if str(fragment.get("selection_role") or "").lower() != "constraint"
+    ]
     priority_fragments = [fragment for fragment in fragments if fragment.get("selection_role") == "priority"]
     supplement_fragments = [fragment for fragment in fragments if fragment.get("selection_role") == "supplement"]
 
@@ -88,7 +105,28 @@ def assert_standalone_nsfw_priority_with_complement(result):
     assert all(fragment["category"] != "NSFW" for fragment in supplement_fragments)
     assert any(fragment["text"] == "nsfw-specific pose controls" for fragment in priority_fragments)
     assert supplement_fragments[0]["repository"] in {"grok", "general"}
-    assert supplement_fragments[0]["text"] in {"safe portrait lighting", "general cinematic fallback"}
+    assert supplement_fragments[0]["text"] in allowed_supplement_texts
+
+
+def assert_korean_nationality_constraint(result):
+    constraints = result.get("constraints") or [
+        fragment
+        for fragment in result.get("fragments", [])
+        if str(fragment.get("selection_role") or "").lower() == "constraint"
+    ]
+    assert len(constraints) == 1
+
+    constraint = constraints[0]
+    text = constraint["text"]
+
+    assert constraint["selection_role"] == "constraint"
+    assert constraint["constraint_type"] == "nationality"
+    assert constraint["repository"] == "grok"
+    assert constraint["file"] == "States/Nationality-Race.txt"
+    assert constraint["source_text"] == "korean"
+    assert "mandatory nationality/ethnicity constraint: korean" in text
+    assert "Korean/East Asian facial features" in text
+    assert "do not add conflicting identity traits from random fragments" in text
 
 
 def test_grok_keyword_strips_and_prefers_matching_repository(tmp_path):
@@ -217,6 +255,97 @@ def test_nsfw_prompt_overrides_other_repository_keyword(tmp_path):
     assert result["keyword_hit"] is False
     assert result["category_forced"] is True
     assert_standalone_nsfw_priority_with_complement(result)
+
+
+def test_korean_prompt_adds_locked_nationality_constraint_despite_random_fragment(tmp_path):
+    root = tmp_path / "repositories"
+    write_korean_repository_fixture(root)
+
+    result = select_grok_prompt_fragments(
+        "random Korean female portrait",
+        repositories_root=root,
+        limit=1,
+        rng=FixedRandom(0.1),
+    )
+
+    assert_korean_nationality_constraint(result)
+    assert any(fragment["text"] == "Nordic blonde runway styling" for fragment in result["fragments"])
+
+
+def test_korea_and_chinese_korea_terms_share_same_stable_constraint(tmp_path):
+    root = tmp_path / "repositories"
+    write_korean_repository_fixture(root)
+
+    english_result = select_grok_prompt_fragments(
+        "random Korea female portrait",
+        repositories_root=root,
+        limit=1,
+        rng=FixedRandom(0.1),
+    )
+    chinese_result = select_grok_prompt_fragments(
+        "random 韩国 female portrait",
+        repositories_root=root,
+        limit=1,
+        rng=FixedRandom(0.1),
+    )
+
+    assert_korean_nationality_constraint(english_result)
+    assert_korean_nationality_constraint(chinese_result)
+    assert english_result["constraints"] == chinese_result["constraints"]
+
+
+def test_combined_nsfw_korean_prompt_keeps_nsfw_priority_and_nationality_constraint(tmp_path):
+    root = tmp_path / "repositories"
+    write_nsfw_repository_fixture(root)
+    (root / "grok" / "States").mkdir()
+    (root / "grok" / "States" / "Nationality-Race.txt").write_text("korean\n", encoding="utf-8")
+    (root / "grok" / "Background" / "lighting.txt").write_text("Nordic blonde runway styling\n", encoding="utf-8")
+
+    result = select_grok_prompt_fragments(
+        "random NSFW Korean female",
+        repositories_root=root,
+        limit=4,
+        rng=CyclingRandom(),
+    )
+
+    assert_standalone_nsfw_priority_with_complement(
+        result,
+        allowed_supplement_texts=frozenset({"Nordic blonde runway styling"}),
+    )
+    assert_korean_nationality_constraint(result)
+    assert result["fragments"][-1]["selection_role"] == "supplement"
+    assert result["fragments"][-1]["text"] == "Nordic blonde runway styling"
+
+
+def test_grok_text_model_receives_korean_constraint_that_overrides_random_fragments(monkeypatch, tmp_path):
+    skill_dir = tmp_path / "image-prompt-optimization"
+    (skill_dir / "repositories").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# image-prompt-optimization\n", encoding="utf-8")
+    write_korean_repository_fixture(skill_dir / "repositories")
+    captured = {}
+
+    monkeypatch.setenv("IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
+    monkeypatch.setattr("common.prompt_optimization_repository.random.SystemRandom", lambda: FixedRandom(0.1))
+
+    def fake_call(system_prompt, user_prompt):
+        captured["user_prompt"] = user_prompt
+        return "rewritten Korean portrait"
+
+    monkeypatch.setattr(grok_image_prompt_rewriter, "_call_grok_text_model", fake_call)
+
+    result = grok_image_prompt_rewriter.rewrite_grok_image_prompt(
+        "random Korean female portrait",
+        model="grok-imagine-image",
+    )
+
+    assert result["enhanced"] is True
+    assert_korean_nationality_constraint({"fragments": result["supplements"]})
+    user_prompt = captured["user_prompt"]
+    assert "Stable user constraints" in user_prompt
+    assert "random fragments must not override" in user_prompt
+    assert "mandatory nationality/ethnicity constraint: korean" in user_prompt
+    assert "Korean/East Asian facial features" in user_prompt
+    assert "Nordic blonde runway styling" in user_prompt
 
 
 def test_grok_text_model_receives_nsfw_priority_and_supplement_metadata(monkeypatch, tmp_path):
