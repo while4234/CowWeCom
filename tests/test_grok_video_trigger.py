@@ -20,25 +20,48 @@ def _singleton_class(factory):
     raise AssertionError("singleton class not found")
 
 
-def test_grok_bot_video_create_returns_local_video_reply(monkeypatch, tmp_path):
-    video_path = tmp_path / "grok.mp4"
-    video_path.write_bytes(b"\x00\x00\x00\x18ftypmp4")
-    calls = []
+def _patch_grok_video_background(monkeypatch):
+    manager = SimpleNamespace(
+        submitted=[],
+        submit=lambda args, context, profile: manager.submitted.append((args, context, profile))
+        or SimpleNamespace(job_id="video-job"),
+        queue_position=lambda job: 0,
+    )
+    monkeypatch.setattr(
+        "agent.tools.video_generation.job_manager.get_grok_video_generation_job_manager",
+        lambda agent_bridge=None: manager,
+    )
+    monkeypatch.setattr("bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None))
+    monkeypatch.setattr(
+        "models.grok.grok_video._resolve_background_profile",
+        lambda context: SimpleNamespace(actor_id="actor", memory_user_id="user"),
+    )
+    return manager
 
-    class FakeProvider:
-        def generate(self, prompt, **kwargs):
-            calls.append((prompt, kwargs))
-            return str(video_path)
 
-    monkeypatch.setattr("models.grok.grok_video.XAIVideoGenProvider", lambda: FakeProvider())
+def test_grok_bot_video_create_starts_background_task(monkeypatch):
+    manager = SimpleNamespace(
+        submitted=[],
+        submit=lambda args, context, profile: manager.submitted.append((args, context, profile))
+        or SimpleNamespace(job_id="video-job"),
+        queue_position=lambda job: 0,
+    )
+    monkeypatch.setattr(
+        "agent.tools.video_generation.job_manager.get_grok_video_generation_job_manager",
+        lambda agent_bridge=None: manager,
+    )
+    monkeypatch.setattr("bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None))
+    monkeypatch.setattr(
+        "models.grok.grok_video._resolve_background_profile",
+        lambda context: SimpleNamespace(actor_id="actor", memory_user_id="user"),
+    )
 
     context = Context(ContextType.VIDEO_CREATE, "make a red kite video")
     reply = object.__new__(GrokBot).reply(context.content, context)
 
-    assert reply.type == ReplyType.VIDEO
-    assert reply.content == str(video_path)
-    assert reply.cleanup_after_send is True
-    assert calls[0][0] == "make a red kite video"
+    assert reply.type == ReplyType.TEXT
+    assert "video-job" in reply.content
+    assert manager.submitted[0][0]["prompt"] == "make a red kite video"
 
 
 def test_default_agent_mode_video_create_shortcuts_to_grok_video(monkeypatch):
@@ -280,6 +303,173 @@ def test_wecom_bot_video_prefix_after_recent_image_auto_uses_ref(monkeypatch, tm
     reset_image_recognition_manager(None)
 
 
+def test_wecom_bot_image_to_video_uses_requested_recent_image_count(monkeypatch, tmp_path):
+    fake_conf = MagicMock()
+    fake_conf.get.side_effect = lambda key, default=None: {
+        "video_create_prefix": [],
+        "image_create_prefix": [],
+        "background_image_recognition_enabled": True,
+        "image_recognition_recent_video_ref_window_seconds": 600,
+    }.get(key, default)
+    monkeypatch.setattr("channel.wecom_bot.wecom_bot_channel.conf", lambda: fake_conf)
+    monkeypatch.setattr("channel.chat_channel.conf", lambda: fake_conf)
+
+    workspace = tmp_path / "workspace"
+    manager = ImageRecognitionManager(workspace_root=str(workspace), max_workers=1)
+    reset_image_recognition_manager(manager)
+    records = []
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        for name in ("first.png", "second.png", "third.png"):
+            source = tmp_path / name
+            source.write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode("ascii"))
+            records.append(
+                manager.register_image(
+                    session_id="u1",
+                    channel_type="wecom_bot",
+                    image_path=str(source),
+                )
+            )
+
+    channel_cls = _singleton_class(WecomBotChannel)
+    channel = object.__new__(channel_cls)
+    channel.channel_type = "wecom_bot"
+
+    context = channel._compose_context(
+        ContextType.TEXT,
+        "generate a video 参考上面2张图片生成产品视频",
+        msg=_wecom_msg(),
+        isgroup=False,
+        no_need_at=True,
+    )
+
+    assert context.type == ContextType.VIDEO_CREATE
+    assert records[0].image_path not in context.content
+    assert records[1].image_path in context.content
+    assert records[2].image_path in context.content
+    assert context.content.count("[image:") == 2
+    reset_image_recognition_manager(None)
+
+
+def test_wecom_bot_image_to_video_without_count_uses_latest_image(monkeypatch, tmp_path):
+    fake_conf = MagicMock()
+    fake_conf.get.side_effect = lambda key, default=None: {
+        "video_create_prefix": [],
+        "image_create_prefix": [],
+        "background_image_recognition_enabled": True,
+        "image_recognition_recent_video_ref_window_seconds": 600,
+    }.get(key, default)
+    monkeypatch.setattr("channel.wecom_bot.wecom_bot_channel.conf", lambda: fake_conf)
+    monkeypatch.setattr("channel.chat_channel.conf", lambda: fake_conf)
+
+    workspace = tmp_path / "workspace"
+    manager = ImageRecognitionManager(workspace_root=str(workspace), max_workers=1)
+    reset_image_recognition_manager(manager)
+    records = []
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        for name in ("first.png", "second.png"):
+            source = tmp_path / name
+            source.write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode("ascii"))
+            records.append(
+                manager.register_image(
+                    session_id="u1",
+                    channel_type="wecom_bot",
+                    image_path=str(source),
+                )
+            )
+
+    channel_cls = _singleton_class(WecomBotChannel)
+    channel = object.__new__(channel_cls)
+    channel.channel_type = "wecom_bot"
+
+    context = channel._compose_context(
+        ContextType.TEXT,
+        "generate a video 参考上面的图片生成产品视频",
+        msg=_wecom_msg(),
+        isgroup=False,
+        no_need_at=True,
+    )
+
+    assert context.type == ContextType.VIDEO_CREATE
+    assert records[0].image_path not in context.content
+    assert records[1].image_path in context.content
+    assert context.content.count("[image:") == 1
+    reset_image_recognition_manager(None)
+
+
+def test_wecom_bot_video_prefix_without_hint_uses_latest_recent_image(monkeypatch, tmp_path):
+    fake_conf = MagicMock()
+    fake_conf.get.side_effect = lambda key, default=None: {
+        "video_create_prefix": ["生成视频"],
+        "image_create_prefix": [],
+        "background_image_recognition_enabled": True,
+        "image_recognition_video_create_auto_ref_window_seconds": 120,
+    }.get(key, default)
+    monkeypatch.setattr("channel.wecom_bot.wecom_bot_channel.conf", lambda: fake_conf)
+    monkeypatch.setattr("channel.chat_channel.conf", lambda: fake_conf)
+
+    workspace = tmp_path / "workspace"
+    manager = ImageRecognitionManager(workspace_root=str(workspace), max_workers=1)
+    reset_image_recognition_manager(manager)
+    records = []
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        for name in ("first.png", "second.png"):
+            source = tmp_path / name
+            source.write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode("ascii"))
+            records.append(
+                manager.register_image(
+                    session_id="u1",
+                    channel_type="wecom_bot",
+                    image_path=str(source),
+                )
+            )
+
+    channel_cls = _singleton_class(WecomBotChannel)
+    channel = object.__new__(channel_cls)
+    channel.channel_type = "wecom_bot"
+
+    context = channel._compose_context(
+        ContextType.TEXT,
+        "生成视频：10s 让镜头轻微推进",
+        msg=_wecom_msg(),
+        isgroup=False,
+        no_need_at=True,
+    )
+
+    assert context.type == ContextType.VIDEO_CREATE
+    assert records[0].image_path not in context.content
+    assert records[1].image_path in context.content
+    assert context.content.count("[image:") == 1
+    reset_image_recognition_manager(None)
+
+
+def test_grok_video_create_detaches_from_session_queue(monkeypatch):
+    import threading
+
+    fake_conf = MagicMock()
+    fake_conf.get.side_effect = lambda key, default=None: {
+        "concurrency_in_session": 1,
+        "video_generation_provider": "xai",
+    }.get(key, default)
+    monkeypatch.setattr("channel.chat_channel.conf", lambda: fake_conf)
+    monkeypatch.setattr("models.grok.grok_video.is_grok_video_provider", lambda: True)
+    sent = []
+
+    channel = object.__new__(ChatChannel)
+    channel.channel_type = "web"
+    channel.lock = threading.RLock()
+    channel.sessions = {}
+    channel.futures = {}
+    channel._handle_detached_grok_video_create = lambda context: sent.append(context.content)
+
+    context = Context(ContextType.VIDEO_CREATE, "生成视频 10s")
+    context["session_id"] = "session"
+
+    channel.produce(context)
+
+    assert sent == ["生成视频 10s"]
+    assert "session" not in channel.sessions
+
+
 def test_wecom_bot_text_to_video_opt_out_skips_recent_image_ref(monkeypatch, tmp_path):
     fake_conf = MagicMock()
     fake_conf.get.side_effect = lambda key, default=None: {
@@ -359,16 +549,7 @@ def test_grok_video_uses_recent_image_count(monkeypatch, tmp_path):
     third = tmp_path / "c.png"
     for path in (first, second, third):
         path.write_bytes(b"\x89PNG\r\n\x1a\nimage")
-    captured = []
-
-    class FakeProvider:
-        def generate(self, prompt, **kwargs):
-            captured.append((prompt, kwargs))
-            output = tmp_path / "result.mp4"
-            output.write_bytes(b"\x00\x00\x00\x18ftypmp4")
-            return str(output)
-
-    monkeypatch.setattr("models.grok.grok_video.XAIVideoGenProvider", lambda: FakeProvider())
+    manager = _patch_grok_video_background(monkeypatch)
     prompt = (
         f"参考上面发的2张图片生成产品视频\n"
         f"[图片: {first}]\n[图片: {second}]\n[图片: {third}]"
@@ -376,10 +557,44 @@ def test_grok_video_uses_recent_image_count(monkeypatch, tmp_path):
 
     reply = object.__new__(GrokBot).reply(prompt, Context(ContextType.VIDEO_CREATE, prompt))
 
-    assert reply.type == ReplyType.VIDEO
-    kwargs = captured[0][1]
-    assert kwargs["image_url"] is None
-    assert kwargs["reference_image_urls"] == [str(second), str(third)]
+    assert reply.type == ReplyType.TEXT
+    args = manager.submitted[0][0]
+    assert args["image_url"] == [str(second), str(third)]
+    assert "aspect_ratio" not in args
+
+
+def test_grok_video_reference_request_without_count_uses_latest_image(monkeypatch, tmp_path):
+    first = tmp_path / "a.png"
+    second = tmp_path / "b.png"
+    third = tmp_path / "c.png"
+    for path in (first, second, third):
+        path.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    manager = _patch_grok_video_background(monkeypatch)
+    prompt = (
+        f"参考上面的图片生成产品视频\n"
+        f"[图片: {first}]\n[图片: {second}]\n[图片: {third}]"
+    )
+
+    reply = object.__new__(GrokBot).reply(prompt, Context(ContextType.VIDEO_CREATE, prompt))
+
+    assert reply.type == ReplyType.TEXT
+    args = manager.submitted[0][0]
+    assert args["image_url"] == str(third)
+
+
+def test_grok_video_with_refs_without_count_uses_latest_image(monkeypatch, tmp_path):
+    first = tmp_path / "a.png"
+    second = tmp_path / "b.png"
+    for path in (first, second):
+        path.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    manager = _patch_grok_video_background(monkeypatch)
+    prompt = f"背景换成火星\n[图片: {first}]\n[图片: {second}]"
+
+    reply = object.__new__(GrokBot).reply(prompt, Context(ContextType.VIDEO_CREATE, prompt))
+
+    assert reply.type == ReplyType.TEXT
+    args = manager.submitted[0][0]
+    assert args["image_url"] == str(second)
 
 
 def test_grok_video_reference_request_without_image_fails():
@@ -388,3 +603,48 @@ def test_grok_video_reference_request_without_image_fails():
 
     assert reply.type == ReplyType.ERROR
     assert "没有找到可用图片" in reply.content
+
+
+def test_grok_video_without_hint_uses_latest_recent_image(monkeypatch, tmp_path):
+    source = tmp_path / "ref.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    manager = ImageRecognitionManager(workspace_root=str(tmp_path / "workspace"), max_workers=1)
+    reset_image_recognition_manager(manager)
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        record = manager.register_image(
+            session_id="session",
+            channel_type="web",
+            image_path=str(source),
+        )
+    job_manager = _patch_grok_video_background(monkeypatch)
+    context = Context(ContextType.VIDEO_CREATE, "生成视频 10s 让镜头推进")
+    context["session_id"] = "session"
+
+    reply = object.__new__(GrokBot).reply(context.content, context)
+
+    assert reply.type == ReplyType.TEXT
+    assert job_manager.submitted[0][0]["image_url"] == record.image_path
+    reset_image_recognition_manager(None)
+
+
+def test_grok_video_text_to_video_opt_out_ignores_latest_recent_image(monkeypatch, tmp_path):
+    source = tmp_path / "ref.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    manager = ImageRecognitionManager(workspace_root=str(tmp_path / "workspace"), max_workers=1)
+    reset_image_recognition_manager(manager)
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        manager.register_image(
+            session_id="session",
+            channel_type="web",
+            image_path=str(source),
+        )
+    job_manager = _patch_grok_video_background(monkeypatch)
+    context = Context(ContextType.VIDEO_CREATE, "文生视频，一只猫在月球奔跑")
+    context["session_id"] = "session"
+
+    reply = object.__new__(GrokBot).reply(context.content, context)
+
+    assert reply.type == ReplyType.TEXT
+    assert "image_url" not in job_manager.submitted[0][0]
+    assert job_manager.submitted[0][0]["aspect_ratio"] == "16:9"
+    reset_image_recognition_manager(None)

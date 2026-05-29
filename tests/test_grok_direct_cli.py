@@ -84,21 +84,52 @@ def test_grok_direct_image_defaults_to_grok_speed_runtime():
 def test_grok_direct_video_defaults_and_uses_context_image_refs():
     plugin = _load_cow_cli_plugin()
     manager = CaptureManager()
-    content = "/grok-direct video -- 让这张图动起来\n[图片: C:/tmp/ref.png]"
+    content = "/grok-direct video -- 参考上面的图片生成视频\n[图片: C:/tmp/old.png]\n[图片: C:/tmp/ref.png]"
     context = _context(content)
     plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
 
     with patch("agent.tools.video_generation.job_manager.get_grok_video_generation_job_manager", return_value=manager), patch(
         "bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None)
     ):
-        result = plugin._cmd_grok_direct("video -- 让这张图动起来\n[图片: C:/tmp/ref.png]", {"context": context})
+        result = plugin._cmd_grok_direct("video -- 参考上面的图片生成视频\n[图片: C:/tmp/old.png]\n[图片: C:/tmp/ref.png]", {"context": context})
 
     args = manager.submitted[0][0]
     assert "任务 job123" in result
-    assert args["prompt"] == "让这张图动起来"
+    assert args["prompt"] == "参考上面的图片生成视频"
     assert args["resolution"] == "480p"
-    assert args["aspect_ratio"] == "16:9"
+    assert "aspect_ratio" not in args
     assert args["duration"] == "6s"
+    assert args["image_url"] == "C:/tmp/ref.png"
+
+
+def test_grok_direct_video_text_only_keeps_default_aspect_ratio():
+    plugin = _load_cow_cli_plugin()
+    manager = CaptureManager()
+    context = _context("/grok-direct video -- 城市天际线延时摄影")
+    plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    with patch("agent.tools.video_generation.job_manager.get_grok_video_generation_job_manager", return_value=manager), patch(
+        "bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None)
+    ):
+        plugin._cmd_grok_direct("video -- 城市天际线延时摄影", {"context": context})
+
+    args = manager.submitted[0][0]
+    assert args["aspect_ratio"] == "16:9"
+
+
+def test_grok_direct_video_without_count_uses_latest_context_ref_even_without_hint():
+    plugin = _load_cow_cli_plugin()
+    manager = CaptureManager()
+    content = "/grok-direct video -- 背景换成火星\n[图片: C:/tmp/old.png]\n[图片: C:/tmp/ref.png]"
+    context = _context(content)
+    plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    with patch("agent.tools.video_generation.job_manager.get_grok_video_generation_job_manager", return_value=manager), patch(
+        "bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None)
+    ):
+        plugin._cmd_grok_direct("video -- 背景换成火星\n[图片: C:/tmp/old.png]\n[图片: C:/tmp/ref.png]", {"context": context})
+
+    args = manager.submitted[0][0]
     assert args["image_url"] == "C:/tmp/ref.png"
 
 
@@ -131,6 +162,133 @@ def test_grok_direct_video_falls_back_to_recent_image_refs(tmp_path):
     reset_image_recognition_manager(None)
 
 
+def test_grok_direct_video_uses_requested_recent_image_count(tmp_path):
+    plugin = _load_cow_cli_plugin()
+    manager = CaptureManager()
+    context = _context("/grok-direct video -- 参考上面2张图片生成产品视频")
+    plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    workspace = tmp_path / "workspace"
+    image_manager = ImageRecognitionManager(workspace_root=str(workspace), max_workers=1)
+    reset_image_recognition_manager(image_manager)
+    records = []
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        for name in ("first.png", "second.png", "third.png"):
+            source = tmp_path / name
+            source.write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode("ascii"))
+            records.append(
+                image_manager.register_image(
+                    session_id="session",
+                    channel_type="web",
+                    image_path=str(source),
+                )
+            )
+
+    with patch("agent.tools.video_generation.job_manager.get_grok_video_generation_job_manager", return_value=manager), patch(
+        "bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None)
+    ):
+        plugin._cmd_grok_direct("video -- 参考上面2张图片生成产品视频", {"context": context})
+
+    args = manager.submitted[0][0]
+    assert args["image_url"] == [records[1].image_path, records[2].image_path]
+    reset_image_recognition_manager(None)
+
+
+def test_grok_direct_video_defaults_to_latest_recent_image(tmp_path):
+    plugin = _load_cow_cli_plugin()
+    manager = CaptureManager()
+    context = _context("/grok-direct video -- 参考上面的图片生成产品视频")
+    plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    workspace = tmp_path / "workspace"
+    image_manager = ImageRecognitionManager(workspace_root=str(workspace), max_workers=1)
+    reset_image_recognition_manager(image_manager)
+    records = []
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        for name in ("first.png", "second.png"):
+            source = tmp_path / name
+            source.write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode("ascii"))
+            records.append(
+                image_manager.register_image(
+                    session_id="session",
+                    channel_type="web",
+                    image_path=str(source),
+                )
+            )
+
+    with patch("agent.tools.video_generation.job_manager.get_grok_video_generation_job_manager", return_value=manager), patch(
+        "bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None)
+    ):
+        plugin._cmd_grok_direct("video -- 参考上面的图片生成产品视频", {"context": context})
+
+    args = manager.submitted[0][0]
+    assert args["image_url"] == records[1].image_path
+    assert "aspect_ratio" not in args
+    reset_image_recognition_manager(None)
+
+
+def test_grok_direct_video_without_hint_uses_latest_recent_image(tmp_path):
+    plugin = _load_cow_cli_plugin()
+    manager = CaptureManager()
+    context = _context("/grok-direct video -- 10s 让镜头轻微推进")
+    plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    workspace = tmp_path / "workspace"
+    image_manager = ImageRecognitionManager(workspace_root=str(workspace), max_workers=1)
+    reset_image_recognition_manager(image_manager)
+    records = []
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        for name in ("first.png", "second.png"):
+            source = tmp_path / name
+            source.write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode("ascii"))
+            records.append(
+                image_manager.register_image(
+                    session_id="session",
+                    channel_type="web",
+                    image_path=str(source),
+                )
+            )
+
+    with patch("agent.tools.video_generation.job_manager.get_grok_video_generation_job_manager", return_value=manager), patch(
+        "bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None)
+    ):
+        plugin._cmd_grok_direct("video -- 10s 让镜头轻微推进", {"context": context})
+
+    args = manager.submitted[0][0]
+    assert args["image_url"] == records[1].image_path
+    assert "aspect_ratio" not in args
+    reset_image_recognition_manager(None)
+
+
+def test_grok_direct_video_text_to_video_opt_out_ignores_recent_image(tmp_path):
+    plugin = _load_cow_cli_plugin()
+    manager = CaptureManager()
+    context = _context("/grok-direct video -- 文生视频，一只猫在月球奔跑")
+    plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    workspace = tmp_path / "workspace"
+    image_manager = ImageRecognitionManager(workspace_root=str(workspace), max_workers=1)
+    reset_image_recognition_manager(image_manager)
+    source = tmp_path / "ref.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        image_manager.register_image(
+            session_id="session",
+            channel_type="web",
+            image_path=str(source),
+        )
+
+    with patch("agent.tools.video_generation.job_manager.get_grok_video_generation_job_manager", return_value=manager), patch(
+        "bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None)
+    ):
+        plugin._cmd_grok_direct("video -- 文生视频，一只猫在月球奔跑", {"context": context})
+
+    args = manager.submitted[0][0]
+    assert "image_url" not in args
+    assert args["aspect_ratio"] == "16:9"
+    reset_image_recognition_manager(None)
+
+
 def test_grok_direct_image_rejects_reference_image():
     plugin = _load_cow_cli_plugin()
     context = _context("/grok-direct image -- 参考这张图画海报\n[图片: C:/tmp/ref.png]")
@@ -139,3 +297,29 @@ def test_grok_direct_image_rejects_reference_image():
     result = plugin._cmd_grok_direct("image -- 参考这张图画海报\n[图片: C:/tmp/ref.png]", {"context": context})
 
     assert "只支持文生图" in result
+
+
+def test_slash_command_suggestions_include_admin_web_commands():
+    plugin = _load_cow_cli_plugin()
+
+    commands = {item["cmd"] for item in plugin.slash_command_suggestions(is_admin=True)}
+
+    assert "/grok-direct image -- 一只穿宇航服的橘猫，电影海报风格" in commands
+    assert "/grok-direct video -- 城市天际线延时摄影" in commands
+    assert "/backend grok" in commands
+    assert "/voice on" in commands
+    assert "/memory rebuild-index" in commands
+    assert "/knowledge off" in commands
+    assert "/install-browser" in commands
+    assert "/start" not in commands
+    assert "/stop" not in commands
+    assert "/restart" not in commands
+
+
+def test_module_slash_command_suggestions_uses_registered_plugin():
+    _load_cow_cli_plugin()
+    from plugins.cow_cli import cow_cli
+
+    commands = {item["cmd"] for item in cow_cli.slash_command_suggestions(is_admin=True)}
+
+    assert "/grok-direct image -- 一只穿宇航服的橘猫，电影海报风格" in commands

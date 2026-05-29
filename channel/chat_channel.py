@@ -9,7 +9,11 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from bridge.context import *
 from bridge.reply import *
 from channel.channel import Channel
-from channel.image_recognition import get_image_recognition_manager
+from channel.image_recognition import (
+    explicit_text_to_video_requested,
+    get_image_recognition_manager,
+    requested_video_reference_image_count,
+)
 from common.agent_task_limits import resolve_agent_task_budget
 from common.agent_task_runtime import SessionRuntime, TaskPolicy
 from common.grok_voice_mode import is_grok_text_to_voice_provider
@@ -63,19 +67,6 @@ _IMAGE_TO_VIDEO_FOLLOWUP_HINTS = (
     "animatethisimage",
     "animatetheimage",
 )
-_TEXT_TO_VIDEO_ONLY_HINTS = (
-    "\u6587\u751f\u89c6\u9891",
-    "\u7eaf\u6587\u751f\u89c6\u9891",
-    "\u4e0d\u53c2\u8003\u56fe",
-    "\u4e0d\u8981\u53c2\u8003\u56fe",
-    "\u4e0d\u7528\u53c2\u8003\u56fe",
-    "\u65e0\u9700\u53c2\u8003\u56fe",
-    "texttovideo",
-    "txt2video",
-    "noimage",
-    "withoutimage",
-)
-
 
 class ChatChannel(Channel):
     name = None  # 登录的用户名
@@ -233,29 +224,18 @@ class ChatChannel(Channel):
         if _IMAGE_REF_RE.search(text):
             return text
         explicit_reference_request = self._looks_like_image_to_video_followup(text)
-        if not explicit_reference_request and self._looks_like_text_to_video_only(text):
+        if explicit_text_to_video_requested(text):
             return text
         max_age_seconds = conf().get(
             "image_recognition_recent_video_ref_window_seconds",
             None,
         )
-        if not explicit_reference_request:
-            auto_ref_window = conf().get(
-                "image_recognition_video_create_auto_ref_window_seconds",
-                120,
-            )
-            try:
-                auto_ref_window = float(auto_ref_window)
-            except (TypeError, ValueError):
-                auto_ref_window = 0
-            if auto_ref_window <= 0:
-                return text
-            max_age_seconds = auto_ref_window
         try:
             manager = get_image_recognition_manager()
+            requested_refs = requested_video_reference_image_count(text)
             refs = manager.recent_image_refs_for_session(
                 session_id,
-                limit=7,
+                limit=requested_refs,
                 max_age_seconds=max_age_seconds,
             )
         except Exception as e:
@@ -276,13 +256,6 @@ class ChatChannel(Channel):
         if not compact:
             return False
         return any(hint in compact for hint in _IMAGE_TO_VIDEO_FOLLOWUP_HINTS)
-
-    @staticmethod
-    def _looks_like_text_to_video_only(content: str) -> bool:
-        compact = "".join(str(content or "").lower().split())
-        if not compact:
-            return False
-        return any(hint in compact for hint in _TEXT_TO_VIDEO_ONLY_HINTS)
 
     @staticmethod
     def _private_image_recognition_prompt() -> str:
@@ -1202,6 +1175,10 @@ class ChatChannel(Channel):
         context["_latency_enqueued_at"] = enqueued_at
         if "_latency_received_at" not in context:
             context["_latency_received_at"] = enqueued_at
+        if self._should_detach_grok_video_create(context):
+            control_pool.submit(self._handle_detached_grok_video_create, context)
+            logger.info("[Latency][FastLane] control=grok_video session=%s", hash_id(session_id))
+            return
         runtime = self._get_or_create_runtime(session_id)
         if context.type == ContextType.TEXT:
             try:
@@ -1234,7 +1211,6 @@ class ChatChannel(Channel):
             quick_reply_pool.submit(self._handle_quick_reply, context, **payload)
             logger.info("[Latency][FastLane] control=quick session=%s", hash_id(session_id))
             return
-
         with self.lock:
             if self.sessions.get(session_id) is not runtime:
                 self.sessions[session_id] = runtime
@@ -1308,6 +1284,29 @@ class ChatChannel(Channel):
                                 del self.sessions[session_id]
                                 del self.futures[session_id]
             time.sleep(0.2)
+
+    @staticmethod
+    def _should_detach_grok_video_create(context: Context) -> bool:
+        if not context or context.type != ContextType.VIDEO_CREATE:
+            return False
+        try:
+            from models.grok.grok_video import is_grok_video_provider
+
+            return bool(is_grok_video_provider() or active_backend_is_grok_for_context(context))
+        except Exception:
+            return False
+
+    def _handle_detached_grok_video_create(self, context: Context) -> None:
+        try:
+            from bridge.bridge import Bridge
+
+            reply = Bridge().fetch_reply_content(context.content, context)
+            if reply and reply.content:
+                reply = self._decorate_reply(context, reply)
+                self._send_reply(context, reply)
+        except Exception as e:
+            logger.error("[GrokVideo] detached task submit failed: %s", e, exc_info=True)
+            self._send_plain_text(context, f"Grok 视频任务提交失败：{e}")
 
     # 取消session_id对应的所有任务，只能取消排队的消息和已提交线程池但未执行的任务
     def cancel_session(self, session_id, clear_pending: bool = True):

@@ -10,6 +10,7 @@ from agent.user_profiles import resolve_single_admin_profile
 from channel.web import web_channel
 from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
+from channel.image_recognition import ImageRecognitionManager, reset_image_recognition_manager
 
 
 def _singleton_class(factory):
@@ -167,6 +168,50 @@ class WebAdminPrivacyTest(unittest.TestCase):
             self.assertTrue(item["content"].startswith("/api/file?token="))
             token = item["content"].split("token=", 1)[1]
             self.assertEqual(web_channel._resolve_web_file_token(token), str(media.resolve()))
+
+    def test_web_uploaded_images_are_cached_for_later_video_refs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            image = Path(tmp) / "upload.png"
+            image.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+            manager = ImageRecognitionManager(workspace_root=str(workspace), max_workers=1)
+            reset_image_recognition_manager(manager)
+
+            with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+                count = web_channel._register_web_uploaded_images(
+                    "web-session",
+                    [{"file_type": "image", "file_path": str(image)}],
+                )
+
+            refs = manager.recent_image_refs_for_session("web-session", limit=1)
+            self.assertEqual(count, 1)
+            self.assertEqual(len(refs), 1)
+            self.assertTrue(Path(refs[0]).exists())
+            reset_image_recognition_manager(None)
+
+    def test_web_admin_context_applies_single_admin_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            context = Context(ContextType.TEXT, "hello")
+            with patch("config.conf") as mock_conf:
+                mock_conf.return_value.get.side_effect = _conf_get(tmp)
+
+                web_channel._apply_web_admin_context(context)
+
+            self.assertEqual(context["actor_id"], "weixin:admin")
+            self.assertEqual(context["actor_role"], "admin")
+            self.assertEqual(context["memory_user_id"], "admin-memory")
+
+    def test_commands_handler_uses_cow_cli_suggestions(self):
+        with patch("channel.web.web_channel._require_auth", return_value=None), patch(
+            "channel.web.web_channel.web.header",
+            return_value=None,
+        ), patch(
+            "channel.web.web_channel._cow_cli_slash_command_suggestions",
+            return_value=[{"cmd": "/grok-direct image -- <prompt>", "desc": "Grok 直出生图"}],
+        ):
+            body = web_channel.CommandsHandler().GET()
+
+        self.assertIn("/grok-direct image", body)
 
 
 if __name__ == "__main__":

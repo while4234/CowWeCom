@@ -136,15 +136,25 @@ class XAIImageGenProvider:
                 _DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
             ),
         }
-        metadata = enhance_image_prompt(
-            clean_prompt,
-            target="grok",
-            model=options["model"],
-            runtime="grok_direct",
-            size=options["resolution"],
-            aspect_ratio=options["aspect_ratio"],
-            enabled=prompt_enhancement,
-        )
+        if prompt_enhancement:
+            metadata = enhance_image_prompt(
+                clean_prompt,
+                target="grok",
+                model=options["model"],
+                runtime="grok_direct",
+                size=options["resolution"],
+                aspect_ratio=options["aspect_ratio"],
+                enabled=True,
+            )
+        else:
+            metadata = {
+                "original_prompt": clean_prompt,
+                "enhanced_prompt": clean_prompt,
+                "enabled": False,
+                "target": "grok",
+                "model": options["model"],
+                "runtime": "grok_direct",
+            }
         self.last_prompt_metadata = metadata
         clean_prompt = str(metadata.get("enhanced_prompt") or clean_prompt).strip()
         payload = {

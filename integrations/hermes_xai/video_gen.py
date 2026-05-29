@@ -40,6 +40,15 @@ DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 120
 VALID_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 VALID_RESOLUTIONS = {"480p", "720p"}
 MAX_REFERENCE_IMAGES = 7
+_IMAGE_ASPECT_RATIOS = (
+    ("16:9", 16 / 9),
+    ("9:16", 9 / 16),
+    ("4:3", 4 / 3),
+    ("3:4", 3 / 4),
+    ("3:2", 3 / 2),
+    ("2:3", 2 / 3),
+    ("1:1", 1.0),
+)
 
 _MODELS: Dict[str, Dict[str, Any]] = {
     "grok-imagine-video": {
@@ -134,17 +143,25 @@ class XAIVideoGenProvider:
             elif image_values:
                 reference_image_urls = image_values
                 image_url = None
-        refs = _normalize_reference_images(reference_image_urls)
-        image_url_norm = _normalize_media_reference(image_url) if image_url else None
+        refs, ref_dimensions = _normalize_reference_images(reference_image_urls)
+        image_url_norm = None
+        image_dimensions = None
+        if image_url:
+            image_url_norm, image_dimensions = _normalize_media_reference(image_url)
         if image_url_norm and refs:
             raise XaiVideoGenError("image_url and reference_image_urls cannot be combined on xAI.")
         if refs and len(refs) > MAX_REFERENCE_IMAGES:
             raise XaiVideoGenError(f"xAI video supports at most {MAX_REFERENCE_IMAGES} reference images.")
+        has_reference_images = bool(image_url_norm or refs)
 
         options = {
             "model": self._resolve_model(model),
-            "duration": _clamp_duration(duration, has_reference_images=bool(refs)),
-            "aspect_ratio": self._resolve_aspect_ratio(aspect_ratio),
+            "duration": _clamp_duration(duration, has_reference_images=has_reference_images),
+            "aspect_ratio": self._resolve_aspect_ratio(
+                aspect_ratio,
+                has_reference_images=has_reference_images,
+                reference_dimensions=image_dimensions or _first_dimensions(ref_dimensions),
+            ),
             "resolution": self._resolve_resolution(resolution),
             "timeout": _bounded_float(
                 timeout_seconds
@@ -295,9 +312,23 @@ class XAIVideoGenProvider:
         candidate = str(resolution or self._config_value("grok_video_resolution") or DEFAULT_RESOLUTION).strip().lower()
         return candidate if candidate in VALID_RESOLUTIONS else DEFAULT_RESOLUTION
 
-    def _resolve_aspect_ratio(self, aspect_ratio: Optional[str]) -> str:
-        candidate = str(aspect_ratio or self._config_value("grok_video_aspect_ratio") or DEFAULT_ASPECT_RATIO).strip()
-        return candidate if candidate in VALID_ASPECT_RATIOS else DEFAULT_ASPECT_RATIO
+    def _resolve_aspect_ratio(
+        self,
+        aspect_ratio: Optional[str],
+        *,
+        has_reference_images: bool = False,
+        reference_dimensions: Optional[tuple[int, int]] = None,
+    ) -> str:
+        explicit = str(aspect_ratio or "").strip()
+        if has_reference_images and not explicit:
+            inferred = _infer_aspect_ratio(reference_dimensions)
+            if inferred:
+                return inferred
+        candidate = str(explicit or self._config_value("grok_video_aspect_ratio") or DEFAULT_ASPECT_RATIO).strip()
+        if candidate in VALID_ASPECT_RATIOS:
+            return candidate
+        inferred = _infer_aspect_ratio(reference_dimensions) if has_reference_images else None
+        return inferred or DEFAULT_ASPECT_RATIO
 
     def _config_value(self, key: str):
         if key in self.config:
@@ -313,25 +344,30 @@ def _xai_headers(api_key: str) -> Dict[str, str]:
     }
 
 
-def _normalize_reference_images(reference_image_urls: Optional[List[str]]) -> Optional[List[Dict[str, str]]]:
+def _normalize_reference_images(
+    reference_image_urls: Optional[List[str]],
+) -> tuple[Optional[List[Dict[str, str]]], List[tuple[int, int]]]:
     refs = []
+    dimensions = []
     for url in reference_image_urls or []:
-        normalized = _normalize_media_reference(url)
+        normalized, size = _normalize_media_reference(url)
         if normalized:
             refs.append({"url": normalized})
-    return refs or None
+        if size:
+            dimensions.append(size)
+    return refs or None, dimensions
 
 
-def _normalize_media_reference(value: Any) -> str:
+def _normalize_media_reference(value: Any) -> tuple[str, Optional[tuple[int, int]]]:
     source = str(value or "").strip().strip("'\"")
     if not source:
-        return ""
+        return "", None
     lowered = source.lower()
     if lowered.startswith(("http://", "https://")) or _DATA_IMAGE_RE.match(source):
-        return source
+        return source, None
     path = _local_path_from_reference(source)
     if not path or not os.path.isfile(path):
-        return source
+        return source, None
     size = os.path.getsize(path)
     if size <= 0:
         raise XaiVideoGenError(f"Reference image is empty: {path}")
@@ -340,7 +376,34 @@ def _normalize_media_reference(value: Any) -> str:
     with open(path, "rb") as handle:
         raw = handle.read()
     mime = _guess_image_mime(raw, path)
-    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}", _image_dimensions(path)
+
+
+def _image_dimensions(path: str) -> Optional[tuple[int, int]]:
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            width, height = image.size
+        if width > 0 and height > 0:
+            return int(width), int(height)
+    except Exception as exc:
+        logger.debug("[GrokVideo] failed to read reference image dimensions for %s: %s", path, exc)
+    return None
+
+
+def _first_dimensions(values: List[tuple[int, int]]) -> Optional[tuple[int, int]]:
+    return values[0] if values else None
+
+
+def _infer_aspect_ratio(dimensions: Optional[tuple[int, int]]) -> Optional[str]:
+    if not dimensions:
+        return None
+    width, height = dimensions
+    if width <= 0 or height <= 0:
+        return None
+    ratio = width / height
+    return min(_IMAGE_ASPECT_RATIOS, key=lambda item: abs(item[1] - ratio))[0]
 
 
 def _local_path_from_reference(source: str) -> str:

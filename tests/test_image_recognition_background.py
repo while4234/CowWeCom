@@ -10,7 +10,12 @@ from unittest.mock import patch
 
 from agent.tools.vision.vision import Vision
 from bridge.context import Context, ContextType
-from channel.image_recognition import ImageRecognitionManager, ImageRecognitionRecord, reset_image_recognition_manager
+from channel.image_recognition import (
+    ImageRecognitionManager,
+    ImageRecognitionRecord,
+    requested_video_reference_image_count,
+    reset_image_recognition_manager,
+)
 from channel.weixin.weixin_channel import WeixinChannel
 from config import conf
 
@@ -125,10 +130,18 @@ class TestImageRecognitionManager(unittest.TestCase):
                     channel_type="wecom_bot",
                     image_path=str(other),
                 )
+                manager.executor.shutdown(wait=True)
 
             refs = manager.recent_image_refs_for_session("session-a", limit=2)
 
             self.assertEqual(refs, [first_record.image_path, second_record.image_path])
+
+    def test_requested_video_reference_image_count_parses_natural_requests(self):
+        self.assertEqual(requested_video_reference_image_count("参考上面2张图片生成视频"), 2)
+        self.assertEqual(requested_video_reference_image_count("参考上面两张图生成视频"), 2)
+        self.assertEqual(requested_video_reference_image_count("use last 3 images"), 3)
+        self.assertEqual(requested_video_reference_image_count("参考上面的图片生成视频"), 1)
+        self.assertEqual(requested_video_reference_image_count("参考上面9张图片生成视频"), 7)
 
     def test_related_followups_expire_before_full_image_cache(self):
         with tempfile.TemporaryDirectory() as workspace:

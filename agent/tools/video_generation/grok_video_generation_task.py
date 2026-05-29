@@ -4,10 +4,17 @@ import re
 from typing import Any, Dict
 
 from agent.tools.base_tool import BaseTool, ToolResult
+from channel.image_recognition import (
+    MAX_VIDEO_REFERENCE_IMAGES,
+    explicit_text_to_video_requested,
+    explicit_video_reference_image_count,
+    get_image_recognition_manager,
+    requested_video_reference_image_count,
+)
 from common.image_generation_routing import looks_like_media_generation_status_question
 
 
-MAX_IMAGE_REFERENCES = 7
+MAX_IMAGE_REFERENCES = MAX_VIDEO_REFERENCE_IMAGES
 
 
 class GrokVideoGenerationTaskTool(BaseTool):
@@ -99,10 +106,10 @@ class GrokVideoGenerationTaskTool(BaseTool):
         if self.current_context is None or self.profile is None:
             return ToolResult.fail("Missing chat context; cannot send Grok video generation results back.")
 
-        image_refs = self._extract_context_image_refs()
+        image_refs = self._select_image_refs_for_prompt(prompt, self._extract_available_image_refs(prompt))
         if not params.get("image_url") and image_refs:
             params["image_url"] = image_refs[0] if len(image_refs) == 1 else image_refs
-        params["image_url"] = self._normalize_image_refs(params.get("image_url"))
+        params["image_url"] = self._normalize_image_refs(params.get("image_url"), prompt=prompt)
         if not params.get("image_url"):
             params.pop("image_url", None)
             if self._looks_like_image_to_video_request(prompt):
@@ -129,12 +136,34 @@ class GrokVideoGenerationTaskTool(BaseTool):
             ref = match.group(1).strip()
             if ref and ref not in refs:
                 refs.append(ref)
-            if len(refs) >= MAX_IMAGE_REFERENCES:
-                break
         return refs
 
-    @staticmethod
-    def _normalize_image_refs(value: Any) -> str | list[str] | None:
+    def _extract_available_image_refs(self, prompt: str) -> list[str]:
+        refs = self._extract_context_image_refs()
+        if refs or explicit_text_to_video_requested(prompt):
+            return refs
+        session_id = ""
+        if self.current_context is not None:
+            try:
+                session_id = str(self.current_context.get("session_id") or "").strip()
+            except Exception:
+                session_id = str(getattr(self.current_context, "session_id", "") or "").strip()
+        if not session_id:
+            return refs
+        try:
+            requested_refs = requested_video_reference_image_count(prompt, max_refs=MAX_IMAGE_REFERENCES)
+            recent = get_image_recognition_manager().recent_image_refs_for_session(
+                session_id,
+                limit=requested_refs,
+            )
+        except Exception:
+            recent = []
+        for ref in recent:
+            if ref and ref not in refs:
+                refs.append(ref)
+        return refs
+
+    def _normalize_image_refs(self, value: Any, prompt: str = "") -> str | list[str] | None:
         if isinstance(value, str):
             refs = [value.strip()] if value.strip() else []
         elif isinstance(value, (list, tuple)):
@@ -147,9 +176,18 @@ class GrokVideoGenerationTaskTool(BaseTool):
                     break
         else:
             refs = []
+        refs = self._select_image_refs_for_prompt(prompt, refs)
         if not refs:
             return None
         return refs[0] if len(refs) == 1 else refs
+
+    def _select_image_refs_for_prompt(self, prompt: str, refs: list[str]) -> list[str]:
+        if not refs:
+            return []
+        requested_count = explicit_video_reference_image_count(prompt, max_refs=MAX_IMAGE_REFERENCES)
+        if requested_count is None:
+            requested_count = 1
+        return refs[-min(requested_count, MAX_IMAGE_REFERENCES):]
 
     def _looks_like_image_to_video_request(self, prompt: str) -> bool:
         haystack_parts = [prompt]

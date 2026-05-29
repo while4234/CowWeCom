@@ -1003,7 +1003,7 @@ chatInput.addEventListener('compositionstart', () => { isComposing = true; });
 chatInput.addEventListener('compositionend', () => { setTimeout(() => { isComposing = false; }, 100); });
 
 // ── Slash Command Menu ───────────────────────────────────────
-const SLASH_COMMANDS = [
+let SLASH_COMMANDS = [
     { cmd: '/help',                desc: '显示命令帮助' },
     { cmd: '/status',              desc: '查看运行状态' },
     { cmd: '/context',             desc: '查看对话上下文' },
@@ -1033,6 +1033,34 @@ let slashJustSelected = false;
 let slashLastFilter = '';
 let slashLastMouseX = -1;
 let slashLastMouseY = -1;
+
+function normalizeSlashCommands(commands) {
+    if (!Array.isArray(commands)) return [];
+    const seen = new Set();
+    return commands
+        .map(item => ({
+            cmd: String(item?.cmd || '').trim(),
+            desc: String(item?.desc || '').trim(),
+        }))
+        .filter(item => item.cmd.startsWith('/') && !seen.has(item.cmd) && seen.add(item.cmd));
+}
+
+function loadSlashCommands() {
+    fetch('/api/commands')
+        .then(r => r.json())
+        .then(data => {
+            const commands = normalizeSlashCommands(data?.commands);
+            if (!commands.length) return;
+            SLASH_COMMANDS = commands;
+            if (isSlashMenuVisible()) {
+                slashLastFilter = '';
+                showSlashMenu(chatInput.value);
+            }
+        })
+        .catch(() => {});
+}
+
+loadSlashCommands();
 
 function showSlashMenu(filter) {
     const q = filter.toLowerCase();

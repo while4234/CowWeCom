@@ -377,10 +377,18 @@ def _normalized_token(value) -> str:
 
 
 def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _falsey(value) -> bool:
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value == 0
     return str(value or "").strip().lower() in {"0", "false", "no", "off", "disabled"}
 
 

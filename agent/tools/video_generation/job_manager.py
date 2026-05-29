@@ -47,7 +47,7 @@ class GrokVideoGenerationJob:
 
 
 class GrokVideoGenerationJobManager:
-    """Runs Grok video generation in per-user FIFO queues."""
+    """Runs Grok video generation in background queues with bounded parallelism."""
 
     def __init__(
         self,
@@ -56,6 +56,7 @@ class GrokVideoGenerationJobManager:
         script_path: Optional[str] = None,
         workspace_root: Optional[str] = None,
         global_workers: Optional[int] = None,
+        actor_workers: Optional[int] = None,
         task_timeout: Optional[int] = None,
         duplicate_window: Optional[int] = None,
     ):
@@ -79,6 +80,15 @@ class GrokVideoGenerationJobManager:
             int(global_workers or conf().get("grok_video_generation_global_workers", 2) or 2),
             1,
         )
+        self.actor_workers = max(
+            int(
+                actor_workers
+                if actor_workers is not None
+                else conf().get("grok_video_generation_actor_workers", self.global_workers)
+                or self.global_workers
+            ),
+            1,
+        )
         self.task_timeout = max(
             int(task_timeout or conf().get("grok_video_generation_task_timeout", 900) or 900),
             1,
@@ -97,7 +107,7 @@ class GrokVideoGenerationJobManager:
         )
         self._lock = threading.RLock()
         self._queues: Dict[str, "queue.Queue[GrokVideoGenerationJob]"] = {}
-        self._active_workers: set[str] = set()
+        self._active_workers: Dict[str, int] = {}
         self._jobs: Dict[str, GrokVideoGenerationJob] = {}
         self._recent_submissions: Dict[tuple[str, str], str] = {}
 
@@ -149,9 +159,7 @@ class GrokVideoGenerationJobManager:
             self._persist_job_state(job)
             if self.duplicate_window:
                 self._recent_submissions[dedupe_key] = job_id
-            if actor_id not in self._active_workers:
-                self._active_workers.add(actor_id)
-                self._executor.submit(self._run_actor_queue, actor_id)
+            self._start_actor_workers_locked(actor_id)
         return job
 
     def queue_position(self, job: GrokVideoGenerationJob) -> int:
@@ -209,14 +217,33 @@ class GrokVideoGenerationJobManager:
                 with self._lock:
                     q = self._queues.get(actor_id)
                     if q is None or q.empty():
-                        self._active_workers.discard(actor_id)
+                        self._finish_actor_worker_locked(actor_id)
                         return
                     job = q.get_nowait()
                 self._run_job(job)
         except Exception as e:
             logger.error("[GrokVideoGenerationJobManager] worker failed for actor=%s: %s", actor_id, e, exc_info=True)
             with self._lock:
-                self._active_workers.discard(actor_id)
+                self._finish_actor_worker_locked(actor_id)
+                self._start_actor_workers_locked(actor_id)
+
+    def _start_actor_workers_locked(self, actor_id: str) -> None:
+        q = self._queues.get(actor_id)
+        if q is None:
+            return
+        active = self._active_workers.get(actor_id, 0)
+        target = min(self.actor_workers, active + q.qsize())
+        while active < target:
+            active += 1
+            self._active_workers[actor_id] = active
+            self._executor.submit(self._run_actor_queue, actor_id)
+
+    def _finish_actor_worker_locked(self, actor_id: str) -> None:
+        active = self._active_workers.get(actor_id, 0) - 1
+        if active > 0:
+            self._active_workers[actor_id] = active
+        else:
+            self._active_workers.pop(actor_id, None)
 
     def _run_job(self, job: GrokVideoGenerationJob) -> None:
         job.status = "running"

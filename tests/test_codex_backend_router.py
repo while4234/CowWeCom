@@ -62,6 +62,16 @@ class TestCodexBackendRouter(unittest.TestCase):
         self.state_path = str(Path(self.tmp.name) / "state.json")
         self.reset_bridge_cache = patch("common.llm_backend_router._reset_bridge_cache")
         self.reset_bridge_cache.start()
+        self.env_patch = patch.dict(
+            "os.environ",
+            {
+                "CAPI_API_KEY": "",
+                "CAPI_MONTHLY_API_KEY": "",
+                "OPENAI_API_BASE": "",
+            },
+            clear=False,
+        )
+        self.env_patch.start()
         conf()["llm_backend"] = {
             "current_backend": "capi",
             "state_path": self.state_path,
@@ -80,6 +90,7 @@ class TestCodexBackendRouter(unittest.TestCase):
         }
 
     def tearDown(self):
+        self.env_patch.stop()
         self.reset_bridge_cache.stop()
         self.tmp.cleanup()
         conf().pop("llm_backend", None)

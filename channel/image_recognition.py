@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -25,6 +26,26 @@ DEFAULT_FOLLOWUP_WAIT_SECONDS = 6.0
 DEFAULT_MAX_WORKERS = 2
 DEFAULT_MAX_TOKENS = 700
 _LEDGER_MODULE = None
+MAX_VIDEO_REFERENCE_IMAGES = 7
+_VIDEO_REF_COUNT_CHINESE_DIGITS = {
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "俩": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+_VIDEO_REF_COUNT_TOKEN = r"([1-9１-９一二两俩三四五六七八九])"
+_VIDEO_REF_COUNT_PATTERNS = (
+    re.compile(rf"(?:参考|使用|用|取|选|拿)?(?:上面|上边|前面|刚才|刚刚|最近|前边)(?:发的|传的|上传的)?{_VIDEO_REF_COUNT_TOKEN}\s*张(?:图片|图|照片)?"),
+    re.compile(rf"(?:参考|使用|用|取|选|拿){_VIDEO_REF_COUNT_TOKEN}\s*张(?:上面|上边|前面|刚才|刚刚|最近|前边)?(?:图片|图|照片)?"),
+    re.compile(rf"(?:last|recent|previous)\s*{_VIDEO_REF_COUNT_TOKEN}\s*(?:images?|pictures?|photos?)", re.IGNORECASE),
+)
 DEFAULT_PROMPT = (
     "请用中文识别这张图片，结果用于后续私聊回复。保持自然、简短，不要使用英文，"
     "不要写成报告格式。说明主要主体、可见动作或场景、重要文字/OCR，以及必要的不确定性。"
@@ -33,6 +54,76 @@ DEFAULT_PROMPT = (
     "金额必须保留截图里看到的精确数字和小数位，不要估算、不要四舍五入成整数；看不清请说明不确定，不要猜。"
     "日期必须尽量解析成 YYYY-MM-DD 或 ISO 8601，不要只写“昨天”“上周”“母亲节”这类自然语言。"
 )
+
+
+def explicit_video_reference_image_count(content: Any, max_refs: int = MAX_VIDEO_REFERENCE_IMAGES) -> Optional[int]:
+    """Return the explicit image count in a video reference request, if any."""
+    max_refs = max(1, min(int(max_refs or MAX_VIDEO_REFERENCE_IMAGES), MAX_VIDEO_REFERENCE_IMAGES))
+    text = str(content or "")
+    compact = "".join(text.split())
+    candidates = (compact, text)
+    for candidate in candidates:
+        for pattern in _VIDEO_REF_COUNT_PATTERNS:
+            match = pattern.search(candidate)
+            if match:
+                return _clamp_video_reference_count(_parse_video_reference_count(match.group(1)), max_refs)
+    return None
+
+
+def requested_video_reference_image_count(content: Any, default: int = 1, max_refs: int = MAX_VIDEO_REFERENCE_IMAGES) -> int:
+    """Return how many recent images the user requested for image-to-video."""
+    explicit_count = explicit_video_reference_image_count(content, max_refs=max_refs)
+    if explicit_count is not None:
+        return explicit_count
+    max_refs = max(1, min(int(max_refs or MAX_VIDEO_REFERENCE_IMAGES), MAX_VIDEO_REFERENCE_IMAGES))
+    return _clamp_video_reference_count(default, max_refs)
+
+
+def explicit_text_to_video_requested(content: Any) -> bool:
+    """Return True when the user explicitly opts out of recent-image references."""
+    compact = "".join(str(content or "").lower().split())
+    if not compact:
+        return False
+    hints = (
+        "文生视频",
+        "纯文生视频",
+        "文字生成视频",
+        "文本生成视频",
+        "不参考图",
+        "不要参考图",
+        "不用参考图",
+        "不参考图片",
+        "不要参考图片",
+        "不用参考图片",
+        "无参考图",
+        "无参考图片",
+        "texttovideo",
+        "txt2video",
+        "noimage",
+        "withoutimage",
+        "withoutreference",
+    )
+    return any(hint in compact for hint in hints)
+
+
+def _parse_video_reference_count(value: str) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 1
+    if text in _VIDEO_REF_COUNT_CHINESE_DIGITS:
+        return _VIDEO_REF_COUNT_CHINESE_DIGITS[text]
+    try:
+        return int(text.translate(str.maketrans("１２３４５６７", "1234567")))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _clamp_video_reference_count(value: int, max_refs: int) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        count = 1
+    return max(1, min(count, max_refs))
 
 _EXPLICIT_IMAGE_QUESTION_MARKERS = (
     "这是什么",
@@ -323,11 +414,7 @@ class ImageRecognitionManager:
                 image_path = str(record.image_path)
                 if not Path(image_path).exists():
                     continue
-                ts = max(
-                    float(record.completed_at or 0),
-                    float(record.updated_at or 0),
-                    float(record.created_at or 0),
-                )
+                ts = float(record.created_at or record.updated_at or record.completed_at or 0)
                 if max_age > 0 and ts > 0 and now - ts > max_age:
                     continue
                 rows.append((ts, image_path))

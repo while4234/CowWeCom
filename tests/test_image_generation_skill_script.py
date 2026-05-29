@@ -123,6 +123,49 @@ class TestImageGenerationSkillScript(unittest.TestCase):
             self.assertEqual([part["type"] for part in content], ["input_text", "input_image"])
             self.assertTrue(content[1]["image_url"].startswith("data:image/png;base64,"))
 
+    def test_prompt_enhancement_false_bool_is_disabled(self):
+        module = load_generate_module()
+
+        self.assertFalse(module._prompt_enhancement_enabled({"prompt_enhancement": False}))
+        self.assertFalse(module._prompt_enhancement_enabled({"prompt_enhancement": 0}))
+        self.assertFalse(module._prompt_enhancement_enabled({"prompt_enhancement": "false"}))
+        self.assertTrue(module._prompt_enhancement_enabled({"prompt_enhancement": True}))
+        self.assertTrue(module._prompt_enhancement_enabled({}))
+
+    def test_grok_runtime_preserves_raw_prompt_when_enhancement_disabled(self):
+        module = load_generate_module()
+        calls = []
+
+        class FakeXAIImageGenProvider:
+            def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
+                calls.append({
+                    "prompt": prompt,
+                    "prompt_enhancement": prompt_enhancement,
+                    "model": model,
+                })
+                source = Path(output_tmp) / "source.jpg"
+                source.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
+                return str(source)
+
+        from integrations.hermes_xai import image_gen as xai_image_gen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_tmp = tmp
+            original = xai_image_gen.XAIImageGenProvider
+            original_route_logs = module._route_cowwecom_console_logs_to_stderr
+            xai_image_gen.XAIImageGenProvider = FakeXAIImageGenProvider
+            module._route_cowwecom_console_logs_to_stderr = lambda: None
+            try:
+                provider = module.GrokXAIProvider()
+                paths = provider.generate("一个猫咪", output_dir=tmp, prompt_enhancement=False)
+                self.assertTrue(Path(paths[0]).exists())
+            finally:
+                xai_image_gen.XAIImageGenProvider = original
+                module._route_cowwecom_console_logs_to_stderr = original_route_logs
+
+        self.assertEqual(calls[0]["prompt"], "一个猫咪")
+        self.assertFalse(calls[0]["prompt_enhancement"])
+
     def test_codex_auth_alias_uses_direct_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
             missing_auth = Path(tmp) / "missing-auth.json"

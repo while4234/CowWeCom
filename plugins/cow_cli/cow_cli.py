@@ -1387,17 +1387,23 @@ class CowCliPlugin(Plugin):
 
     def _submit_grok_direct_video(self, prompt: str, options: dict, context, profile) -> str:
         refs = self._collect_grok_direct_image_refs(options, context)
-        if not refs and self._looks_like_grok_direct_image_to_video(prompt):
-            refs = self._recent_grok_direct_image_refs(context)
+        if refs:
+            refs = self._select_grok_direct_image_refs(prompt, refs)
+        text_to_video_only = self._is_grok_direct_text_to_video(prompt)
+        if not refs and not text_to_video_only:
+            refs = self._recent_grok_direct_image_refs(context, prompt)
         if not refs and self._looks_like_grok_direct_image_to_video(prompt):
             return "没有找到可用图片，请先发送/上传/引用图片后重试。"
 
         params = {
             "prompt": prompt,
-            "aspect_ratio": options.get("aspect_ratio") or "16:9",
             "duration": options.get("duration") or "6s",
             "resolution": options.get("resolution") or "480p",
         }
+        if options.get("aspect_ratio"):
+            params["aspect_ratio"] = options["aspect_ratio"]
+        elif not refs:
+            params["aspect_ratio"] = "16:9"
         if options.get("quality"):
             params["quality"] = options["quality"]
         if refs:
@@ -1409,7 +1415,8 @@ class CowCliPlugin(Plugin):
         manager = get_grok_video_generation_job_manager(Bridge().get_agent_bridge())
         job = manager.submit(params, context, profile)
         position = manager.queue_position(job)
-        detail = f"{params['resolution']} / {params['aspect_ratio']} / {params['duration']}，提示词未经过模型润色"
+        aspect_detail = params.get("aspect_ratio") or ("跟随参考图" if refs else "16:9")
+        detail = f"{params['resolution']} / {aspect_detail} / {params['duration']}，提示词未经过模型润色"
         return self._grok_direct_submitted_text("视频", job.job_id, position, detail)
 
     @staticmethod
@@ -1521,14 +1528,26 @@ class CowCliPlugin(Plugin):
             value = cls._strip_grok_direct_quotes(ref).strip()
             if value and value not in cleaned:
                 cleaned.append(value)
-            if len(cleaned) >= _GROK_DIRECT_MAX_IMAGE_REFS:
-                break
         return cleaned
 
-    @staticmethod
-    def _recent_grok_direct_image_refs(context) -> list:
+    @classmethod
+    def _select_grok_direct_image_refs(cls, prompt: str, refs: list) -> list:
+        if not refs:
+            return []
         try:
-            from channel.image_recognition import get_image_recognition_manager
+            from channel.image_recognition import explicit_video_reference_image_count
+
+            requested_count = explicit_video_reference_image_count(prompt, max_refs=_GROK_DIRECT_MAX_IMAGE_REFS)
+        except Exception:
+            requested_count = None
+        if requested_count is None:
+            requested_count = 1
+        return refs[-min(int(requested_count), _GROK_DIRECT_MAX_IMAGE_REFS):]
+
+    @staticmethod
+    def _recent_grok_direct_image_refs(context, prompt: str = "") -> list:
+        try:
+            from channel.image_recognition import get_image_recognition_manager, requested_video_reference_image_count
 
             session_id = ""
             if context is not None:
@@ -1538,9 +1557,10 @@ class CowCliPlugin(Plugin):
                     session_id = str(getattr(context, "session_id", "") or "").strip()
             if not session_id:
                 return []
+            requested_refs = requested_video_reference_image_count(prompt, max_refs=_GROK_DIRECT_MAX_IMAGE_REFS)
             return get_image_recognition_manager().recent_image_refs_for_session(
                 session_id,
-                limit=_GROK_DIRECT_MAX_IMAGE_REFS,
+                limit=requested_refs,
             )
         except Exception:
             return []
@@ -1553,6 +1573,16 @@ class CowCliPlugin(Plugin):
     def _looks_like_grok_direct_image_to_video(prompt: str) -> bool:
         haystack = str(prompt or "").lower()
         return any(hint.lower() in haystack for hint in _GROK_DIRECT_IMAGE_TO_VIDEO_HINTS)
+
+    @staticmethod
+    def _is_grok_direct_text_to_video(prompt: str) -> bool:
+        try:
+            from channel.image_recognition import explicit_text_to_video_requested
+
+            return explicit_text_to_video_requested(prompt)
+        except Exception:
+            compact = "".join(str(prompt or "").lower().split())
+            return "文生视频" in compact or "texttovideo" in compact
 
     @staticmethod
     def _grok_direct_usage(prefix: str = "") -> str:
@@ -1585,19 +1615,71 @@ class CowCliPlugin(Plugin):
         return "\n".join(lines)
 
     def _help_sections(self, is_admin: bool) -> list:
+        lines = []
+        for title, entries in self._help_entry_sections():
+            visible = [
+                label
+                for command, command_args, label in entries
+                if is_admin or self._command_access_level(command, command_args) == ACCESS_PUBLIC
+            ]
+            if not visible:
+                continue
+            if lines:
+                lines.append("")
+            lines.append(title)
+            lines.extend(visible)
+        return lines
+
+    def slash_command_suggestions(self, is_admin: bool = True) -> list:
+        suggestions = []
+        seen = set()
+        for _, entries in self._help_entry_sections():
+            for command, command_args, label in entries:
+                if command in CLI_ONLY_COMMANDS:
+                    continue
+                if not is_admin and self._command_access_level(command, command_args) != ACCESS_PUBLIC:
+                    continue
+                slash_command = self._slash_command_text(command, command_args)
+                if not slash_command or slash_command in seen:
+                    continue
+                seen.add(slash_command)
+                suggestions.append({
+                    "cmd": slash_command,
+                    "desc": self._slash_command_description(label),
+                })
+        return suggestions
+
+    @staticmethod
+    def _slash_command_text(command: str, command_args: str = "") -> str:
+        base = f"/{str(command or '').strip()}"
+        args = str(command_args or "").strip()
+        return f"{base} {args}" if args else base
+
+    @staticmethod
+    def _slash_command_description(label: str) -> str:
+        text = str(label or "").strip()
+        for delimiter in ("：", ":"):
+            if delimiter in text:
+                return text.split(delimiter, 1)[1].strip()
+        return text
+
+    def _help_entry_sections(self) -> list:
         sections = [
             ("常用", [
                 ("help", "", "/help：查看可用命令"),
                 ("status", "", "/status：查看运行状态"),
                 ("version", "", "/version：查看版本"),
                 ("tokens", "", "/tokens：查询本地 CowAgent/CowWechat token 用量"),
+                ("tokens", "month", "/tokens month：查询本月 token 用量"),
+                ("tokens", "all", "/tokens all：查询累计 token 用量"),
+                ("updates", "today", "/updates today：查看今日项目更新"),
                 ("logs", "20", "/logs 20：查看最近日志"),
             ]),
             ("账本", [
-                ("ledger", self._encode_ledger_args("today"), "查询本日账单：今天本地记账汇总"),
-                ("ledger", self._encode_ledger_args("week"), "查询本周消费：本周本地记账汇总"),
-                ("ledger", self._encode_ledger_args("month"), "查询本月账单：本月本地记账汇总"),
-                ("ledger", self._encode_ledger_args("last_month"), "查询上月账单：上月本地记账汇总"),
+                ("ledger", "today", "/ledger today：查询本日账单，今天本地记账汇总"),
+                ("ledger", "week", "/ledger week：查询本周消费，本周本地记账汇总"),
+                ("ledger", "month", "/ledger month：查询本月账单，本月本地记账汇总"),
+                ("ledger", "last_month", "/ledger last_month：查询上月账单，上月本地记账汇总"),
             ]),
             ("后端", [
                 ("backend", "", "/backend：查看当前模型后端"),
@@ -1607,6 +1689,11 @@ class CowCliPlugin(Plugin):
                 ("backend", "codex", "/backend codex：切到 Codex"),
                 ("backend", "capi", "/backend capi：切到 CAPI 额度卡"),
                 ("backend", "capi-monthly", "/backend capi-monthly：切到 CAPI 月卡"),
+                ("backend", "grok", "/backend grok：切到 Grok"),
+                ("backend", "gpt", "/backend gpt：切到 GPT"),
+                ("backend", "status", "/backend status：查看后端状态"),
+                ("backend", "credential-safety", "/backend credential-safety：检查后端凭据安全"),
+                ("backend", "quota capi-monthly", "/backend quota capi-monthly：查询 CAPI 月卡额度"),
                 ("backend", "auto reset", "/backend auto reset：重置后端自动切换"),
             ]),
             ("语音", [
@@ -1620,12 +1707,15 @@ class CowCliPlugin(Plugin):
             ]),
             ("技能", [
                 ("skill", "list", "/skill list：查看已安装技能"),
+                ("skill", "list --remote", "/skill list --remote：浏览远端技能"),
                 ("skill", "info example", "/skill info <名称>：查看技能详情"),
+                ("skill", "usage example", "/skill usage <名称>：查看技能用法"),
                 ("skill", "search example", "/skill search <关键词>：搜索技能"),
                 ("skill", "install example", "/skill install <名称>：安装技能"),
                 ("skill", "uninstall example", "/skill uninstall <名称>：卸载技能"),
                 ("skill", "enable example", "/skill enable <名称>：启用技能"),
                 ("skill", "disable example", "/skill disable <名称>：禁用技能"),
+                ("install-browser", "", "/install-browser：安装浏览器自动化依赖"),
             ]),
             ("Grok 直出", [
                 ("grok-direct", "image -- 一只穿宇航服的橘猫，电影海报风格", "/grok-direct image -- <prompt>：Grok 直出生图（默认 speed）"),
@@ -1637,7 +1727,8 @@ class CowCliPlugin(Plugin):
                 ("memory", "rebuild-index", "/memory rebuild-index：重建记忆索引"),
                 ("knowledge", "", "/knowledge：查看知识库统计"),
                 ("knowledge", "list", "/knowledge list：查看知识库文件树"),
-                ("knowledge", "on", "/knowledge on|off：开启或关闭知识库"),
+                ("knowledge", "on", "/knowledge on：开启知识库"),
+                ("knowledge", "off", "/knowledge off：关闭知识库"),
             ]),
             ("配置", [
                 ("config", "", "/config：查看当前配置"),
@@ -1645,21 +1736,7 @@ class CowCliPlugin(Plugin):
                 ("config", "model gpt-5", "/config <key> <val>：修改配置"),
             ]),
         ]
-
-        lines = []
-        for title, entries in sections:
-            visible = [
-                label
-                for command, command_args, label in entries
-                if is_admin or self._command_access_level(command, command_args) == ACCESS_PUBLIC
-            ]
-            if not visible:
-                continue
-            if lines:
-                lines.append("")
-            lines.append(title)
-            lines.extend(visible)
-        return lines
+        return sections
 
     def _cmd_version(self, args: str, e_context, **_) -> str:
         return f"CowAgent v{__version__}"
@@ -3645,3 +3722,18 @@ class CowCliPlugin(Plugin):
             "普通用户可查看状态、账本、Skill/知识库说明和后端额度；"
             "后端切换、配置、日志、安装和启停类命令需要管理员权限。"
         )
+
+
+def slash_command_suggestions(is_admin: bool = True) -> list:
+    plugin_cls = plugins.instance.plugins.get("COW_CLI")
+    if plugin_cls is None:
+        try:
+            import importlib
+
+            importlib.import_module("plugins.cow_cli")
+        except Exception:
+            pass
+        plugin_cls = plugins.instance.plugins.get("COW_CLI")
+    if plugin_cls is None:
+        raise RuntimeError("CowCli plugin is not registered")
+    return plugin_cls().slash_command_suggestions(is_admin=is_admin)

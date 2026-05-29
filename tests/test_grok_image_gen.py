@@ -91,6 +91,11 @@ def test_provider_can_skip_prompt_enhancement(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(image_gen.requests, "post", fake_post)
+    monkeypatch.setattr(
+        image_gen,
+        "enhance_image_prompt",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("enhancer should not run")),
+    )
 
     image_gen.XAIImageGenProvider().generate("raw prompt", prompt_enhancement=False)
 

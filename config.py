@@ -196,7 +196,6 @@ available_setting = {
     "image_recognition_result_ttl_seconds": 86400,
     "image_recognition_image_ttl_seconds": 604800,
     "image_recognition_related_followup_window_seconds": 900,
-    "image_recognition_video_create_auto_ref_window_seconds": 120,
     "image_recognition_followup_wait_seconds": 6,
     "image_recognition_workers": 2,
     "image_recognition_max_tokens": 700,
@@ -231,6 +230,8 @@ available_setting = {
     "grok_video_timeout_seconds": 240,
     "grok_video_poll_interval_seconds": 5,
     "grok_video_download_timeout_seconds": 120,
+    "grok_video_generation_global_workers": 2,
+    "grok_video_generation_actor_workers": 2,
     # Azure OpenAI dall-e-3 配置
     "dalle3_image_style": "vivid", # 图片生成dalle3的风格，可选有 vivid, natural
     "dalle3_image_quality": "hd", # 图片生成dalle3的质量，可选有 standard, hd

@@ -145,6 +145,56 @@ def test_provider_sends_single_and_multi_image_payloads_as_data_uri(monkeypatch,
     assert all(item["url"].startswith("data:image/png;base64,") for item in refs)
 
 
+def test_provider_infers_aspect_ratio_from_reference_image(monkeypatch, tmp_path):
+    Image = pytest.importorskip("PIL.Image")
+    image = tmp_path / "portrait.png"
+    Image.new("RGB", (900, 1600), "white").save(image)
+    payloads = []
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(video_gen, "resolve_xai_http_credentials", lambda force_refresh=False: _oauth_creds())
+    monkeypatch.setattr(
+        video_gen.requests,
+        "post",
+        lambda url, headers, json, timeout: payloads.append(json) or FakeResponse(payload={"request_id": "req"}),
+    )
+    monkeypatch.setattr(
+        video_gen.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(payload={"status": "done", "video": {"url": "https://cdn.x.ai/out.mp4"}}),
+    )
+    _patch_video_download(monkeypatch)
+
+    video_gen.XAIVideoGenProvider().generate("animate", image_url=str(image))
+
+    assert payloads[0]["aspect_ratio"] == "9:16"
+
+
+def test_provider_explicit_aspect_ratio_overrides_reference_image(monkeypatch, tmp_path):
+    Image = pytest.importorskip("PIL.Image")
+    image = tmp_path / "portrait.png"
+    Image.new("RGB", (900, 1600), "white").save(image)
+    payloads = []
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(video_gen, "resolve_xai_http_credentials", lambda force_refresh=False: _oauth_creds())
+    monkeypatch.setattr(
+        video_gen.requests,
+        "post",
+        lambda url, headers, json, timeout: payloads.append(json) or FakeResponse(payload={"request_id": "req"}),
+    )
+    monkeypatch.setattr(
+        video_gen.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(payload={"status": "done", "video": {"url": "https://cdn.x.ai/out.mp4"}}),
+    )
+    _patch_video_download(monkeypatch)
+
+    video_gen.XAIVideoGenProvider().generate("animate", image_url=str(image), aspect_ratio="16:9")
+
+    assert payloads[0]["aspect_ratio"] == "16:9"
+
+
 def test_provider_retries_submit_and_poll_once_after_401(monkeypatch, tmp_path):
     resolver_force_flags = []
     post_tokens = []

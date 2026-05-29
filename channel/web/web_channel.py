@@ -114,6 +114,64 @@ def _get_web_admin_profile():
         return None
 
 
+def _apply_web_admin_context(context) -> None:
+    """Web console requests run as the configured administrator."""
+    if context is None:
+        return
+    profile = _get_web_admin_profile()
+    if profile is not None:
+        try:
+            from agent.user_profiles import apply_profile_to_context
+
+            apply_profile_to_context(context, profile)
+            context["_actor_profile"] = profile
+            return
+        except Exception as e:
+            logger.warning(f"[WebChannel] Failed to apply admin profile: {e}")
+
+    context["actor_id"] = context.get("actor_id") or "web:admin"
+    context["actor_role"] = "admin"
+    context["memory_user_id"] = context.get("memory_user_id") or "web_admin"
+
+
+def _register_web_uploaded_images(session_id: str, attachments) -> int:
+    session_id = str(session_id or "").strip()
+    if not session_id or not attachments:
+        return 0
+    try:
+        from channel.image_recognition import get_image_recognition_manager
+
+        manager = get_image_recognition_manager()
+    except Exception as e:
+        logger.debug(f"[WebChannel] Image recognition manager unavailable for upload cache: {e}")
+        return 0
+
+    registered = 0
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        if str(attachment.get("file_type") or "").strip().lower() != "image":
+            continue
+        image_path = str(attachment.get("file_path") or "").strip()
+        if not image_path:
+            continue
+        try:
+            record = manager.register_image(
+                session_id=session_id,
+                channel_type="web",
+                image_path=image_path,
+                is_group=False,
+                sender_label="Web",
+            )
+            if record:
+                registered += 1
+        except Exception as e:
+            logger.debug(f"[WebChannel] Failed to cache uploaded image for Grok video: {e}")
+    if registered:
+        logger.info(f"[WebChannel] Cached {registered} uploaded image(s) for recent Grok video refs")
+    return registered
+
+
 def _register_web_file(file_path: str) -> str:
     token = uuid.uuid4().hex
     expires_at = time.time() + _FILE_SERVE_TOKEN_TTL_SECONDS
@@ -744,6 +802,8 @@ class WebChannel(ChatChannel):
             context["receiver"] = session_id
             context["request_id"] = request_id
             context["web_authenticated"] = True
+            _apply_web_admin_context(context)
+            _register_web_uploaded_images(session_id, attachments)
 
             if use_sse:
                 context["on_event"] = self._make_sse_callback(request_id)
@@ -912,6 +972,7 @@ class WebChannel(ChatChannel):
             '/api/weixin/qrlogin', 'WeixinQrHandler',
             '/api/feishu/register', 'FeishuRegisterHandler',
             '/api/tools', 'ToolsHandler',
+            '/api/commands', 'CommandsHandler',
             '/api/skills', 'SkillsHandler',
             '/api/memory', 'MemoryHandler',
             '/api/memory/content', 'MemoryContentHandler',
@@ -3226,6 +3287,27 @@ class ToolsHandler:
         except Exception as e:
             logger.error(f"[WebChannel] Tools API error: {e}")
             return json.dumps({"status": "error", "message": str(e)})
+
+
+class CommandsHandler:
+    def GET(self):
+        _require_auth()
+        web.header('Content-Type', 'application/json; charset=utf-8')
+        try:
+            commands = _cow_cli_slash_command_suggestions(is_admin=True)
+            return json.dumps({"status": "success", "commands": commands}, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[WebChannel] Commands API error: {e}")
+            return json.dumps({"status": "error", "message": str(e)})
+
+
+def _cow_cli_slash_command_suggestions(is_admin: bool = True) -> list:
+    from plugins import PluginManager
+
+    plugin_cls = PluginManager().plugins.get("COW_CLI")
+    if plugin_cls is None:
+        raise RuntimeError("CowCli plugin is not registered")
+    return plugin_cls().slash_command_suggestions(is_admin=is_admin)
 
 
 class SkillsHandler:
