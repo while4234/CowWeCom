@@ -1872,6 +1872,17 @@ class ChannelsHandler:
                 {"key": "wecom_bot_auth_source", "label": "Auth Source", "type": "text", "default": "cowagent"},
             ],
         }),
+        ("discord", {
+            "label": {"zh": "Discord", "en": "Discord"},
+            "icon": "fa-comments",
+            "color": "blue",
+            "fields": [
+                {"key": "discord_bot_token", "label": "Bot Token", "type": "secret"},
+                {"key": "discord_guild_id", "label": "Guild ID", "type": "text"},
+                {"key": "discord_admin_user_id", "label": "Admin User ID", "type": "text"},
+                {"key": "discord_allowed_channel_ids", "label": "Allowed Channel IDs", "type": "text"},
+            ],
+        }),
         ("qq", {
             "label": {"zh": "QQ 机器人", "en": "QQ Bot"},
             "icon": "fa-comment",

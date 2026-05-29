@@ -118,6 +118,8 @@
 
 - `2026-05-26` pending commit `fix: clarify web channel connect choices`: The Web console add-channel dropdown now only shows the tested Weixin and WeCom Bot paths, hiding unverified Feishu/DingTalk/QQ/WeCom App/official-account entries from normal user setup. The Weixin QR waiting view also keeps a read-only connection-role badge visible, so when an administrator already exists the page clearly says the current scan is a normal-user connection. Validation: `node --check channel\web\static\js\console.js` and focused channel/privacy pytest passed.
 
+- `2026-05-29` pending commit `feat: add discord channel`: Added a native Discord channel that reuses the current CowCli command surface as Discord Slash Commands, with `/imagine`, `/video`, and `/image-to-video` mapped to Grok image generation, text-to-video, and image-to-video shortcuts. Discord has its own single-admin configuration (`discord_admin_user_id`), optional guild/channel allowlists, Web channel settings for token/admin/channel fields, lazy `discord.py` imports, and background image/video completion context preservation so jobs can reply to the originating Discord channel. Validation: safe upload preflight passed before staging in the Discord worktree; `py -3 -m py_compile channel\discord\discord_channel.py channel\discord\discord_message.py channel\channel_factory.py app.py agent\tools\image_generation\job_manager.py agent\tools\video_generation\job_manager.py` passed; `py -3 -m pytest tests\test_discord_channel.py tests\test_web_admin_privacy.py -q` passed.
+
 ## Repository Purpose
 
 Personal CowWeCom deployment and development workspace for WeCom Bot integration, OpenAI-compatible model providers, image generation tooling, scheduler tools, and agent memory features.

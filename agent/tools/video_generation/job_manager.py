@@ -462,6 +462,10 @@ class GrokVideoGenerationJobManager:
         }
         if context_token:
             snapshot["context_token"] = context_token
+        for key in ("_discord_channel_id", "_discord_guild_id"):
+            value = self._context_get(context, key)
+            if value:
+                snapshot[key] = value
         return snapshot
 
     @staticmethod
@@ -481,6 +485,10 @@ class GrokVideoGenerationJobManager:
         context["isgroup"] = bool(snapshot.get("isgroup", False))
         context["session_id"] = snapshot.get("session_id") or snapshot.get("receiver")
         context["channel_type"] = snapshot.get("channel_type", "unknown")
+        if snapshot.get("_discord_channel_id"):
+            context["_discord_channel_id"] = snapshot.get("_discord_channel_id")
+        if snapshot.get("_discord_guild_id"):
+            context["_discord_guild_id"] = snapshot.get("_discord_guild_id")
         context["msg"] = SimpleNamespace(context_token=snapshot["context_token"]) if snapshot.get("context_token") else None
         return context
 

@@ -68,6 +68,7 @@ CowWeCom 的目标不是做一个“所有平台都写在 README 里的通用机
 | 个人微信 | `weixin` 或 `weixin_*` | 重点维护 | 扫码登录，支持命名实例和多用户隔离 |
 | 企业微信智能机器人 | `wecom_bot` | 默认推荐 | 使用 Bot ID 和 Secret 走长连接，适合企业微信单聊和群聊 |
 | 企业微信自建应用 | `wechatcom_app` | 可用 | 需要公网回调 URL、企业可信 IP 和企业微信后台配置 |
+| Discord | `discord` | 可用 | 独立于微信和企业微信的管理员通道，支持原生 Slash Commands 和 Grok 生图/视频直出 |
 | Web 控制台 | 自动附加 `web` | 默认开启 | 本地管理入口，不替代微信/企业微信业务通道 |
 | 终端调试 | `terminal` | 开发调试 | 适合本地排查，不作为主要使用入口 |
 
@@ -172,6 +173,7 @@ http://127.0.0.1:9899
 | `web_host` | Web 控制台监听地址。留空时，本地无密码默认只监听 `127.0.0.1` |
 | `web_password` | Web 控制台访问密码。公网或局域网暴露时必须设置 |
 | `agent_admin_users` | 管理员用户 actor id 列表；Web 微信扫码接入遵守微信管理员约束，企业微信智能机器人按 `wecom_bot` 单独判断首个管理员 |
+| `discord_bot_token` / `discord_admin_user_id` / `discord_allowed_channel_ids` | Discord 通道配置；Discord 只允许一个独立管理员，可选限定 Guild 和频道 |
 | `agent_user_profiles` | 用户角色、展示名、记忆 ID 等覆盖配置；扫码选择的管理员/普通用户身份会写入这里 |
 | `external_reply_inject_to_agent_context` | 是否把 CowCli 等非 Agent 快答的可见问答同步进后续 Agent 会话上下文，默认开启，便于“把这个转述给她”这类跟进指令引用最新回复 |
 | `short_contextual_reply_keep_turns` | “没有/不用/好的”等含糊短回复请求只保留最近上下文轮数，默认 2，避免旧主题串扰 |
@@ -311,6 +313,24 @@ http://YOUR_HOST:9898/wxcomapp/
 ```
 
 请在企业微信后台确认 URL、Token、EncodingAESKey、可信 IP 和端口安全组配置一致。
+
+## Discord 接入
+
+Discord 通道独立于微信和企业微信，适合把 CowCli 管理命令和 Grok 生图、文生视频、图生视频直出放到 Discord 使用。当前实现只允许一个 Discord 管理员，管理员配置不会复用微信/企业微信管理员身份。
+
+```json
+{
+  "channel_type": "discord",
+  "discord_bot_token": "YOUR_DISCORD_BOT_TOKEN",
+  "discord_guild_id": "YOUR_GUILD_ID",
+  "discord_admin_user_id": "YOUR_DISCORD_USER_ID",
+  "discord_allowed_channel_ids": ["YOUR_CHANNEL_ID"]
+}
+```
+
+也可以在 Web 控制台的「通道」页选择 Discord，填写 Bot Token、Guild ID、Admin User ID 和允许的频道 ID 后连接。Bot 启动时会同步原生 Slash Commands：除 `start`、`stop`、`restart` 这类终端生命周期命令外，聊天内可执行的 CowCli 命令都会以 Discord 原生命令提供；`/imagine prompt`、`/video prompt` 和 `/image-to-video prompt + 图片附件` 分别是 Grok 生图、文生视频和图生视频的快捷入口。
+
+如果需要让 Discord 普通消息或图片附件进入同会话上下文，可开启 `discord_message_content_enabled=true`，同时在 Discord Developer Portal 为 Bot 开启 Message Content Intent；默认保持关闭，仅使用原生 Slash Commands。
 
 ## Web 控制台
 
@@ -488,6 +508,7 @@ CowWeCom/
 │  ├─ weixin/                  个人微信通道
 │  ├─ wecom_bot/               企业微信智能机器人通道
 │  ├─ wechatcom/               企业微信自建应用通道
+│  ├─ discord/                 Discord 通道
 │  └─ web/                     Web 控制台
 ├─ cli/                        cow 命令行
 ├─ common/                     配置、日志、后端路由、用量、运行时工具
@@ -513,6 +534,7 @@ CowWeCom/
 - “当前后端”状态和当前后端额度查询会按发起人的有效后端展示：普通用户看到共享 GPT 后端，管理员/白名单用户切到 Grok 后看到自己的 Grok，不再误报全局 CAPI 月卡。
 - 图像生成触发收紧为显式“画图/生图/生成图片/绘图/出图”等说法；引用图片后的普通问答、生成失败追问和宽高/字节限制处理更稳。
 - 新增管理员专用 `/grok-direct image|video` 直出模式，原始 prompt 直接提交 Grok 后台任务；Web 端命令菜单同步 CowCli 管理员命令，直出图片硬跳过本地提示词润色，图生视频可复用可解析消息图片或同会话最近图片作为参考图，未明确数量时只取最近 1 张，明确“参考上面 N 张”时最多取最近 7 张；普通 Grok 视频和直出视频都后台执行，视频任务可并行生成，参考图默认跟随图片比例。
+- 新增独立 Discord 通道：Web 控制台可填写 Bot Token、Guild ID、唯一 Admin User ID 和允许频道；Discord 原生 Slash Commands 覆盖聊天内 CowCli 命令，并提供 `/imagine`、`/video`、`/image-to-video` 快捷入口，支持 Grok 生图、文生视频和图生视频，后台任务完成后可回发到原频道。
 - Agent 上下文聚焦和纯进度快照识别更稳：类似 `Feature list完成90% tc_list完成30%` 的工作进度汇报不会触发公共协议知识库自动检索或协议问答路径；后续“没有/不用/好的”等回复会优先绑定最近 BOT 提问，避免旧协议问答串扰；私聊图片识别新增默认关闭的非账单主动回复开关，只缓存识图信息，账单自动记账仍会回执。
 
 ### 2026-05-28

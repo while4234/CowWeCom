@@ -40,6 +40,9 @@ def create_channel(channel_type) -> Channel:
     elif channel_type == const.WECOM_BOT:
         from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
         ch = WecomBotChannel()
+    elif channel_type == "discord":
+        from channel.discord.discord_channel import DiscordChannel
+        ch = DiscordChannel()
     elif channel_type == const.QQ:
         from channel.qq.qq_channel import QQChannel
         ch = QQChannel()

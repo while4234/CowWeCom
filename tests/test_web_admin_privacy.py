@@ -213,6 +213,17 @@ class WebAdminPrivacyTest(unittest.TestCase):
 
         self.assertIn("/grok-direct image", body)
 
+    def test_channels_handler_exposes_discord_config_fields(self):
+        discord_def = web_channel.ChannelsHandler.CHANNEL_DEFS["discord"]
+
+        keys = {field["key"] for field in discord_def["fields"]}
+
+        self.assertIn("discord_bot_token", keys)
+        self.assertIn("discord_admin_user_id", keys)
+        self.assertIn("discord_allowed_channel_ids", keys)
+        token_field = next(field for field in discord_def["fields"] if field["key"] == "discord_bot_token")
+        self.assertEqual(token_field["type"], "secret")
+
 
 if __name__ == "__main__":
     unittest.main()

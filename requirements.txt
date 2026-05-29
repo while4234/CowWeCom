@@ -26,6 +26,9 @@ dingtalk_stream
 websocket-client>=1.4.0
 pycryptodome
 
+# discord
+discord.py>=2.4,<3
+
 # voice conversion for Grok/xAI TTS and WeCom voice upload; system ffmpeg is also required
 pydub>=0.25.1
 audioop-lts>=0.2.2; python_version >= "3.13"

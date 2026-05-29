@@ -397,6 +397,14 @@ available_setting = {
     "wecom_bot_auth_source": "cowagent",  # WeCom QR creation auth source
     "wecom_bot_member_aliases": {},
     "wecom_bot_group_member_aliases": {},
+    # Discord 配置：独立于微信/企业微信，只允许一个 Discord 管理员接入
+    "discord_bot_token": "",  # Discord Bot Token；也可使用 DISCORD_BOT_TOKEN 环境变量
+    "discord_guild_id": "",  # 可选：限定一个 Discord Guild/Server
+    "discord_admin_user_id": "",  # 唯一允许使用 Discord 通道的管理员用户 ID
+    "discord_allowed_channel_ids": [],  # 可选：限定可用的文本频道 ID 列表，字符串或数组均可
+    "discord_command_sync_on_startup": True,  # 启动时同步原生 Slash Commands
+    "discord_message_content_enabled": False,  # 可选：开启普通消息/附件处理，需要 Discord Message Content Intent
+    "discord_ephemeral_replies": False,  # Slash Command 回复是否仅调用者可见
     # 微信配置
     "weixin_token": "",  # 微信登录后获取的bot_token，留空则启动时自动扫码登录
     "weixin_base_url": "https://ilinkai.weixin.qq.com",  # Weixin ilink API base URL
@@ -406,7 +414,7 @@ available_setting = {
     # chatgpt指令自定义触发词
     "clear_memory_commands": ["#清除记忆"],  # 重置会话指令，必须以#开头
     # channel配置
-    "channel_type": "",  # 通道类型，支持多渠道同时运行。单个: "feishu"，多个: "feishu, dingtalk" 或 ["feishu", "dingtalk"]。可选值: web,feishu,dingtalk,wecom_bot,weixin,wechatmp,wechatmp_service,wechatcom_app
+    "channel_type": "",  # 通道类型，支持多渠道同时运行。单个: "feishu"，多个: "feishu, dingtalk" 或 ["feishu", "dingtalk"]。可选值: web,feishu,dingtalk,wecom_bot,discord,weixin,wechatmp,wechatmp_service,wechatcom_app
     "web_console": True,  # 是否自动启动Web控制台（默认启动）。设为False可禁用
     "subscribe_msg": "",  # 订阅消息, 支持: wechatmp, wechatmp_service, wechatcom_app
     "debug": False,  # 是否开启debug模式，开启后会打印更多日志
@@ -789,6 +797,7 @@ def load_config():
         "qq_app_id": "QQ_APP_ID",
         "qq_app_secret": "QQ_APP_SECRET",
         "weixin_token": "WEIXIN_TOKEN",
+        "discord_bot_token": "DISCORD_BOT_TOKEN",
     }
     injected = 0
     for conf_key, env_key in _CONFIG_TO_ENV.items():
