@@ -52,7 +52,8 @@ class ChannelManager:
         self._channels = {}        # channel_name -> channel instance
         self._threads = {}         # channel_name -> thread
         self._primary_channel = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._restarting_channels = set()
         self.cloud_mode = False    # set to True when cloud client is active
 
     @property
@@ -70,7 +71,15 @@ class ChannelManager:
         """
         with self._lock:
             channels = []
+            seen_names = set()
             for name in channel_names:
+                if name in seen_names:
+                    logger.info(f"[ChannelManager] Duplicate channel '{name}' ignored during start")
+                    continue
+                seen_names.add(name)
+                if name in self._channels:
+                    logger.info(f"[ChannelManager] Channel '{name}' is already running; start skipped")
+                    continue
                 ch = channel_factory.create_channel(name)
                 ch.cloud_mode = self.cloud_mode
                 self._channels[name] = ch
@@ -143,11 +152,13 @@ class ChannelManager:
             if channel_name and self._primary_channel is self._channels.get(channel_name):
                 self._primary_channel = None
 
+        all_stopped = True
         for name, ch, th in to_stop:
             if ch is None:
                 logger.warning(f"[ChannelManager] Channel '{name}' not found in managed channels")
                 if th and th.is_alive():
                     self._interrupt_thread(th, name)
+                    all_stopped = False
                 continue
             logger.info(f"[ChannelManager] Stopping channel '{name}'...")
             graceful = False
@@ -166,6 +177,8 @@ class ChannelManager:
                     else:
                         logger.warning(f"[ChannelManager] Channel '{name}' thread did not exit in 5s, forcing interrupt")
                         self._interrupt_thread(th, name)
+                    all_stopped = False
+        return all_stopped
 
     @staticmethod
     def _interrupt_thread(th: threading.Thread, name: str):
@@ -191,12 +204,28 @@ class ChannelManager:
         Restart a single channel with a new channel type.
         Can be called from any thread (e.g. linkai config callback).
         """
-        logger.info(f"[ChannelManager] Restarting channel to '{new_channel_name}'...")
-        self.stop(new_channel_name)
-        _clear_singleton_cache(new_channel_name)
-        time.sleep(1)
-        self.start([new_channel_name], first_start=False)
-        logger.info(f"[ChannelManager] Channel restarted to '{new_channel_name}' successfully")
+        with self._lock:
+            if new_channel_name in self._restarting_channels:
+                logger.info(
+                    f"[ChannelManager] Restart for '{new_channel_name}' already in progress; coalescing"
+                )
+                return
+            self._restarting_channels.add(new_channel_name)
+
+        try:
+            logger.info(f"[ChannelManager] Restarting channel to '{new_channel_name}'...")
+            if not self.stop(new_channel_name):
+                logger.warning(
+                    f"[ChannelManager] Restart for '{new_channel_name}' aborted because the old thread is still alive"
+                )
+                return
+            _clear_singleton_cache(new_channel_name)
+            time.sleep(1)
+            self.start([new_channel_name], first_start=False)
+            logger.info(f"[ChannelManager] Channel restarted to '{new_channel_name}' successfully")
+        finally:
+            with self._lock:
+                self._restarting_channels.discard(new_channel_name)
 
     def add_channel(self, channel_name: str):
         """
