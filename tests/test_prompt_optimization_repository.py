@@ -98,6 +98,27 @@ def test_nsfw_prompt_forces_grok_nsfw_repository_path(tmp_path):
     assert fragment["text"] == "nsfw-specific pose controls"
 
 
+def test_nsfw_prompt_overrides_other_repository_keyword(tmp_path):
+    root = tmp_path / "repositories"
+    (root / "grok" / "NSFW").mkdir(parents=True)
+    (root / "general").mkdir()
+    (root / "grok" / "NSFW" / "pose.txt").write_text("nsfw-specific pose controls\n", encoding="utf-8")
+    (root / "general" / "fallback.txt").write_text("general fallback\n", encoding="utf-8")
+
+    result = select_grok_prompt_fragments(
+        "general NSFW portrait",
+        repositories_root=root,
+        limit=1,
+        rng=FixedRandom(0.95),
+    )
+
+    assert result["keyword"] == "grok"
+    assert result["keyword_hit"] is False
+    assert result["category_forced"] is True
+    assert result["fragments"][0]["repository"] == "grok"
+    assert result["fragments"][0]["category"] == "NSFW"
+
+
 def test_strip_repository_keywords_ignores_partial_words():
     assert strip_repository_keywords("use grok style", ["grok"]) == "use style"
     assert strip_repository_keywords("use mygrok style", ["grok"]) == "use mygrok style"
