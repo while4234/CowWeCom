@@ -13,6 +13,28 @@ from integrations.hermes_xai.auth import AuthError
 PNG_BYTES = b"\x89PNG\r\n\x1a\nimage"
 
 
+class FixedRandom:
+    def __init__(self, roll):
+        self.roll = roll
+
+    def random(self):
+        return self.roll
+
+    def choice(self, values):
+        return values[0]
+
+
+def write_grok_repository_skill(root):
+    skill_dir = root / "image-prompt-optimization"
+    repositories = skill_dir / "repositories"
+    (repositories / "grok").mkdir(parents=True)
+    (repositories / "general").mkdir()
+    (skill_dir / "SKILL.md").write_text("# image-prompt-optimization\n", encoding="utf-8")
+    (repositories / "grok" / "visual.txt").write_text("grok cinematic detail\n", encoding="utf-8")
+    (repositories / "general" / "visual.txt").write_text("general cinematic detail\n", encoding="utf-8")
+    return skill_dir
+
+
 def png_with_dimensions(width: int, height: int) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big")
 
@@ -29,6 +51,8 @@ class FakePostResponse:
 
 def test_provider_posts_images_generation_with_oauth_token_and_payload(monkeypatch, tmp_path, caplog):
     calls = []
+    rewrite_calls = []
+    skill_dir = write_grok_repository_skill(tmp_path)
 
     def fake_resolver(force_refresh=False):
         calls.append(("resolver", force_refresh))
@@ -46,16 +70,20 @@ def test_provider_posts_images_generation_with_oauth_token_and_payload(monkeypat
         )
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
+    monkeypatch.setattr("common.prompt_optimization_repository.random.SystemRandom", lambda: FixedRandom(0.1))
     monkeypatch.setattr(image_gen, "resolve_xai_http_credentials", fake_resolver)
     monkeypatch.setattr(image_gen.requests, "post", fake_post)
-    monkeypatch.setattr(
-        grok_image_prompt_rewriter,
-        "_call_grok_text_model",
-        lambda system_prompt, user_prompt: "A rewritten Grok prompt for a calm cinematic lake.",
-    )
+
+    def fake_rewrite(system_prompt, user_prompt):
+        rewrite_calls.append((system_prompt, user_prompt))
+        return "A rewritten Grok prompt for a calm cinematic lake."
+
+    monkeypatch.setattr(grok_image_prompt_rewriter, "_call_grok_text_model", fake_rewrite)
 
     with caplog.at_level(logging.INFO):
-        path = image_gen.XAIImageGenProvider().generate(
+        provider = image_gen.XAIImageGenProvider()
+        path = provider.generate(
             "paint a calm lake",
             aspect_ratio="landscape",
             resolution="2k",
@@ -69,6 +97,11 @@ def test_provider_posts_images_generation_with_oauth_token_and_payload(monkeypat
     assert post_call[3]["model"] == "grok-imagine-image-quality"
     assert post_call[3]["prompt"] == "A rewritten Grok prompt for a calm cinematic lake."
     assert "[CowWeCom hidden image prompt enhancement]" not in post_call[3]["prompt"]
+    assert "matched_prompt_repository_keyword: grok" in rewrite_calls[0][1]
+    assert "repository_selection_rule: 90% from grok, 10% from other repositories" in rewrite_calls[0][1]
+    assert "[grok/visual.txt:1] grok cinematic detail" in rewrite_calls[0][1]
+    assert provider.last_prompt_metadata["library"]["keyword"] == "grok"
+    assert provider.last_prompt_metadata["supplements"][0]["repository"] == "grok"
     assert post_call[3]["aspect_ratio"] == "16:9"
     assert post_call[3]["resolution"] == "2k"
     assert "image" not in post_call[3]

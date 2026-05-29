@@ -83,6 +83,28 @@ def write_fixture_library(root: Path):
     (root / "others.json").write_text("[]", encoding="utf-8")
 
 
+class FixedRandom:
+    def __init__(self, roll):
+        self.roll = roll
+
+    def random(self):
+        return self.roll
+
+    def choice(self, values):
+        return values[0]
+
+
+def write_grok_repository_skill(root: Path):
+    skill_dir = root / "image-prompt-optimization"
+    repositories = skill_dir / "repositories"
+    (repositories / "grok").mkdir(parents=True)
+    (repositories / "general").mkdir()
+    (skill_dir / "SKILL.md").write_text("# image-prompt-optimization\n", encoding="utf-8")
+    (repositories / "grok" / "visual.txt").write_text("grok cinematic detail\n", encoding="utf-8")
+    (repositories / "general" / "visual.txt").write_text("general cinematic detail\n", encoding="utf-8")
+    return skill_dir
+
+
 class TestImagePromptEnhancer(unittest.TestCase):
     def test_full_prompt_library_reference_snapshot_is_present(self):
         manifest = json.loads((REFERENCE_ROOT / "manifest.json").read_text(encoding="utf-8"))
@@ -93,18 +115,19 @@ class TestImagePromptEnhancer(unittest.TestCase):
 
     def test_grok_uses_model_rewrite_instead_of_prompt_library(self):
         with tempfile.TemporaryDirectory() as tmp:
-            library = Path(tmp)
-            write_fixture_library(library)
+            skill_dir = write_grok_repository_skill(Path(tmp))
 
-            with patch(
+            with patch.dict(os.environ, {"IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR": str(skill_dir)}), patch(
+                "common.prompt_optimization_repository.random.SystemRandom",
+                return_value=FixedRandom(0.1),
+            ), patch(
                 "common.grok_image_prompt_rewriter._call_grok_text_model",
                 return_value="Final prompt\uff1a A polished Grok prompt with cinematic lighting.",
             ) as rewrite_call:
                 result = enhance_image_prompt(
-                    "grok 帮我生成一张高级感人物写真",
+                    "generate a calm cinematic lake",
                     target="grok",
                     model="grok-imagine-image",
-                    library_dir=str(library),
                 )
 
         self.assertTrue(result["enhanced"])
@@ -113,10 +136,15 @@ class TestImagePromptEnhancer(unittest.TestCase):
         self.assertEqual(result["enhanced_prompt"], "A polished Grok prompt with cinematic lighting.")
         self.assertEqual(result["templates"], [])
         self.assertEqual(result["library"]["name"], "image-prompt-optimization")
+        self.assertEqual(result["library"]["keyword"], "grok")
+        self.assertEqual(result["supplements"][0]["repository"], "grok")
         self.assertEqual(rewrite_call.call_count, 1)
         system_prompt, user_prompt = rewrite_call.call_args.args
         self.assertIn("Grok image prompt optimizer", system_prompt)
-        self.assertIn("grok 帮我生成一张高级感人物写真", user_prompt)
+        self.assertIn("generate a calm cinematic lake", user_prompt)
+        self.assertIn("matched_prompt_repository_keyword: grok", user_prompt)
+        self.assertIn("repository_selection_rule: 90% from grok, 10% from other repositories", user_prompt)
+        self.assertIn("[grok/visual.txt:1] grok cinematic detail", user_prompt)
 
     def test_global_disable_skips_grok_model_rewrite(self):
         with patch.dict(os.environ, {"IMAGE_PROMPT_ENHANCEMENT_ENABLED": "false"}):
