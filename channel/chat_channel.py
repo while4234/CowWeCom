@@ -63,6 +63,18 @@ _IMAGE_TO_VIDEO_FOLLOWUP_HINTS = (
     "animatethisimage",
     "animatetheimage",
 )
+_TEXT_TO_VIDEO_ONLY_HINTS = (
+    "\u6587\u751f\u89c6\u9891",
+    "\u7eaf\u6587\u751f\u89c6\u9891",
+    "\u4e0d\u53c2\u8003\u56fe",
+    "\u4e0d\u8981\u53c2\u8003\u56fe",
+    "\u4e0d\u7528\u53c2\u8003\u56fe",
+    "\u65e0\u9700\u53c2\u8003\u56fe",
+    "texttovideo",
+    "txt2video",
+    "noimage",
+    "withoutimage",
+)
 
 
 class ChatChannel(Channel):
@@ -220,17 +232,31 @@ class ChatChannel(Channel):
             return text
         if _IMAGE_REF_RE.search(text):
             return text
-        if not self._looks_like_image_to_video_followup(text):
+        explicit_reference_request = self._looks_like_image_to_video_followup(text)
+        if not explicit_reference_request and self._looks_like_text_to_video_only(text):
             return text
+        max_age_seconds = conf().get(
+            "image_recognition_recent_video_ref_window_seconds",
+            None,
+        )
+        if not explicit_reference_request:
+            auto_ref_window = conf().get(
+                "image_recognition_video_create_auto_ref_window_seconds",
+                120,
+            )
+            try:
+                auto_ref_window = float(auto_ref_window)
+            except (TypeError, ValueError):
+                auto_ref_window = 0
+            if auto_ref_window <= 0:
+                return text
+            max_age_seconds = auto_ref_window
         try:
             manager = get_image_recognition_manager()
             refs = manager.recent_image_refs_for_session(
                 session_id,
                 limit=7,
-                max_age_seconds=conf().get(
-                    "image_recognition_recent_video_ref_window_seconds",
-                    None,
-                ),
+                max_age_seconds=max_age_seconds,
             )
         except Exception as e:
             logger.debug("[ImageRecognition] failed to collect recent video refs: %s", e)
@@ -250,6 +276,13 @@ class ChatChannel(Channel):
         if not compact:
             return False
         return any(hint in compact for hint in _IMAGE_TO_VIDEO_FOLLOWUP_HINTS)
+
+    @staticmethod
+    def _looks_like_text_to_video_only(content: str) -> bool:
+        compact = "".join(str(content or "").lower().split())
+        if not compact:
+            return False
+        return any(hint in compact for hint in _TEXT_TO_VIDEO_ONLY_HINTS)
 
     @staticmethod
     def _private_image_recognition_prompt() -> str:
