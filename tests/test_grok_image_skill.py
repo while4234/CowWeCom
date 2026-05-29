@@ -152,12 +152,13 @@ class TestGrokImageSkill(unittest.TestCase):
         calls = []
 
         class FakeXAIImageGenProvider:
-            def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None):
+            def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
                 calls.append({
                     "prompt": prompt,
                     "aspect_ratio": aspect_ratio,
                     "resolution": resolution,
                     "model": model,
+                    "prompt_enhancement": prompt_enhancement,
                 })
                 source = Path(output_tmp) / "source.jpg"
                 source.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
@@ -195,8 +196,8 @@ class TestGrokImageSkill(unittest.TestCase):
         calls = []
 
         class FakeXAIImageGenProvider:
-            def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None):
-                calls.append(prompt)
+            def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
+                calls.append((prompt, prompt_enhancement))
                 source = Path(output_tmp) / "source.jpg"
                 source.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
                 return str(source)
@@ -216,7 +217,7 @@ class TestGrokImageSkill(unittest.TestCase):
                 xai_image_gen.XAIImageGenProvider = original
                 module._route_cowwecom_console_logs_to_stderr = original_route_logs
 
-            self.assertEqual(calls, ["raw prompt"])
+            self.assertEqual(calls, [("raw prompt", False)])
             self.assertFalse((Path(tmp) / "prompt_metadata.json").exists())
 
     def test_grok_runtime_routes_cowwecom_console_logs_to_stderr(self):

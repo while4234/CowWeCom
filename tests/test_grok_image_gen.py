@@ -69,6 +69,34 @@ def test_provider_posts_images_generation_with_oauth_token_and_payload(monkeypat
     assert "Authorization: Bearer" not in caplog.text
 
 
+def test_provider_can_skip_prompt_enhancement(monkeypatch, tmp_path):
+    payloads = []
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        image_gen,
+        "resolve_xai_http_credentials",
+        lambda force_refresh=False: {
+            "provider": "xai-oauth",
+            "auth_mode": "oauth_pkce",
+            "api_key": "token",
+            "base_url": "https://api.x.ai/v1",
+        },
+    )
+
+    def fake_post(url, headers, json, timeout):
+        payloads.append(json)
+        return FakePostResponse(
+            payload={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+        )
+
+    monkeypatch.setattr(image_gen.requests, "post", fake_post)
+
+    image_gen.XAIImageGenProvider().generate("raw prompt", prompt_enhancement=False)
+
+    assert payloads[0]["prompt"] == "raw prompt"
+
+
 def test_provider_refreshes_once_on_401(monkeypatch, tmp_path):
     resolver_force_flags = []
     post_tokens = []

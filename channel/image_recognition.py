@@ -291,6 +291,53 @@ class ImageRecognitionManager:
             record = self._records.get(record_id or "")
             return self._copy_record(record) if record else None
 
+    def recent_image_refs_for_session(
+        self,
+        session_id: str,
+        *,
+        limit: int = 7,
+        max_age_seconds: Optional[float] = None,
+    ) -> List[str]:
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return []
+        try:
+            max_refs = max(1, min(int(limit), 7))
+        except (TypeError, ValueError):
+            max_refs = 7
+        if max_age_seconds is None:
+            max_age_seconds = self.related_followup_window_seconds
+        try:
+            max_age = float(max_age_seconds)
+        except (TypeError, ValueError):
+            max_age = float(RELATED_FOLLOWUP_WINDOW_SECONDS)
+
+        now = time.time()
+        rows: list[tuple[float, str]] = []
+        with self._lock:
+            self._load_state_locked()
+            self.cleanup_locked(now)
+            for record in self._records.values():
+                if record.session_id != session_id or not record.image_path:
+                    continue
+                image_path = str(record.image_path)
+                if not Path(image_path).exists():
+                    continue
+                ts = max(
+                    float(record.completed_at or 0),
+                    float(record.updated_at or 0),
+                    float(record.created_at or 0),
+                )
+                if max_age > 0 and ts > 0 and now - ts > max_age:
+                    continue
+                rows.append((ts, image_path))
+        rows.sort(key=lambda item: item[0])
+        refs: list[str] = []
+        for _, image_path in rows[-max_refs:]:
+            if image_path not in refs:
+                refs.append(image_path)
+        return refs
+
     def build_followup_context(self, session_id: str, wait_seconds: Optional[float] = None) -> str:
         session_id = str(session_id or "").strip()
         if not session_id:

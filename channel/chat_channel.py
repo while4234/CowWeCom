@@ -37,6 +37,34 @@ quick_reply_pool = ThreadPoolExecutor(max_workers=4)  # /q 快答线程池
 
 
 # 抽象类, 它包含了与消息通道无关的通用处理逻辑
+_IMAGE_REF_RE = re.compile(r"\[\s*(?:\u56fe\u7247|image)\s*:\s*([^\]]+?)\s*\]", re.IGNORECASE)
+_IMAGE_TO_VIDEO_FOLLOWUP_HINTS = (
+    "\u53c2\u8003\u4e0a\u56fe",
+    "\u53c2\u8003\u4e0a\u9762",
+    "\u53c2\u8003\u521a\u624d",
+    "\u53c2\u8003\u8fd9\u5f20",
+    "\u4e0a\u56fe",
+    "\u4e0a\u9762\u51e0\u5f20",
+    "\u4e0a\u9762\u53d1\u7684",
+    "\u521a\u624d\u53d1\u7684",
+    "\u6700\u8fd1\u51e0\u5f20",
+    "\u8fd9\u5f20\u56fe",
+    "\u8fd9\u51e0\u5f20\u56fe",
+    "\u5f15\u7528\u56fe",
+    "\u56fe\u751f\u89c6\u9891",
+    "\u4ee5\u56fe\u751f\u89c6\u9891",
+    "\u8ba9\u56fe\u52a8\u8d77\u6765",
+    "\u8ba9\u8fd9\u5f20\u56fe\u52a8\u8d77\u6765",
+    "\u628a\u56fe\u52a8\u8d77\u6765",
+    "thisimage",
+    "thispicture",
+    "referenceimage",
+    "imagetovideo",
+    "animatethisimage",
+    "animatetheimage",
+)
+
+
 class ChatChannel(Channel):
     name = None  # 登录的用户名
     user_id = None  # 登录的用户id
@@ -177,6 +205,43 @@ class ChatChannel(Channel):
         if not extra:
             return content
         return f"{content.rstrip()}{extra}"
+
+    def _append_recent_image_refs_for_video_create(self, session_id: str, content: str) -> str:
+        text = str(content or "")
+        if not self._background_image_recognition_enabled():
+            return text
+        if _IMAGE_REF_RE.search(text):
+            return text
+        if not self._looks_like_image_to_video_followup(text):
+            return text
+        try:
+            manager = get_image_recognition_manager()
+            refs = manager.recent_image_refs_for_session(
+                session_id,
+                limit=7,
+                max_age_seconds=conf().get(
+                    "image_recognition_recent_video_ref_window_seconds",
+                    None,
+                ),
+            )
+        except Exception as e:
+            logger.debug("[ImageRecognition] failed to collect recent video refs: %s", e)
+            refs = []
+        if not refs:
+            return text
+        logger.info(
+            "[ImageRecognition] attached recent image refs to video create: session=%s count=%s",
+            hash_id(session_id),
+            len(refs),
+        )
+        return f"{text.rstrip()}\n" + "\n".join(f"[image: {ref}]" for ref in refs)
+
+    @staticmethod
+    def _looks_like_image_to_video_followup(content: str) -> bool:
+        compact = "".join(str(content or "").lower().split())
+        if not compact:
+            return False
+        return any(hint in compact for hint in _IMAGE_TO_VIDEO_FOLLOWUP_HINTS)
 
     @staticmethod
     def _private_image_recognition_prompt() -> str:
@@ -540,7 +605,12 @@ class ChatChannel(Channel):
                 else:
                     context.type = ContextType.TEXT
             context.content = content.strip()
-            if context.type == ContextType.TEXT:
+            if context.type == ContextType.VIDEO_CREATE:
+                context.content = self._append_recent_image_refs_for_video_create(
+                    context.get("session_id", ""),
+                    context.content,
+                )
+            elif context.type == ContextType.TEXT:
                 context.content = self._append_image_recognition_context(
                     context.get("session_id", ""),
                     context.content,

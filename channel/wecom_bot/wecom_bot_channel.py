@@ -862,6 +862,11 @@ class WecomBotChannel(ChatChannel):
                 context.content = self._format_group_member_query(context, content)
             else:
                 context.content = content
+            if context.type == ContextType.VIDEO_CREATE:
+                context.content = self._append_recent_image_refs_for_video_create(
+                    context.get("session_id", ""),
+                    context.content,
+                )
 
         return context
 

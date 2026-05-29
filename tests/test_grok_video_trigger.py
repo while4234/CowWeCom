@@ -1,12 +1,13 @@
 # encoding:utf-8
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from bridge.context import Context, ContextType
 from bridge.reply import ReplyType
 from channel.channel import Channel
 from channel.chat_channel import ChatChannel
+from channel.image_recognition import ImageRecognitionManager, reset_image_recognition_manager
 from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
 from models.grok.grok_bot import GrokBot
 
@@ -193,6 +194,48 @@ def test_wecom_bot_video_prefix_creates_video_context(monkeypatch):
     assert context["receiver"] == "u1"
     assert context["session_id"] == "u1"
     assert context["_visible_task_summary"] == "一只猫跑步"
+
+
+def test_wecom_bot_image_to_video_uses_recent_image_ref(monkeypatch, tmp_path):
+    fake_conf = MagicMock()
+    fake_conf.get.side_effect = lambda key, default=None: {
+        "video_create_prefix": [],
+        "image_create_prefix": [],
+        "background_image_recognition_enabled": True,
+        "image_recognition_recent_video_ref_window_seconds": 600,
+    }.get(key, default)
+    monkeypatch.setattr("channel.wecom_bot.wecom_bot_channel.conf", lambda: fake_conf)
+    monkeypatch.setattr("channel.chat_channel.conf", lambda: fake_conf)
+
+    workspace = tmp_path / "workspace"
+    source = tmp_path / "ref.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    manager = ImageRecognitionManager(workspace_root=str(workspace), max_workers=1)
+    reset_image_recognition_manager(manager)
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        record = manager.register_image(
+            session_id="u1",
+            channel_type="wecom_bot",
+            image_path=str(source),
+        )
+
+    channel_cls = _singleton_class(WecomBotChannel)
+    channel = object.__new__(channel_cls)
+    channel.channel_type = "wecom_bot"
+
+    context = channel._compose_context(
+        ContextType.TEXT,
+        "generate a video image to video wave",
+        msg=_wecom_msg(),
+        isgroup=False,
+        no_need_at=True,
+    )
+
+    assert context.type == ContextType.VIDEO_CREATE
+    assert context["_visible_task_summary"] == "image to video wave"
+    assert "[image:" in context.content
+    assert record.image_path in context.content
+    reset_image_recognition_manager(None)
 
 
 def test_wecom_bot_image_prefix_and_plain_text_still_work(monkeypatch):

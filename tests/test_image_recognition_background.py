@@ -99,6 +99,37 @@ class TestImageRecognitionManager(unittest.TestCase):
                 "explicit",
             )
 
+    def test_recent_image_refs_for_session_returns_recent_existing_images(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            first = Path(workspace) / "first.png"
+            second = Path(workspace) / "second.png"
+            other = Path(workspace) / "other.png"
+            for path in (first, second, other):
+                path.write_bytes(PNG_BYTES + path.name.encode("ascii"))
+
+            with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+                first_record = manager.register_image(
+                    session_id="session-a",
+                    channel_type="wecom_bot",
+                    image_path=str(first),
+                )
+                time.sleep(0.01)
+                second_record = manager.register_image(
+                    session_id="session-a",
+                    channel_type="wecom_bot",
+                    image_path=str(second),
+                )
+                manager.register_image(
+                    session_id="session-b",
+                    channel_type="wecom_bot",
+                    image_path=str(other),
+                )
+
+            refs = manager.recent_image_refs_for_session("session-a", limit=2)
+
+            self.assertEqual(refs, [first_record.image_path, second_record.image_path])
+
     def test_related_followups_expire_before_full_image_cache(self):
         with tempfile.TemporaryDirectory() as workspace:
             manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)

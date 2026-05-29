@@ -180,6 +180,12 @@ class XAIVideoGenProvider:
             payload["image"] = {"url": image_url_norm}
         if refs:
             payload["reference_images"] = refs
+        logger.info(
+            "[GrokVideo] submitting request: has_image=%s reference_count=%s model=%s",
+            bool(image_url_norm),
+            len(refs or []),
+            options["model"],
+        )
 
         try:
             request_id = self._submit(payload)

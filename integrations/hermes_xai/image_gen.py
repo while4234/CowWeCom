@@ -116,6 +116,7 @@ class XAIImageGenProvider:
         aspect_ratio: Optional[str] = None,
         resolution: Optional[str] = None,
         model: Optional[str] = None,
+        prompt_enhancement: Any = True,
     ) -> str:
         """Generate an image and return a local image file path."""
         clean_prompt = str(prompt or "").strip()
@@ -142,6 +143,7 @@ class XAIImageGenProvider:
             runtime="grok_direct",
             size=options["resolution"],
             aspect_ratio=options["aspect_ratio"],
+            enabled=prompt_enhancement,
         )
         self.last_prompt_metadata = metadata
         clean_prompt = str(metadata.get("enhanced_prompt") or clean_prompt).strip()

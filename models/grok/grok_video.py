@@ -16,8 +16,12 @@ _GROK_VIDEO_PROVIDERS = {"xai", "grok"}
 _IMAGE_REF_RE = re.compile(r"\[\s*(?:\u56fe\u7247|image)\s*:\s*([^\]]+?)\s*\]", re.IGNORECASE)
 _RECENT_IMAGE_COUNT_RE = re.compile(r"(?:\u4e0a\u9762\u53d1\u7684|\u6700\u8fd1|\u4e0a\u9762|last)\s*(\d+)\s*(?:\u5f20|images?|pics?|pictures?)", re.IGNORECASE)
 _REFERENCE_HINTS = (
+    "\u53c2\u8003\u4e0a\u56fe",
     "\u53c2\u8003\u4e0a\u9762",
+    "\u53c2\u8003\u521a\u624d",
     "\u53c2\u8003\u8fd9\u5f20",
+    "\u4e0a\u56fe",
+    "\u4e0a\u9762\u51e0\u5f20",
     "\u8fd9\u5f20\u56fe",
     "\u8fd9\u5f20\u56fe\u7247",
     "\u4e0a\u9762\u53d1\u7684",

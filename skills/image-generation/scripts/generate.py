@@ -621,6 +621,7 @@ class GrokXAIProvider(ImageProvider):
                 aspect_ratio=aspect_ratio,
                 resolution=_resolve_grok_resolution(size),
                 model=selected_model,
+                prompt_enhancement=prompt_enhancement,
             )
         ).expanduser().resolve()
         if not generated_path.exists() or generated_path.stat().st_size <= 0:

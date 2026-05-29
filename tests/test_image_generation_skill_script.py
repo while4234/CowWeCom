@@ -328,7 +328,7 @@ class TestImageGenerationSkillScript(unittest.TestCase):
                         "from pathlib import Path",
                         "from common.log import logger",
                         "class XAIImageGenProvider:",
-                        "    def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None):",
+                        "    def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):",
                         "        logger.info('fake grok provider log on cow logger')",
                         "        path = Path(__file__).resolve().parents[2] / 'source.jpg'",
                         "        path.write_bytes(b'\\xff\\xd8\\xff\\xe0fake-jpeg')",

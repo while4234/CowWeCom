@@ -154,6 +154,13 @@ _GROK_DIRECT_ALLOWED_OPTIONS = {
     "video": {"aspect_ratio", "resolution", "quality", "duration", "image_url"},
 }
 _GROK_DIRECT_IMAGE_TO_VIDEO_HINTS = (
+    "\u53c2\u8003\u4e0a\u56fe",
+    "\u53c2\u8003\u4e0a\u9762",
+    "\u53c2\u8003\u521a\u624d",
+    "\u4e0a\u9762\u51e0\u5f20",
+    "\u4e0a\u9762\u53d1\u7684",
+    "\u521a\u624d\u53d1\u7684",
+    "\u6700\u8fd1\u51e0\u5f20",
     "这张图",
     "这张图片",
     "参考图",
@@ -1378,6 +1385,8 @@ class CowCliPlugin(Plugin):
     def _submit_grok_direct_video(self, prompt: str, options: dict, context, profile) -> str:
         refs = self._collect_grok_direct_image_refs(options, context)
         if not refs and self._looks_like_grok_direct_image_to_video(prompt):
+            refs = self._recent_grok_direct_image_refs(context)
+        if not refs and self._looks_like_grok_direct_image_to_video(prompt):
             return "没有找到可用图片，请先发送/上传/引用图片后重试。"
 
         params = {
@@ -1512,6 +1521,26 @@ class CowCliPlugin(Plugin):
             if len(cleaned) >= _GROK_DIRECT_MAX_IMAGE_REFS:
                 break
         return cleaned
+
+    @staticmethod
+    def _recent_grok_direct_image_refs(context) -> list:
+        try:
+            from channel.image_recognition import get_image_recognition_manager
+
+            session_id = ""
+            if context is not None:
+                try:
+                    session_id = str(context.get("session_id") or "").strip()
+                except Exception:
+                    session_id = str(getattr(context, "session_id", "") or "").strip()
+            if not session_id:
+                return []
+            return get_image_recognition_manager().recent_image_refs_for_session(
+                session_id,
+                limit=_GROK_DIRECT_MAX_IMAGE_REFS,
+            )
+        except Exception:
+            return []
 
     @staticmethod
     def _strip_grok_direct_image_refs(prompt: str) -> str:

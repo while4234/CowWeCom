@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from bridge.context import Context, ContextType
+from channel.image_recognition import ImageRecognitionManager, reset_image_recognition_manager
 from plugins import Event, EventAction, EventContext
 
 
@@ -99,6 +100,35 @@ def test_grok_direct_video_defaults_and_uses_context_image_refs():
     assert args["aspect_ratio"] == "16:9"
     assert args["duration"] == "6s"
     assert args["image_url"] == "C:/tmp/ref.png"
+
+
+def test_grok_direct_video_falls_back_to_recent_image_refs(tmp_path):
+    plugin = _load_cow_cli_plugin()
+    manager = CaptureManager()
+    context = _context("/grok-direct video -- image to video wave")
+    plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    workspace = tmp_path / "workspace"
+    source = tmp_path / "ref.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    image_manager = ImageRecognitionManager(workspace_root=str(workspace), max_workers=1)
+    reset_image_recognition_manager(image_manager)
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        record = image_manager.register_image(
+            session_id="session",
+            channel_type="web",
+            image_path=str(source),
+        )
+
+    with patch("agent.tools.video_generation.job_manager.get_grok_video_generation_job_manager", return_value=manager), patch(
+        "bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None)
+    ):
+        result = plugin._cmd_grok_direct("video -- image to video wave", {"context": context})
+
+    args = manager.submitted[0][0]
+    assert "job123" in result
+    assert args["image_url"] == record.image_path
+    reset_image_recognition_manager(None)
 
 
 def test_grok_direct_image_rejects_reference_image():
