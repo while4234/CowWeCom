@@ -211,14 +211,49 @@ def _build_grok_direct_video_query(
 
 
 def _build_enhanced_grok_image_args(prompt: str, image_path: str = "", *, quality: str = "speed") -> Dict[str, Any]:
+    return _build_grok_image_job_args(prompt, image_path, quality=quality, prompt_enhancement=True)
+
+
+def _build_direct_grok_image_args(prompt: str, image_path: str = "", *, quality: str = "speed") -> Dict[str, Any]:
+    return _build_grok_image_job_args(prompt, image_path, quality=quality, prompt_enhancement=False)
+
+
+def _build_grok_image_job_args(
+    prompt: str,
+    image_path: str = "",
+    *,
+    quality: str = "speed",
+    prompt_enhancement: bool = True,
+) -> Dict[str, Any]:
     args: Dict[str, Any] = {
         "prompt": str(prompt or "").strip(),
         "runtime": "grok",
         "quality": quality or "speed",
-        "prompt_enhancement": True,
+        "prompt_enhancement": bool(prompt_enhancement),
     }
     if image_path:
         args["image_url"] = image_path
+    return args
+
+
+def _build_grok_video_job_args(
+    prompt: str,
+    image_path: str = "",
+    *,
+    duration: str = "6s",
+    resolution: str = "480p",
+    prompt_enhancement: bool = True,
+) -> Dict[str, Any]:
+    args: Dict[str, Any] = {
+        "prompt": str(prompt or "").strip(),
+        "duration": duration or "6s",
+        "resolution": resolution or "480p",
+        "prompt_enhancement": bool(prompt_enhancement),
+    }
+    if image_path:
+        args["image_url"] = image_path
+    else:
+        args["aspect_ratio"] = "16:9"
     return args
 
 
@@ -562,8 +597,14 @@ class DiscordChannel(ChatChannel):
             return
 
         if direct:
-            query = _build_grok_direct_image_query(prompt, image_path, quality=quality)
-            reply = await self.loop.run_in_executor(_executor, self._run_cow_cli_command, query, context)
+            reply = await self.loop.run_in_executor(
+                _executor,
+                self._submit_direct_grok_image_job,
+                prompt,
+                image_path or "",
+                quality,
+                context,
+            )
         else:
             reply = await self.loop.run_in_executor(
                 _executor,
@@ -597,13 +638,16 @@ class DiscordChannel(ChatChannel):
             return
 
         if direct:
-            query = _build_grok_direct_video_query(
+            reply = await self.loop.run_in_executor(
+                _executor,
+                self._submit_grok_video_job,
                 prompt,
                 image_path or "",
-                duration=duration,
-                resolution=resolution,
+                duration,
+                resolution,
+                context,
+                False,
             )
-            reply = await self.loop.run_in_executor(_executor, self._run_cow_cli_command, query, context)
         else:
             reply = await self.loop.run_in_executor(
                 _executor,
@@ -613,6 +657,7 @@ class DiscordChannel(ChatChannel):
                 duration,
                 resolution,
                 context,
+                True,
             )
         await self._send_reply_async(reply, context)
 
@@ -629,26 +674,51 @@ class DiscordChannel(ChatChannel):
         return image_path
 
     def _submit_enhanced_grok_image_job(self, prompt: str, image_path: str, quality: str, context: Context) -> Reply:
+        return self._submit_grok_image_job(prompt, image_path, quality, context, prompt_enhancement=True)
+
+    def _submit_direct_grok_image_job(self, prompt: str, image_path: str, quality: str, context: Context) -> Reply:
+        return self._submit_grok_image_job(prompt, image_path, quality, context, prompt_enhancement=False)
+
+    def _submit_grok_image_job(
+        self,
+        prompt: str,
+        image_path: str,
+        quality: str,
+        context: Context,
+        *,
+        prompt_enhancement: bool,
+    ) -> Reply:
         try:
             from agent.tools.image_generation.job_manager import get_image_generation_job_manager
             from bridge.bridge import Bridge
 
             profile = self._resolve_background_profile(context)
-            args = _build_enhanced_grok_image_args(prompt, image_path, quality=quality)
+            args = _build_grok_image_job_args(
+                prompt,
+                image_path,
+                quality=quality,
+                prompt_enhancement=prompt_enhancement,
+            )
             manager = get_image_generation_job_manager(Bridge().get_agent_bridge())
             job = manager.submit(args, context, profile)
             position = manager.queue_position(job)
             state = "started" if position == 0 else f"queued at position {position}"
+            mode = "prompt-enhanced" if prompt_enhancement else "direct"
+            enhancement_note = (
+                "The installed image prompt enhancer will run before submission."
+                if prompt_enhancement
+                else "Prompt enhancement is disabled for this direct task."
+            )
             return Reply(
                 ReplyType.TEXT,
                 (
-                    f"Grok prompt-enhanced image task {state}. Task ID: {job.job_id}.\n"
-                    "The installed image prompt enhancer will run before submission."
+                    f"Grok {mode} image task {state}. Task ID: {job.job_id}.\n"
+                    f"{enhancement_note}"
                 ),
             )
         except Exception as e:
-            logger.warning("[Discord] enhanced Grok image submit failed: %s", e, exc_info=True)
-            return Reply(ReplyType.ERROR, f"Enhanced Grok image task failed: {e}")
+            logger.warning("[Discord] Grok image submit failed: %s", e, exc_info=True)
+            return Reply(ReplyType.ERROR, f"Grok image task failed: {e}")
 
     def _submit_grok_video_job(
         self,
@@ -657,21 +727,20 @@ class DiscordChannel(ChatChannel):
         duration: str,
         resolution: str,
         context: Context,
+        prompt_enhancement: bool = True,
     ) -> Reply:
         try:
             from agent.tools.video_generation.job_manager import get_grok_video_generation_job_manager
             from bridge.bridge import Bridge
 
             profile = self._resolve_background_profile(context)
-            args: Dict[str, Any] = {
-                "prompt": str(prompt or "").strip(),
-                "duration": duration or "6s",
-                "resolution": resolution or "480p",
-            }
-            if image_path:
-                args["image_url"] = image_path
-            else:
-                args["aspect_ratio"] = "16:9"
+            args = _build_grok_video_job_args(
+                prompt,
+                image_path,
+                duration=duration,
+                resolution=resolution,
+                prompt_enhancement=prompt_enhancement,
+            )
             manager = get_grok_video_generation_job_manager(Bridge().get_agent_bridge())
             job = manager.submit(args, context, profile)
             position = manager.queue_position(job)

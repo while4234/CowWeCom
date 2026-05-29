@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 from agent.tools.base_tool import BaseTool, ToolResult
 from common.image_prompt_enhancer import load_prompt_history
+from common.log import logger
 from common.utils import expand_path
 from config import conf
 
@@ -31,7 +32,15 @@ class ImageGenerationPromptHistoryTool(BaseTool):
             },
             "exact_only": {
                 "type": "boolean",
-                "description": "Return only the exact stored enhanced prompt text. Use this for requests like 'show the prompt you just polished'.",
+                "description": "Return only the prompt text. By default this is translated to Chinese for display; set raw=true for the original stored prompt.",
+            },
+            "raw": {
+                "type": "boolean",
+                "description": "Return the original stored enhanced prompt without Chinese translation.",
+            },
+            "original": {
+                "type": "boolean",
+                "description": "Alias for raw=true.",
             },
         },
     }
@@ -74,12 +83,17 @@ class ImageGenerationPromptHistoryTool(BaseTool):
         if not records:
             return ToolResult.fail("No hidden media prompt was found for the recent generation tasks in this chat.")
 
-        if _truthy(params.get("exact_only") or params.get("raw")):
-            prompts = [str(record.get("enhanced_prompt") or "") for record in records]
+        translate = not _truthy(params.get("raw") or params.get("original"))
+        if _truthy(params.get("exact_only")):
+            prompts = [
+                _display_prompt_text(record, translate=translate, model=getattr(self, "model", None))
+                for record in records
+            ]
             return ToolResult.success("\n\n---\n\n".join(prompt for prompt in prompts if prompt))
 
         sections = []
         for record in records:
+            prompt_text = _display_prompt_text(record, translate=translate, model=getattr(self, "model", None))
             templates = record.get("templates") or []
             template_lines = []
             for item in templates[:3]:
@@ -102,9 +116,9 @@ class ImageGenerationPromptHistoryTool(BaseTool):
                         f"Use case: {record.get('use_case') or 'unknown'}",
                         source_label,
                         template_text,
-                        "Enhanced prompt:",
+                        "Chinese prompt:" if translate else "Enhanced prompt:",
                         "```text",
-                        str(record.get("enhanced_prompt") or ""),
+                        prompt_text,
                         "```",
                     ]
                 )
@@ -118,3 +132,124 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return value != 0
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "raw", "exact"}
+
+
+def _display_prompt_text(record: Dict[str, Any], *, translate: bool, model: Any = None) -> str:
+    prompt = str(record.get("enhanced_prompt") or "")
+    if not translate or not prompt:
+        return prompt
+    translated = _translate_prompt_to_chinese(prompt, record, model=model)
+    return translated or prompt
+
+
+def _translate_prompt_to_chinese(prompt: str, record: Dict[str, Any], *, model: Any = None) -> str:
+    if _should_use_grok_translation(record):
+        return (
+            _translate_prompt_with_grok(prompt)
+            or _translate_prompt_with_attached_model(prompt, model)
+            or _translate_prompt_with_bridge(prompt)
+            or ""
+        )
+    return _translate_prompt_with_attached_model(prompt, model) or _translate_prompt_with_bridge(prompt) or ""
+
+
+def _should_use_grok_translation(record: Dict[str, Any]) -> bool:
+    target = str(record.get("target") or "").strip().lower()
+    version = str(record.get("version") or "").strip().lower()
+    runtime = str(record.get("runtime") or "").strip().lower()
+    return target == "grok" or version.startswith("grok-model-rewrite") or "grok" in runtime
+
+
+def _translate_prompt_with_grok(prompt: str) -> str:
+    try:
+        from models.grok.grok_bot import GrokBot
+
+        return _call_translation_model(GrokBot(), prompt, request_kind="grok_prompt_history_translation")
+    except Exception as exc:
+        logger.warning("[PromptHistory] Grok prompt translation failed: %s", exc)
+        return ""
+
+
+def _translate_prompt_with_attached_model(prompt: str, model: Any) -> str:
+    if model is None or not hasattr(model, "call_with_tools"):
+        return ""
+    try:
+        return _call_translation_model(model, prompt, request_kind="prompt_history_translation")
+    except Exception as exc:
+        logger.warning("[PromptHistory] prompt translation failed: %s", exc)
+        return ""
+
+
+def _translate_prompt_with_bridge(prompt: str) -> str:
+    try:
+        from bridge.bridge import Bridge
+
+        response = Bridge().fetch_translate(prompt, from_lang="", to_lang="zh")
+        return _clean_translated_prompt(getattr(response, "content", response))
+    except Exception as exc:
+        logger.warning("[PromptHistory] bridge prompt translation failed: %s", exc)
+        return ""
+
+
+def _call_translation_model(model: Any, prompt: str, *, request_kind: str) -> str:
+    system = (
+        "Translate hidden image/video generation prompts into Chinese for display. "
+        "Preserve quoted text exactly, and keep model names, file paths, aspect ratios, "
+        "numbers, parameter names, and code-like tokens unchanged. Return only the Chinese translation."
+    )
+    user_prompt = "Translate this prompt into Chinese:\n\n" + str(prompt or "")
+    response = model.call_with_tools(
+        messages=[{"role": "user", "content": user_prompt}],
+        tools=None,
+        stream=False,
+        system=system,
+        temperature=0,
+        max_tokens=2000,
+        max_output_tokens=2000,
+        request_timeout=60,
+        cache_shape_metadata={"request_kind": request_kind},
+    )
+    return _clean_translated_prompt(_extract_text_response(response))
+
+
+def _extract_text_response(response: Any) -> str:
+    if isinstance(response, str):
+        return response
+    if not isinstance(response, dict):
+        return ""
+    if response.get("error"):
+        raise RuntimeError(str(response.get("message") or "prompt translation model call failed"))
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if isinstance(message, dict):
+            return _extract_content_text(message.get("content"))
+    for key in ("content", "text", "message", "result"):
+        if response.get(key):
+            return _extract_content_text(response.get(key))
+    return ""
+
+
+def _extract_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(str(block.get("text") or block.get("content") or ""))
+        return "".join(parts)
+    return str(content or "")
+
+
+def _clean_translated_prompt(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("```") and text.endswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 2:
+            text = "\n".join(lines[1:-1]).strip()
+    return text

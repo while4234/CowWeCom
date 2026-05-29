@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.tools.image_generation import prompt_history as prompt_history_module
 from agent.tools.image_generation.prompt_history import ImageGenerationPromptHistoryTool
 from bridge.context import Context, ContextType
 from common.image_prompt_enhancer import (
@@ -212,13 +213,13 @@ class TestImagePromptEnhancer(unittest.TestCase):
             tool.profile = SimpleNamespace(memory_user_id="user_a", shared_workspace=tmp)
             tool.current_context = Context(ContextType.TEXT, "把提示词发给我看看")
             tool.current_context["session_id"] = "session-a"
-            result = tool.execute({})
+            result = tool.execute({"raw": True})
 
         self.assertEqual(result.status, "success")
         self.assertIn("Enhanced prompt:", result.result)
         self.assertIn(ENHANCED_PROMPT_MARKER, result.result)
 
-    def test_prompt_history_tool_can_return_exact_stored_prompt_only(self):
+    def test_prompt_history_tool_can_return_raw_stored_prompt_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             expected = "Exact polished prompt from the last Grok job."
             record_prompt_history(
@@ -243,10 +244,171 @@ class TestImagePromptEnhancer(unittest.TestCase):
             tool.profile = SimpleNamespace(memory_user_id="user_a", shared_workspace=tmp)
             tool.current_context = Context(ContextType.TEXT, "show the exact prompt")
             tool.current_context["session_id"] = "session-a"
-            result = tool.execute({"exact_only": True})
+            result = tool.execute({"exact_only": True, "raw": True})
 
         self.assertEqual(result.status, "success")
         self.assertEqual(result.result, expected)
+
+    def test_prompt_history_tool_translates_grok_prompt_with_grok_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record_prompt_history(
+                workspace_root=tmp,
+                memory_user_id="user_a",
+                session_id="session-a",
+                job_id="job123",
+                output_path=str(Path(tmp) / "out.png"),
+                metadata={
+                    "version": "grok-model-rewrite-v2",
+                    "enhanced": True,
+                    "target": "grok",
+                    "media_type": "image",
+                    "use_case": "image_model_rewrite",
+                    "original_prompt": "draw",
+                    "enhanced_prompt": "A cinematic portrait with soft light.",
+                    "library": {},
+                    "templates": [],
+                },
+            )
+
+            calls = []
+            tool = ImageGenerationPromptHistoryTool()
+            tool.profile = SimpleNamespace(memory_user_id="user_a", shared_workspace=tmp)
+            tool.current_context = Context(ContextType.TEXT, "查看刚才润色后的提示词")
+            tool.current_context["session_id"] = "session-a"
+
+            with patch.object(
+                prompt_history_module,
+                "_translate_prompt_with_grok",
+                side_effect=lambda prompt: calls.append(prompt) or "柔和光线下的电影感肖像。",
+            ), patch.object(
+                prompt_history_module,
+                "_translate_prompt_with_attached_model",
+                side_effect=AssertionError("Grok records must use Grok translation first"),
+            ):
+                result = tool.execute({"exact_only": True})
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.result, "柔和光线下的电影感肖像。")
+        self.assertEqual(calls, ["A cinematic portrait with soft light."])
+
+    def test_prompt_history_tool_translates_direct_grok_record_with_grok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record_prompt_history(
+                workspace_root=tmp,
+                memory_user_id="user_a",
+                session_id="session-a",
+                job_id="job123",
+                output_path=str(Path(tmp) / "out.png"),
+                metadata={
+                    "enhanced": False,
+                    "target": "grok",
+                    "runtime": "grok_direct",
+                    "original_prompt": "draw",
+                    "enhanced_prompt": "A direct Grok prompt.",
+                    "library": {},
+                    "templates": [],
+                },
+            )
+
+            calls = []
+            tool = ImageGenerationPromptHistoryTool()
+            tool.profile = SimpleNamespace(memory_user_id="user_a", shared_workspace=tmp)
+            tool.current_context = Context(ContextType.TEXT, "查看提示词")
+            tool.current_context["session_id"] = "session-a"
+
+            with patch.object(
+                prompt_history_module,
+                "_translate_prompt_with_grok",
+                side_effect=lambda prompt: calls.append(prompt) or "Grok 直接提示词。",
+            ), patch.object(
+                prompt_history_module,
+                "_translate_prompt_with_attached_model",
+                side_effect=AssertionError("direct Grok records must use Grok translation first"),
+            ), patch.object(
+                prompt_history_module,
+                "_translate_prompt_with_bridge",
+                side_effect=AssertionError("direct Grok records must not need bridge translation when Grok succeeds"),
+            ):
+                result = tool.execute({"exact_only": True})
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.result, "Grok 直接提示词。")
+        self.assertEqual(calls, ["A direct Grok prompt."])
+
+    def test_prompt_history_tool_translates_non_grok_prompt_with_attached_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record_prompt_history(
+                workspace_root=tmp,
+                memory_user_id="user_a",
+                session_id="session-a",
+                job_id="job123",
+                output_path=str(Path(tmp) / "out.png"),
+                metadata={
+                    "version": "youmind-full-library-v1",
+                    "enhanced": True,
+                    "target": "gpt",
+                    "use_case": "poster",
+                    "original_prompt": "draw",
+                    "enhanced_prompt": "A clean product poster.",
+                    "library": {},
+                    "templates": [],
+                },
+            )
+
+            calls = []
+            tool = ImageGenerationPromptHistoryTool()
+            tool.model = object()
+            tool.profile = SimpleNamespace(memory_user_id="user_a", shared_workspace=tmp)
+            tool.current_context = Context(ContextType.TEXT, "查看刚才润色后的提示词")
+            tool.current_context["session_id"] = "session-a"
+
+            with patch.object(
+                prompt_history_module,
+                "_translate_prompt_with_attached_model",
+                side_effect=lambda prompt, model: calls.append((prompt, model)) or "干净的产品海报。",
+            ):
+                result = tool.execute({"exact_only": True})
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.result, "干净的产品海报。")
+        self.assertEqual(calls, [("A clean product poster.", tool.model)])
+
+    def test_prompt_history_tool_uses_bridge_translation_when_model_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record_prompt_history(
+                workspace_root=tmp,
+                memory_user_id="user_a",
+                session_id="session-a",
+                job_id="job123",
+                output_path=str(Path(tmp) / "out.png"),
+                metadata={
+                    "version": "youmind-full-library-v1",
+                    "enhanced": True,
+                    "target": "gpt",
+                    "use_case": "poster",
+                    "original_prompt": "draw",
+                    "enhanced_prompt": "A clean product poster.",
+                    "library": {},
+                    "templates": [],
+                },
+            )
+
+            bridge_calls = []
+            tool = ImageGenerationPromptHistoryTool()
+            tool.profile = SimpleNamespace(memory_user_id="user_a", shared_workspace=tmp)
+            tool.current_context = Context(ContextType.TEXT, "查看提示词")
+            tool.current_context["session_id"] = "session-a"
+
+            with patch.object(
+                prompt_history_module,
+                "_translate_prompt_with_bridge",
+                side_effect=lambda prompt: bridge_calls.append(prompt) or "干净的产品海报。",
+            ):
+                result = tool.execute({"exact_only": True})
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.result, "干净的产品海报。")
+        self.assertEqual(bridge_calls, ["A clean product poster."])
 
     def test_redacts_hidden_prompt_from_error_text(self):
         text = (

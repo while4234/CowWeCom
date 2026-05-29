@@ -316,6 +316,8 @@ http://YOUR_HOST:9898/wxcomapp/
 
 请在企业微信后台确认 URL、Token、EncodingAESKey、可信 IP 和端口安全组配置一致。
 
+提示词查看说明：隐藏提示词历史只在用户明确要求时读取，默认返回中文展示文案；Grok 图片和视频记录优先使用 Grok 文本模型翻译，普通 GPT/Codex 记录使用当前 Agent 模型或翻译桥兜底。需要排查原始 prompt 时，可明确要求返回原文。
+
 ## Discord 接入
 
 Discord 通道独立于微信和企业微信，适合把 CowCli 管理命令和 Grok 生图、文生视频、图生视频直出放到 Discord 使用。当前实现只允许一个 Discord 管理员，管理员配置不会复用微信/企业微信管理员身份。
@@ -534,7 +536,8 @@ CowWeCom/
 
 - Grok 图片/视频隐藏提示词仓库从 `grokSfw` 更名为 `grok`，并内置 YetAnotherWildcardCollection 的完整 wildcard/prompt `.txt` 快照。
 - 普通 Grok 生图/视频润色默认 90% 使用 `grok` 仓库、10% 使用其他仓库；prompt 含 `NSFW` 时优先使用 `grok/NSFW`，并允许混入 1 条非优先补充片段。
-- 查看“刚才润色后的提示词”会读取最近一次已存储的最终 prompt，Grok 视频重写结果也会进入同一套 prompt 历史。
+- 查看“刚才润色后的提示词”会读取最近一次已存储的最终 prompt，不重新润色；默认以中文展示，Grok 图片/视频记录优先用 Grok 翻译，需要原文时可显式要求原文。
+- Discord Grok 图片/视频 Slash Commands 的附件语义固定为：不上传附件就是文生图/文生视频，上传附件才进入图生图/图生视频；direct 图片/视频不再绕 CowCli 的最近图片启发式。
 
 ### 2026-05-29
 
