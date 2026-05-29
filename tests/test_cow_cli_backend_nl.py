@@ -392,6 +392,62 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertEqual(get_current_backend(), "codex")
         self.assertEqual(get_current_backend_for_profile(profile), "grok")
 
+    def test_admin_status_after_grok_switch_reports_personal_backend(self):
+        from bridge.context import Context, ContextType
+        from common.llm_backend_router import save_state
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        save_state({"current_backend": "capi_monthly"})
+        context_kwargs = {
+            "actor_role": "admin",
+            "actor_id": "web:admin",
+            "channel_type": "web",
+        }
+
+        switch_context = Context(ContextType.TEXT, "帮我切换后端到grok", kwargs=dict(context_kwargs))
+        plugin.on_handle_context(EventContext(Event.ON_HANDLE_CONTEXT, {"context": switch_context}))
+
+        status_context = Context(ContextType.TEXT, "查询当前后端", kwargs=dict(context_kwargs))
+        status_event = EventContext(Event.ON_HANDLE_CONTEXT, {"context": status_context})
+        plugin.on_handle_context(status_event)
+
+        content = status_event["reply"].content
+        self.assertEqual(status_event.action, EventAction.BREAK_PASS)
+        self.assertIn("- current_backend: grok", content)
+        self.assertIn("- effective_model: grok-4.3", content)
+        self.assertIn("- shared_gpt_backend: capi_monthly", content)
+        self.assertNotIn("- current_backend: capi_monthly", content)
+
+    def test_admin_current_quota_after_grok_switch_does_not_query_monthly(self):
+        from bridge.context import Context, ContextType
+        from common.llm_backend_router import save_state
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        save_state({"current_backend": "capi_monthly"})
+        context_kwargs = {
+            "actor_role": "admin",
+            "actor_id": "web:admin",
+            "channel_type": "web",
+        }
+
+        switch_context = Context(ContextType.TEXT, "帮我切换后端到grok", kwargs=dict(context_kwargs))
+        plugin.on_handle_context(EventContext(Event.ON_HANDLE_CONTEXT, {"context": switch_context}))
+
+        quota_context = Context(ContextType.TEXT, "查询当前后端额度", kwargs=dict(context_kwargs))
+        quota_event = EventContext(Event.ON_HANDLE_CONTEXT, {"context": quota_context})
+        with (
+            patch.object(plugin, "_backend_capi_quota") as capi_quota,
+            patch.object(plugin, "_backend_quota") as codex_quota,
+        ):
+            plugin.on_handle_context(quota_event)
+
+        self.assertEqual(quota_event.action, EventAction.BREAK_PASS)
+        self.assertIn("当前后端是 grok", quota_event["reply"].content)
+        capi_quota.assert_not_called()
+        codex_quota.assert_not_called()
+
     def test_whitelist_natural_grok_switch_is_personal_and_local(self):
         from agent.user_profiles import resolve_agent_user_profile
         from bridge.context import Context, ContextType
@@ -418,6 +474,33 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertIn("Personal LLM backend switched to grok", e_context["reply"].content)
         self.assertEqual(get_current_backend(), "codex")
         self.assertEqual(get_current_backend_for_profile(profile), "grok")
+
+    def test_whitelist_status_after_grok_switch_reports_personal_backend(self):
+        from bridge.context import Context, ContextType
+        from common.llm_backend_router import save_state
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        save_state({"current_backend": "capi_monthly"})
+        context_kwargs = {
+            "actor_role": "user",
+            "actor_id": "wecom_bot:shan-hai",
+            "channel_type": "wecom_bot",
+            "display_name": "山海入梦来",
+        }
+
+        switch_context = Context(ContextType.TEXT, "切换后端到grok", kwargs=dict(context_kwargs))
+        plugin.on_handle_context(EventContext(Event.ON_HANDLE_CONTEXT, {"context": switch_context}))
+
+        status_context = Context(ContextType.TEXT, "查询当前后端", kwargs=dict(context_kwargs))
+        status_event = EventContext(Event.ON_HANDLE_CONTEXT, {"context": status_context})
+        plugin.on_handle_context(status_event)
+
+        content = status_event["reply"].content
+        self.assertEqual(status_event.action, EventAction.BREAK_PASS)
+        self.assertIn("- current_backend: grok", content)
+        self.assertIn("- shared_gpt_backend: capi_monthly", content)
+        self.assertNotIn("需要管理员权限", content)
 
     def test_whitelist_natural_gpt_switch_returns_to_shared_backend(self):
         from agent.user_profiles import resolve_agent_user_profile
@@ -505,23 +588,27 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertEqual(e_context.action, EventAction.BREAK_PASS)
         self.assertIn("需要管理员权限", e_context["reply"].content)
 
-    def test_backend_status_is_hidden_from_normal_user(self):
+    def test_backend_status_uses_shared_route_for_normal_user(self):
         from bridge.context import Context, ContextType
+        from common.llm_backend_router import save_state
         from plugins import Event, EventAction, EventContext
 
         plugin = _load_cow_cli_plugin()
+        save_state({"current_backend": "capi_monthly"})
         context = Context(ContextType.TEXT, "/backend status", kwargs={"actor_role": "user"})
         e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
 
-        with patch("common.llm_backend_router.describe_status", return_value="backend status ok"):
-            plugin.on_handle_context(e_context)
+        plugin.on_handle_context(e_context)
 
         self.assertEqual(e_context.action, EventAction.BREAK_PASS)
-        self.assertIn("需要管理员权限", e_context["reply"].content)
+        self.assertIn("- current_backend: capi_monthly", e_context["reply"].content)
+        self.assertNotIn("shared_gpt_backend", e_context["reply"].content)
 
     def test_backend_quota_subcommands_require_admin(self):
         plugin = _load_cow_cli_plugin()
 
+        self.assertEqual(plugin._command_access_level("backend", "status"), "public")
+        self.assertEqual(plugin._command_access_level("backend", "quota-current"), "public")
         self.assertEqual(plugin._command_access_level("backend", "quota capi"), "admin")
         self.assertEqual(plugin._command_access_level("backend", "capi quota"), "admin")
         self.assertEqual(plugin._command_access_level("backend", "capi-monthly quota"), "admin")
@@ -545,7 +632,9 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertIn("/status", user_help)
         self.assertIn("查询本月账单", user_help)
         self.assertIn("管理员命令已隐藏", user_help)
-        self.assertNotIn("/backend：查看当前模型后端", user_help)
+        self.assertIn("/backend：查看当前模型后端", user_help)
+        self.assertIn("/backend quota-current：查询当前后端额度", user_help)
+        self.assertNotIn("/backend quota capi：查询 CAPI 额度卡", user_help)
         self.assertNotIn("/backend capi：切到 CAPI 额度卡", user_help)
         self.assertNotIn("/skill install <名称>：安装技能", user_help)
         self.assertNotIn("/config <key> <val>：修改配置", user_help)

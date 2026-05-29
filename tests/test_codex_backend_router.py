@@ -583,6 +583,43 @@ class TestCodexBackendRouter(unittest.TestCase):
         self.assertEqual(get_effective_model(BACKEND_GROK), "grok-4.3")
         self.assertEqual(get_current_backend_for_profile(normal), BACKEND_CAPI)
 
+    def test_actor_status_reports_personal_grok_before_shared_backend(self):
+        admin = SimpleNamespace(
+            actor_id="web:admin",
+            raw_user_id="web:admin",
+            memory_user_id="admin",
+            display_name="Admin",
+            role="admin",
+            is_admin=True,
+        )
+        save_state({"current_backend": BACKEND_CAPI_MONTHLY})
+        set_user_backend_override(admin, BACKEND_GROK, reason="unit_test")
+
+        text = describe_status(admin)
+
+        self.assertIn("- current_backend: grok", text)
+        self.assertIn("- effective_model: grok-4.3", text)
+        self.assertIn("- shared_gpt_backend: capi_monthly", text)
+        self.assertIn("- personal_backend_override: True", text)
+        self.assertNotIn("- current_backend: capi_monthly", text)
+
+    def test_normal_actor_status_reports_shared_backend_without_personal_lines(self):
+        normal = SimpleNamespace(
+            actor_id="wecom_bot:u2",
+            raw_user_id="u2",
+            memory_user_id="m2",
+            display_name="普通用户",
+            role="user",
+            is_admin=False,
+        )
+        save_state({"current_backend": BACKEND_CAPI_MONTHLY})
+
+        text = describe_status(normal)
+
+        self.assertIn("- current_backend: capi_monthly", text)
+        self.assertNotIn("shared_gpt_backend", text)
+        self.assertNotIn("personal_backend_override", text)
+
     def test_midnight_auto_switch_keeps_grok_user_override_out_of_global_route(self):
         whitelisted = SimpleNamespace(
             actor_id="wecom_bot:u1",

@@ -188,9 +188,9 @@ http://127.0.0.1:9899
 
 CAPI 额度卡/月卡查询依赖 `llm_backend.providers.capi` 和 `llm_backend.providers.capi_monthly` 下的专用 key。更新部署后请检查本机 `CAPI_API_KEY`、`CAPI_MONTHLY_API_KEY`，或在 ignored 的 `config.json` 中配置 `llm_backend.providers.capi.api_key`、`llm_backend.providers.capi_monthly.api_key`；不要把真实 key 写入 `config-template.json` 或提交到 Git。
 
-Grok 现在作为独立、受限的模型后端接入 `llm_backend.providers.grok`：Web 管理端可以添加或保存模型后端 profile，并把 Grok 或其他已保存后端只分配给管理员和白名单用户。默认白名单只有 `山海入梦来`；普通用户仍共用同一个 GPT 后端池，只按现有额度和规则在 CAPI/CAPI 月卡/Codex 之间切换，不能切换或感知后端。每日 00:00 自动切换只处理全局 GPT 后端，不会自动切到 Grok；管理员和白名单用户的个人后端选择也不会改写普通用户的全局后端。
+Grok 现在作为独立、受限的模型后端接入 `llm_backend.providers.grok`：Web 管理端可以添加或保存模型后端 profile，并把 Grok 或其他已保存后端只分配给管理员和白名单用户。默认白名单只有 `山海入梦来`；普通用户仍共用同一个 GPT 后端池，只按现有额度和规则在 CAPI/CAPI 月卡/Codex 之间切换，不能切换到受限 Grok 后端。每日 00:00 自动切换只处理全局 GPT 后端，不会自动切到 Grok；管理员和白名单用户的个人后端选择也不会改写普通用户的全局后端。
 
-管理员和白名单用户可以在聊天中直接用自然语言快速切换个人模型后端，例如“切换后端到 Grok / xAI”会在 CowCli 本地命令层写入个人 Grok override，并在 Agent 执行前完成；“切回 GPT 后端”会清除个人 override，回到共享 GPT 后端池。这个本地切换不触发 Agent、不修改普通用户的全局 GPT 后端；普通用户发送同类后端切换话术仍会被拒绝。
+管理员和白名单用户可以在聊天中直接用自然语言快速切换个人模型后端，例如“切换后端到 Grok / xAI”会在 CowCli 本地命令层写入个人 Grok override，并在 Agent 执行前完成；“切回 GPT 后端”会清除个人 override，回到共享 GPT 后端池。这个本地切换不触发 Agent、不修改普通用户的全局 GPT 后端；查询“当前后端”或“当前后端额度”时会按发起人的有效后端展示，普通用户看到共享 GPT 后端，管理员/白名单用户看到自己的个人后端，普通用户发送同类后端切换话术仍会被拒绝。
 
 Grok/xAI 原生账号登录仍在 `/grok` 完成，文字聊天模型由受限后端 profile 控制，不再要求把普通用户的全局 `bot_type` 改成 Grok。Grok 图片生成复用同一 OAuth 凭据：当管理员或白名单用户把个人模型后端切到 Grok 后，普通生图默认走 Grok；如果此时要走 GPT/OpenAI/Codex 生图，需要在请求里明确说明。仅说质量或速度偏好不会切换生图提供方。管理员还可以直接发送 `/grok-direct image -- <prompt>` 或 `/grok-direct video -- <prompt>`，绕过 Agent/LLM 的提示词分析和润色，把原始 prompt 提交到 Grok 后台任务；默认生图为 speed，默认视频为 `480p / 16:9 / 6s`。`/grok-direct image` 会同时跳过 YouMind 隐式提示词增强；`/grok-direct video` 会使用消息中可解析的上传、回复或引用图片作为视频参考图，并在企业微信智能机器人里支持先发图片、随后说“参考上图/上面几张生成视频”时自动补齐同会话最近图片。若企业微信引用旧图事件只携带纯文本、不携带图片内容或可追溯 msgid，机器人无法知道引用的是哪张旧图。
 
@@ -509,7 +509,7 @@ CowWeCom/
 
 - Grok 升级为独立受限模型后端：管理员可在 Web 端添加/保存后端 profile，白名单用户可使用个人 Grok 后端，普通用户继续共用全局 GPT 后端池且不能切换或感知后端。
 - 每日 00:00 自动切换只处理全局 GPT 后端；管理员/白名单用户的个人后端选择不会影响普通用户，Grok 后端也不再接收思考深度切换参数。
-- 管理员和白名单用户可用自然语言切换个人后端；切到 Grok 后，明确的生图/视频默认走 Grok，只有明确说 GPT/OpenAI/Codex 生图时才回到 GPT/Codex 生图。
+- “当前后端”状态和当前后端额度查询会按发起人的有效后端展示：普通用户看到共享 GPT 后端，管理员/白名单用户切到 Grok 后看到自己的 Grok，不再误报全局 CAPI 月卡。
 - 图像生成触发收紧为显式“画图/生图/生成图片/绘图/出图”等说法；引用图片后的普通问答、生成失败追问和宽高/字节限制处理更稳。
 - 新增管理员专用 `/grok-direct image|video` 直出模式，原始 prompt 直接提交 Grok 后台任务；视频可复用可解析消息图片或同会话最近图片作为参考图。
 - Agent 纯进度快照识别更稳：类似 `Feature list完成90% tc_list完成30%` 的工作进度汇报不会再触发公共协议知识库自动检索或协议问答路径；私聊图片识别新增默认关闭的非账单主动回复开关，只缓存识图信息，账单自动记账仍会回执。

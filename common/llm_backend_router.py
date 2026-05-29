@@ -853,28 +853,40 @@ def status_snapshot(profile: Any = None) -> Dict[str, Any]:
         snapshot["actor_effective_model"] = get_effective_model(actor_backend)
         snapshot["actor_backend_overridden"] = actor_backend != current_backend
         snapshot["restricted_backend_allowed"] = can_use_restricted_backend(profile)
+        snapshot["actor_backend_quota"] = latest_recorded_quota_for_backend(actor_backend, state=state)
     return snapshot
 
 
-def describe_status() -> str:
-    snapshot = status_snapshot()
+def describe_status(profile: Any = None) -> str:
+    snapshot = status_snapshot(profile)
     auto = snapshot.get("auto") or {}
+    active_backend = snapshot.get("actor_backend") or snapshot["current_backend"]
+    active_model = snapshot.get("actor_effective_model") or snapshot["effective_model"]
     lines = [
         "LLM backend status",
-        f"- current_backend: {snapshot['current_backend']}",
-        f"- effective_model: {snapshot['effective_model']}",
+        f"- current_backend: {active_backend}",
+        f"- effective_model: {active_model}",
         f"- manual_override: {snapshot['manual_override_active']}",
         f"- auto_switch_latched: {snapshot['auto_switch_latched']}",
     ]
+    if profile is not None and (
+        snapshot.get("actor_backend_overridden")
+        or snapshot.get("restricted_backend_allowed")
+    ):
+        lines.extend([
+            f"- shared_gpt_backend: {snapshot['current_backend']}",
+            f"- personal_backend_override: {snapshot['actor_backend_overridden']}",
+        ])
     if auto:
         lines.append(f"- last_checked_date: {auto.get('last_checked_date', '')}")
         lines.append(f"- last_decision: {auto.get('last_decision', '')}")
         lines.append(f"- last_reason: {auto.get('last_reason', '')}")
-    quota = snapshot.get("current_backend_quota") or {}
+    quota = snapshot.get("actor_backend_quota") if profile is not None else snapshot.get("current_backend_quota")
+    quota = quota or {}
     if quota:
-        lines.extend(_format_backend_quota_status_lines(snapshot["current_backend"], quota))
+        lines.extend(_format_backend_quota_status_lines(active_backend, quota))
     monthly = snapshot.get("monthly_card") or {}
-    if snapshot["current_backend"] == BACKEND_CAPI_MONTHLY and monthly and not quota:
+    if active_backend == BACKEND_CAPI_MONTHLY and monthly and not quota:
         lines.append(f"- monthly_remaining: {monthly.get('remaining', '')}/{monthly.get('total', '')}")
         lines.append(f"- monthly_last_action: {monthly.get('last_action', '')}")
     return "\n".join(lines)

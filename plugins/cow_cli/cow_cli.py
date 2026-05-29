@@ -865,6 +865,9 @@ class CowCliPlugin(Plugin):
         return ACCESS_ADMIN
 
     def _backend_access_level(self, args: str) -> str:
+        sub = self._first_arg(args)
+        if sub in {"", "status", "show", "quota-current", "current-quota", "active-quota"}:
+            return ACCESS_PUBLIC
         return ACCESS_ADMIN
 
     @staticmethod
@@ -1939,22 +1942,22 @@ class CowCliPlugin(Plugin):
         )
 
         parts = args.strip().split()
+        profile = self._resolve_backend_actor_profile(e_context)
         if not parts or parts[0].lower() in {"status", "show"}:
-            return describe_status()
+            return describe_status(profile)
 
         sub = parts[0].lower()
         if sub in {"credential-safety", "key-safety", "secret-safety"}:
             return self._backend_credential_safety()
 
         if sub in {"quota-current", "current-quota", "active-quota"}:
-            return self._backend_current_quota()
+            return self._backend_current_quota(profile)
 
         quota_backend = self._backend_quota_target(parts)
         if quota_backend:
             return self._backend_capi_quota(quota_backend)
 
         if self._is_personal_backend_switch_args(args):
-            profile = self._resolve_backend_actor_profile(e_context)
             if profile is None:
                 return "Personal backend switch requires a chat user context."
             backend = normalize_backend(sub)
@@ -2073,15 +2076,26 @@ class CowCliPlugin(Plugin):
         record_codex_quota_check(snapshot, action="manual_quota_query")
         return format_codex_quota_snapshot_text(snapshot) or "Codex quota query returned no content."
 
-    def _backend_current_quota(self) -> str:
-        from common.llm_backend_router import BACKEND_CAPI_MONTHLY, BACKEND_CODEX, get_current_backend
+    def _backend_current_quota(self, profile=None) -> str:
+        from common.llm_backend_router import (
+            BACKEND_CAPI,
+            BACKEND_CAPI_MONTHLY,
+            BACKEND_CODEX,
+            get_current_backend,
+            get_current_backend_for_profile,
+        )
 
-        backend = get_current_backend()
+        backend = get_current_backend_for_profile(profile) if profile is not None else get_current_backend()
         if backend == BACKEND_CODEX:
             return self._backend_quota()
         if backend == BACKEND_CAPI_MONTHLY:
             return self._backend_capi_quota(BACKEND_CAPI_MONTHLY)
-        return self._backend_capi_quota("capi")
+        if backend == BACKEND_CAPI:
+            return self._backend_capi_quota(BACKEND_CAPI)
+        return (
+            f"当前后端是 {backend}，这个后端没有可查询的 CAPI/Codex 额度。"
+            "可用 `/backend status` 查看当前路由状态。"
+        )
 
     @staticmethod
     def _backend_quota_target(parts) -> str:
