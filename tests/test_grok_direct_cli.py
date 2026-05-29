@@ -289,14 +289,106 @@ def test_grok_direct_video_text_to_video_opt_out_ignores_recent_image(tmp_path):
     reset_image_recognition_manager(None)
 
 
-def test_grok_direct_image_rejects_reference_image():
+def test_grok_direct_image_uses_context_reference_image():
     plugin = _load_cow_cli_plugin()
-    context = _context("/grok-direct image -- 参考这张图画海报\n[图片: C:/tmp/ref.png]")
+    manager = CaptureManager()
+    context = _context("/grok-direct image -- edit this image into a poster\n[image: C:/tmp/ref.png]")
     plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
 
-    result = plugin._cmd_grok_direct("image -- 参考这张图画海报\n[图片: C:/tmp/ref.png]", {"context": context})
+    with patch("agent.tools.image_generation.job_manager.get_image_generation_job_manager", return_value=manager), patch(
+        "bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None)
+    ):
+        result = plugin._cmd_grok_direct("image -- edit this image into a poster\n[image: C:/tmp/ref.png]", {"context": context})
 
-    assert "只支持文生图" in result
+    args = manager.submitted[0][0]
+    assert "job123" in result
+    assert args["prompt"] == "edit this image into a poster"
+    assert args["image_url"] == "C:/tmp/ref.png"
+    assert args["prompt_enhancement"] is False
+    assert "aspect_ratio" not in args
+    assert "size" not in args
+
+
+def test_grok_direct_image_without_reference_stays_text_to_image():
+    plugin = _load_cow_cli_plugin()
+    manager = CaptureManager()
+    context = _context("/grok-direct image -- generate an image of a cat")
+    plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    with patch("agent.tools.image_generation.job_manager.get_image_generation_job_manager", return_value=manager), patch(
+        "bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None)
+    ):
+        plugin._cmd_grok_direct("image -- generate an image of a cat", {"context": context})
+
+    args = manager.submitted[0][0]
+    assert "image_url" not in args
+    assert args["prompt_enhancement"] is False
+
+
+def test_grok_direct_image_reference_request_without_image_errors():
+    plugin = _load_cow_cli_plugin()
+    context = _context("/grok-direct image -- edit this image into a poster")
+    plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    result = plugin._cmd_grok_direct("image -- edit this image into a poster", {"context": context})
+
+    assert "先上传一张图片" in result
+
+
+def test_grok_direct_image_rejects_multiple_reference_images():
+    plugin = _load_cow_cli_plugin()
+    context = _context("/grok-direct image -- edit this image\n[image: C:/tmp/a.png]\n[image: C:/tmp/b.png]")
+    plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    result = plugin._cmd_grok_direct(
+        "image -- edit this image\n[image: C:/tmp/a.png]\n[image: C:/tmp/b.png]",
+        {"context": context},
+    )
+
+    assert "只支持一张参考图" in result
+
+
+def test_grok_direct_image_falls_back_to_recent_image_ref(tmp_path):
+    plugin = _load_cow_cli_plugin()
+    manager = CaptureManager()
+    context = _context("/grok-direct image -- change it into movie poster style")
+    plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    workspace = tmp_path / "workspace"
+    source = tmp_path / "ref.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    image_manager = ImageRecognitionManager(workspace_root=str(workspace), max_workers=1)
+    reset_image_recognition_manager(image_manager)
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        record = image_manager.register_image(
+            session_id="session",
+            channel_type="web",
+            image_path=str(source),
+        )
+
+    with patch("agent.tools.image_generation.job_manager.get_image_generation_job_manager", return_value=manager), patch(
+        "bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None)
+    ):
+        plugin._cmd_grok_direct("image -- change it into movie poster style", {"context": context})
+
+    args = manager.submitted[0][0]
+    assert args["image_url"] == record.image_path
+    assert args["prompt_enhancement"] is False
+    reset_image_recognition_manager(None)
+
+
+def test_grok_direct_image_quality_option_is_preserved():
+    plugin = _load_cow_cli_plugin()
+    manager = CaptureManager()
+    context = _context("/grok-direct image --quality quality -- generate an image of a studio portrait")
+    plugin._resolve_grok_direct_profile = lambda ctx: SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    with patch("agent.tools.image_generation.job_manager.get_image_generation_job_manager", return_value=manager), patch(
+        "bridge.bridge.Bridge", lambda: SimpleNamespace(get_agent_bridge=lambda: None)
+    ):
+        plugin._cmd_grok_direct("image --quality quality -- generate an image of a studio portrait", {"context": context})
+
+    assert manager.submitted[0][0]["quality"] == "quality"
 
 
 def test_grok_direct_usage_mentions_720p_10s_video_examples():

@@ -25,6 +25,11 @@ from common.image_generation_routing import (
     match_image_create_prefix,
     match_video_create_prefix,
 )
+from common.image_reference_routing import (
+    image_create_auto_ref_window_seconds,
+    is_image_to_image_reference_request,
+    is_text_to_image_only_request,
+)
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common import memory
 from integrations.hermes_xai.media_download import cleanup_generated_reply_media
@@ -111,6 +116,13 @@ class ChatChannel(Channel):
     @staticmethod
     def _background_image_recognition_enabled() -> bool:
         return bool(conf().get("background_image_recognition_enabled", True))
+
+    @staticmethod
+    def _should_skip_image_recognition_followup_context(content: str) -> bool:
+        text = str(content or "").lstrip()
+        if text.startswith("/grok-direct"):
+            return True
+        return bool(explicit_image_generation_requested(text) or explicit_video_generation_requested(text))
 
     def _register_image_recognition_context(self, context: Context) -> bool:
         if not context or context.type != ContextType.IMAGE:
@@ -249,6 +261,36 @@ class ChatChannel(Channel):
             len(refs),
         )
         return f"{text.rstrip()}\n" + "\n".join(f"[image: {ref}]" for ref in refs)
+
+    def _append_recent_image_ref_for_image_create(self, session_id: str, content: str) -> str:
+        text = str(content or "")
+        if not self._background_image_recognition_enabled():
+            return text
+        if _IMAGE_REF_RE.search(text):
+            return text
+        if is_text_to_image_only_request(text):
+            return text
+        if not is_image_to_image_reference_request(text):
+            return text
+        max_age_seconds = image_create_auto_ref_window_seconds(
+            conf().get("image_recognition_image_create_auto_ref_window_seconds", None)
+        )
+        try:
+            refs = get_image_recognition_manager().recent_image_refs_for_session(
+                session_id,
+                limit=1,
+                max_age_seconds=max_age_seconds,
+            )
+        except Exception as e:
+            logger.debug("[ImageRecognition] failed to collect recent image-create ref: %s", e)
+            refs = []
+        if not refs:
+            return text
+        logger.info(
+            "[ImageRecognition] attached recent image ref to image create: session=%s",
+            hash_id(session_id),
+        )
+        return f"{text.rstrip()}\n[image: {refs[-1]}]"
 
     @staticmethod
     def _looks_like_image_to_video_followup(content: str) -> bool:
@@ -623,6 +665,11 @@ class ChatChannel(Channel):
             context.content = content.strip()
             if context.type == ContextType.VIDEO_CREATE:
                 context.content = self._append_recent_image_refs_for_video_create(
+                    context.get("session_id", ""),
+                    context.content,
+                )
+            elif context.type == ContextType.IMAGE_CREATE:
+                context.content = self._append_recent_image_ref_for_image_create(
                     context.get("session_id", ""),
                     context.content,
                 )

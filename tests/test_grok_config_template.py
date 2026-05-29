@@ -28,6 +28,7 @@ class TestGrokConfigTemplate(unittest.TestCase):
             "grok_image_aspect_ratio": "square",
             "grok_image_timeout_seconds": 120,
             "grok_image_download_timeout_seconds": 60,
+            "image_recognition_image_create_auto_ref_window_seconds": 180,
             "video_generation_provider": "xai",
             "video_create_prefix": ["生成视频", "视频生成", "画个视频"],
             "grok_video_model": "grok-imagine-video",
@@ -117,6 +118,7 @@ class TestGrokConfigTemplate(unittest.TestCase):
             "grok_image_aspect_ratio",
             "grok_image_timeout_seconds",
             "grok_image_download_timeout_seconds",
+            "image_recognition_image_create_auto_ref_window_seconds",
             "video_generation_provider",
             "video_create_prefix",
             "grok_video_model",
@@ -131,6 +133,14 @@ class TestGrokConfigTemplate(unittest.TestCase):
         missing = sorted(expected_keys.difference(self.template))
 
         self.assertEqual(missing, [])
+
+    def test_image_create_recent_ref_window_matches_config_default(self):
+        from config import available_setting
+
+        key = "image_recognition_image_create_auto_ref_window_seconds"
+        self.assertIn(key, available_setting)
+        self.assertIn(key, self.template)
+        self.assertEqual(available_setting[key], self.template[key])
 
     def test_template_defaults_to_recommended_voice_backend_model_and_reasoning(self):
         llm_backend = self.template["llm_backend"]

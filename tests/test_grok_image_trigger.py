@@ -1,12 +1,14 @@
 # encoding:utf-8
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from bridge.context import Context, ContextType
 from bridge.bridge import Bridge
 from bridge.reply import Reply, ReplyType
 from channel.channel import Channel
+from channel.chat_channel import ChatChannel
+from channel.image_recognition import ImageRecognitionManager, reset_image_recognition_manager
 from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
 from integrations.hermes_xai.media_download import new_generated_media_path
 from models.grok.grok_bot import GrokBot
@@ -158,6 +160,156 @@ def test_active_grok_profile_image_create_explicit_gpt_bypasses_grok(monkeypatch
     assert reply.type == ReplyType.IMAGE_URL
     assert reply.content == "gpt-image-url"
     assert grok_calls == []
+
+
+def _chat_msg():
+    return SimpleNamespace(
+        from_user_id="session",
+        from_user_nickname="User",
+        other_user_id="session",
+        other_user_nickname="User",
+        to_user_id="bot",
+        actual_user_id="session",
+        actual_user_nickname="User",
+        is_at=False,
+        at_list=[],
+        self_display_name="bot",
+    )
+
+
+def _patch_image_create_conf(monkeypatch):
+    fake_conf = MagicMock()
+    fake_conf.get.side_effect = lambda key, default=None: {
+        "single_chat_prefix": [""],
+        "group_chat_prefix": [],
+        "image_create_prefix": [],
+        "video_create_prefix": [],
+        "background_image_recognition_enabled": True,
+        "image_recognition_image_create_auto_ref_window_seconds": 600,
+    }.get(key, default)
+    fake_conf.get_user_data.return_value = {}
+    monkeypatch.setattr("channel.chat_channel.conf", lambda: fake_conf)
+
+
+def test_grok_image_reference_request_promotes_to_image_create(monkeypatch):
+    _patch_image_create_conf(monkeypatch)
+    monkeypatch.setattr("channel.chat_channel.active_backend_is_grok_for_context", lambda ctx: True)
+
+    channel = object.__new__(ChatChannel)
+    channel.channel_type = "web"
+    channel.user_id = "bot"
+    channel.name = "bot"
+
+    context = ChatChannel._compose_context(
+        channel,
+        ContextType.TEXT,
+        "edit this image into a poster",
+        msg=_chat_msg(),
+        isgroup=False,
+    )
+
+    assert context.type == ContextType.IMAGE_CREATE
+    assert context.content == "edit this image into a poster"
+
+
+def test_grok_image_reference_request_attaches_recent_image(monkeypatch, tmp_path):
+    _patch_image_create_conf(monkeypatch)
+    monkeypatch.setattr("channel.chat_channel.active_backend_is_grok_for_context", lambda ctx: True)
+
+    source = tmp_path / "ref.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    manager = ImageRecognitionManager(workspace_root=str(tmp_path / "workspace"), max_workers=1)
+    reset_image_recognition_manager(manager)
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        record = manager.register_image(
+            session_id="session",
+            channel_type="web",
+            image_path=str(source),
+        )
+
+    channel = object.__new__(ChatChannel)
+    channel.channel_type = "web"
+    channel.user_id = "bot"
+    channel.name = "bot"
+
+    context = ChatChannel._compose_context(
+        channel,
+        ContextType.TEXT,
+        "edit this image into a poster",
+        msg=_chat_msg(),
+        isgroup=False,
+    )
+
+    assert context.type == ContextType.IMAGE_CREATE
+    assert "[image:" in context.content
+    assert record.image_path in context.content
+    reset_image_recognition_manager(None)
+
+
+def test_grok_text_to_image_does_not_attach_recent_image(monkeypatch, tmp_path):
+    _patch_image_create_conf(monkeypatch)
+    monkeypatch.setattr("channel.chat_channel.active_backend_is_grok_for_context", lambda ctx: True)
+
+    source = tmp_path / "ref.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    manager = ImageRecognitionManager(workspace_root=str(tmp_path / "workspace"), max_workers=1)
+    reset_image_recognition_manager(manager)
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        manager.register_image(
+            session_id="session",
+            channel_type="web",
+            image_path=str(source),
+        )
+
+    channel = object.__new__(ChatChannel)
+    channel.channel_type = "web"
+    channel.user_id = "bot"
+    channel.name = "bot"
+
+    context = ChatChannel._compose_context(
+        channel,
+        ContextType.TEXT,
+        "generate an image of a cat",
+        msg=_chat_msg(),
+        isgroup=False,
+    )
+
+    assert context.type == ContextType.IMAGE_CREATE
+    assert "[image:" not in context.content
+    reset_image_recognition_manager(None)
+
+
+def test_grok_text_to_image_opt_out_does_not_attach_recent_image(monkeypatch, tmp_path):
+    _patch_image_create_conf(monkeypatch)
+    monkeypatch.setattr("channel.chat_channel.active_backend_is_grok_for_context", lambda ctx: True)
+
+    source = tmp_path / "ref.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    manager = ImageRecognitionManager(workspace_root=str(tmp_path / "workspace"), max_workers=1)
+    reset_image_recognition_manager(manager)
+    with patch.object(ImageRecognitionManager, "_recognize_image", return_value="summary"):
+        manager.register_image(
+            session_id="session",
+            channel_type="web",
+            image_path=str(source),
+        )
+
+    channel = object.__new__(ChatChannel)
+    channel.channel_type = "web"
+    channel.user_id = "bot"
+    channel.name = "bot"
+
+    context = ChatChannel._compose_context(
+        channel,
+        ContextType.TEXT,
+        "text-to-image generate an image of a cat without image",
+        msg=_chat_msg(),
+        isgroup=False,
+    )
+
+    assert context.type == ContextType.IMAGE_CREATE
+    assert "[image:" not in context.content
+    reset_image_recognition_manager(None)
 
 
 def test_wecom_bot_declares_image_reply_supported():

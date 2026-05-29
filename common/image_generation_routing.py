@@ -7,6 +7,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from common.image_reference_routing import (
+    is_image_to_image_reference_request,
+    is_text_to_image_only_request,
+)
+
 
 GPT_IMAGE_RUNTIME = "codex_auth"
 GROK_IMAGE_RUNTIME = "grok"
@@ -135,6 +140,8 @@ def explicit_image_generation_requested(prompt: Any) -> bool:
     text = " ".join(str(prompt or "").strip().split())
     if not text:
         return False
+    if is_image_to_image_reference_request(text):
+        return True
     return bool(_IMAGE_GENERATION_CN_RE.search(text) or _IMAGE_GENERATION_EN_RE.search(text))
 
 

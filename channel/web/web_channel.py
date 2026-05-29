@@ -166,9 +166,9 @@ def _register_web_uploaded_images(session_id: str, attachments) -> int:
             if record:
                 registered += 1
         except Exception as e:
-            logger.debug(f"[WebChannel] Failed to cache uploaded image for Grok video: {e}")
+            logger.debug(f"[WebChannel] Failed to cache uploaded image for Grok media refs: {e}")
     if registered:
-        logger.info(f"[WebChannel] Cached {registered} uploaded image(s) for recent Grok video refs")
+        logger.info(f"[WebChannel] Cached {registered} uploaded image(s) for recent Grok media refs")
     return registered
 
 
@@ -721,10 +721,19 @@ class WebChannel(ChatChannel):
             else:
                 file_type = "file"
 
+            if file_type == "image" and session_id:
+                _register_web_uploaded_images(
+                    session_id,
+                    [{
+                        "file_type": file_type,
+                        "file_path": save_path,
+                    }],
+                )
+
             from urllib.parse import quote
             preview_url = f"/uploads/{quote(public_path, safe='/')}"
 
-            logger.info(f"[WebChannel] File uploaded: {original_name} -> {save_path} ({file_type})")
+            logger.info(f"[WebChannel] File uploaded: {original_name} -> {os.path.basename(save_path)} ({file_type})")
 
             return json.dumps({
                 "status": "success",

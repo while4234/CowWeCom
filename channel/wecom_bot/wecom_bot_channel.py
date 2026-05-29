@@ -479,7 +479,8 @@ class WecomBotChannel(ChatChannel):
                 wecom_msg.content = wecom_msg.content + "\n" + "\n".join(file_refs)
                 logger.info(f"[WecomBot] Attached {len(cached_files)} cached file(s)")
                 file_cache.clear(session_id)
-            wecom_msg.content = self._append_image_recognition_context(session_id, wecom_msg.content)
+            if not self._should_skip_image_recognition_followup_context(wecom_msg.content):
+                wecom_msg.content = self._append_image_recognition_context(session_id, wecom_msg.content)
 
         context = self._compose_context(
             wecom_msg.ctype,
@@ -864,6 +865,11 @@ class WecomBotChannel(ChatChannel):
                 context.content = content
             if context.type == ContextType.VIDEO_CREATE:
                 context.content = self._append_recent_image_refs_for_video_create(
+                    context.get("session_id", ""),
+                    context.content,
+                )
+            elif context.type == ContextType.IMAGE_CREATE:
+                context.content = self._append_recent_image_ref_for_image_create(
                     context.get("session_id", ""),
                     context.content,
                 )

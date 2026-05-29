@@ -28,7 +28,10 @@ from channel.weixin.weixin_identity import (
 )
 from channel.weixin.weixin_message import WeixinMessage
 from common.expired_dict import ExpiredDict
-from common.image_generation_routing import match_image_create_prefix
+from common.image_generation_routing import (
+    explicit_image_generation_requested,
+    match_image_create_prefix,
+)
 from common.image_send_limits import image_send_dimensions_from_config, prepare_image_for_send
 from common.log import logger
 from config import conf
@@ -564,7 +567,8 @@ class WeixinChannel(ChatChannel):
                         refs.append(f"[文件: {fpath}]")
                 wx_msg.content = wx_msg.content + "\n" + "\n".join(refs)
                 file_cache.clear(session_id)
-            wx_msg.content = self._append_image_recognition_context(session_id, wx_msg.content)
+            if not self._should_skip_image_recognition_followup_context(wx_msg.content):
+                wx_msg.content = self._append_image_recognition_context(session_id, wx_msg.content)
 
         context = self._compose_context(
             wx_msg.ctype,
@@ -689,9 +693,16 @@ class WeixinChannel(ChatChannel):
             if img_match_prefix:
                 content = content.replace(img_match_prefix, "", 1)
                 context.type = ContextType.IMAGE_CREATE
+            elif self._should_promote_grok_media_create(context, content, explicit_image_generation_requested):
+                context.type = ContextType.IMAGE_CREATE
             else:
                 context.type = ContextType.TEXT
             context.content = content.strip()
+            if context.type == ContextType.IMAGE_CREATE:
+                context.content = self._append_recent_image_ref_for_image_create(
+                    context.get("session_id", ""),
+                    context.content,
+                )
 
         return context
 

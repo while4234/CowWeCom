@@ -30,6 +30,14 @@ import plugins
 from plugins import Plugin, Event, EventContext, EventAction
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
+from common.image_reference_routing import (
+    extract_image_references,
+    image_create_auto_ref_window_seconds,
+    is_image_to_image_reference_request,
+    is_text_to_image_only_request,
+    safe_image_ref_label,
+    strip_image_references,
+)
 from common.log import logger
 from cli import __version__
 from plugins.cow_cli.backend_nl import parse_backend_natural_command
@@ -137,7 +145,6 @@ _TOKEN_USAGE_PERIOD_LABELS = {
     "all": "累计",
 }
 
-_GROK_DIRECT_IMAGE_REF_RE = re.compile(r"\[\s*(?:图片|image)\s*:\s*([^\]]+?)\s*\]", re.IGNORECASE)
 _GROK_DIRECT_MAX_IMAGE_REFS = 7
 _GROK_DIRECT_OPTION_ALIASES = {
     "--ar": "aspect_ratio",
@@ -1348,23 +1355,40 @@ class CowCliPlugin(Plugin):
         if parsed.get("error"):
             return parsed["error"]
 
-        prompt = self._strip_grok_direct_image_refs(parsed["prompt"])
+        raw_prompt = parsed["prompt"].strip()
+        prompt = self._strip_grok_direct_image_refs(raw_prompt)
         if not prompt:
             return self._grok_direct_usage("缺少 prompt。")
 
         try:
             profile = self._resolve_grok_direct_profile(context)
             if parsed["kind"] == "image":
-                return self._submit_grok_direct_image(prompt, parsed["options"], context, profile)
+                return self._submit_grok_direct_image(prompt, parsed["options"], context, profile, raw_prompt=raw_prompt)
             return self._submit_grok_direct_video(prompt, parsed["options"], context, profile)
         except Exception as e:
             logger.warning(f"[CowCli] /grok-direct failed: {e}", exc_info=True)
             return f"Grok 直出任务提交失败：{e}"
 
-    def _submit_grok_direct_image(self, prompt: str, options: dict, context, profile) -> str:
-        refs = self._collect_grok_direct_image_refs(options, context)
-        if refs:
-            return "Grok 图片直出 v1 只支持文生图；引用图片请改用 /grok-direct video 生成图生视频。"
+    def _submit_grok_direct_image(self, prompt: str, options: dict, context, profile, raw_prompt: str = "") -> str:
+        intent_text = raw_prompt or prompt
+        text_to_image_only = is_text_to_image_only_request(intent_text)
+        refs = [] if text_to_image_only else self._collect_grok_direct_image_refs(options, context, raw_prompt)
+        ref_source = "prompt" if refs else ""
+
+        if len(refs) > 1:
+            return "Grok 图生图 v1 当前只支持一张参考图，请只保留一张图片后重试。"
+
+        reference_requested = is_image_to_image_reference_request(
+            intent_text,
+            allow_transform_without_image_word=True,
+        )
+        if not refs and reference_requested:
+            refs = self._recent_grok_direct_image_create_refs(context)
+            ref_source = "recent" if refs else ""
+        if len(refs) > 1:
+            return "Grok 图生图 v1 当前只支持一张参考图，请只保留一张图片后重试。"
+        if not refs and reference_requested and not text_to_image_only:
+            return "没有找到可用图片（可能已过期），请先上传一张图片后再重试。"
 
         params = {
             "prompt": prompt,
@@ -1372,10 +1396,19 @@ class CowCliPlugin(Plugin):
             "quality": options.get("quality") or "speed",
             "prompt_enhancement": False,
         }
+        if refs:
+            params["image_url"] = refs[0]
         if options.get("aspect_ratio"):
             params["aspect_ratio"] = options["aspect_ratio"]
         if options.get("size"):
             params["size"] = options["size"]
+
+        logger.info(
+            "[CowCli] /grok-direct image submit image_url=%s source=%s ref=%s",
+            bool(refs),
+            ref_source or "none",
+            safe_image_ref_label(refs[0]) if refs else "",
+        )
 
         from agent.tools.image_generation.job_manager import get_image_generation_job_manager
         from bridge.bridge import Bridge
@@ -1512,7 +1545,7 @@ class CowCliPlugin(Plugin):
         return text
 
     @classmethod
-    def _collect_grok_direct_image_refs(cls, options: dict, context) -> list:
+    def _collect_grok_direct_image_refs(cls, options: dict, context, prompt: str = "") -> list:
         refs = []
         explicit = options.get("image_url")
         if isinstance(explicit, str):
@@ -1520,8 +1553,12 @@ class CowCliPlugin(Plugin):
         elif isinstance(explicit, (list, tuple)):
             refs.extend(str(item or "") for item in explicit)
 
-        content = str(getattr(context, "content", "") or context.get("content", "") or "")
-        refs.extend(match.group(1).strip() for match in _GROK_DIRECT_IMAGE_REF_RE.finditer(content))
+        refs.extend(extract_image_references(prompt))
+        try:
+            content = str(getattr(context, "content", "") or context.get("content", "") or "")
+        except Exception:
+            content = str(getattr(context, "content", "") or "")
+        refs.extend(extract_image_references(content))
 
         cleaned = []
         for ref in refs:
@@ -1566,8 +1603,33 @@ class CowCliPlugin(Plugin):
             return []
 
     @staticmethod
+    def _recent_grok_direct_image_create_refs(context) -> list:
+        try:
+            from channel.image_recognition import get_image_recognition_manager
+            from config import conf
+
+            session_id = ""
+            if context is not None:
+                try:
+                    session_id = str(context.get("session_id") or "").strip()
+                except Exception:
+                    session_id = str(getattr(context, "session_id", "") or "").strip()
+            if not session_id:
+                return []
+            max_age_seconds = image_create_auto_ref_window_seconds(
+                conf().get("image_recognition_image_create_auto_ref_window_seconds", None)
+            )
+            return get_image_recognition_manager().recent_image_refs_for_session(
+                session_id,
+                limit=1,
+                max_age_seconds=max_age_seconds,
+            )
+        except Exception:
+            return []
+
+    @staticmethod
     def _strip_grok_direct_image_refs(prompt: str) -> str:
-        return _GROK_DIRECT_IMAGE_REF_RE.sub("", str(prompt or "")).strip()
+        return strip_image_references(prompt)
 
     @staticmethod
     def _looks_like_grok_direct_image_to_video(prompt: str) -> bool:
@@ -1597,8 +1659,11 @@ class CowCliPlugin(Plugin):
             "  /grok-direct video --resolution 720p --duration 10s -- <prompt>",
             "",
             "默认：image 使用 speed；video 使用 480p / 16:9 / 6s。",
+            "示例：/grok-direct image -- 换成电影海报风格",
+            "示例：/grok-direct image --quality quality -- 换成高质量摄影棚风格",
+            "示例：/grok-direct image --ar 16:9 -- 改成横版封面",
             "示例：/grok-direct video --resolution 720p --duration 10s -- 城市天际线延时摄影",
-            "引用/上传图片后执行 video，会自动把图片作为参考图。",
+            "引用/上传图片后执行 image 或 video，会自动把图片作为参考图；image v1 只支持一张参考图。",
         ])
         return "\n".join(lines)
 
@@ -1721,6 +1786,9 @@ class CowCliPlugin(Plugin):
             ]),
             ("Grok 直出", [
                 ("grok-direct", "image -- 一只穿宇航服的橘猫，电影海报风格", "/grok-direct image -- <prompt>：Grok 直出生图（默认 speed）"),
+                ("grok-direct", "image -- 换成电影海报风格", "/grok-direct image -- <prompt>：上传图后直出单图图生图，不做提示词润色"),
+                ("grok-direct", "image --quality quality -- 换成高质量摄影棚风格", "/grok-direct image --quality quality -- <prompt>：上传图后直出高质量图生图"),
+                ("grok-direct", "image --ar 16:9 -- 改成横版封面", "/grok-direct image --ar 16:9 -- <prompt>：上传图后按显式比例图生图"),
                 ("grok-direct", "video -- 城市天际线延时摄影", "/grok-direct video -- <prompt>：Grok 直出视频（默认 480p / 16:9 / 6s）"),
                 ("grok-direct", "video --resolution 720p --duration 10s -- 城市天际线延时摄影", "/grok-direct video --resolution 720p --duration 10s -- <prompt>：Grok 直出 720p / 10s 视频"),
                 ("grok-direct", "video --resolution 720p --duration 10s -- 让这张图动起来，轻微镜头推进", "/grok-direct video --resolution 720p --duration 10s -- <prompt>：上传图后直出 720p / 10s 图生视频"),
