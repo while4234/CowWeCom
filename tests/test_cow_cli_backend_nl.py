@@ -120,6 +120,24 @@ class TestCowCliBackendNaturalLanguage(unittest.TestCase):
             ("backend", "codex"),
         )
 
+    def test_switches_to_personal_grok_or_gpt_for_explicit_request(self):
+        self.assertEqual(
+            parse_backend_natural_command("帮我切换后端到grok"),
+            ("backend", "grok"),
+        )
+        self.assertEqual(
+            parse_backend_natural_command("请切到 Grok backend"),
+            ("backend", "grok"),
+        )
+        self.assertEqual(
+            parse_backend_natural_command("switch backend to xai"),
+            ("backend", "grok"),
+        )
+        self.assertEqual(
+            parse_backend_natural_command("切回gpt后端"),
+            ("backend", "gpt"),
+        )
+
     def test_status_request_does_not_need_slash_command(self):
         self.assertEqual(
             parse_backend_natural_command("现在后端状态是什么"),
@@ -133,13 +151,16 @@ class TestCowCliBackendNaturalLanguage(unittest.TestCase):
     def test_informational_questions_do_not_switch(self):
         self.assertIsNone(parse_backend_natural_command("如何切换到 CAPI 后端？"))
         self.assertIsNone(parse_backend_natural_command("CAPI 和 Codex 有什么区别"))
+        self.assertIsNone(parse_backend_natural_command("Grok 和 Codex 有什么区别"))
         self.assertIsNone(parse_backend_natural_command("使用 CAPI 有什么方法"))
+        self.assertIsNone(parse_backend_natural_command("如何切换到 Grok 后端？"))
         self.assertIsNone(parse_backend_natural_command("切换到 CAPI 是否可行"))
         self.assertIsNone(parse_backend_natural_command("用 CAPI 有什么好处"))
 
     def test_negative_requests_do_not_switch(self):
         self.assertIsNone(parse_backend_natural_command("先别切换到 CAPI"))
         self.assertIsNone(parse_backend_natural_command("不要改用 Codex"))
+        self.assertIsNone(parse_backend_natural_command("不要切换到 grok"))
 
     def test_auto_reset_alias(self):
         self.assertEqual(
@@ -157,7 +178,15 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         conf()["llm_backend"] = {
             "current_backend": "codex",
             "state_path": str(Path(self.tmp.name) / "state.json"),
-            "providers": {"codex": {"model": "gpt-5.5"}},
+            "providers": {
+                "codex": {"model": "gpt-5.5"},
+                "grok": {"model": "grok-4.3"},
+            },
+            "restricted_backends": {
+                "enabled": True,
+                "allowed_backends": ["grok"],
+                "whitelist": ["山海入梦来"],
+            },
         }
 
     def tearDown(self):
@@ -207,6 +236,17 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertEqual(result, "LLM backend switched to capi_monthly")
         self.assertEqual(get_current_backend(), "capi_monthly")
+
+    def test_execute_grok_switch_requires_chat_context(self):
+        from common.llm_backend_router import get_current_backend, load_state
+
+        plugin = _load_cow_cli_plugin()
+
+        result = plugin.execute("帮我切换后端到grok", session_id="test")
+
+        self.assertEqual(result, "Personal backend switch requires a chat user context.")
+        self.assertEqual(get_current_backend(), "codex")
+        self.assertFalse(load_state().get("user_backend_overrides"))
 
     def test_execute_returns_none_for_information_query(self):
         plugin = _load_cow_cli_plugin()
@@ -325,6 +365,119 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
 
         self.assertEqual(e_context.action, EventAction.BREAK_PASS)
         self.assertIn("codex", e_context["reply"].content)
+
+    def test_admin_natural_grok_switch_is_personal_and_local(self):
+        from agent.user_profiles import resolve_agent_user_profile
+        from bridge.context import Context, ContextType
+        from common.llm_backend_router import get_current_backend, get_current_backend_for_profile
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        context = Context(
+            ContextType.TEXT,
+            "帮我切换后端到grok",
+            kwargs={
+                "actor_role": "admin",
+                "actor_id": "web:admin",
+                "channel_type": "web",
+            },
+        )
+        profile = resolve_agent_user_profile(context)
+        e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
+
+        plugin.on_handle_context(e_context)
+
+        self.assertEqual(e_context.action, EventAction.BREAK_PASS)
+        self.assertIn("Personal LLM backend switched to grok", e_context["reply"].content)
+        self.assertEqual(get_current_backend(), "codex")
+        self.assertEqual(get_current_backend_for_profile(profile), "grok")
+
+    def test_whitelist_natural_grok_switch_is_personal_and_local(self):
+        from agent.user_profiles import resolve_agent_user_profile
+        from bridge.context import Context, ContextType
+        from common.llm_backend_router import get_current_backend, get_current_backend_for_profile
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        context = Context(
+            ContextType.TEXT,
+            "切换后端到grok",
+            kwargs={
+                "actor_role": "user",
+                "actor_id": "wecom_bot:shan-hai",
+                "channel_type": "wecom_bot",
+                "display_name": "山海入梦来",
+            },
+        )
+        profile = resolve_agent_user_profile(context)
+        e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
+
+        plugin.on_handle_context(e_context)
+
+        self.assertEqual(e_context.action, EventAction.BREAK_PASS)
+        self.assertIn("Personal LLM backend switched to grok", e_context["reply"].content)
+        self.assertEqual(get_current_backend(), "codex")
+        self.assertEqual(get_current_backend_for_profile(profile), "grok")
+
+    def test_whitelist_natural_gpt_switch_returns_to_shared_backend(self):
+        from agent.user_profiles import resolve_agent_user_profile
+        from bridge.context import Context, ContextType
+        from common.llm_backend_router import (
+            get_current_backend,
+            get_current_backend_for_profile,
+            set_user_backend_override,
+        )
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        context = Context(
+            ContextType.TEXT,
+            "切回gpt后端",
+            kwargs={
+                "actor_role": "user",
+                "actor_id": "wecom_bot:shan-hai",
+                "channel_type": "wecom_bot",
+                "display_name": "山海入梦来",
+            },
+        )
+        profile = resolve_agent_user_profile(context)
+        set_user_backend_override(profile, "grok", manual=True, reason="test")
+        self.assertEqual(get_current_backend_for_profile(profile), "grok")
+        e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
+
+        plugin.on_handle_context(e_context)
+
+        self.assertEqual(e_context.action, EventAction.BREAK_PASS)
+        self.assertIn("shared GPT default", e_context["reply"].content)
+        self.assertEqual(get_current_backend(), "codex")
+        self.assertEqual(get_current_backend_for_profile(profile), "codex")
+
+    def test_normal_user_natural_grok_switch_is_denied(self):
+        from agent.user_profiles import resolve_agent_user_profile
+        from bridge.context import Context, ContextType
+        from common.llm_backend_router import get_current_backend, get_current_backend_for_profile
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        context = Context(
+            ContextType.TEXT,
+            "帮我切换后端到grok",
+            kwargs={
+                "actor_role": "user",
+                "actor_id": "wecom_bot:normal-user",
+                "channel_type": "wecom_bot",
+                "display_name": "普通用户",
+            },
+        )
+        profile = resolve_agent_user_profile(context)
+        e_context = EventContext(Event.ON_HANDLE_CONTEXT, {"context": context})
+
+        plugin.on_handle_context(e_context)
+
+        self.assertEqual(e_context.action, EventAction.BREAK_PASS)
+        self.assertIn("需要管理员权限", e_context["reply"].content)
+        self.assertEqual(get_current_backend(), "codex")
+        self.assertEqual(get_current_backend_for_profile(profile), "codex")
 
     def test_high_risk_cli_command_requires_admin(self):
         from bridge.context import Context, ContextType

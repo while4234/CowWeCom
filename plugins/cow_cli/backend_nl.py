@@ -14,6 +14,8 @@ BackendCommand = Tuple[str, str]
 _PUNCTUATION_RE = re.compile(r"[\s,，。.!！?？:：;；\"'`“”‘’（）()\[\]【】<>《》]+")
 _CAPI_RE = re.compile(r"\bcapi\b", re.IGNORECASE)
 _CODEX_RE = re.compile(r"\bcodex\b", re.IGNORECASE)
+_GROK_RE = re.compile(r"\b(?:grok|xai|x\.ai)\b", re.IGNORECASE)
+_GPT_RE = re.compile(r"\b(?:gpt|chatgpt)\b", re.IGNORECASE)
 
 _REQUEST_MARKERS = (
     "帮我",
@@ -296,6 +298,10 @@ def _compact(text: str) -> str:
 
 
 def _target_backend(normalized: str, compact: str) -> Optional[str]:
+    if _GROK_RE.search(normalized) or "grok" in compact or "xai" in compact:
+        return "grok"
+    if _GPT_RE.search(normalized) or "gpt" in compact or "chatgpt" in compact:
+        return "gpt"
     if _looks_like_capi_monthly(normalized, compact):
         return "capi_monthly"
     if _CAPI_RE.search(normalized) or "capi" in compact:

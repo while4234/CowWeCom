@@ -186,6 +186,8 @@ CAPI 额度卡/月卡查询依赖 `llm_backend.providers.capi` 和 `llm_backend.
 
 Grok 现在作为独立、受限的模型后端接入 `llm_backend.providers.grok`：Web 管理端可以添加或保存模型后端 profile，并把 Grok 或其他已保存后端只分配给管理员和白名单用户。默认白名单只有 `山海入梦来`；普通用户仍共用同一个 GPT 后端池，只按现有额度和规则在 CAPI/CAPI 月卡/Codex 之间切换，不能切换或感知后端。每日 00:00 自动切换只处理全局 GPT 后端，不会自动切到 Grok；管理员和白名单用户的个人后端选择也不会改写普通用户的全局后端。
 
+管理员和白名单用户可以在聊天中直接用自然语言快速切换个人模型后端，例如“切换后端到 Grok / xAI”会在 CowCli 本地命令层写入个人 Grok override，并在 Agent 执行前完成；“切回 GPT 后端”会清除个人 override，回到共享 GPT 后端池。这个本地切换不触发 Agent、不修改普通用户的全局 GPT 后端；普通用户发送同类后端切换话术仍会被拒绝。
+
 Grok/xAI 原生账号登录仍在 `/grok` 完成，文字聊天模型由受限后端 profile 控制，不再要求把普通用户的全局 `bot_type` 改成 Grok。Grok 图片生成复用同一 OAuth 凭据：当管理员或白名单用户把个人模型后端切到 Grok 后，普通生图默认走 Grok；如果此时要走 GPT/OpenAI/Codex 生图，需要在请求里明确说明。仅说质量或速度偏好不会切换生图提供方。Grok 生图支持 `grok-imagine-image` 速度模型和 `grok-imagine-image-quality` 质量模型；只有用户明确说 Grok 高质量、quality mode、高清、高质量、精细等类似要求时才使用质量模型，否则 Grok 默认使用快速模型，并把 xAI 返回的 URL 或 b64 图片先落成本地文件再发送。图片生成会在模型调用前隐式检索 `skills/image-generation/references/nano-banana-pro/` 中的 YouMind 全量提示词库：GPT/Codex 作为全能生图路线按用途适配，Grok 默认偏向人物写真与高审美人像；隐藏提示词只写入用户工作区历史，普通前台消息不展示。Grok 视频生成使用同一 OAuth 凭据和 `grok-imagine-video`，配置项为 `video_generation_provider=xai`、`video_create_prefix`、`grok_video_model`、`grok_video_duration`、`grok_video_aspect_ratio`、`grok_video_resolution`、`grok_video_timeout_seconds`、`grok_video_poll_interval_seconds` 和 `grok_video_download_timeout_seconds`；微信/企业微信里可直接说“生成视频 ...”，也可以先发或引用一张图片后说“参考上面发的图片生成 ... 视频”，多图场景可说“参考上面发的 3 张图片生成 ... 视频”。生成结果总是先下载为本地 MP4，再用 `ReplyType.VIDEO` 发送，不直接把 xAI 远端 URL 发给用户。OAuth token 默认写入 CowWeCom 的 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_import_hermes_auth=true` 时可在 CowWeCom auth store 缺失时只读导入 Hermes 的 `providers.xai-oauth`，不会写回 Hermes auth store；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。手动粘贴登录默认要求完整 callback URL 或同时包含 `code` 和 `state` 的查询字符串；裸授权码兼容需显式开启 `grok_oauth_accept_bare_code=true`，且必须存在当前 PKCE 登录会话。Web 状态/测试接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token、authorization code 或 code_verifier。完整配置和排障见 [docs/grok.md](docs/grok.md)。
 
 企业微信原生语音气泡仍受平台 AMR 窄带格式限制。为改善听感，默认会减少 Grok 流式 TTS 的切段频率（`grok_voice_max_segment_chars=180`、`grok_voice_flush_idle_ms=1500`），并在转换企业微信语音前启用响度归一化与最高 AMR-NB 码率（`wecom_voice_normalize_enabled=true`、`wecom_voice_normalize_target_dbfs=-18.0`、`wecom_voice_normalize_headroom_db=1.0`、`wecom_voice_amr_bitrate=12.2k`）。这些设置会保留原生语音气泡，但不会突破企业微信 AMR 本身的电话音质上限。
@@ -502,6 +504,7 @@ CowWeCom/
 - 每日 00:00 自动切换保持只处理全局 GPT 后端，不会自动切到 Grok；管理员/白名单用户的个人后端选择不会影响普通用户。
 - 默认 Grok 白名单为 `山海入梦来`，Grok 聊天与 Grok 模型调用继续复用现有 xAI/Grok 登录凭据和 `grok_model` 配置。
 - Grok 后端不再接收思考深度切换参数；管理员或白名单用户切到 Grok 后默认生图走 Grok，只有明确说 GPT/OpenAI/Codex 生图时才回到 GPT/Codex 生图。
+- 管理员和白名单用户可直接说“切换后端到 Grok / xAI”或“切回 GPT 后端”，CowCli 会在 Agent 前本地快速切换个人后端；普通用户仍不能切换或感知后端。
 
 ### 2026-05-28
 

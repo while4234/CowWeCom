@@ -787,6 +787,16 @@ class CowCliPlugin(Plugin):
     def _can_use_command(self, cmd: str, args: str, e_context: EventContext) -> bool:
         if self._is_admin_context(e_context):
             return True
+        if cmd == "backend" and self._is_personal_backend_switch_args(args):
+            profile = self._resolve_backend_actor_profile(e_context)
+            if profile is not None:
+                try:
+                    from common.llm_backend_router import can_use_restricted_backend
+
+                    return can_use_restricted_backend(profile)
+                except Exception as e:
+                    logger.debug(f"[CowCli] restricted backend access check failed: {e}")
+                    return False
         return self._command_access_level(cmd, args) == ACCESS_PUBLIC
 
     def _command_access_level(self, cmd: str, args: str = "") -> str:
@@ -822,6 +832,39 @@ class CowCliPlugin(Plugin):
     def _first_arg(args: str) -> str:
         parts = str(args or "").strip().split()
         return parts[0].lower() if parts else ""
+
+    @staticmethod
+    def _is_personal_backend_switch_args(args: str) -> bool:
+        parts = str(args or "").strip().split()
+        sub = parts[0].lower() if parts else ""
+        if sub in {"grok", "xai", "x.ai", "xai-oauth", "grok-account", "gpt", "chatgpt", "default", "global"}:
+            return True
+        return False
+
+    @staticmethod
+    def _resolve_backend_actor_profile(e_context: EventContext):
+        if e_context is None:
+            return None
+        try:
+            context = e_context["context"]
+        except Exception:
+            return None
+        try:
+            profile = getattr(context, "_actor_profile", None) or context.get("_actor_profile")
+        except Exception:
+            profile = getattr(context, "_actor_profile", None)
+        if profile is not None:
+            return profile
+        try:
+            from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile
+
+            profile = resolve_agent_user_profile(context)
+            apply_profile_to_context(context, profile)
+            context["_actor_profile"] = profile
+            return profile
+        except Exception as e:
+            logger.debug(f"[CowCli] failed to resolve backend actor profile: {e}")
+            return None
 
     def _is_admin_context(self, e_context: EventContext) -> bool:
         if e_context is None:
@@ -1603,7 +1646,14 @@ class CowCliPlugin(Plugin):
         return "\n".join(lines)
 
     def _cmd_backend(self, args: str, e_context, **_) -> str:
-        from common.llm_backend_router import clear_manual_override, describe_status, normalize_backend, set_current_backend
+        from common.llm_backend_router import (
+            USER_BACKEND_DEFAULT,
+            clear_manual_override,
+            describe_status,
+            normalize_backend,
+            set_current_backend,
+            set_user_backend_override,
+        )
 
         parts = args.strip().split()
         if not parts or parts[0].lower() in {"status", "show"}:
@@ -1619,6 +1669,16 @@ class CowCliPlugin(Plugin):
         quota_backend = self._backend_quota_target(parts)
         if quota_backend:
             return self._backend_capi_quota(quota_backend)
+
+        if self._is_personal_backend_switch_args(args):
+            profile = self._resolve_backend_actor_profile(e_context)
+            if profile is None:
+                return "Personal backend switch requires a chat user context."
+            backend = normalize_backend(sub)
+            set_user_backend_override(profile, backend, manual=True, reason="cow_cli")
+            if backend == USER_BACKEND_DEFAULT:
+                return "Personal LLM backend switched to shared GPT default"
+            return "Personal LLM backend switched to {}".format(backend)
 
         if sub in {"codex", "capi", "capi_monthly", "capi-monthly", "monthly", "capi-month"}:
             backend = normalize_backend(sub)
@@ -1638,6 +1698,8 @@ class CowCliPlugin(Plugin):
             "  /backend codex",
             "  /backend capi            切换到 CAPI 额度卡",
             "  /backend capi-monthly    切换到 CAPI 月卡",
+            "  /backend grok            switch your personal backend to Grok (admin/whitelist only)",
+            "  /backend gpt             switch your personal backend back to the shared GPT default",
             "  /backend auto reset",
             "  /backend quota",
             "  /backend quota-current",
