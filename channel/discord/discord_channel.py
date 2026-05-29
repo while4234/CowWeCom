@@ -281,6 +281,24 @@ class DiscordChannel(ChatChannel):
         )
         self._registered_commands.append("imagine")
 
+        async def image_to_image_callback(interaction, prompt: str, image):
+            await self._handle_media_shortcut_interaction(interaction, "image", prompt, image)
+
+        image_to_image_callback.__name__ = "discord_image_to_image"
+        image_to_image_callback.__annotations__ = {
+            "interaction": self.discord.Interaction,
+            "prompt": str,
+            "image": self.discord.Attachment,
+        }
+        bot.tree.add_command(
+            self.app_commands.Command(
+                name="image-to-image",
+                description="Grok image-to-image shortcut",
+                callback=self.app_commands.describe(prompt="Image edit prompt", image="Reference image")(image_to_image_callback),
+            )
+        )
+        self._registered_commands.append("image-to-image")
+
         async def video_callback(interaction, prompt: str):
             await self._handle_media_shortcut_interaction(interaction, "video", prompt)
 

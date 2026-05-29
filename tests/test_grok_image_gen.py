@@ -111,7 +111,7 @@ def test_provider_sends_single_reference_image_payload_as_data_uri(monkeypatch, 
     reference = tmp_path / "portrait.png"
     reference_bytes = png_with_dimensions(900, 1600)
     reference.write_bytes(reference_bytes)
-    payloads = []
+    post_calls = []
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
@@ -126,7 +126,7 @@ def test_provider_sends_single_reference_image_payload_as_data_uri(monkeypatch, 
     )
 
     def fake_post(url, headers, json, timeout):
-        payloads.append(json)
+        post_calls.append((url, json))
         return FakePostResponse(
             payload={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
         )
@@ -139,8 +139,10 @@ def test_provider_sends_single_reference_image_payload_as_data_uri(monkeypatch, 
         prompt_enhancement=False,
     )
 
-    payload = payloads[0]
+    assert post_calls[0][0] == "https://api.x.ai/v1/images/edits"
+    payload = post_calls[0][1]
     assert payload["image"]["url"].startswith("data:image/png;base64,")
+    assert payload["image"]["type"] == "image_url"
     assert base64.b64decode(payload["image"]["url"].split(",", 1)[1]) == reference_bytes
     assert payload["aspect_ratio"] == "9:16"
     assert payload["resolution"] == "2k"

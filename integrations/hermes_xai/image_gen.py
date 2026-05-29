@@ -45,6 +45,8 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 DEFAULT_MODEL = "grok-imagine-image"
 DEFAULT_RESOLUTION = "1k"
 DEFAULT_ASPECT_RATIO = "square"
+_IMAGE_GENERATION_ENDPOINT = "/images/generations"
+_IMAGE_EDIT_ENDPOINT = "/images/edits"
 
 _XAI_ASPECT_RATIOS = {
     "landscape": "16:9",
@@ -193,11 +195,14 @@ class XAIImageGenProvider:
             payload = _build_image_to_image_payload(clean_prompt, options, normalized_image_url)
         else:
             payload = _build_image_generation_payload(clean_prompt, options)
+        endpoint_path = _IMAGE_EDIT_ENDPOINT if normalized_image_url else _IMAGE_GENERATION_ENDPOINT
+        options["endpoint_path"] = endpoint_path
         logger.info(
             "[GrokImage] submitting request_id=%s provider=xai runtime=grok_direct image_to_image=%s "
-            "model=%s aspect_ratio=%s resolution=%s",
+            "endpoint=%s model=%s aspect_ratio=%s resolution=%s",
             request_id,
             is_image_to_image,
+            endpoint_path,
             options["model"],
             options["aspect_ratio"],
             options["resolution"],
@@ -240,8 +245,9 @@ class XAIImageGenProvider:
             )
         base_url = str(creds.get("base_url") or DEFAULT_XAI_OAUTH_BASE_URL).strip().rstrip("/")
         _ensure_oauth_xai_base_url(base_url, creds)
+        endpoint_path = str(options.get("endpoint_path") or _IMAGE_GENERATION_ENDPOINT)
         return requests.post(
-            f"{base_url}/images/generations",
+            f"{base_url}{endpoint_path}",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -343,13 +349,11 @@ def _build_image_generation_payload(prompt: str, options: Dict[str, Any]) -> Dic
 def _build_image_to_image_payload(prompt: str, options: Dict[str, Any], image_url: str) -> Dict[str, Any]:
     """Build the single-reference Grok image-to-image payload in one place.
 
-    The repository only exposes the text-to-image endpoint today. The single
-    reference field intentionally mirrors the Hermes video provider's
-    ``{"image": {"url": ...}}`` convention so future endpoint adjustments stay
-    localized here.
+    xAI image edits are JSON requests, not multipart OpenAI-compatible SDK
+    calls. Keep the exact input-image envelope localized here.
     """
     payload = _build_image_generation_payload(prompt, options)
-    payload["image"] = {"url": image_url}
+    payload["image"] = {"url": image_url, "type": "image_url"}
     return payload
 
 

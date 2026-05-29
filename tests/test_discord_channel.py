@@ -65,6 +65,10 @@ class DiscordChannelTest(unittest.TestCase):
             "/grok-direct image -- a neon city",
         )
         self.assertEqual(
+            _build_grok_media_shortcut_query("image", "make it a poster", "C:\\tmp\\ref.png"),
+            "/grok-direct image -- make it a poster\n[image: C:\\tmp\\ref.png]",
+        )
+        self.assertEqual(
             _build_grok_media_shortcut_query("video", "a neon city timelapse"),
             "/grok-direct video -- a neon city timelapse",
         )
@@ -77,6 +81,45 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertEqual(_normalize_proxy_url("127.0.0.1:7897"), "http://127.0.0.1:7897")
         self.assertEqual(_normalize_proxy_url("http://127.0.0.1:7897"), "http://127.0.0.1:7897")
         self.assertEqual(_normalize_proxy_url(""), "")
+
+    @patch("channel.discord.discord_channel._cow_cli_suggestions", return_value=[])
+    def test_registers_image_to_image_shortcut_command(self, _suggestions):
+        channel = _discord_channel_instance()
+        channel.discord = types.SimpleNamespace(Interaction=object, Attachment=object)
+        channel._registered_commands = []
+
+        class FakeCommand:
+            def __init__(self, name, description, callback):
+                self.name = name
+                self.description = description
+                self.callback = callback
+
+        class FakeAppCommands:
+            Command = FakeCommand
+
+            @staticmethod
+            def describe(**_kwargs):
+                return lambda callback: callback
+
+            @staticmethod
+            def rename(**_kwargs):
+                return lambda callback: callback
+
+        class FakeTree:
+            def __init__(self):
+                self.commands = []
+
+            def add_command(self, command):
+                self.commands.append(command)
+
+        bot = types.SimpleNamespace(tree=FakeTree())
+        channel.app_commands = FakeAppCommands
+
+        channel._register_slash_commands(bot)
+
+        names = {command.name for command in bot.tree.commands}
+        self.assertIn("image-to-image", names)
+        self.assertIn("image-to-image", channel._registered_commands)
 
     def test_allowed_actor_requires_configured_discord_admin(self):
         channel = _discord_channel_instance()
