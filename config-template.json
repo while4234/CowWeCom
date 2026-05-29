@@ -2,7 +2,7 @@
   "channel_type": "wecom_bot",
   "bot_type": "",
   "model": "deepseek-v4-flash",
-  "_grok_enable_note": "To enable Grok Chat set bot_type to grok or xai and keep grok_model as the xAI model, for example: {\"bot_type\":\"grok\",\"grok_model\":\"grok-4.3\"}.",
+  "_grok_enable_note": "Grok Chat is a restricted model backend. Configure llm_backend.providers.grok and assign it to an admin or whitelisted user from the Web backend settings; ordinary users remain on the shared GPT backend.",
   "deepseek_api_key": "",
   "deepseek_api_base": "https://api.deepseek.com/v1",
   "qianfan_api_key": "",
@@ -243,7 +243,19 @@
         "model": "",
         "request_timeout_seconds": 120,
         "default_daily_quota": 90
+      },
+      "grok": {
+        "label": "Grok account",
+        "model": "grok-4.3",
+        "api_base": "https://api.x.ai/v1",
+        "wire_api": "responses",
+        "auth": "account"
       }
+    },
+    "restricted_backends": {
+      "enabled": true,
+      "allowed_backends": ["grok"],
+      "whitelist": ["山海入梦来"]
     },
     "auto_switch": {
       "enabled": true,

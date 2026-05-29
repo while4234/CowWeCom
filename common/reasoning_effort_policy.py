@@ -92,8 +92,8 @@ def resolve_reasoning_effort_for_task(user_message: str, model_adapter: Any) -> 
     if _admin_only() and not _is_admin_model(model_adapter):
         return None
 
-    active_backend = get_current_backend()
-    main_model = get_effective_model()
+    active_backend = _model_active_backend(model_adapter)
+    main_model = get_effective_model(active_backend)
     chat_scope = _chat_scope(model_adapter)
     input_is_voice = _model_input_is_voice(model_adapter)
     quality_effort = _configured_effort("reasoning_effort_policy_quality_effort", "xhigh", routed_only=True)
@@ -328,7 +328,7 @@ def run_policy_optimizer_once(
     records = _read_policy_decision_records_tail(limit=200)
     learning_samples = _read_learning_samples_tail(limit=DEFAULT_LEARNING_SAMPLE_LIMIT)
     record_count = record_count if record_count is not None else _count_policy_decision_records()
-    active_backend = get_current_backend()
+    active_backend = _model_active_backend(model_adapter)
     optimizer_model = _optimizer_model_name(model_adapter)
     started = datetime.now(timezone.utc).isoformat()
     attempt_id = uuid.uuid4().hex[:12]
@@ -580,6 +580,13 @@ def _model_input_is_voice(model_adapter: Any) -> bool:
     return bool(getattr(model_adapter, "input_is_voice", False))
 
 
+def _model_active_backend(model_adapter: Any) -> str:
+    getter = getattr(model_adapter, "_active_backend", None)
+    if callable(getter):
+        return getter()
+    return get_current_backend()
+
+
 def _normalize_task_text(value: str) -> str:
     return " ".join(str(value or "").strip().split()).lower()
 
@@ -672,7 +679,7 @@ def _end_optimizer_run() -> None:
 
 def _optimizer_model_name(model_adapter: Any) -> str:
     for value in (
-        get_effective_model(),
+        get_effective_model(_model_active_backend(model_adapter)),
         getattr(model_adapter, "model", ""),
         conf().get("model"),
         "gpt-5.5",

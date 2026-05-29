@@ -19,6 +19,7 @@ from common.llm_backend_router import (
     BACKEND_CAPI,
     BACKEND_CAPI_MONTHLY,
     BACKEND_CODEX,
+    BACKEND_GROK,
     get_current_backend,
     is_capi_quota_exhausted_error,
     is_capi_runtime_fallback_error,
@@ -140,6 +141,19 @@ class AgentStreamExecutor:
         # Track files to send (populated by read tool)
         self.files_to_send = []  # List of file metadata dicts
 
+    def _active_backend(self) -> str:
+        getter = getattr(self.model, "_active_backend", None)
+        if callable(getter):
+            return getter()
+        return get_current_backend()
+
+    def _set_active_backend(self, backend: str, *, reason: str) -> None:
+        setter = getattr(self.model, "set_active_backend", None)
+        if callable(setter):
+            setter(backend, manual=False, reason=reason)
+            return
+        set_current_backend(backend, manual=False, reason=reason)
+
     def _emit_event(self, event_type: str, data: dict = None):
         """Emit event"""
         if self.on_event:
@@ -180,6 +194,7 @@ class AgentStreamExecutor:
             BACKEND_CAPI: "CAPI quota card",
             BACKEND_CAPI_MONTHLY: "CAPI monthly card",
             BACKEND_CODEX: "Codex",
+            BACKEND_GROK: "Grok",
         }
         backend_id = str(backend or "").strip()
         label = labels.get(backend_id, backend_id or "unknown")
@@ -331,7 +346,7 @@ class AgentStreamExecutor:
             selected_effort="xhigh",
             decision_source="knowledge_budget",
             reason="knowledge_task_xhigh_locked",
-            active_backend=get_current_backend(),
+            active_backend=self._active_backend(),
             main_model=str(getattr(self.model, "model", "") or ""),
             chat_scope=chat_scope,
             local_rule="knowledge_task",
@@ -1542,7 +1557,7 @@ class AgentStreamExecutor:
                 '429', '500', '502', '503', '504', '512'
             ])
 
-            current_backend = get_current_backend()
+            current_backend = self._active_backend()
             quota_exhausted = is_capi_quota_exhausted_error(error_str)
             capi_runtime_fallback_error = (
                 current_backend in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY}
@@ -1561,7 +1576,7 @@ class AgentStreamExecutor:
                     )
             )
             if should_runtime_fallback:
-                previous_backend = get_current_backend()
+                previous_backend = self._active_backend()
                 fallback_attempted.add(previous_backend)
                 fallback_backend = select_capi_runtime_fallback_backend(
                     previous_backend,
@@ -1576,9 +1591,8 @@ class AgentStreamExecutor:
                         error_str[:180],
                     )
                 else:
-                    set_current_backend(
+                    self._set_active_backend(
                         fallback_backend,
-                        manual=False,
                         reason=f"capi_runtime_fallback:{previous_backend}->{fallback_backend}",
                     )
                     logger.warning(

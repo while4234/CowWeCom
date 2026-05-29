@@ -20,6 +20,10 @@ from common.log import logger
 BACKEND_CAPI = "capi"
 BACKEND_CAPI_MONTHLY = "capi_monthly"
 BACKEND_CODEX = "codex"
+BACKEND_GROK = "grok"
+GPT_BACKENDS = {BACKEND_CAPI, BACKEND_CAPI_MONTHLY, BACKEND_CODEX}
+RESTRICTED_BACKENDS = {BACKEND_GROK}
+USER_BACKEND_DEFAULT = "gpt"
 
 
 DEFAULT_LLM_BACKEND_CONFIG: Dict[str, Any] = {
@@ -60,6 +64,18 @@ DEFAULT_LLM_BACKEND_CONFIG: Dict[str, Any] = {
             "connectivity_timeout_seconds": 12,
             "default_daily_quota": 90,
         },
+        "grok": {
+            "label": "Grok account",
+            "model": "grok-4.3",
+            "api_base": "https://api.x.ai/v1",
+            "wire_api": "responses",
+            "auth": "account",
+        },
+    },
+    "restricted_backends": {
+        "enabled": True,
+        "allowed_backends": ["grok"],
+        "whitelist": ["山海入梦来"],
     },
     "auto_switch": {
         "enabled": True,
@@ -106,14 +122,18 @@ def get_codex_provider_config() -> Dict[str, Any]:
 def get_capi_provider_config(backend: Optional[str] = None) -> Dict[str, Any]:
     cfg = get_llm_backend_config()
     providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+    normalized = normalize_backend(backend or get_current_backend())
     base = deep_merge(DEFAULT_LLM_BACKEND_CONFIG["providers"]["capi"], providers.get("capi", {}))
-    if normalize_backend(backend or get_current_backend()) == BACKEND_CAPI_MONTHLY:
+    if normalized == BACKEND_CAPI_MONTHLY:
         monthly = deep_merge(DEFAULT_LLM_BACKEND_CONFIG["providers"]["capi_monthly"], providers.get("capi_monthly", {}))
         merged = deep_merge(base, monthly)
         for inherited_key in ("api_base", "wire_api", "model"):
             if not str(monthly.get(inherited_key) or "").strip():
                 merged[inherited_key] = base.get(inherited_key, "")
         return merged
+    provider = providers.get(normalized)
+    if normalized not in {BACKEND_CAPI, BACKEND_CODEX, BACKEND_GROK} and isinstance(provider, Mapping):
+        return deep_merge(base, provider)
     return base
 
 
@@ -442,6 +462,21 @@ def get_codex_model() -> str:
     return str(get_codex_provider_config().get("model") or "gpt-5.5")
 
 
+def get_grok_provider_config() -> Dict[str, Any]:
+    cfg = get_llm_backend_config()
+    providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+    return deep_merge(DEFAULT_LLM_BACKEND_CONFIG["providers"]["grok"], providers.get("grok", {}))
+
+
+def get_grok_model() -> str:
+    provider_model = str(get_grok_provider_config().get("model") or "").strip()
+    if provider_model:
+        return provider_model
+    from config import conf
+
+    return str(conf().get("grok_model") or const.GROK_4_3).strip() or const.GROK_4_3
+
+
 def get_state_path() -> str:
     cfg = get_llm_backend_config()
     configured = str(cfg.get("state_path") or "").strip()
@@ -477,30 +512,168 @@ def save_state(state: Mapping[str, Any]) -> None:
 def get_current_backend() -> str:
     state = load_state()
     backend = str(state.get("current_backend") or get_llm_backend_config().get("current_backend") or BACKEND_CAPI)
-    return normalize_backend(backend)
+    normalized = normalize_backend(backend)
+    return normalized if normalized in GPT_BACKENDS else BACKEND_CAPI
+
+
+def get_current_backend_for_profile(profile: Any = None) -> str:
+    """Return the active backend for a specific actor without changing global GPT routing."""
+    global_backend = get_current_backend()
+    if not can_use_restricted_backend(profile):
+        return global_backend
+    override = _user_backend_override_for_profile(profile)
+    if not override:
+        return global_backend
+    backend = str(override.get("current_backend") or "").strip()
+    normalized = normalize_backend(backend)
+    if normalized in GPT_BACKENDS:
+        return normalized
+    if normalized in RESTRICTED_BACKENDS and _restricted_backend_allowed(normalized):
+        return normalized
+    if _custom_backend_allowed(normalized):
+        return normalized
+    return global_backend
 
 
 def normalize_backend(value: str) -> str:
     raw = str(value or "").strip().lower()
+    if raw in {USER_BACKEND_DEFAULT, "global", "default", "auto", "gpt"}:
+        return USER_BACKEND_DEFAULT
     if raw in {BACKEND_CODEX, "openai-codex", "codex-direct"}:
         return BACKEND_CODEX
+    if raw in {BACKEND_GROK, const.XAI, "xai-oauth", "grok-account"}:
+        return BACKEND_GROK
     if raw in {BACKEND_CAPI_MONTHLY, "capi-monthly", "capi_month", "capi-month", "monthly", "month"}:
         return BACKEND_CAPI_MONTHLY
+    if _custom_backend_allowed(raw):
+        return raw
     return BACKEND_CAPI
 
 
-def is_codex_active() -> bool:
-    return get_current_backend() == BACKEND_CODEX
+def can_use_restricted_backend(profile: Any = None) -> bool:
+    if profile is None:
+        return False
+    cfg = get_llm_backend_config()
+    restricted = cfg.get("restricted_backends") if isinstance(cfg.get("restricted_backends"), Mapping) else {}
+    if not bool(restricted.get("enabled", True)):
+        return False
+    if bool(getattr(profile, "is_admin", False)) or str(getattr(profile, "role", "")).lower() == "admin":
+        return True
+    whitelist = _as_string_set(restricted.get("whitelist") or [])
+    if not whitelist:
+        return False
+    candidates = _profile_identity_candidates(profile)
+    return any(candidate in whitelist for candidate in candidates)
 
 
-def is_capi_monthly_active() -> bool:
-    return get_current_backend() == BACKEND_CAPI_MONTHLY
+def available_actor_backends(profile: Any = None) -> list[str]:
+    backends = [USER_BACKEND_DEFAULT]
+    if can_use_restricted_backend(profile):
+        for backend in (BACKEND_CAPI, BACKEND_CAPI_MONTHLY, BACKEND_CODEX):
+            if backend not in backends:
+                backends.append(backend)
+        cfg = get_llm_backend_config()
+        restricted = cfg.get("restricted_backends") if isinstance(cfg.get("restricted_backends"), Mapping) else {}
+        allowed = restricted.get("allowed_backends") or list(RESTRICTED_BACKENDS)
+        for backend in allowed:
+            normalized = normalize_backend(str(backend))
+            if normalized in RESTRICTED_BACKENDS and normalized not in backends:
+                backends.append(normalized)
+        providers = cfg.get("providers") if isinstance(cfg.get("providers"), Mapping) else {}
+        for backend in providers:
+            normalized = normalize_backend(str(backend))
+            if normalized not in {USER_BACKEND_DEFAULT, *backends} and _custom_backend_allowed(normalized):
+                backends.append(normalized)
+    return backends
 
 
-def get_effective_model() -> str:
-    if is_codex_active():
+def _restricted_backend_allowed(backend: str) -> bool:
+    normalized = normalize_backend(backend)
+    if normalized not in RESTRICTED_BACKENDS:
+        return False
+    cfg = get_llm_backend_config()
+    restricted = cfg.get("restricted_backends") if isinstance(cfg.get("restricted_backends"), Mapping) else {}
+    if not bool(restricted.get("enabled", True)):
+        return False
+    allowed = restricted.get("allowed_backends") or list(RESTRICTED_BACKENDS)
+    return normalized in {normalize_backend(str(item)) for item in allowed}
+
+
+def _custom_backend_allowed(backend: str) -> bool:
+    normalized = str(backend or "").strip().lower()
+    if not normalized or normalized in {USER_BACKEND_DEFAULT, *GPT_BACKENDS, *RESTRICTED_BACKENDS}:
+        return False
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{1,63}", normalized):
+        return False
+    try:
+        cfg = get_llm_backend_config()
+    except Exception:
+        return False
+    providers = cfg.get("providers") if isinstance(cfg.get("providers"), Mapping) else {}
+    provider = providers.get(normalized)
+    return isinstance(provider, Mapping)
+
+
+def _user_backend_override_for_profile(profile: Any) -> Dict[str, Any]:
+    state = load_state()
+    overrides = state.get("user_backend_overrides") if isinstance(state.get("user_backend_overrides"), dict) else {}
+    for candidate in _profile_identity_candidates(profile):
+        override = overrides.get(candidate)
+        if isinstance(override, dict):
+            return dict(override)
+    return {}
+
+
+def _profile_backend_key(profile: Any) -> str:
+    for attr in ("actor_id", "memory_user_id", "raw_user_id", "display_name"):
+        value = str(getattr(profile, attr, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _profile_identity_candidates(profile: Any) -> set[str]:
+    candidates = set()
+    for attr in ("actor_id", "raw_user_id", "memory_user_id", "display_name"):
+        value = str(getattr(profile, attr, "") or "").strip()
+        if value:
+            candidates.add(value)
+    return candidates
+
+
+def _add_profile_backend_aliases(record: Dict[str, Any], profile: Any) -> None:
+    aliases = sorted(candidate for candidate in _profile_identity_candidates(profile) if candidate)
+    if aliases:
+        record["aliases"] = aliases
+
+
+def _as_string_set(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return {item.strip() for item in value.split(",") if item.strip()}
+    if isinstance(value, (list, tuple, set)):
+        return {str(item).strip() for item in value if str(item).strip()}
+    return set()
+
+
+def is_codex_active(backend: Optional[str] = None) -> bool:
+    return normalize_backend(backend or get_current_backend()) == BACKEND_CODEX
+
+
+def is_capi_monthly_active(backend: Optional[str] = None) -> bool:
+    return normalize_backend(backend or get_current_backend()) == BACKEND_CAPI_MONTHLY
+
+
+def backend_supports_reasoning_effort(backend: Optional[str] = None) -> bool:
+    return normalize_backend(backend or get_current_backend()) != BACKEND_GROK
+
+
+def get_effective_model(backend: Optional[str] = None) -> str:
+    normalized_backend = normalize_backend(backend or get_current_backend())
+    if normalized_backend == BACKEND_CODEX:
         return get_codex_model()
-    capi_model = get_capi_provider_config().get("model")
+    if normalized_backend == BACKEND_GROK:
+        return get_grok_model()
+    capi_model = get_capi_provider_config(normalized_backend).get("model")
     if capi_model:
         return str(capi_model)
     from config import conf
@@ -508,9 +681,12 @@ def get_effective_model() -> str:
     return str(conf().get("model") or const.GPT_41_MINI)
 
 
-def get_effective_chat_bot_type(model_name: Optional[str] = None) -> str:
-    if is_codex_active():
+def get_effective_chat_bot_type(model_name: Optional[str] = None, backend: Optional[str] = None) -> str:
+    normalized_backend = normalize_backend(backend or get_current_backend())
+    if normalized_backend == BACKEND_CODEX:
         return const.CODEX
+    if normalized_backend == BACKEND_GROK:
+        return const.GROK
     return resolve_configured_chat_bot_type(model_name)
 
 
@@ -575,6 +751,8 @@ def resolve_configured_chat_bot_type(model_name: Optional[str] = None) -> str:
 
 def set_current_backend(backend: str, *, manual: bool = True, reason: str = "") -> Dict[str, Any]:
     normalized = normalize_backend(backend)
+    if normalized not in GPT_BACKENDS:
+        raise ValueError(f"unsupported global backend: {backend}")
     state = load_state()
     state["current_backend"] = normalized
     state["current_backend_source"] = "manual" if manual else "auto"
@@ -593,6 +771,60 @@ def set_current_backend(backend: str, *, manual: bool = True, reason: str = "") 
     return state
 
 
+def set_user_backend_override(
+    profile: Any,
+    backend: str,
+    *,
+    manual: bool = True,
+    reason: str = "",
+) -> Dict[str, Any]:
+    if not can_use_restricted_backend(profile):
+        raise PermissionError("restricted backend access denied")
+    normalized = normalize_backend(backend)
+    state = load_state()
+    key = _profile_backend_key(profile)
+    if not key:
+        raise ValueError("profile key is required")
+    overrides = state.get("user_backend_overrides") if isinstance(state.get("user_backend_overrides"), dict) else {}
+    now = datetime.now().isoformat(timespec="seconds")
+    if normalized == USER_BACKEND_DEFAULT:
+        overrides.pop(key, None)
+    elif normalized in GPT_BACKENDS:
+        overrides[key] = {
+            "current_backend": normalized,
+            "source": "manual" if manual else "auto",
+            "updated_at": now,
+        }
+        if reason:
+            overrides[key]["reason"] = reason
+        _add_profile_backend_aliases(overrides[key], profile)
+    elif normalized in RESTRICTED_BACKENDS and _restricted_backend_allowed(normalized):
+        overrides[key] = {
+            "current_backend": normalized,
+            "source": "manual" if manual else "auto",
+            "updated_at": now,
+        }
+        if reason:
+            overrides[key]["reason"] = reason
+        _add_profile_backend_aliases(overrides[key], profile)
+    elif _custom_backend_allowed(normalized):
+        overrides[key] = {
+            "current_backend": normalized,
+            "source": "manual" if manual else "auto",
+            "updated_at": now,
+        }
+        if reason:
+            overrides[key]["reason"] = reason
+        _add_profile_backend_aliases(overrides[key], profile)
+    else:
+        raise ValueError(f"unsupported personal backend: {backend}")
+    state["user_backend_overrides"] = overrides
+    state["updated_at"] = now
+    save_state(state)
+    _reset_bridge_cache()
+    return state
+
+
 def clear_manual_override() -> Dict[str, Any]:
     state = load_state()
     state["manual_override_active"] = False
@@ -602,10 +834,11 @@ def clear_manual_override() -> Dict[str, Any]:
     return state
 
 
-def status_snapshot() -> Dict[str, Any]:
+def status_snapshot(profile: Any = None) -> Dict[str, Any]:
     state = load_state()
     current_backend = get_current_backend()
-    return {
+    actor_backend = get_current_backend_for_profile(profile) if profile is not None else current_backend
+    snapshot = {
         "current_backend": current_backend,
         "effective_model": get_effective_model(),
         "manual_override_active": bool(state.get("manual_override_active", False)),
@@ -615,6 +848,12 @@ def status_snapshot() -> Dict[str, Any]:
         "backend_quota": state.get("backend_quota", {}) if isinstance(state.get("backend_quota"), dict) else {},
         "current_backend_quota": latest_recorded_quota_for_backend(current_backend, state=state),
     }
+    if profile is not None:
+        snapshot["actor_backend"] = actor_backend
+        snapshot["actor_effective_model"] = get_effective_model(actor_backend)
+        snapshot["actor_backend_overridden"] = actor_backend != current_backend
+        snapshot["restricted_backend_allowed"] = can_use_restricted_backend(profile)
+    return snapshot
 
 
 def describe_status() -> str:

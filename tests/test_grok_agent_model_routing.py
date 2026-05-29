@@ -1,6 +1,7 @@
 # encoding:utf-8
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from agent.protocol import LLMRequest
@@ -50,6 +51,18 @@ class _FakeOpenAICompatibleBot(OpenAICompatibleBot):
 
 
 class TestGrokAgentModelRouting(unittest.TestCase):
+    @staticmethod
+    def _admin_profile():
+        return SimpleNamespace(
+            actor_id="admin",
+            raw_user_id="admin",
+            memory_user_id="admin",
+            display_name="Admin",
+            role="admin",
+            is_admin=True,
+            conversation_id="admin",
+        )
+
     def _fake_conf(self, bot_type):
         values = {
             "agent": True,
@@ -150,7 +163,7 @@ class TestGrokAgentModelRouting(unittest.TestCase):
         with patch("config.conf", return_value=fake_conf), \
                 patch("common.llm_backend_router.is_codex_active", return_value=False), \
                 patch("bridge.agent_bridge.conf", return_value=fake_conf), \
-                patch("models.bot_factory.create_bot", return_value=bot):
+                patch.object(AgentLLMModel, "_create_bot_for_route", return_value=bot):
             model = AgentLLMModel(bridge=MagicMock())
             result = model.call(self._request())
 
@@ -171,6 +184,42 @@ class TestGrokAgentModelRouting(unittest.TestCase):
         self.assertEqual(routed_model, "codex-fast")
         self.assertEqual(route_backend, "codex")
 
+    def test_profile_backend_override_resolves_grok_route(self):
+        model = AgentLLMModel(bridge=MagicMock())
+        model.set_actor_profile(self._admin_profile())
+        request = LLMRequest(messages=[{"role": "user", "content": "hi"}])
+
+        with patch("bridge.agent_bridge.get_current_backend_for_profile", return_value="grok"):
+            bot_type, routed_model, route_backend = model._resolve_request_route(request)
+
+        self.assertEqual(bot_type, const.GROK)
+        self.assertEqual(routed_model, "grok-4.3")
+        self.assertEqual(route_backend, "grok")
+
+    def test_normal_user_request_for_grok_falls_back_to_shared_gpt_backend(self):
+        model = AgentLLMModel(bridge=MagicMock())
+        model.set_actor_profile(SimpleNamespace(
+            actor_id="user",
+            raw_user_id="user",
+            memory_user_id="user",
+            display_name="Normal User",
+            role="user",
+            is_admin=False,
+            conversation_id="user",
+        ))
+        request = LLMRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            backend="grok",
+        )
+
+        with patch("bridge.agent_bridge.get_current_backend", return_value="capi"), \
+                patch("bridge.agent_bridge.get_effective_openai_api_config", return_value={"model": "gpt-4.1-mini"}):
+            bot_type, routed_model, route_backend = model._resolve_request_route(request)
+
+        self.assertEqual(bot_type, const.OPENAI)
+        self.assertEqual(routed_model, "gpt-4.1-mini")
+        self.assertEqual(route_backend, "capi")
+
     def test_user_visible_call_counter_uses_request_backend_override(self):
         model = AgentLLMModel(bridge=MagicMock())
         model.channel_type = "wechatcom_app"
@@ -185,6 +234,22 @@ class TestGrokAgentModelRouting(unittest.TestCase):
             model._note_user_visible_model_call(request)
 
         note.assert_called_once_with(backend="codex", request_kind="normal")
+
+    def test_user_visible_call_counter_uses_profile_backend_when_request_has_none(self):
+        model = AgentLLMModel(bridge=MagicMock())
+        model.set_actor_profile(self._admin_profile())
+        model.channel_type = "wechatcom_app"
+        model.session_id = "s1"
+        request = LLMRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            cache_shape_metadata={"request_kind": "normal"},
+        )
+
+        with patch("bridge.agent_bridge.get_current_backend_for_profile", return_value="grok"), \
+                patch("common.llm_backend_quota_refresh.note_user_visible_model_call") as note:
+            model._note_user_visible_model_call(request)
+
+        note.assert_called_once_with(backend="grok", request_kind="normal")
 
 
 if __name__ == "__main__":

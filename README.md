@@ -56,7 +56,7 @@ CowWeCom 的目标不是做一个“所有平台都写在 README 里的通用机
 | 知识库 | 本地知识库、协议/规范公共知识后端、上传构建索引、LLM 学习文档生成、可追溯检索 |
 | Skills | 项目内置 Skills 启动同步到运行工作区，可按需启用、禁用、校验和扩展 |
 | 图像/视频生成 | 使用本项目 `image-generation` Skill，经 Codex auth 调用图像生成工具，支持后台任务和结果回传；内置 YouMind 全量提示词库会在后台为 GPT/Codex 与 Grok 隐式润色提示词；用户明确说 Grok/xAI 时可切到 `grok-image-generation` 使用已登录 Grok 账号生图；视频生成走 `grok-video-generation`，支持文生视频、单图生视频和最多 7 张参考图的视频生成 |
-| 后端路由 | Codex、OpenAI-compatible/CAPI 等后端路由，支持额度查询、自动切换和推理强度策略 |
+| 后端路由 | Codex、OpenAI-compatible/CAPI 等 GPT 后端路由，支持额度查询、自动切换、推理强度策略，以及管理员/白名单独立 Grok 后端 |
 | 安全隔离 | 管理员/普通用户角色、普通用户文件访问边界、敏感路径保护、Web 管理接口认证 |
 
 ## 支持范围
@@ -178,13 +178,15 @@ http://127.0.0.1:9899
 | `knowledge_backend` | 本地文档知识库与公共协议/规范知识后端配置 |
 | `agent_knowledge_max_steps` | 需要查询公共/个人知识库、上传文档、协议原文或 `knowledge_query/deep_query` 的问答步数预算；默认 40，并锁定高质量推理 |
 | `skill` | Skills 的运行时配置，例如图像生成 Codex auth |
-| `llm_backend` | Codex/CAPI 等后端路由与自动切换配置 |
+| `llm_backend` | Codex/CAPI/Grok 等后端路由、受限用户后端和 GPT 自动切换配置 |
 | `project_optimizer_*` | 本地优化证据记录、原始输入缓存消费和临时脚本快照配置；默认写入 `agent_workspace/data/project-optimizer/`，不得进入 Git |
 | `reasoning_effort_policy_runtime_auto_optimize_enabled` | 旧的 Agent 内后台思考深度自动调优开关；默认关闭，主力机器改用 Codex 每日 0 点 automation 先检查 300 次增量模型调用再运行项目优化 |
 
 CAPI 额度卡/月卡查询依赖 `llm_backend.providers.capi` 和 `llm_backend.providers.capi_monthly` 下的专用 key。更新部署后请检查本机 `CAPI_API_KEY`、`CAPI_MONTHLY_API_KEY`，或在 ignored 的 `config.json` 中配置 `llm_backend.providers.capi.api_key`、`llm_backend.providers.capi_monthly.api_key`；不要把真实 key 写入 `config-template.json` 或提交到 Git。
 
-Grok/xAI 目前作为灰度能力接入：管理员可访问 `/grok` 完成原生账号 OAuth 登录，但普通配置页默认不展示 Grok，也不会因为登录 token 改变当前真实聊天后端。需要启用 Grok Chat 时，在 `config.json` 设置 `bot_type=grok` 或 `bot_type=xai`，并用 `grok_model` 控制 xAI 模型，例如 `{"bot_type": "grok", "grok_model": "grok-4.3"}`；通用 `model` 可继续保留给其他后端，Agent 主链路不会用它覆盖 `grok_model`。如需在普通模型配置面板展示 Grok，可显式开启 `grok_gray_enabled=true`。Grok 图片生成复用同一 OAuth 凭据，只有用户明确说使用 Grok、xAI、X.ai、Grok 账号或 Grok 网页生图时才会通过 `grok-image-generation` 切到 xAI；普通生图、仅说质量或速度偏好时仍默认走 Codex 生图。Grok 生图支持 `grok-imagine-image` 速度模型和 `grok-imagine-image-quality` 质量模型；只有用户明确说 Grok 高质量、quality mode、高清、高质量、精细等类似要求时才使用质量模型，否则 Grok 默认使用快速模型，并把 xAI 返回的 URL 或 b64 图片先落成本地文件再发送。图片生成会在模型调用前隐式检索 `skills/image-generation/references/nano-banana-pro/` 中的 YouMind 全量提示词库：GPT/Codex 作为全能生图路线按用途适配，Grok 默认偏向人物写真与高审美人像；隐藏提示词只写入用户工作区历史，普通前台消息不展示。Grok 视频生成使用同一 OAuth 凭据和 `grok-imagine-video`，配置项为 `video_generation_provider=xai`、`video_create_prefix`、`grok_video_model`、`grok_video_duration`、`grok_video_aspect_ratio`、`grok_video_resolution`、`grok_video_timeout_seconds`、`grok_video_poll_interval_seconds` 和 `grok_video_download_timeout_seconds`；微信/企业微信里可直接说“生成视频 ...”，也可以先发或引用一张图片后说“参考上面发的图片生成 ... 视频”，多图场景可说“参考上面发的 3 张图片生成 ... 视频”。生成结果总是先下载为本地 MP4，再用 `ReplyType.VIDEO` 发送，不直接把 xAI 远端 URL 发给用户。OAuth token 默认写入 CowWeCom 的 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_import_hermes_auth=true` 时可在 CowWeCom auth store 缺失时只读导入 Hermes 的 `providers.xai-oauth`，不会写回 Hermes auth store；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。手动粘贴登录默认要求完整 callback URL 或同时包含 `code` 和 `state` 的查询字符串；裸授权码兼容需显式开启 `grok_oauth_accept_bare_code=true`，且必须存在当前 PKCE 登录会话。Web 状态/测试接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token、authorization code 或 code_verifier。完整配置和排障见 [docs/grok.md](docs/grok.md)。
+Grok 现在作为独立、受限的模型后端接入 `llm_backend.providers.grok`：Web 管理端可以添加或保存模型后端 profile，并把 Grok 或其他已保存后端只分配给管理员和白名单用户。默认白名单只有 `山海入梦来`；普通用户仍共用同一个 GPT 后端池，只按现有额度和规则在 CAPI/CAPI 月卡/Codex 之间切换，不能切换或感知后端。每日 00:00 自动切换只处理全局 GPT 后端，不会自动切到 Grok；管理员和白名单用户的个人后端选择也不会改写普通用户的全局后端。
+
+Grok/xAI 原生账号登录仍在 `/grok` 完成，文字聊天模型由受限后端 profile 控制，不再要求把普通用户的全局 `bot_type` 改成 Grok。Grok 图片生成复用同一 OAuth 凭据，只有用户明确说使用 Grok、xAI、X.ai、Grok 账号或 Grok 网页生图时才会通过 `grok-image-generation` 切到 xAI；普通生图、仅说质量或速度偏好时仍默认走 Codex 生图。Grok 生图支持 `grok-imagine-image` 速度模型和 `grok-imagine-image-quality` 质量模型；只有用户明确说 Grok 高质量、quality mode、高清、高质量、精细等类似要求时才使用质量模型，否则 Grok 默认使用快速模型，并把 xAI 返回的 URL 或 b64 图片先落成本地文件再发送。图片生成会在模型调用前隐式检索 `skills/image-generation/references/nano-banana-pro/` 中的 YouMind 全量提示词库：GPT/Codex 作为全能生图路线按用途适配，Grok 默认偏向人物写真与高审美人像；隐藏提示词只写入用户工作区历史，普通前台消息不展示。Grok 视频生成使用同一 OAuth 凭据和 `grok-imagine-video`，配置项为 `video_generation_provider=xai`、`video_create_prefix`、`grok_video_model`、`grok_video_duration`、`grok_video_aspect_ratio`、`grok_video_resolution`、`grok_video_timeout_seconds`、`grok_video_poll_interval_seconds` 和 `grok_video_download_timeout_seconds`；微信/企业微信里可直接说“生成视频 ...”，也可以先发或引用一张图片后说“参考上面发的图片生成 ... 视频”，多图场景可说“参考上面发的 3 张图片生成 ... 视频”。生成结果总是先下载为本地 MP4，再用 `ReplyType.VIDEO` 发送，不直接把 xAI 远端 URL 发给用户。OAuth token 默认写入 CowWeCom 的 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_import_hermes_auth=true` 时可在 CowWeCom auth store 缺失时只读导入 Hermes 的 `providers.xai-oauth`，不会写回 Hermes auth store；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。手动粘贴登录默认要求完整 callback URL 或同时包含 `code` 和 `state` 的查询字符串；裸授权码兼容需显式开启 `grok_oauth_accept_bare_code=true`，且必须存在当前 PKCE 登录会话。Web 状态/测试接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token、authorization code 或 code_verifier。完整配置和排障见 [docs/grok.md](docs/grok.md)。
 
 企业微信原生语音气泡仍受平台 AMR 窄带格式限制。为改善听感，默认会减少 Grok 流式 TTS 的切段频率（`grok_voice_max_segment_chars=180`、`grok_voice_flush_idle_ms=1500`），并在转换企业微信语音前启用响度归一化与最高 AMR-NB 码率（`wecom_voice_normalize_enabled=true`、`wecom_voice_normalize_target_dbfs=-18.0`、`wecom_voice_normalize_headroom_db=1.0`、`wecom_voice_amr_bitrate=12.2k`）。这些设置会保留原生语音气泡，但不会突破企业微信 AMR 本身的电话音质上限。
 
@@ -308,7 +310,7 @@ Web 控制台默认随服务启动，提供以下管理能力：
 - Skills 启用、禁用和展示。
 - 记忆、知识库和知识图谱浏览。
 - 定时任务管理。
-- 缓存、日志、后端状态和用量查看。
+- 缓存、日志、后端状态、用量查看和管理员模型后端配置。
 - 协议知识后端的上传、构建和文档导出。
 
 本地运行建议：
@@ -492,6 +494,13 @@ CowWeCom/
 ## 更新日志
 
 这里记录本仓库当前维护方向的核心变化。详细提交、验证命令和回滚线索请看 `GIT_NOTES.md`；README 只保留面向使用者和部署者的摘要。
+
+### 2026-05-29
+
+- Grok 账号登录升级为独立受限模型后端：管理员可在 Web 端添加/保存模型后端 profile，并将 Grok 或自定义 OpenAI-compatible 后端单独分配给管理员或白名单用户。
+- 普通用户继续共用全局 GPT 后端池，只按原有额度规则在 CAPI/CAPI 月卡/Codex 之间切换；普通用户不能切换、查看或感知模型后端，CowCli `/backend` 相关能力改为管理员可见。
+- 每日 00:00 自动切换保持只处理全局 GPT 后端，不会自动切到 Grok；管理员/白名单用户的个人后端选择不会影响普通用户。
+- 默认 Grok 白名单为 `山海入梦来`，Grok 聊天与 Grok 模型调用继续复用现有 xAI/Grok 登录凭据和 `grok_model` 配置。
 
 ### 2026-05-28
 

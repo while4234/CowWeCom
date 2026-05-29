@@ -5,10 +5,12 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import threading
 import time
 import uuid
 from queue import Queue, Empty
+from types import SimpleNamespace
 from typing import Tuple
 
 import web
@@ -1389,6 +1391,92 @@ class ConfigHandler:
             providers.pop("grok", None)
         return providers
 
+    @staticmethod
+    def _safe_backend_profiles(llm_cfg):
+        providers = llm_cfg.get("providers") if isinstance(llm_cfg.get("providers"), dict) else {}
+        result = {}
+        for backend, provider in providers.items():
+            if not isinstance(provider, dict):
+                continue
+            public = {
+                "label": provider.get("label") or backend,
+                "model": provider.get("model") or "",
+                "api_base": provider.get("api_base") or provider.get("base_url") or "",
+                "wire_api": provider.get("wire_api") or "",
+                "auth": provider.get("auth") or "",
+            }
+            result[str(backend)] = public
+        return result
+
+    @staticmethod
+    def _backend_profile_id(value: str) -> str:
+        from common.llm_backend_router import (
+            BACKEND_CAPI,
+            BACKEND_CAPI_MONTHLY,
+            BACKEND_CODEX,
+            BACKEND_GROK,
+            USER_BACKEND_DEFAULT,
+            normalize_backend,
+        )
+
+        raw = str(value or "").strip().lower()
+        if not raw:
+            return ""
+        if raw in {USER_BACKEND_DEFAULT, "global", "default", "auto", "gpt"}:
+            return ""
+        known_aliases = {
+            BACKEND_CAPI,
+            BACKEND_CAPI_MONTHLY,
+            "capi-monthly",
+            "capi_month",
+            "capi-month",
+            "monthly",
+            "month",
+            BACKEND_CODEX,
+            "openai-codex",
+            "codex-direct",
+            BACKEND_GROK,
+            const.XAI,
+            "xai-oauth",
+            "grok-account",
+        }
+        if raw in known_aliases:
+            return normalize_backend(raw)
+        if re.fullmatch(r"[a-z][a-z0-9_-]{1,63}", raw):
+            return raw
+        return ""
+
+    @staticmethod
+    def _backend_target_profile(target: str):
+        target = str(target or "").strip()
+        if not target:
+            return None
+        admin_profile = ConfigHandler._web_admin_profile_or_default()
+        if target in {"__admin__", "admin", "current_admin"}:
+            return admin_profile
+        return SimpleNamespace(
+            actor_id=target,
+            raw_user_id=target,
+            memory_user_id=target,
+            display_name=target,
+            role="user",
+            is_admin=False,
+        )
+
+    @staticmethod
+    def _web_admin_profile_or_default():
+        profile = _get_web_admin_profile()
+        if profile is not None:
+            return profile
+        return SimpleNamespace(
+            actor_id="web:admin",
+            raw_user_id="admin",
+            memory_user_id="web_admin",
+            display_name="Web Admin",
+            role="admin",
+            is_admin=True,
+        )
+
     def GET(self):
         _require_auth()
         web.header('Content-Type', 'application/json; charset=utf-8')
@@ -1422,8 +1510,12 @@ class ConfigHandler:
 
             raw_pwd = local_config.get("web_password", "")
             masked_pwd = ("*" * len(raw_pwd)) if raw_pwd else ""
-            from common.llm_backend_router import status_snapshot
-            backend_status = status_snapshot()
+            from common.llm_backend_router import available_actor_backends, get_llm_backend_config, load_state, status_snapshot
+            admin_profile = self._web_admin_profile_or_default()
+            backend_status = status_snapshot(admin_profile)
+            llm_cfg = get_llm_backend_config()
+            restricted = llm_cfg.get("restricted_backends") if isinstance(llm_cfg.get("restricted_backends"), dict) else {}
+            state = load_state()
             display_model = backend_status.get("effective_model") if backend_status.get("current_backend") == "codex" else local_config.get("model", "")
             display_bot_type = "codex" if backend_status.get("current_backend") == "codex" else (
                 "openai" if local_config.get("bot_type") == "chatGPT" else local_config.get("bot_type", "")
@@ -1447,6 +1539,12 @@ class ConfigHandler:
                 "api_keys": api_keys_masked,
                 "providers": providers,
                 "llm_backend": backend_status,
+                "model_backends": {
+                    "profiles": self._safe_backend_profiles(llm_cfg),
+                    "available_for_admin": available_actor_backends(admin_profile),
+                    "restricted_whitelist": restricted.get("whitelist") or [],
+                    "user_overrides": state.get("user_backend_overrides", {}) if isinstance(state.get("user_backend_overrides"), dict) else {},
+                },
                 "web_password_masked": masked_pwd,
                 "grok_gray_enabled": bool(local_config.get("grok_gray_enabled", False)),
             }, ensure_ascii=False)
@@ -1459,8 +1557,17 @@ class ConfigHandler:
         web.header('Content-Type', 'application/json; charset=utf-8')
         try:
             data = json.loads(web.data())
+            if not isinstance(data, dict):
+                return json.dumps({"status": "error", "message": "invalid request body"})
             updates = data.get("updates", {})
-            if not updates:
+            updates = updates if isinstance(updates, dict) else {}
+            backend_profile_update = data.get("llm_backend_provider")
+            actor_backend_update = data.get("actor_backend")
+            if backend_profile_update is not None and not isinstance(backend_profile_update, dict):
+                return json.dumps({"status": "error", "message": "invalid backend provider payload"})
+            if actor_backend_update is not None and not isinstance(actor_backend_update, dict):
+                return json.dumps({"status": "error", "message": "invalid actor backend payload"})
+            if not updates and backend_profile_update is None and actor_backend_update is None:
                 return json.dumps({"status": "error", "message": "no updates provided"})
 
             local_config = conf()
@@ -1495,7 +1602,8 @@ class ConfigHandler:
                 applied[key] = value
 
             if not applied and not codex_selected:
-                return json.dumps({"status": "error", "message": "no valid keys to update"})
+                if backend_profile_update is None and actor_backend_update is None:
+                    return json.dumps({"status": "error", "message": "no valid keys to update"})
 
             config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__)))), "config.json")
@@ -1505,7 +1613,7 @@ class ConfigHandler:
             else:
                 file_cfg = {}
             if codex_selected:
-                from common.llm_backend_router import get_llm_backend_config, set_current_backend
+                from common.llm_backend_router import get_llm_backend_config, set_user_backend_override
 
                 llm_cfg = get_llm_backend_config()
                 providers = llm_cfg.setdefault("providers", {})
@@ -1514,13 +1622,71 @@ class ConfigHandler:
                     codex_cfg["model"] = codex_model
                 local_config["llm_backend"] = llm_cfg
                 file_cfg["llm_backend"] = llm_cfg
-                set_current_backend("codex", manual=True, reason="web_config")
-                applied["llm_backend_current"] = "codex"
+                set_user_backend_override(
+                    self._web_admin_profile_or_default(),
+                    "codex",
+                    manual=True,
+                    reason="web_config",
+                )
+                applied["actor_backend"] = {"target": "__admin__", "backend": "codex"}
                 if codex_model:
                     applied["codex_model"] = codex_model
+            if backend_profile_update is not None:
+                from common.llm_backend_router import BACKEND_GROK, get_llm_backend_config
+
+                llm_cfg = get_llm_backend_config()
+                backend = self._backend_profile_id(backend_profile_update.get("backend"))
+                if not backend:
+                    return json.dumps({"status": "error", "message": "unsupported backend"})
+                providers_cfg = llm_cfg.setdefault("providers", {})
+                provider_cfg = providers_cfg.setdefault(backend, {})
+                for src_key, dst_key in (
+                    ("label", "label"),
+                    ("model", "model"),
+                    ("api_base", "api_base"),
+                    ("wire_api", "wire_api"),
+                    ("auth", "auth"),
+                ):
+                    value = backend_profile_update.get(src_key)
+                    if value is not None:
+                        provider_cfg[dst_key] = str(value).strip()
+                local_config["llm_backend"] = llm_cfg
+                file_cfg["llm_backend"] = llm_cfg
+                applied["llm_backend_provider"] = backend
+                if backend == BACKEND_GROK:
+                    model = str(provider_cfg.get("model") or "").strip()
+                    api_base = str(provider_cfg.get("api_base") or "").strip()
+                    wire_api = str(provider_cfg.get("wire_api") or "").strip()
+                    if model:
+                        local_config["grok_model"] = model
+                        file_cfg["grok_model"] = model
+                    if api_base:
+                        local_config["grok_api_base"] = api_base
+                        file_cfg["grok_api_base"] = api_base
+                    if wire_api:
+                        local_config["grok_wire_api"] = wire_api
+                        file_cfg["grok_wire_api"] = wire_api
+            if actor_backend_update is not None:
+                from common.llm_backend_router import set_user_backend_override
+
+                target_profile = self._backend_target_profile(actor_backend_update.get("target"))
+                if target_profile is None:
+                    return json.dumps({"status": "error", "message": "backend target is required"})
+                set_user_backend_override(
+                    target_profile,
+                    actor_backend_update.get("backend"),
+                    manual=True,
+                    reason="web_config",
+                )
+                applied["actor_backend"] = {
+                    "target": actor_backend_update.get("target"),
+                    "backend": actor_backend_update.get("backend"),
+                }
             file_cfg.update(applied)
             file_cfg.pop("llm_backend_current", None)
             file_cfg.pop("codex_model", None)
+            file_cfg.pop("llm_backend_provider", None)
+            file_cfg.pop("actor_backend", None)
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(file_cfg, f, indent=4, ensure_ascii=False)
 
@@ -1529,7 +1695,7 @@ class ConfigHandler:
             # Reset Bridge so that bot routing reflects the new config.
             # Without this, Bridge keeps its cached bot instance (e.g. LinkAIBot)
             # even after the user switches bot_type / use_linkai / model in UI.
-            bridge_routing_keys = {"bot_type", "use_linkai", "model", "llm_backend_current"}
+            bridge_routing_keys = {"bot_type", "use_linkai", "model", "llm_backend_current", "llm_backend_provider", "actor_backend"}
             if any(k in applied for k in bridge_routing_keys):
                 try:
                     from bridge.bridge import Bridge
@@ -1541,7 +1707,7 @@ class ConfigHandler:
             from common.llm_backend_router import status_snapshot
 
             return json.dumps(
-                {"status": "success", "applied": applied, "llm_backend": status_snapshot()},
+                {"status": "success", "applied": applied, "llm_backend": status_snapshot(self._web_admin_profile_or_default())},
                 ensure_ascii=False,
             )
         except Exception as e:

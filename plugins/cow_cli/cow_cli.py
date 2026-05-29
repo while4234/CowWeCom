@@ -67,7 +67,7 @@ COMMAND_ACCESS = {
     "config": ACCESS_ADMIN,
     "knowledge": ACCESS_PUBLIC,
     "memory": ACCESS_PUBLIC,
-    "backend": ACCESS_PUBLIC,
+    "backend": ACCESS_ADMIN,
     "voice": ACCESS_ADMIN,
     "updates": ACCESS_ADMIN,
     "ledger": ACCESS_PUBLIC,
@@ -816,19 +816,6 @@ class CowCliPlugin(Plugin):
         return ACCESS_ADMIN
 
     def _backend_access_level(self, args: str) -> str:
-        parts = str(args or "").strip().split()
-        if not parts or parts[0].lower() in {"status", "show", "credential-safety", "key-safety", "secret-safety"}:
-            return ACCESS_PUBLIC
-        sub = parts[0].lower()
-        if sub in {
-            "quota", "gpt-quota", "codex-quota",
-            "quota-current", "current-quota", "active-quota",
-            "quota-capi", "capi-quota", "quota-card", "quota-card-quota",
-            "quota-capi-monthly", "capi-monthly-quota", "monthly-quota",
-        }:
-            return ACCESS_PUBLIC
-        if self._backend_quota_target(parts):
-            return ACCESS_PUBLIC
         return ACCESS_ADMIN
 
     @staticmethod

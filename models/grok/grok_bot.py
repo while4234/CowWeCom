@@ -38,7 +38,12 @@ class GrokBot(Bot, OpenAICompatibleBot):
         }
 
     def _resolve_model(self):
-        model = conf().get("grok_model") or DEFAULT_GROK_MODEL
+        try:
+            from common.llm_backend_router import get_grok_model
+
+            model = get_grok_model()
+        except Exception:
+            model = conf().get("grok_model") or DEFAULT_GROK_MODEL
         if str(model).strip().lower() in {const.GROK, const.XAI}:
             return DEFAULT_GROK_MODEL
         return model

@@ -352,7 +352,7 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertEqual(e_context.action, EventAction.BREAK_PASS)
         self.assertIn("需要管理员权限", e_context["reply"].content)
 
-    def test_public_cli_command_remains_available_to_normal_user(self):
+    def test_backend_status_is_hidden_from_normal_user(self):
         from bridge.context import Context, ContextType
         from plugins import Event, EventAction, EventContext
 
@@ -364,14 +364,14 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
             plugin.on_handle_context(e_context)
 
         self.assertEqual(e_context.action, EventAction.BREAK_PASS)
-        self.assertEqual(e_context["reply"].content, "backend status ok")
+        self.assertIn("需要管理员权限", e_context["reply"].content)
 
-    def test_public_backend_quota_subcommands_remain_available_to_normal_user(self):
+    def test_backend_quota_subcommands_require_admin(self):
         plugin = _load_cow_cli_plugin()
 
-        self.assertEqual(plugin._command_access_level("backend", "quota capi"), "public")
-        self.assertEqual(plugin._command_access_level("backend", "capi quota"), "public")
-        self.assertEqual(plugin._command_access_level("backend", "capi-monthly quota"), "public")
+        self.assertEqual(plugin._command_access_level("backend", "quota capi"), "admin")
+        self.assertEqual(plugin._command_access_level("backend", "capi quota"), "admin")
+        self.assertEqual(plugin._command_access_level("backend", "capi-monthly quota"), "admin")
         self.assertEqual(plugin._command_access_level("backend", "capi"), "admin")
 
     def test_help_filters_commands_by_user_role(self):
@@ -392,6 +392,7 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertIn("/status", user_help)
         self.assertIn("查询本月账单", user_help)
         self.assertIn("管理员命令已隐藏", user_help)
+        self.assertNotIn("/backend：查看当前模型后端", user_help)
         self.assertNotIn("/backend capi：切到 CAPI 额度卡", user_help)
         self.assertNotIn("/skill install <名称>：安装技能", user_help)
         self.assertNotIn("/config <key> <val>：修改配置", user_help)

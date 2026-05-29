@@ -5,7 +5,7 @@ from common import const
 from common.log import logger
 from common.singleton import singleton
 from config import conf
-from common.llm_backend_router import get_effective_chat_bot_type
+from common.llm_backend_router import BACKEND_CODEX, BACKEND_GROK, get_current_backend_for_profile, get_effective_chat_bot_type
 from translate.factory import create_translator
 from voice.factory import create_voice
 
@@ -117,7 +117,17 @@ class Bridge(object):
         from common.llm_backend_router import get_current_backend
         from common.llm_backend_quota_refresh import note_user_visible_model_call
 
-        task_backend = get_current_backend()
+        profile = getattr(context, "_actor_profile", None) if context else None
+        if profile is None and context:
+            try:
+                from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile
+
+                profile = resolve_agent_user_profile(context)
+                apply_profile_to_context(context, profile)
+                context["_actor_profile"] = profile
+            except Exception as e:
+                logger.debug(f"[Bridge] Actor backend profile resolution skipped: {e}")
+        task_backend = get_current_backend_for_profile(profile) if profile is not None else get_current_backend()
         try:
             if context and context.type == ContextType.VIDEO_CREATE:
                 from models.grok.grok_video import generate_reply, is_grok_video_provider
@@ -131,10 +141,16 @@ class Bridge(object):
                     return generate_reply(query, context)
             if not (context and context.get("is_scheduled_task")):
                 note_user_visible_model_call(task_backend, request_kind="chat_reply")
-            reply = self.get_bot("chat").reply(query, context)
+            if task_backend == BACKEND_GROK:
+                reply = self.find_chat_bot(BACKEND_GROK).reply(query, context)
+            elif task_backend != get_current_backend():
+                reply = self.find_backend_chat_bot(task_backend).reply(query, context)
+            else:
+                reply = self.get_bot("chat").reply(query, context)
             return reply
         finally:
-            maybe_check_capi_monthly_after_task(task_backend)
+            if task_backend == get_current_backend():
+                maybe_check_capi_monthly_after_task(task_backend)
 
     def fetch_voice_to_text(self, voiceFile) -> Reply:
         return self.get_bot("voice_to_text").voiceToText(voiceFile)
@@ -149,6 +165,16 @@ class Bridge(object):
         if self.chat_bots.get(bot_type) is None:
             self.chat_bots[bot_type] = create_bot(bot_type)
         return self.chat_bots.get(bot_type)
+
+    def find_backend_chat_bot(self, backend: str):
+        key = "backend:{}".format(backend)
+        if self.chat_bots.get(key) is None:
+            if backend == BACKEND_CODEX:
+                self.chat_bots[key] = create_bot(const.CODEX)
+            else:
+                from models.chatgpt.chat_gpt_bot import ChatGPTBot
+                self.chat_bots[key] = ChatGPTBot(backend_override=backend)
+        return self.chat_bots.get(key)
 
     def reset_bot(self):
         """

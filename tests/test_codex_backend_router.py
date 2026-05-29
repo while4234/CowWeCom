@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from common.codex_quota_logic import decide_codex_auto_switch
@@ -10,11 +11,15 @@ from common.llm_backend_router import (
     BACKEND_CAPI,
     BACKEND_CAPI_MONTHLY,
     BACKEND_CODEX,
+    BACKEND_GROK,
+    available_actor_backends,
     check_capi_connectivity,
     evaluate_auto_switch,
     evaluate_midnight_backend_route,
     get_effective_openai_api_config,
+    get_current_backend_for_profile,
     get_current_backend,
+    get_effective_model,
     is_capi_runtime_fallback_error,
     is_capi_quota_exhausted_error,
     load_state,
@@ -23,6 +28,7 @@ from common.llm_backend_router import (
     record_codex_quota_check,
     select_capi_runtime_fallback_backend,
     select_backend_after_monthly_quota_low,
+    set_user_backend_override,
     save_state,
 )
 from config import conf
@@ -66,6 +72,11 @@ class TestCodexBackendRouter(unittest.TestCase):
                 "respect_manual_override": True,
             },
             "providers": {"codex": {"model": "gpt-5.5"}},
+            "restricted_backends": {
+                "enabled": True,
+                "allowed_backends": ["grok"],
+                "whitelist": ["山海入梦来"],
+            },
         }
 
     def tearDown(self):
@@ -544,6 +555,80 @@ class TestCodexBackendRouter(unittest.TestCase):
 
         self.assertEqual(tokens["access_token"], "not-a-real-token")
         self.assertEqual(tokens["account_id"], "acct_test")
+
+    def test_restricted_grok_backend_override_is_per_whitelisted_user_only(self):
+        save_state({"current_backend": BACKEND_CAPI})
+        whitelisted = SimpleNamespace(
+            actor_id="wecom_bot:u1",
+            raw_user_id="u1",
+            memory_user_id="m1",
+            display_name="山海入梦来",
+            role="user",
+            is_admin=False,
+        )
+        normal = SimpleNamespace(
+            actor_id="wecom_bot:u2",
+            raw_user_id="u2",
+            memory_user_id="m2",
+            display_name="普通用户",
+            role="user",
+            is_admin=False,
+        )
+
+        state = set_user_backend_override(whitelisted, BACKEND_GROK, reason="unit_test")
+
+        self.assertEqual(state["current_backend"], BACKEND_CAPI)
+        self.assertEqual(get_current_backend(), BACKEND_CAPI)
+        self.assertEqual(get_current_backend_for_profile(whitelisted), BACKEND_GROK)
+        self.assertEqual(get_effective_model(BACKEND_GROK), "grok-4.3")
+        self.assertEqual(get_current_backend_for_profile(normal), BACKEND_CAPI)
+
+    def test_midnight_auto_switch_keeps_grok_user_override_out_of_global_route(self):
+        whitelisted = SimpleNamespace(
+            actor_id="wecom_bot:u1",
+            raw_user_id="u1",
+            memory_user_id="m1",
+            display_name="山海入梦来",
+            role="user",
+            is_admin=False,
+        )
+        save_state({"current_backend": BACKEND_CAPI})
+        set_user_backend_override(whitelisted, BACKEND_GROK, reason="unit_test")
+
+        state = evaluate_midnight_backend_route(
+            quota_payload=weekly_payload(used_percent=5),
+            capi_connectivity_checker=lambda backend: True,
+            now=datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60),
+        )
+
+        self.assertEqual(state["current_backend"], BACKEND_CODEX)
+        self.assertEqual(get_current_backend_for_profile(whitelisted), BACKEND_GROK)
+
+    def test_admin_custom_backend_override_uses_saved_provider_without_global_switch(self):
+        admin = SimpleNamespace(
+            actor_id="admin",
+            raw_user_id="admin",
+            memory_user_id="admin",
+            display_name="Admin",
+            role="admin",
+            is_admin=True,
+        )
+        conf()["llm_backend"]["providers"]["custom_fast"] = {
+            "model": "gpt-custom",
+            "api_base": "https://custom.example/v1",
+            "wire_api": "responses",
+            "api_key": "CUSTOM-KEY",
+        }
+        save_state({"current_backend": BACKEND_CAPI})
+
+        set_user_backend_override(admin, "custom_fast", reason="unit_test")
+        routed = get_effective_openai_api_config("custom_fast")
+
+        self.assertEqual(get_current_backend(), BACKEND_CAPI)
+        self.assertEqual(get_current_backend_for_profile(admin), "custom_fast")
+        self.assertIn("custom_fast", available_actor_backends(admin))
+        self.assertEqual(routed["backend"], "custom_fast")
+        self.assertEqual(routed["model"], "gpt-custom")
 
 
 if __name__ == "__main__":

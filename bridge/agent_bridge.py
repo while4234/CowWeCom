@@ -28,12 +28,20 @@ from common.llm_backend_router import (
     BACKEND_CAPI,
     BACKEND_CAPI_MONTHLY,
     BACKEND_CODEX,
+    BACKEND_GROK,
+    GPT_BACKENDS,
+    USER_BACKEND_DEFAULT,
+    can_use_restricted_backend,
     get_codex_model,
     get_current_backend,
+    get_current_backend_for_profile,
     get_effective_chat_bot_type,
     get_effective_model,
     get_effective_openai_api_config,
+    get_grok_model,
     normalize_backend,
+    set_current_backend,
+    set_user_backend_override,
 )
 from models.openai_compatible_bot import OpenAICompatibleBot
 
@@ -116,21 +124,67 @@ class AgentLLMModel(LLMModel):
         self.actor_role = ""
         self.is_admin = False
         self.is_group = False
+        self._actor_profile = None
 
     @property
     def model(self):
-        raw_model = get_effective_model()
-        return self._resolve_model_for_bot_type(self._resolve_bot_type(raw_model))
+        active_backend = self._active_backend()
+        raw_model = get_effective_model(active_backend)
+        return self._resolve_model_for_bot_type(self._resolve_bot_type(raw_model, active_backend), raw_model)
 
     @model.setter
     def model(self, value):
         pass
 
-    def _resolve_bot_type(self, model_name: str) -> str:
+    def _active_backend(self) -> str:
+        return get_current_backend_for_profile(self._actor_profile)
+
+    def set_actor_profile(self, profile=None, context: Optional[Context] = None) -> None:
+        self._actor_profile = profile
+        if context is not None:
+            self.channel_type = context.get("channel_type", "")
+            self.session_id = (
+                getattr(profile, "conversation_id", "")
+                or context.get("conversation_id")
+                or context.get("session_id")
+                or ""
+            )
+            self.is_group = bool(context.get("isgroup", False))
+            self.input_is_voice = bool(context.get("input_is_voice", False))
+        if profile is not None:
+            self.user_id = getattr(profile, "actor_id", "")
+            self.user_label = getattr(profile, "display_name", "")
+            self.memory_user_id = getattr(profile, "memory_user_id", "")
+            self.actor_role = getattr(profile, "role", "")
+            self.is_admin = bool(getattr(profile, "is_admin", False))
+
+    def set_active_backend(self, backend: str, *, manual: bool = False, reason: str = ""):
+        if self._actor_profile is not None and can_use_restricted_backend(self._actor_profile):
+            return set_user_backend_override(self._actor_profile, backend, manual=manual, reason=reason)
+        return set_current_backend(backend, manual=manual, reason=reason)
+
+    def _allowed_request_backend(self, backend: str) -> str:
+        normalized = normalize_backend(backend)
+        if normalized == USER_BACKEND_DEFAULT:
+            return get_current_backend()
+        if self._actor_profile is None:
+            return normalized
+        if normalized in GPT_BACKENDS:
+            return normalized if can_use_restricted_backend(self._actor_profile) else get_current_backend()
+        if normalized == BACKEND_GROK:
+            return normalized if can_use_restricted_backend(self._actor_profile) else get_current_backend()
+        return normalized if can_use_restricted_backend(self._actor_profile) else get_current_backend()
+
+    def _resolve_bot_type(self, model_name: str, backend: Optional[str] = None) -> str:
         """Resolve bot type from model name, matching Bridge.__init__ logic."""
-        effective = get_effective_chat_bot_type(model_name)
+        active_backend = normalize_backend(backend or self._active_backend())
+        effective = get_effective_chat_bot_type(model_name, active_backend)
         if effective == const.CODEX:
             return effective
+        if effective in {const.GROK, const.XAI}:
+            return const.GROK
+        if active_backend not in {USER_BACKEND_DEFAULT, BACKEND_CAPI, BACKEND_CAPI_MONTHLY, BACKEND_GROK, BACKEND_CODEX}:
+            return const.OPENAI
         if conf().get("use_linkai", False) and conf().get("linkai_api_key"):
             return const.LINKAI
         # Support custom bot type configuration
@@ -164,31 +218,41 @@ class AgentLLMModel(LLMModel):
 
     def _resolve_model_for_bot_type(self, cur_bot_type: str, requested_model: Optional[str] = None) -> str:
         if self._is_grok_bot_type(cur_bot_type):
-            model = conf().get("grok_model") or const.GROK_4_3
+            model = get_grok_model()
             return str(model or const.GROK_4_3).strip() or const.GROK_4_3
-        return requested_model or get_effective_model()
+        return requested_model or get_effective_model(self._active_backend())
 
     @property
     def bot(self):
         """Lazy load the bot, re-create when model or bot_type changes"""
-        raw_model = get_effective_model()
-        cur_bot_type = self._resolve_bot_type(raw_model)
-        cur_model = self._resolve_model_for_bot_type(cur_bot_type)
-        return self._get_bot_for_route(cur_bot_type, cur_model, "")
+        active_backend = self._active_backend()
+        raw_model = get_effective_model(active_backend)
+        cur_bot_type = self._resolve_bot_type(raw_model, active_backend)
+        cur_model = self._resolve_model_for_bot_type(cur_bot_type, raw_model)
+        route_backend = active_backend if active_backend != USER_BACKEND_DEFAULT else get_current_backend()
+        return self._get_bot_for_route(cur_bot_type, cur_model, route_backend)
 
     def _resolve_request_route(self, request: LLMRequest):
         backend = str(getattr(request, "backend", "") or "").strip()
         if backend:
-            backend = normalize_backend(backend)
+            backend = self._allowed_request_backend(backend)
             requested_model = str(getattr(request, "model", "") or "").strip()
             if backend == BACKEND_CODEX:
                 return const.CODEX, requested_model or get_codex_model(), backend
+            if backend == BACKEND_GROK:
+                return const.GROK, get_grok_model(), backend
             routed = get_effective_openai_api_config(backend)
-            return const.OPENAI, requested_model or str(routed.get("model") or get_effective_model()), backend
+            return const.OPENAI, requested_model or str(routed.get("model") or get_effective_model(backend)), backend
 
-        raw_model = get_effective_model()
-        cur_bot_type = self._resolve_bot_type(raw_model)
-        return cur_bot_type, self._resolve_model_for_bot_type(cur_bot_type, getattr(request, "model", None)), ""
+        active_backend = self._active_backend()
+        raw_model = get_effective_model(active_backend)
+        if active_backend == BACKEND_CODEX:
+            return const.CODEX, getattr(request, "model", None) or get_codex_model(), active_backend
+        if active_backend == BACKEND_GROK:
+            return const.GROK, get_grok_model(), active_backend
+        cur_bot_type = self._resolve_bot_type(raw_model, active_backend)
+        route_backend = active_backend if active_backend != USER_BACKEND_DEFAULT else get_current_backend()
+        return cur_bot_type, self._resolve_model_for_bot_type(cur_bot_type, getattr(request, "model", None) or raw_model), route_backend
 
     def _get_bot_for_route(self, cur_bot_type: str, cur_model: str, backend: str = ""):
         if (
@@ -208,11 +272,11 @@ class AgentLLMModel(LLMModel):
     def _create_bot_for_route(cur_bot_type: str, backend: str = ""):
         from models.bot_factory import create_bot
 
-        if backend in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY} and cur_bot_type in {const.OPENAI, const.CHATGPT, const.CUSTOM}:
+        if backend and backend != BACKEND_GROK and cur_bot_type in {const.OPENAI, const.CHATGPT, const.CUSTOM}:
             from models.chatgpt.chat_gpt_bot import ChatGPTBot
 
             return ChatGPTBot(backend_override=backend)
-        if backend in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY} and cur_bot_type == const.OPEN_AI:
+        if backend and backend != BACKEND_GROK and cur_bot_type == const.OPEN_AI:
             from models.openai.open_ai_bot import OpenAIBot
 
             return OpenAIBot(backend_override=backend)
@@ -436,7 +500,7 @@ class AgentLLMModel(LLMModel):
             if isinstance(metadata, dict):
                 request_kind = str(metadata.get("request_kind") or "")
             note_user_visible_model_call(
-                backend=getattr(request, "backend", None),
+                backend=self._allowed_request_backend(getattr(request, "backend", None) or self._active_backend()),
                 request_kind=request_kind,
             )
         except Exception as e:
@@ -821,6 +885,7 @@ class AgentBridge:
                 profile = resolve_agent_user_profile(context)
                 apply_profile_to_context(context, profile)
                 conversation_id = profile.conversation_id
+                task_backend = get_current_backend_for_profile(profile)
             else:
                 conversation_id = session_id
 
@@ -894,16 +959,23 @@ class AgentBridge:
             
             # Pass context metadata to model for downstream API requests
             if context and hasattr(agent, 'model'):
-                agent.model.channel_type = context.get("channel_type", "")
-                agent.model.session_id = conversation_id or session_id or ""
-                agent.model.is_group = bool(context.get("isgroup", False))
-                agent.model.input_is_voice = bool(context.get("input_is_voice", False))
-                if profile is not None:
-                    agent.model.user_id = profile.actor_id
-                    agent.model.user_label = profile.display_name
-                    agent.model.memory_user_id = profile.memory_user_id
-                    agent.model.actor_role = profile.role
-                    agent.model.is_admin = bool(profile.is_admin)
+                if hasattr(agent.model, "set_actor_profile"):
+                    agent.model.set_actor_profile(profile, context)
+                else:
+                    agent.model.channel_type = context.get("channel_type", "")
+                    agent.model.session_id = conversation_id or session_id or ""
+                    agent.model.is_group = bool(context.get("isgroup", False))
+                    agent.model.input_is_voice = bool(context.get("input_is_voice", False))
+                    if profile is not None:
+                        agent.model.user_id = profile.actor_id
+                        agent.model.user_label = profile.display_name
+                        agent.model.memory_user_id = profile.memory_user_id
+                        agent.model.actor_role = profile.role
+                        agent.model.is_admin = bool(profile.is_admin)
+                if hasattr(agent.model, "_active_backend"):
+                    task_backend = agent.model._active_backend()
+                else:
+                    task_backend = get_current_backend_for_profile(profile) if profile is not None else get_current_backend()
 
             # Store session_id on agent so executor can clear DB on fatal errors
             agent._current_session_id = conversation_id or session_id
@@ -939,7 +1011,7 @@ class AgentBridge:
                     task_budget.max_steps,
                     task_budget_kind,
                 )
-                monthly_backend_used = True
+                monthly_backend_used = task_backend == get_current_backend()
                 response = agent.run_stream(
                     user_message=query,
                     on_event=event_handler.handle_event,

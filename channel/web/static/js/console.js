@@ -63,6 +63,16 @@ const I18N = {
         config_save_error: '保存失败',
         config_custom_option: '自定义...',
         config_custom_tip: '接口需遵循 OpenAI API 协议',
+        backend_profile_title: '模型后端',
+        backend_profile_desc: 'Grok 作为受限后端，仅管理员和白名单用户可单独切换。',
+        backend_profile_backend: '后端',
+        backend_profile_id: '后端 ID',
+        backend_profile_model: '后端模型',
+        backend_profile_wire_api: '协议',
+        backend_profile_save: '保存后端',
+        backend_actor_target: '切换对象',
+        backend_actor_backend: '使用后端',
+        backend_actor_save: '保存切换',
         config_security: '安全设置', config_password: '访问密码',
         config_password_hint: '留空则不启用密码保护',
         config_password_changed: '密码已更新，请重新登录',
@@ -193,6 +203,16 @@ const I18N = {
         config_save_error: 'Save failed',
         config_custom_option: 'Custom...',
         config_custom_tip: 'API must follow OpenAI protocol.',
+        backend_profile_title: 'Model Backend',
+        backend_profile_desc: 'Grok is a restricted backend for admins and whitelisted users only.',
+        backend_profile_backend: 'Backend',
+        backend_profile_id: 'Backend ID',
+        backend_profile_model: 'Backend model',
+        backend_profile_wire_api: 'Wire API',
+        backend_profile_save: 'Save Backend',
+        backend_actor_target: 'Target user',
+        backend_actor_backend: 'Backend',
+        backend_actor_save: 'Save Switch',
         config_security: 'Security', config_password: 'Password',
         config_password_hint: 'Leave empty to disable password protection',
         config_password_changed: 'Password updated, please re-login',
@@ -2541,6 +2561,7 @@ let configProviders = {};
 let configApiBases = {};
 let configApiKeys = {};
 let configCurrentModel = '';
+let configModelBackends = {};
 let cfgProviderValue = '';
 let cfgModelValue = '';
 
@@ -2600,7 +2621,9 @@ function initConfigView(data) {
     configApiBases = data.api_bases || {};
     configApiKeys = data.api_keys || {};
     configCurrentModel = data.model || '';
+    configModelBackends = data.model_backends || {};
     renderBackendStatus(data.llm_backend);
+    renderBackendProfiles(configModelBackends);
 
     const providerEl = document.getElementById('cfg-provider');
     const providerOpts = Object.entries(configProviders).map(([pid, p]) => ({ value: pid, label: p.label }));
@@ -2670,9 +2693,60 @@ function renderBackendStatus(status) {
     const modelEl = document.getElementById('cfg-backend-model');
     const autoEl = document.getElementById('cfg-backend-auto');
     if (currentEl) currentEl.textContent = current || '--';
-    if (modelEl) modelEl.textContent = model || '--';
+    if (modelEl) {
+        const actorBackend = backend.actor_backend || '';
+        const actorModel = backend.actor_effective_model || '';
+        modelEl.textContent = actorBackend && actorBackend !== current
+            ? `${actorModel || model || '--'} (${actorBackend})`
+            : (model || '--');
+    }
     if (autoEl) autoEl.textContent = autoLabel || '--';
     wrap.classList.remove('hidden');
+}
+
+function renderBackendProfiles(modelBackends) {
+    const profiles = (modelBackends && modelBackends.profiles) || {};
+    const backendEl = document.getElementById('cfg-backend-profile-backend');
+    const backendIdEl = document.getElementById('cfg-backend-profile-id');
+    const modelEl = document.getElementById('cfg-backend-profile-model');
+    const apiBaseEl = document.getElementById('cfg-backend-profile-api-base');
+    const wireEl = document.getElementById('cfg-backend-profile-wire-api');
+    const targetEl = document.getElementById('cfg-backend-actor-target');
+    const actorBackendEl = document.getElementById('cfg-backend-actor-backend');
+    const profileIds = Array.from(new Set(['grok', ...Object.keys(profiles || {})]));
+
+    const applyProfile = (backendId) => {
+        const profile = profiles[backendId] || {};
+        if (backendIdEl) backendIdEl.value = backendId || '';
+        if (modelEl) modelEl.value = profile.model || (backendId === 'grok' ? 'grok-4.3' : '');
+        if (apiBaseEl) apiBaseEl.value = profile.api_base || (backendId === 'grok' ? 'https://api.x.ai/v1' : '');
+        if (wireEl) wireEl.value = profile.wire_api || 'responses';
+    };
+
+    if (backendEl) {
+        backendEl.innerHTML = profileIds.map((id) => {
+            const label = (profiles[id] && profiles[id].label) || id;
+            return `<option value="${escapeHtml(id)}">${escapeHtml(label)} (${escapeHtml(id)})</option>`;
+        }).join('');
+        backendEl.value = profiles.grok ? 'grok' : (profileIds[0] || 'grok');
+        backendEl.onchange = () => applyProfile(backendEl.value || 'grok');
+        applyProfile(backendEl.value || 'grok');
+    } else {
+        applyProfile('grok');
+    }
+    if (targetEl && !targetEl.value) {
+        const whitelist = (modelBackends && modelBackends.restricted_whitelist) || [];
+        targetEl.value = whitelist[0] || '__admin__';
+    }
+    if (actorBackendEl) {
+        const available = (modelBackends && modelBackends.available_for_admin) || ['gpt', 'grok'];
+        const labels = { gpt: 'GPT 自动', capi: 'CAPI', capi_monthly: 'CAPI 月卡', codex: 'Codex', grok: 'Grok' };
+        actorBackendEl.innerHTML = available.map((id) => {
+            const label = labels[id] || ((profiles[id] && profiles[id].label) || id);
+            return `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`;
+        }).join('');
+        actorBackendEl.value = available.includes('gpt') ? 'gpt' : (available[0] || 'gpt');
+    }
 }
 
 function detectProvider(model) {
@@ -2883,6 +2957,67 @@ function saveModelConfig() {
         }
     })
     .catch(() => showStatus('cfg-model-status', 'config_save_error', true))
+    .finally(() => { btn.disabled = false; });
+}
+
+function saveBackendProfile() {
+    const backendId = (
+        document.getElementById('cfg-backend-profile-id').value ||
+        document.getElementById('cfg-backend-profile-backend').value ||
+        'grok'
+    ).trim().toLowerCase();
+    const payload = {
+        backend: backendId,
+        label: backendId === 'grok' ? 'Grok account' : backendId,
+        model: document.getElementById('cfg-backend-profile-model').value.trim() || (backendId === 'grok' ? 'grok-4.3' : ''),
+        api_base: document.getElementById('cfg-backend-profile-api-base').value.trim() || (backendId === 'grok' ? 'https://api.x.ai/v1' : ''),
+        wire_api: document.getElementById('cfg-backend-profile-wire-api').value || 'responses',
+        auth: backendId === 'grok' ? 'account' : '',
+    };
+    const btn = document.getElementById('cfg-backend-profile-save');
+    btn.disabled = true;
+    fetch('/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ llm_backend_provider: payload })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.status === 'success') {
+            showStatus('cfg-backend-profile-status', 'config_saved', false);
+            if (data.llm_backend) renderBackendStatus(data.llm_backend);
+            loadConfig();
+        } else {
+            showStatus('cfg-backend-profile-status', 'config_save_error', true);
+        }
+    })
+    .catch(() => showStatus('cfg-backend-profile-status', 'config_save_error', true))
+    .finally(() => { btn.disabled = false; });
+}
+
+function saveActorBackend() {
+    const payload = {
+        target: document.getElementById('cfg-backend-actor-target').value.trim() || '__admin__',
+        backend: document.getElementById('cfg-backend-actor-backend').value || 'gpt',
+    };
+    const btn = document.getElementById('cfg-backend-actor-save');
+    btn.disabled = true;
+    fetch('/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actor_backend: payload })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.status === 'success') {
+            showStatus('cfg-backend-profile-status', 'config_saved', false);
+            if (data.llm_backend) renderBackendStatus(data.llm_backend);
+            loadConfig();
+        } else {
+            showStatus('cfg-backend-profile-status', 'config_save_error', true);
+        }
+    })
+    .catch(() => showStatus('cfg-backend-profile-status', 'config_save_error', true))
     .finally(() => { btn.disabled = false; });
 }
 

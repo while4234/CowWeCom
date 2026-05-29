@@ -3,6 +3,7 @@
 import os
 import json
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -171,6 +172,50 @@ class TestGrokWebGray(unittest.TestCase):
         self.assertIn("grok_gray_enabled", web_channel.ConfigHandler.EDITABLE_KEYS)
         self.assertIn("grok_import_hermes_auth", web_channel.ConfigHandler.EDITABLE_KEYS)
         self.assertIn("grok_import_hermes_auth_overwrite", web_channel.ConfigHandler.EDITABLE_KEYS)
+
+    def test_backend_profile_id_accepts_custom_backend_names(self):
+        from channel.web.web_channel import ConfigHandler
+
+        handler = ConfigHandler()
+
+        self.assertEqual(handler._backend_profile_id("custom_fast"), "custom_fast")
+        self.assertEqual(handler._backend_profile_id("grok"), "grok")
+        self.assertEqual(handler._backend_profile_id("gpt"), "")
+
+    def test_backend_profile_save_does_not_require_updates_payload(self):
+        import channel.web.web_channel as web_channel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_conf = {
+                "llm_backend": {
+                    "current_backend": "capi",
+                    "state_path": os.path.join(tmp, "state.json"),
+                    "providers": {},
+                }
+            }
+            fake_file = os.path.join(tmp, "channel", "web", "web_channel.py")
+            payload = {
+                "llm_backend_provider": {
+                    "backend": "custom_fast",
+                    "model": "gpt-custom",
+                    "api_base": "https://custom.example/v1",
+                    "wire_api": "responses",
+                }
+            }
+
+            with patch.object(web_channel, "_require_auth", return_value=None), \
+                    patch.object(web_channel.web, "header", return_value=None), \
+                    patch.object(web_channel.web, "data", return_value=json.dumps(payload).encode()), \
+                    patch.object(web_channel, "conf", return_value=fake_conf), \
+                    patch.object(web_channel, "__file__", fake_file):
+                result = json.loads(web_channel.ConfigHandler().POST())
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["applied"]["llm_backend_provider"], "custom_fast")
+        self.assertEqual(
+            fake_conf["llm_backend"]["providers"]["custom_fast"]["api_base"],
+            "https://custom.example/v1",
+        )
 
 
 if __name__ == "__main__":

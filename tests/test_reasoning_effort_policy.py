@@ -628,12 +628,17 @@ class TestAgentLLMModelReasoningEffort(unittest.TestCase):
         conf().update(self.old_conf)
         self.tmp.cleanup()
 
+    @staticmethod
+    def _attach_fake_bot(adapter, fake_bot, model=None):
+        adapter._bot = fake_bot
+        adapter._bot_model = model or adapter.model
+        adapter._bot_type = adapter._resolve_bot_type(adapter.model)
+        adapter._bot_backend = adapter._active_backend()
+
     def test_call_forwards_request_model_effort_and_timeout(self):
         adapter = AgentLLMModel(None)
         fake_bot = FakeBot()
-        adapter._bot = fake_bot
-        adapter._bot_model = adapter.model
-        adapter._bot_type = adapter._resolve_bot_type(adapter.model)
+        self._attach_fake_bot(adapter, fake_bot, model="gpt-5-mini")
 
         adapter.call(LLMRequest(
             messages=[{"role": "user", "content": "x"}],
@@ -651,9 +656,7 @@ class TestAgentLLMModelReasoningEffort(unittest.TestCase):
         conf()["model_reasoning_effort"] = "xhigh"
         adapter = AgentLLMModel(None)
         fake_bot = FakeBot()
-        adapter._bot = fake_bot
-        adapter._bot_model = adapter.model
-        adapter._bot_type = adapter._resolve_bot_type(adapter.model)
+        self._attach_fake_bot(adapter, fake_bot, model="gpt-5-mini")
 
         request = LLMRequest(messages=[{"role": "user", "content": "x"}], model="gpt-5-mini")
         request.reasoning_effort_locked = True
@@ -667,9 +670,7 @@ class TestAgentLLMModelReasoningEffort(unittest.TestCase):
         conf()["model_reasoning_effort"] = "xhigh"
         adapter = AgentLLMModel(None)
         fake_bot = FakeBot()
-        adapter._bot = fake_bot
-        adapter._bot_model = adapter.model
-        adapter._bot_type = adapter._resolve_bot_type(adapter.model)
+        self._attach_fake_bot(adapter, fake_bot, model="gpt-5-mini")
 
         request = LLMRequest(
             messages=[{"role": "user", "content": "x"}],
@@ -688,9 +689,7 @@ class TestAgentLLMModelReasoningEffort(unittest.TestCase):
         conf()["llm_backend"]["quota_refresh"] = {"enabled": True, "model_call_interval": 2}
         adapter = AgentLLMModel(None)
         fake_bot = FakeBot()
-        adapter._bot = fake_bot
-        adapter._bot_model = adapter.model
-        adapter._bot_type = adapter._resolve_bot_type(adapter.model)
+        self._attach_fake_bot(adapter, fake_bot)
         adapter.channel_type = "wecom_bot"
         request = LLMRequest(messages=[{"role": "user", "content": "x"}], model="gpt-5-mini")
 
@@ -711,9 +710,7 @@ class TestAgentLLMModelReasoningEffort(unittest.TestCase):
         conf()["llm_backend"]["quota_refresh"] = {"enabled": True, "model_call_interval": 1}
         adapter = AgentLLMModel(None)
         fake_bot = FakeBot()
-        adapter._bot = fake_bot
-        adapter._bot_model = adapter.model
-        adapter._bot_type = adapter._resolve_bot_type(adapter.model)
+        self._attach_fake_bot(adapter, fake_bot)
         request = LLMRequest(
             messages=[{"role": "user", "content": "x"}],
             quota_refresh_silent=True,
