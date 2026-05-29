@@ -137,9 +137,10 @@ class TestImageGenerationSkillScript(unittest.TestCase):
         calls = []
 
         class FakeXAIImageGenProvider:
-            def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
+            def generate(self, prompt, *, image_url=None, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
                 calls.append({
                     "prompt": prompt,
+                    "image_url": image_url,
                     "prompt_enhancement": prompt_enhancement,
                     "model": model,
                 })
@@ -164,6 +165,7 @@ class TestImageGenerationSkillScript(unittest.TestCase):
                 module._route_cowwecom_console_logs_to_stderr = original_route_logs
 
         self.assertEqual(calls[0]["prompt"], "一个猫咪")
+        self.assertIsNone(calls[0]["image_url"])
         self.assertFalse(calls[0]["prompt_enhancement"])
 
     def test_codex_auth_alias_uses_direct_runtime(self):
@@ -371,7 +373,7 @@ class TestImageGenerationSkillScript(unittest.TestCase):
                         "from pathlib import Path",
                         "from common.log import logger",
                         "class XAIImageGenProvider:",
-                        "    def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):",
+                        "    def generate(self, prompt, *, image_url=None, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):",
                         "        logger.info('fake grok provider log on cow logger')",
                         "        path = Path(__file__).resolve().parents[2] / 'source.jpg'",
                         "        path.write_bytes(b'\\xff\\xd8\\xff\\xe0fake-jpeg')",

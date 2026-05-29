@@ -12,7 +12,7 @@ CowWeCom 当前支持：
 - Grok Chat，`bot_type=grok` 或 `bot_type=xai` 时启用。
 - Grok TTS。
 - 企业微信语音模式，覆盖 `wechatcom_app` 和 `wecom_bot`。
-- Grok 图片生成。
+- Grok 图片生成，支持文生图和单张参考图图生图。
 - Grok 视频生成，支持文生视频、单图生视频、多图生视频。
 
 个人微信当前不新增语音发送能力；个人微信文字、图片、文件、视频等既有能力保持原行为。
@@ -167,6 +167,7 @@ Grok 语音回复分为两种模式：
 - 通过现有图片生成前缀触发。
 - `text_to_image=grok` 或 `text_to_image=xai` 时使用 Grok 图片生成。
 - 使用同一套 Grok OAuth / API key 凭据。
+- 图生图 v1 只支持一张参考图，可使用本地路径、`file://`、HTTP/HTTPS URL 或 data URI；未显式指定比例/尺寸时会尽量按参考图尺寸推断比例和 1k/2k 分辨率。
 - xAI 返回 b64 或 URL 后，CowWeCom 先保存成本地文件，再发送本地图片。
 - 不直接向用户发送远端 URL。
 - URL 下载只允许公开 HTTPS 地址，并会逐跳校验 redirect、DNS 解析结果和 Content-Type，拒绝 localhost、内网、link-local 与云 metadata 地址。

@@ -25,8 +25,9 @@ def test_grok_bot_image_create_returns_local_image_reply(monkeypatch, tmp_path):
     image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage")
 
     class FakeProvider:
-        def generate(self, prompt):
+        def generate(self, prompt, **kwargs):
             assert prompt == "draw a red kite"
+            assert kwargs["image_url"] is None
             return str(image_path)
 
     monkeypatch.setattr("models.grok.grok_image.XAIImageGenProvider", lambda: FakeProvider())

@@ -11,6 +11,12 @@ from common.image_prompt_enhancer import record_prompt_history
 from common.utils import expand_path
 from config import conf
 from integrations.hermes_xai.image_gen import XAIImageGenProvider, XaiImageGenError
+from models.grok.grok_image_options import (
+    extract_image_references,
+    looks_like_grok_image_to_image_request,
+    resolve_grok_image_options,
+    strip_image_references,
+)
 
 
 _GROK_IMAGE_PROVIDERS = {"xai", "grok"}
@@ -23,9 +29,29 @@ def is_grok_image_provider(provider: Optional[str] = None) -> bool:
 
 def generate_reply(prompt: str, context=None, provider: Optional[XAIImageGenProvider] = None) -> Reply:
     image_provider = provider or XAIImageGenProvider()
+    prompt_text = str(prompt or "").strip()
+    image_refs = extract_image_references(prompt_text)
+    image_url = image_refs[0] if image_refs else None
+    generation_prompt = strip_image_references(prompt_text) if image_url else prompt_text
+    if not image_url and looks_like_grok_image_to_image_request(prompt_text):
+        return Reply(ReplyType.ERROR, "这是图生图/修图请求，请先上传一张图片，或引用一张图片后再发送修改说明。")
+
     try:
-        image_path = image_provider.generate(prompt)
+        options = resolve_grok_image_options(
+            prompt=generation_prompt,
+            image_url=image_url,
+        )
+        image_path = image_provider.generate(
+            generation_prompt,
+            image_url=options.image_url,
+            aspect_ratio=options.aspect_ratio,
+            resolution=options.resolution,
+            model=options.model,
+            prompt_enhancement=True,
+        )
     except XaiImageGenError as exc:
+        return Reply(ReplyType.ERROR, str(exc))
+    except ValueError as exc:
         return Reply(ReplyType.ERROR, str(exc))
     reply = Reply(ReplyType.IMAGE, image_path)
     reply.cleanup_after_send = True

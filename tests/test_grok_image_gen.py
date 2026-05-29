@@ -12,6 +12,10 @@ from integrations.hermes_xai.auth import AuthError
 PNG_BYTES = b"\x89PNG\r\n\x1a\nimage"
 
 
+def png_with_dimensions(width: int, height: int) -> bytes:
+    return b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big")
+
+
 class FakePostResponse:
     def __init__(self, status_code=200, payload=None, text=""):
         self.status_code = status_code
@@ -61,6 +65,7 @@ def test_provider_posts_images_generation_with_oauth_token_and_payload(monkeypat
     assert "[CowWeCom hidden image prompt enhancement]" in post_call[3]["prompt"]
     assert post_call[3]["aspect_ratio"] == "16:9"
     assert post_call[3]["resolution"] == "2k"
+    assert "image" not in post_call[3]
     assert post_call[4] == 120.0
     assert path.endswith(".png")
     assert tmp_path in tmp_path.__class__(path).parents
@@ -100,6 +105,110 @@ def test_provider_can_skip_prompt_enhancement(monkeypatch, tmp_path):
     image_gen.XAIImageGenProvider().generate("raw prompt", prompt_enhancement=False)
 
     assert payloads[0]["prompt"] == "raw prompt"
+
+
+def test_provider_sends_single_reference_image_payload_as_data_uri(monkeypatch, tmp_path):
+    reference = tmp_path / "portrait.png"
+    reference_bytes = png_with_dimensions(900, 1600)
+    reference.write_bytes(reference_bytes)
+    payloads = []
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        image_gen,
+        "resolve_xai_http_credentials",
+        lambda force_refresh=False: {
+            "provider": "xai-oauth",
+            "auth_mode": "oauth_pkce",
+            "api_key": "token",
+            "base_url": "https://api.x.ai/v1",
+        },
+    )
+
+    def fake_post(url, headers, json, timeout):
+        payloads.append(json)
+        return FakePostResponse(
+            payload={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+        )
+
+    monkeypatch.setattr(image_gen.requests, "post", fake_post)
+
+    image_gen.XAIImageGenProvider().generate(
+        "turn this into a poster",
+        image_url=str(reference),
+        prompt_enhancement=False,
+    )
+
+    payload = payloads[0]
+    assert payload["image"]["url"].startswith("data:image/png;base64,")
+    assert base64.b64decode(payload["image"]["url"].split(",", 1)[1]) == reference_bytes
+    assert payload["aspect_ratio"] == "9:16"
+    assert payload["resolution"] == "2k"
+
+
+def test_provider_accepts_http_reference_without_logging_sensitive_query(monkeypatch, tmp_path, caplog):
+    payloads = []
+    reference_url = "https://cdn.example.test/input.png?token=secret-token"
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        image_gen,
+        "resolve_xai_http_credentials",
+        lambda force_refresh=False: {
+            "provider": "xai-oauth",
+            "auth_mode": "oauth_pkce",
+            "api_key": "token",
+            "base_url": "https://api.x.ai/v1",
+        },
+    )
+    monkeypatch.setattr(
+        image_gen.requests,
+        "post",
+        lambda url, headers, json, timeout: payloads.append(json)
+        or FakePostResponse(payload={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}),
+    )
+
+    with caplog.at_level(logging.INFO):
+        image_gen.XAIImageGenProvider().generate(
+            "use the reference",
+            image_url=reference_url,
+            prompt_enhancement=False,
+        )
+
+    assert payloads[0]["image"]["url"] == reference_url
+    assert "secret-token" not in caplog.text
+    assert "token=" not in caplog.text
+
+
+def test_provider_rejects_unreadable_reference_without_full_path_leak(monkeypatch, tmp_path, caplog):
+    missing = tmp_path / "secret-token-folder" / "missing.png"
+
+    with caplog.at_level(logging.INFO), pytest.raises(image_gen.XaiImageGenError) as exc_info:
+        image_gen.XAIImageGenProvider().generate(
+            "edit this",
+            image_url=str(missing),
+            prompt_enhancement=False,
+        )
+
+    message = str(exc_info.value)
+    assert "Reference image is not readable" in message
+    assert "missing.png" in message
+    assert "secret-token-folder" not in message
+    assert "secret-token-folder" not in caplog.text
+
+
+def test_provider_rejects_oversized_data_uri(monkeypatch):
+    monkeypatch.setattr(image_gen, "_MAX_IMAGE_BYTES", 4)
+    data_uri = "data:image/png;base64," + base64.b64encode(b"12345").decode("ascii")
+
+    with pytest.raises(image_gen.XaiImageGenError) as exc_info:
+        image_gen.XAIImageGenProvider().generate(
+            "edit this",
+            image_url=data_uri,
+            prompt_enhancement=False,
+        )
+
+    assert "exceeds" in str(exc_info.value)
 
 
 def test_provider_refreshes_once_on_401(monkeypatch, tmp_path):
@@ -146,7 +255,15 @@ def test_provider_sanitizes_http_errors(monkeypatch, tmp_path):
     def fake_post(*args, **kwargs):
         return FakePostResponse(
             status_code=500,
-            payload={"error": {"message": "Authorization: Bearer secret-token access_token=secret-token"}},
+            payload={
+                "error": {
+                    "message": (
+                        "Authorization: Bearer secret-token "
+                        "Cookie: session=secret-token "
+                        "access_token=secret-token"
+                    )
+                }
+            },
         )
 
     monkeypatch.chdir(tmp_path)
@@ -159,6 +276,7 @@ def test_provider_sanitizes_http_errors(monkeypatch, tmp_path):
     message = str(exc_info.value)
     assert "secret-token" not in message
     assert "Authorization: Bearer" not in message
+    assert "session=" not in message
     assert "<redacted>" in message
 
 

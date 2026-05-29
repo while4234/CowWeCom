@@ -10,10 +10,12 @@ credentials to PR 1's Grok OAuth resolver.
 from __future__ import annotations
 
 import base64
+import mimetypes
 import os
 import re
+import uuid
 from typing import Any, Dict, Iterable, Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import requests
 
@@ -61,6 +63,7 @@ _DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 60.0
 _MAX_IMAGE_BYTES = 25 * 1024 * 1024
 
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*[:=]\s*)(bearer|basic)\s+[a-z0-9._~+/=-]+")
+_COOKIE_HEADER_RE = re.compile(r"(?i)((?:cookie|set-cookie)\s*[:=]\s*)[^\r\n]+")
 _TOKEN_FIELD_RE = re.compile(
     r"(?i)\b(access_token|refresh_token|authorization_code|code|code_verifier)\b\s*[:=]\s*['\"]?[^'\"\s,;}]+"  # noqa: E501
 )
@@ -69,6 +72,14 @@ _URL_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"
 _MAGIC_EXTENSIONS = (
     (b"\x89PNG\r\n\x1a\n", ".png"),
     (b"\xff\xd8\xff", ".jpg"),
+)
+_DATA_IMAGE_RE = re.compile(r"^data:image/[^;]+;base64,(.+)$", re.IGNORECASE | re.DOTALL)
+_MAGIC_IMAGE_MIMES = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"RIFF", "image/webp"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
 )
 
 
@@ -116,12 +127,29 @@ class XAIImageGenProvider:
         aspect_ratio: Optional[str] = None,
         resolution: Optional[str] = None,
         model: Optional[str] = None,
+        image_url: Optional[Any] = None,
         prompt_enhancement: Any = True,
     ) -> str:
         """Generate an image and return a local image file path."""
         clean_prompt = str(prompt or "").strip()
         if not clean_prompt:
             raise XaiImageGenError("Grok image prompt is empty.")
+
+        request_id = uuid.uuid4().hex[:12]
+        source_image_url = _single_image_reference(image_url)
+        normalized_image_url = None
+        is_image_to_image = bool(source_image_url)
+        if source_image_url:
+            inferred = _infer_options_from_reference(
+                clean_prompt,
+                source_image_url,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+                model=model,
+            )
+            aspect_ratio = aspect_ratio or inferred.get("aspect_ratio")
+            resolution = resolution or inferred.get("resolution")
+            normalized_image_url = _normalize_media_reference(source_image_url)
 
         options = {
             "model": self._resolve_model(model),
@@ -135,6 +163,8 @@ class XAIImageGenProvider:
                 self._config_value("grok_image_download_timeout_seconds"),
                 _DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
             ),
+            "request_id": request_id,
+            "is_image_to_image": is_image_to_image,
         }
         if prompt_enhancement:
             metadata = enhance_image_prompt(
@@ -142,6 +172,7 @@ class XAIImageGenProvider:
                 target="grok",
                 model=options["model"],
                 runtime="grok_direct",
+                image_url=source_image_url,
                 size=options["resolution"],
                 aspect_ratio=options["aspect_ratio"],
                 enabled=True,
@@ -157,12 +188,19 @@ class XAIImageGenProvider:
             }
         self.last_prompt_metadata = metadata
         clean_prompt = str(metadata.get("enhanced_prompt") or clean_prompt).strip()
-        payload = {
-            "model": options["model"],
-            "prompt": clean_prompt,
-            "aspect_ratio": options["aspect_ratio"],
-            "resolution": options["resolution"],
-        }
+        if normalized_image_url:
+            payload = _build_image_to_image_payload(clean_prompt, options, normalized_image_url)
+        else:
+            payload = _build_image_generation_payload(clean_prompt, options)
+        logger.info(
+            "[GrokImage] submitting request_id=%s provider=xai runtime=grok_direct image_to_image=%s "
+            "model=%s aspect_ratio=%s resolution=%s",
+            request_id,
+            is_image_to_image,
+            options["model"],
+            options["aspect_ratio"],
+            options["resolution"],
+        )
 
         try:
             response = self._post_generation(payload, options, force_refresh=False)
@@ -173,7 +211,7 @@ class XAIImageGenProvider:
             result = response.json()
             image_path = self._save_response_image(result, options)
             _assert_local_image(image_path)
-            logger.info("[GrokImage] generated image file: %s", image_path)
+            logger.info("[GrokImage] generated image file: %s request_id=%s", os.path.basename(image_path), request_id)
             return image_path
         except AuthError as exc:
             raise XaiImageGenError(_sanitize_error_text(str(exc))) from exc
@@ -285,6 +323,168 @@ def _save_url_image(url: str, *, prefix: str, timeout: float, max_bytes: int = _
     )
 
 
+def _build_image_generation_payload(prompt: str, options: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the unchanged Grok text-to-image payload."""
+    return {
+        "model": options["model"],
+        "prompt": prompt,
+        "aspect_ratio": options["aspect_ratio"],
+        "resolution": options["resolution"],
+    }
+
+
+def _build_image_to_image_payload(prompt: str, options: Dict[str, Any], image_url: str) -> Dict[str, Any]:
+    """Build the single-reference Grok image-to-image payload in one place.
+
+    The repository only exposes the text-to-image endpoint today. The single
+    reference field intentionally mirrors the Hermes video provider's
+    ``{"image": {"url": ...}}`` convention so future endpoint adjustments stay
+    localized here.
+    """
+    payload = _build_image_generation_payload(prompt, options)
+    payload["image"] = {"url": image_url}
+    return payload
+
+
+def _single_image_reference(image_url: Optional[Any]) -> Optional[str]:
+    if image_url is None:
+        return None
+    if isinstance(image_url, (list, tuple)):
+        values = [str(item or "").strip() for item in image_url if str(item or "").strip()]
+        if not values:
+            return None
+        if len(values) > 1:
+            raise XaiImageGenError("Grok image-to-image supports exactly one reference image.")
+        return values[0]
+    value = str(image_url or "").strip()
+    return value or None
+
+
+def _normalize_media_reference(value: Any) -> str:
+    source = str(value or "").strip().strip("'\"")
+    if not source:
+        raise XaiImageGenError("Grok image-to-image requires a reference image.")
+    lowered = source.lower()
+    if lowered.startswith(("http://", "https://")):
+        return source
+    data_match = _DATA_IMAGE_RE.match(source)
+    if data_match:
+        _validate_data_image_reference(source)
+        return source
+
+    path = _local_path_from_reference(source)
+    label = _safe_reference_label(source)
+    if not path or not os.path.isfile(path):
+        raise XaiImageGenError(f"Reference image is not readable: {label}")
+    try:
+        size = os.path.getsize(path)
+    except OSError as exc:
+        raise XaiImageGenError(f"Reference image is not readable: {label}") from exc
+    if size <= 0:
+        raise XaiImageGenError(f"Reference image is empty: {label}")
+    if size > _MAX_IMAGE_BYTES:
+        raise XaiImageGenError(f"Reference image exceeds {_MAX_IMAGE_BYTES // (1024 * 1024)}MB: {label}")
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError as exc:
+        raise XaiImageGenError(f"Reference image is not readable: {label}") from exc
+    mime = _guess_image_mime(raw, path)
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def _validate_data_image_reference(source: str) -> None:
+    match = _DATA_IMAGE_RE.match(source)
+    if not match:
+        raise XaiImageGenError("Reference image data URI is invalid.")
+    try:
+        raw = base64.b64decode(match.group(1), validate=True)
+    except Exception as exc:
+        raise XaiImageGenError("Reference image data URI is invalid.") from exc
+    if not raw:
+        raise XaiImageGenError("Reference image is empty: data-uri")
+    if len(raw) > _MAX_IMAGE_BYTES:
+        raise XaiImageGenError(f"Reference image exceeds {_MAX_IMAGE_BYTES // (1024 * 1024)}MB: data-uri")
+
+
+def _infer_options_from_reference(
+    prompt: str,
+    image_url: str,
+    *,
+    aspect_ratio: Optional[str],
+    resolution: Optional[str],
+    model: Optional[str],
+) -> Dict[str, Optional[str]]:
+    if aspect_ratio and resolution:
+        return {}
+    try:
+        from models.grok.grok_image_options import resolve_grok_image_options, safe_reference_label
+
+        options = resolve_grok_image_options(
+            prompt=prompt,
+            image_url=image_url,
+            size=resolution,
+            aspect_ratio=aspect_ratio,
+            model=model,
+        )
+        inferred: Dict[str, Optional[str]] = {}
+        if not aspect_ratio and options.aspect_ratio:
+            inferred["aspect_ratio"] = options.aspect_ratio
+        if not resolution and options.resolution:
+            inferred["resolution"] = options.resolution
+        if options.reference_dimensions:
+            logger.info(
+                "[GrokImage] reference dimensions inferred request source=%s width=%s height=%s "
+                "aspect_ratio=%s resolution=%s",
+                safe_reference_label(image_url),
+                options.reference_dimensions[0],
+                options.reference_dimensions[1],
+                options.aspect_ratio,
+                options.resolution,
+            )
+        return inferred
+    except Exception as exc:
+        logger.info(
+            "[GrokImage] reference dimension inference skipped source=%s error=%s",
+            _safe_reference_label(image_url),
+            _sanitize_error_text(str(exc)),
+        )
+        return {}
+
+
+def _local_path_from_reference(source: str) -> str:
+    if source.lower().startswith("file://"):
+        parsed = urlparse(source)
+        path = unquote(parsed.path or source[7:])
+        if os.name == "nt" and re.match(r"^/[A-Za-z]:/", path):
+            path = path[1:]
+        return path
+    expanded = os.path.abspath(os.path.expanduser(source))
+    return expanded if os.path.exists(expanded) else source
+
+
+def _guess_image_mime(raw: bytes, path: str) -> str:
+    for magic, mime in _MAGIC_IMAGE_MIMES:
+        if raw.startswith(magic):
+            return mime
+    mime = mimetypes.guess_type(path)[0]
+    return mime if mime and mime.startswith("image/") else "image/png"
+
+
+def _safe_reference_label(source: Any) -> str:
+    value = str(source or "").strip()
+    if not value:
+        return "<empty>"
+    if _DATA_IMAGE_RE.match(value):
+        return "data:image/*;base64,<redacted>"
+    if value.lower().startswith(("http://", "https://")):
+        parsed = urlparse(value)
+        name = os.path.basename(parsed.path or "") or "<url>"
+        return f"{parsed.scheme}://{parsed.netloc}/{name}"
+    path = _local_path_from_reference(value)
+    return os.path.basename(path) or "<local-file>"
+
+
 def _new_image_path(prefix: str, extension: str) -> str:
     safe_prefix = re.sub(r"[^a-zA-Z0-9_.-]+", "_", prefix or "xai_image").strip("._") or "xai_image"
     return new_generated_media_path(safe_prefix, extension)
@@ -348,6 +548,7 @@ def _safe_http_error(response: requests.Response) -> str:
 def _sanitize_error_text(value: Any, extra_secrets: Optional[Iterable[str]] = None) -> str:
     text = redact_hidden_image_prompt_text(value)
     text = _AUTH_HEADER_RE.sub(r"\1<redacted>", text)
+    text = _COOKIE_HEADER_RE.sub(r"\1<redacted>", text)
     text = _TOKEN_FIELD_RE.sub(lambda match: f"{match.group(1)}=<redacted>", text)
     text = _URL_RE.sub("<redacted-url>", text)
     for secret in extra_secrets or []:

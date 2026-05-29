@@ -76,36 +76,9 @@ _GROK_RUNTIMES = {
     "xai-oauth",
 }
 
+_DETACHED_COWWECOM_LOG_STREAMS = []
 _GROK_SPEED_MODEL = "grok-imagine-image"
 _GROK_QUALITY_MODEL = "grok-imagine-image-quality"
-_DETACHED_COWWECOM_LOG_STREAMS = []
-_GROK_SPEED_QUALITY_HINTS = {
-    "speed",
-    "fast",
-    "quick",
-    "draft",
-    "low",
-    "standard",
-    "快速",
-    "快",
-    "速度",
-    "草稿",
-}
-_GROK_HIGH_QUALITY_HINTS = {
-    "quality",
-    "high quality",
-    "high",
-    "hd",
-    "best",
-    "detailed",
-    "detail",
-    "premium",
-    "高质量",
-    "高清",
-    "精细",
-    "细节",
-    "质量",
-}
 
 _DATA_IMAGE_RE = re.compile(r"^data:image/[^;]+;base64,(.+)$", re.DOTALL)
 _OPENAI_IMAGE_MODEL_ALIASES = {
@@ -519,6 +492,7 @@ def _ensure_project_root_on_path() -> None:
         str(Path(__file__).resolve().parents[3]) if len(Path(__file__).resolve().parents) > 3 else "",
         os.getcwd(),
     ]
+    primary_inserted = False
     for candidate in candidates:
         if not candidate:
             continue
@@ -526,8 +500,11 @@ def _ensure_project_root_on_path() -> None:
         if (root / "integrations" / "hermes_xai" / "image_gen.py").exists():
             root_str = str(root)
             if root_str not in sys.path:
-                sys.path.insert(0, root_str)
-            return
+                if primary_inserted:
+                    sys.path.append(root_str)
+                else:
+                    sys.path.insert(0, root_str)
+            primary_inserted = True
 
 
 def _route_cowwecom_console_logs_to_stderr() -> None:
@@ -544,43 +521,17 @@ def _route_cowwecom_console_logs_to_stderr() -> None:
 
 
 def _resolve_grok_model(prompt: str, quality: str | None = None, model: str | None = None) -> str:
-    explicit_model = (model or "").strip()
-    if explicit_model in {_GROK_SPEED_MODEL, _GROK_QUALITY_MODEL}:
-        return explicit_model
+    _ensure_project_root_on_path()
+    from models.grok.grok_image_options import resolve_grok_image_model
 
-    quality_hint = str(quality or "").strip().lower()
-    if quality_hint in _GROK_HIGH_QUALITY_HINTS:
-        return _GROK_QUALITY_MODEL
-    if quality_hint in _GROK_SPEED_QUALITY_HINTS:
-        return _GROK_SPEED_MODEL
-
-    haystack = str(prompt or "").lower()
-    if _has_grok_quality_phrase(haystack):
-        return _GROK_QUALITY_MODEL
-    return explicit_model or _GROK_SPEED_MODEL
-
-
-def _has_grok_quality_phrase(text: str) -> bool:
-    chinese_phrases = ("高质量", "高清", "精细", "细节丰富", "质量优先", "质量模式")
-    if any(phrase in text for phrase in chinese_phrases):
-        return True
-    return bool(
-        re.search(
-            r"\b(high[- ]?quality|quality\s+mode|best\s+quality|hd|high\s+detail|detailed|premium)\b",
-            text,
-        )
-    )
+    return resolve_grok_image_model(prompt, quality=quality, model=model)
 
 
 def _resolve_grok_resolution(size: str | None) -> str | None:
-    value = str(size or "").strip().lower()
-    if not value or value == "auto":
-        return None
-    if "2k" in value or "2048" in value:
-        return "2k"
-    if "1k" in value or "1024" in value:
-        return "1k"
-    return None
+    _ensure_project_root_on_path()
+    from models.grok.grok_image_options import resolve_grok_image_resolution
+
+    return resolve_grok_image_resolution(size)
 
 
 class GrokXAIProvider(ImageProvider):
@@ -600,36 +551,48 @@ class GrokXAIProvider(ImageProvider):
         output_dir: str = ".",
         prompt_enhancement: bool = True,
     ) -> list[str]:
-        if image_url:
-            raise RuntimeError(
-                "Grok/xAI image generation currently supports text-to-image only in this skill. "
-                "Use the default Codex image-generation runtime for image editing or image fusion."
-            )
-
         _ensure_project_root_on_path()
         from integrations.hermes_xai.image_gen import XAIImageGenProvider
+        from models.grok.grok_image_options import resolve_grok_image_options, safe_reference_label
 
         _route_cowwecom_console_logs_to_stderr()
-        selected_model = _resolve_grok_model(prompt, quality=quality, model=self.model)
+        options = resolve_grok_image_options(
+            prompt=prompt,
+            image_url=image_url,
+            size=size,
+            aspect_ratio=aspect_ratio,
+            quality=quality,
+            model=self.model,
+        )
+        selected_model = options.model
         self.model = selected_model
+        if options.image_url and options.inferred_from_reference:
+            print(
+                "[image-generation] Grok image-to-image inferred "
+                f"aspect_ratio={options.aspect_ratio} resolution={options.resolution} "
+                f"from reference={safe_reference_label(options.image_url)}",
+                file=sys.stderr,
+            )
         enhanced_prompt = _enhance_prompt_for_provider(
             prompt,
             target="grok",
             output_dir=output_dir,
             model=selected_model,
             runtime="grok",
+            image_url=options.image_url,
             quality=quality,
-            size=size,
-            aspect_ratio=aspect_ratio,
+            size=options.resolution or size,
+            aspect_ratio=options.aspect_ratio or aspect_ratio,
             enabled=prompt_enhancement,
         )
         generated_path = Path(
             XAIImageGenProvider().generate(
                 enhanced_prompt,
-                aspect_ratio=aspect_ratio,
-                resolution=_resolve_grok_resolution(size),
+                image_url=options.image_url,
+                aspect_ratio=options.aspect_ratio or aspect_ratio,
+                resolution=options.resolution or _resolve_grok_resolution(size),
                 model=selected_model,
-                prompt_enhancement=prompt_enhancement,
+                prompt_enhancement=False,
             )
         ).expanduser().resolve()
         if not generated_path.exists() or generated_path.stat().st_size <= 0:

@@ -18,6 +18,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = PROJECT_ROOT / "skills" / "image-generation" / "scripts" / "generate.py"
 
 
+def png_with_dimensions(width: int, height: int) -> bytes:
+    return b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big")
+
+
 def load_generate_module():
     spec = importlib.util.spec_from_file_location("image_generation_generate_grok", SCRIPT)
     module = importlib.util.module_from_spec(spec)
@@ -152,9 +156,10 @@ class TestGrokImageSkill(unittest.TestCase):
         calls = []
 
         class FakeXAIImageGenProvider:
-            def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
+            def generate(self, prompt, *, image_url=None, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
                 calls.append({
                     "prompt": prompt,
+                    "image_url": image_url,
                     "aspect_ratio": aspect_ratio,
                     "resolution": resolution,
                     "model": model,
@@ -190,14 +195,16 @@ class TestGrokImageSkill(unittest.TestCase):
             self.assertEqual(calls[0]["resolution"], "2k")
             self.assertEqual(calls[0]["aspect_ratio"], "3:4")
             self.assertEqual(calls[0]["model"], "grok-imagine-image-quality")
+            self.assertIsNone(calls[0]["image_url"])
+            self.assertFalse(calls[0]["prompt_enhancement"])
 
     def test_grok_provider_can_skip_hidden_prompt_enhancement(self):
         module = load_generate_module()
         calls = []
 
         class FakeXAIImageGenProvider:
-            def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
-                calls.append((prompt, prompt_enhancement))
+            def generate(self, prompt, *, image_url=None, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
+                calls.append((prompt, image_url, prompt_enhancement))
                 source = Path(output_tmp) / "source.jpg"
                 source.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
                 return str(source)
@@ -208,17 +215,96 @@ class TestGrokImageSkill(unittest.TestCase):
             output_tmp = tmp
             original = xai_image_gen.XAIImageGenProvider
             original_route_logs = module._route_cowwecom_console_logs_to_stderr
+            original_ensure_cow_root = module._ensure_cowwecom_root_on_path
             xai_image_gen.XAIImageGenProvider = FakeXAIImageGenProvider
             module._route_cowwecom_console_logs_to_stderr = lambda: None
+            module._ensure_cowwecom_root_on_path = lambda: (_ for _ in ()).throw(AssertionError("enhancer should not load"))
             try:
                 provider = module.GrokXAIProvider()
                 provider.generate("raw prompt", output_dir=tmp, prompt_enhancement=False)
             finally:
                 xai_image_gen.XAIImageGenProvider = original
                 module._route_cowwecom_console_logs_to_stderr = original_route_logs
+                module._ensure_cowwecom_root_on_path = original_ensure_cow_root
 
-            self.assertEqual(calls, [("raw prompt", False)])
+            self.assertEqual(calls, [("raw prompt", None, False)])
             self.assertFalse((Path(tmp) / "prompt_metadata.json").exists())
+
+    def test_grok_provider_supports_image_url_and_infers_reference_size(self):
+        module = load_generate_module()
+        calls = []
+
+        class FakeXAIImageGenProvider:
+            def generate(self, prompt, *, image_url=None, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
+                calls.append({
+                    "image_url": image_url,
+                    "aspect_ratio": aspect_ratio,
+                    "resolution": resolution,
+                    "model": model,
+                    "prompt_enhancement": prompt_enhancement,
+                })
+                source = Path(output_tmp) / "source.jpg"
+                source.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
+                return str(source)
+
+        from integrations.hermes_xai import image_gen as xai_image_gen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_tmp = tmp
+            reference = Path(tmp) / "portrait.png"
+            reference.write_bytes(png_with_dimensions(900, 1600))
+            original = xai_image_gen.XAIImageGenProvider
+            original_route_logs = module._route_cowwecom_console_logs_to_stderr
+            xai_image_gen.XAIImageGenProvider = FakeXAIImageGenProvider
+            module._route_cowwecom_console_logs_to_stderr = lambda: None
+            try:
+                provider = module.GrokXAIProvider()
+                paths = provider.generate("turn this into a poster", image_url=str(reference), output_dir=tmp)
+            finally:
+                xai_image_gen.XAIImageGenProvider = original
+                module._route_cowwecom_console_logs_to_stderr = original_route_logs
+
+            self.assertEqual(len(paths), 1)
+            self.assertEqual(calls[0]["image_url"], str(reference))
+            self.assertEqual(calls[0]["aspect_ratio"], "9:16")
+            self.assertEqual(calls[0]["resolution"], "2k")
+            self.assertEqual(calls[0]["model"], "grok-imagine-image")
+            self.assertFalse(calls[0]["prompt_enhancement"])
+
+    def test_grok_provider_explicit_aspect_ratio_overrides_reference_size(self):
+        module = load_generate_module()
+        calls = []
+
+        class FakeXAIImageGenProvider:
+            def generate(self, prompt, *, image_url=None, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
+                calls.append((image_url, aspect_ratio, resolution))
+                source = Path(output_tmp) / "source.jpg"
+                source.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
+                return str(source)
+
+        from integrations.hermes_xai import image_gen as xai_image_gen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_tmp = tmp
+            reference = Path(tmp) / "portrait.png"
+            reference.write_bytes(png_with_dimensions(900, 1600))
+            original = xai_image_gen.XAIImageGenProvider
+            original_route_logs = module._route_cowwecom_console_logs_to_stderr
+            xai_image_gen.XAIImageGenProvider = FakeXAIImageGenProvider
+            module._route_cowwecom_console_logs_to_stderr = lambda: None
+            try:
+                provider = module.GrokXAIProvider()
+                provider.generate(
+                    "make it 16:9 cinematic",
+                    image_url=str(reference),
+                    aspect_ratio="16:9",
+                    output_dir=tmp,
+                )
+            finally:
+                xai_image_gen.XAIImageGenProvider = original
+                module._route_cowwecom_console_logs_to_stderr = original_route_logs
+
+            self.assertEqual(calls[0], (str(reference), "16:9", None))
 
     def test_grok_runtime_routes_cowwecom_console_logs_to_stderr(self):
         module = load_generate_module()
