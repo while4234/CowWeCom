@@ -1,0 +1,26 @@
+adolescent
+adult
+ancient
+baby
+baby boomer
+centenarian
+child
+cub
+elder
+elderly
+infant
+middle-aged
+neonate
+old
+older
+oldest
+senior
+supercentenarian
+teenage
+teenager
+toddler
+tween
+young
+younger
+youngest
+young-adult

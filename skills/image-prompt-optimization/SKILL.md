@@ -21,7 +21,7 @@ Use it as the shared repository for:
 ```text
 skills/image-prompt-optimization/
   references/nano-banana-pro/      # existing YouMind/Nano Banana Pro JSON snapshot
-  repositories/grokSfw/            # keyword-triggered Grok SFW prompt fragments
+  repositories/grok/               # YetAnotherWildcardCollection snapshot for Grok fragments
   repositories/general/            # optional fallback fragments
   templates/grok_image_system_prompt.txt
   templates/grok_video_system_prompt.txt
@@ -36,10 +36,12 @@ skills/image-prompt-optimization/
   rewriting, not the active GPT/Codex backend.
 - Grok rewrite first strips repository trigger keywords from the user-visible
   visual request.
-- If the user prompt contains `grokSfw`, random missing-detail fragments are
-  selected with this rule: 90% from `repositories/grokSfw/`, 10% from other
-  repositories when they contain fragments.
-- If no keyword repository is matched, Grok uses the generic template only.
+- If the prompt needs Grok rewriting and is not a raw/direct request, random
+  missing-detail fragments are selected with this rule: 90% from
+  `repositories/grok/`, 10% from other repositories when they contain fragments.
+- If the user prompt contains `NSFW`, fragment selection is forced to the
+  `repositories/grok/NSFW/` category and does not use the 10% other-repository
+  branch.
 - Direct raw commands can still pass `prompt_enhancement=false` to bypass this
   hidden optimization path.
 
@@ -52,10 +54,10 @@ one selectable fragment.
 Example:
 
 ```text
-repositories/grokSfw/
-  lighting.txt
-  composition.txt
-  wardrobe.txt
+repositories/grok/
+  Styling/Lighting.txt
+  Styling/Composition.txt
+  NSFW/POV.txt
 ```
 
 ```text
@@ -65,7 +67,8 @@ half-body editorial framing, relaxed pose, clear face, balanced negative space
 
 To add another keyword later, create another folder such as
 `repositories/myKeyword/`; when that exact keyword appears in the user's prompt,
-the same 90% matched-repository / 10% other-repository rule applies.
+the same 90% matched-repository / 10% other-repository rule applies. Without a
+keyword, Grok defaults to the `grok` repository.
 
 After changing project skills, sync the same folder to:
 

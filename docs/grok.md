@@ -185,7 +185,8 @@ Grok 语音回复分为两种模式：
 - 使用同一套 Grok OAuth / API key 凭据。
 - 普通 Grok 生图不会使用 YouMind/Nano Banana Pro 本地提示词库；运行时会把用户原始 prompt 加上 `skills/image-prompt-optimization/templates/grok_image_system_prompt.txt` 系统模板和可选随机仓库片段，交给 Grok 文本模型重写成完整最终 prompt，再提交给 Grok。
 - 可直接替换 `skills/image-prompt-optimization/templates/grok_image_system_prompt.txt` 调整 Grok 生图提示词重写规则；也可用 `GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT` 或 `GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT_FILE` 覆盖。
-- 如果 prompt 包含 `grokSfw`，系统会把这个关键词当作隐藏仓库触发词并从最终视觉请求中移除；缺少细节的随机补全 90% 从 `skills/image-prompt-optimization/repositories/grokSfw/` 选择，10% 从其他仓库选择。后续可在该目录中添加 UTF-8 `.txt`，每行一条可随机片段。
+- 普通 Grok 润色默认从 `skills/image-prompt-optimization/repositories/grok/` 选择随机片段：90% 使用 `grok` 仓库，10% 使用其他仓库。显式 prompt 关键词 `grok` 会从最终视觉请求中移除。
+- 如果 prompt 包含 `NSFW`，系统会强制使用 `skills/image-prompt-optimization/repositories/grok/NSFW/` 分类片段，不走 10% 其他仓库分支。
 - `/grok-direct image` 会继续端到端跳过提示词重写，把原始 prompt 直接提交给 Grok。
 - 图生图 v1 只支持一张参考图，可使用本地路径、`file://`、HTTP/HTTPS URL 或 data URI；有参考图时使用 xAI image edit `/images/edits`，纯文生图保持 `/images/generations`；未显式指定比例/尺寸时会尽量按参考图尺寸推断比例和 1k/2k 分辨率。
 - xAI 返回 b64 或 URL 后，CowWeCom 先保存成本地文件，再发送本地图片。
@@ -195,7 +196,7 @@ Grok 语音回复分为两种模式：
 
 视频生成：
 
-- 普通 Grok 视频生成会使用 `skills/image-prompt-optimization/templates/grok_video_system_prompt.txt` 和同一套随机仓库规则，先由 Grok 文本模型重写最终视频 prompt；`/grok-direct video` 继续使用 `prompt_enhancement=false` 跳过重写。
+- 普通 Grok 视频生成会使用 `skills/image-prompt-optimization/templates/grok_video_system_prompt.txt` 和同一套随机仓库规则，先由 Grok 文本模型重写最终视频 prompt；默认 90% 使用 `repositories/grok/`、10% 使用其他仓库，prompt 含 `NSFW` 时强制使用 `repositories/grok/NSFW/`；`/grok-direct video` 继续使用 `prompt_enhancement=false` 跳过重写。
 - 通过 `video_create_prefix` 触发，例如 `生成视频 夕阳下的城市航拍，电影感`。
 - 引用单图：引用图片后发 `生成视频 让这张图里的车驶过雨夜街道`。
 - 上文单图：先发图，再发 `参考上面发的图片生成一个镜头推进的视频`。

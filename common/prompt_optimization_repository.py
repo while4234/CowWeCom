@@ -18,8 +18,9 @@ except Exception:  # pragma: no cover - standalone import fallback
     logger = logging.getLogger(__name__)
 
 
-DEFAULT_GROK_KEYWORD = "grokSfw"
+DEFAULT_GROK_KEYWORD = "grok"
 DEFAULT_PREFERRED_PROBABILITY = 0.9
+NSFW_CATEGORY = "NSFW"
 
 
 def resolve_prompt_optimization_skill_dir(configured: str | None = None) -> Optional[Path]:
@@ -134,12 +135,17 @@ def select_grok_prompt_fragments(
 ) -> dict[str, Any]:
     root = _resolve_repositories_root(repositories_root)
     repositories = _load_text_repositories(root)
-    keyword = _first_matching_repository_keyword(prompt, repositories)
+    explicit_keyword = _first_matching_repository_keyword(prompt, repositories)
+    force_nsfw = _contains_nsfw_keyword(prompt) and DEFAULT_GROK_KEYWORD in repositories
+    keyword = DEFAULT_GROK_KEYWORD if force_nsfw else (explicit_keyword or _default_grok_repository(repositories))
+    forced_category = NSFW_CATEGORY if force_nsfw else ""
     cleaned_prompt = strip_repository_keywords(prompt, repositories.keys())
     if not keyword:
         return {
             "keyword": "",
             "keyword_hit": False,
+            "category": "",
+            "category_forced": False,
             "cleaned_prompt": cleaned_prompt,
             "preferred_probability": preferred_probability,
             "fragments": [],
@@ -148,13 +154,15 @@ def select_grok_prompt_fragments(
 
     randomizer = rng or random.SystemRandom()
     preferred = repositories.get(keyword, [])
+    if forced_category:
+        preferred = _filter_fragments_by_category(preferred, forced_category)
     other = [fragment for name, fragments in repositories.items() if name != keyword for fragment in fragments]
     selected: list[dict[str, Any]] = []
     seen: set[str] = set()
     for _ in range(max(int(limit or 0), 0)):
-        use_preferred = randomizer.random() < preferred_probability
+        use_preferred = bool(forced_category) or randomizer.random() < preferred_probability
         pool = preferred if use_preferred else other
-        fallback = other if use_preferred else preferred
+        fallback = [] if forced_category else (other if use_preferred else preferred)
         fragment = _pick_fragment(pool, fallback, randomizer)
         if not fragment:
             continue
@@ -165,9 +173,11 @@ def select_grok_prompt_fragments(
         seen.add(key)
     return {
         "keyword": keyword,
-        "keyword_hit": True,
+        "keyword_hit": bool(explicit_keyword and explicit_keyword == keyword),
+        "category": forced_category,
+        "category_forced": bool(forced_category),
         "cleaned_prompt": cleaned_prompt,
-        "preferred_probability": preferred_probability,
+        "preferred_probability": 1.0 if forced_category else preferred_probability,
         "fragments": selected,
         "repositories_root": str(root) if root else "",
     }
@@ -209,6 +219,9 @@ def _load_text_fragments(repo_dir: Path) -> list[dict[str, Any]]:
         if path.name.startswith("."):
             continue
         try:
+            relative_path = path.relative_to(repo_dir)
+            relative_name = relative_path.as_posix()
+            category = relative_path.parts[0] if len(relative_path.parts) > 1 else ""
             for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
                 text = line.strip()
                 if not text or text.startswith("#"):
@@ -216,7 +229,8 @@ def _load_text_fragments(repo_dir: Path) -> list[dict[str, Any]]:
                 fragments.append(
                     {
                         "repository": repo_dir.name,
-                        "file": str(path.relative_to(repo_dir)),
+                        "category": category,
+                        "file": relative_name,
                         "line": line_no,
                         "text": text,
                     }
@@ -231,9 +245,20 @@ def _first_matching_repository_keyword(prompt: str, repositories: dict[str, list
     for name in repositories:
         if re.search(rf"(?i)(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", text):
             return name
-    if re.search(rf"(?i)(?<![A-Za-z0-9_-]){re.escape(DEFAULT_GROK_KEYWORD)}(?![A-Za-z0-9_-])", text):
-        return DEFAULT_GROK_KEYWORD if DEFAULT_GROK_KEYWORD in repositories else ""
     return ""
+
+
+def _default_grok_repository(repositories: dict[str, list[dict[str, Any]]]) -> str:
+    return DEFAULT_GROK_KEYWORD if DEFAULT_GROK_KEYWORD in repositories else ""
+
+
+def _contains_nsfw_keyword(prompt: str) -> bool:
+    return bool(re.search(r"(?i)(?<![A-Za-z0-9_-])NSFW(?![A-Za-z0-9_-])", str(prompt or "")))
+
+
+def _filter_fragments_by_category(fragments: list[dict[str, Any]], category: str) -> list[dict[str, Any]]:
+    expected = str(category or "").strip().lower()
+    return [fragment for fragment in fragments if str(fragment.get("category") or "").strip().lower() == expected]
 
 
 def _pick_fragment(

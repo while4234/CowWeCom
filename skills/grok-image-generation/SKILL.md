@@ -60,9 +60,10 @@ skills/image-prompt-optimization/templates/grok_image_system_prompt.txt
 
 Replace that file, or set `GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT` /
 `GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT_FILE`, to customize the prompt writer.
-If the prompt contains `grokSfw`, random missing-detail fragments are selected
-90% from `skills/image-prompt-optimization/repositories/grokSfw/` and 10% from
-other repositories when available.
+For non-direct Grok image generation, random missing-detail fragments are
+selected 90% from `skills/image-prompt-optimization/repositories/grok/` and
+10% from other repositories when available. If the prompt contains `NSFW`,
+selection is forced to `repositories/grok/NSFW/`.
 
 Example explicit Grok request:
 

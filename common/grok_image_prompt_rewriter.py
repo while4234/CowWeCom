@@ -150,6 +150,8 @@ def _rewrite_grok_media_prompt(
             "repositories_root": str(selection.get("repositories_root") or ""),
             "keyword": str(selection.get("keyword") or ""),
             "keyword_hit": bool(selection.get("keyword_hit")),
+            "category": str(selection.get("category") or ""),
+            "category_forced": bool(selection.get("category_forced")),
             "preferred_probability": selection.get("preferred_probability"),
         },
         "templates": [],
@@ -249,7 +251,10 @@ def _build_user_prompt(
     keyword = selection.get("keyword")
     if keyword:
         lines.append(f"- matched_prompt_repository_keyword: {keyword}")
-        lines.append(f"- repository_selection_rule: 90% from {keyword}, 10% from other repositories when available")
+        if selection.get("category_forced"):
+            lines.append(f"- repository_selection_rule: forced {keyword}/{selection.get('category')} category")
+        else:
+            lines.append(f"- repository_selection_rule: 90% from {keyword}, 10% from other repositories when available")
     fragments = selection.get("fragments") or []
     lines.extend(["", "Random repository fragments for missing details:"])
     if fragments:

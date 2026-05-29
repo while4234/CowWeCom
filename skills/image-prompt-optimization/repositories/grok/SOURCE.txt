@@ -1,0 +1,3 @@
+Source: https://github.com/LulzRose/YetAnotherWildcardCollection.git
+Commit: 4c32dc9c480a551cdbdebbaee110c70f9228ca96
+License: Unlicense; see UNLICENSE in this directory.
