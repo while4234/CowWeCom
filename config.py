@@ -406,6 +406,7 @@ available_setting = {
     "discord_allowed_channel_ids": [],  # 可选：限定可用的文本频道 ID 列表，字符串或数组均可
     "discord_proxy": "",  # 可选：Discord 连接代理，例如 http://127.0.0.1:7897；也可使用 DISCORD_PROXY 环境变量
     "discord_command_sync_on_startup": True,  # 启动时同步原生 Slash Commands
+    "discord_prune_global_commands_on_startup": True,  # 配置 Guild 时清理历史全局 Slash Commands
     "discord_message_content_enabled": False,  # 可选：开启普通消息/附件处理，需要 Discord Message Content Intent
     "discord_ephemeral_replies": False,  # Slash Command 回复是否仅调用者可见
     # 微信配置

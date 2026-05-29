@@ -16,26 +16,64 @@ from plugins import Event, EventContext
 from plugins.plugin_manager import PluginManager
 
 
+GROK_GEN_IMAGE_COMMAND = "grok-gen-image"
+GROK_GEN_VIDEO_COMMAND = "grok-gen-video"
+GROK_DIRECT_GEN_IMAGE_COMMAND = "grok-direct-gen-image"
+GROK_DIRECT_GEN_VIDEO_COMMAND = "grok-direct-gen-video"
+PROJECT_DISCORD_COMMANDS = {
+    GROK_GEN_IMAGE_COMMAND,
+    GROK_GEN_VIDEO_COMMAND,
+    GROK_DIRECT_GEN_IMAGE_COMMAND,
+    GROK_DIRECT_GEN_VIDEO_COMMAND,
+}
+DISCORD_COWCLI_COMMANDS = {
+    "help",
+    "version",
+    "status",
+    "logs",
+    "tokens",
+    "updates",
+    "ledger",
+    "backend",
+    "voice",
+    "context",
+    "skill",
+    "install-browser",
+    "memory",
+    "knowledge",
+    "config",
+}
 CHAT_COMMAND_FALLBACKS = {
-    "help": "查看可用 CowCli 命令",
-    "version": "查看版本",
-    "status": "查看运行状态",
-    "logs": "查看日志",
-    "skill": "管理或查询 Skills",
-    "context": "管理上下文",
-    "config": "查看或修改配置",
-    "knowledge": "管理知识库",
-    "memory": "管理记忆",
-    "backend": "查看或切换模型后端",
-    "voice": "查看或切换语音模式",
-    "updates": "查看项目更新",
-    "ledger": "查询本地账本",
-    "tokens": "查询本地 token 用量",
-    "grok-direct": "Grok 直出图片或视频",
-    "install-browser": "安装浏览器依赖",
+    "help": "Show available CowCli commands",
+    "version": "Show version",
+    "status": "Show runtime status",
+    "logs": "Show recent logs",
+    "tokens": "Show local token usage",
+    "updates": "Show project updates",
+    "ledger": "Query local ledger",
+    "backend": "View or switch model backend",
+    "voice": "View or switch voice mode",
+    "context": "Manage chat context",
+    "skill": "Manage or query skills",
+    "install-browser": "Install browser automation dependencies",
+    "memory": "Manage memory",
+    "knowledge": "Manage knowledge base",
+    "config": "View or update configuration",
 }
 CLI_ONLY_COMMANDS = {"start", "stop", "restart"}
 DISCORD_COMMAND_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+GROK_IMAGE_QUALITY_CHOICES = (
+    ("speed (default)", "speed"),
+    ("quality", "quality"),
+)
+GROK_VIDEO_DURATION_CHOICES = (
+    ("6s (default)", "6s"),
+    ("10s", "10s"),
+)
+GROK_VIDEO_RESOLUTION_CHOICES = (
+    ("480p (default)", "480p"),
+    ("720p", "720p"),
+)
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="discord-cowcli")
 
 
@@ -94,16 +132,12 @@ def _discord_command_name(command_text: str) -> str:
 
 def _cow_cli_suggestions() -> List[Dict[str, str]]:
     try:
-        from plugins.cow_cli.cow_cli import CowCliPlugin
+        from plugins.cow_cli.cow_cli import slash_command_suggestions
 
-        suggestions = CowCliPlugin().slash_command_suggestions(is_admin=True)
+        suggestions = slash_command_suggestions(is_admin=True)
     except Exception as e:
         logger.warning("[Discord] CowCli suggestions unavailable, using fallback commands: %s", e)
-        suggestions = [
-            {"cmd": f"/{name}", "desc": desc}
-            for name, desc in CHAT_COMMAND_FALLBACKS.items()
-            if name not in CLI_ONLY_COMMANDS
-        ]
+        suggestions = [{"cmd": f"/{name}", "desc": desc} for name, desc in CHAT_COMMAND_FALLBACKS.items()]
     return _normalise_cow_cli_suggestions(suggestions)
 
 
@@ -113,7 +147,12 @@ def _normalise_cow_cli_suggestions(suggestions: Iterable[Dict[str, str]]) -> Lis
     for item in suggestions:
         command_text = str(item.get("cmd") or "").strip()
         name = _discord_command_name(command_text)
-        if not name or name in CLI_ONLY_COMMANDS or name in seen:
+        if (
+            not name
+            or name in CLI_ONLY_COMMANDS
+            or name not in DISCORD_COWCLI_COMMANDS
+            or name in seen
+        ):
             continue
         seen.add(name)
         commands.append({
@@ -134,11 +173,65 @@ def _split_slash_text(command_text: str) -> Tuple[str, str]:
     return parts[0].lower(), parts[1] if len(parts) > 1 else ""
 
 
-def _build_grok_media_shortcut_query(kind: str, prompt: str, image_path: str = "") -> str:
+def _build_grok_media_shortcut_query(
+    kind: str,
+    prompt: str,
+    image_path: str = "",
+    *,
+    quality: str = "",
+    duration: str = "",
+    resolution: str = "",
+) -> str:
     prompt = str(prompt or "").strip()
     if image_path:
         prompt = (prompt + "\n" if prompt else "") + f"[image: {image_path}]"
-    return f"/grok-direct {kind} -- {prompt}".strip()
+    options = _grok_media_option_text(kind, quality=quality, duration=duration, resolution=resolution)
+    options = f" {options}" if options else ""
+    return f"/grok-direct {kind}{options} -- {prompt}".strip()
+
+
+def _build_grok_direct_image_query(prompt: str, image_path: str = "", *, quality: str = "speed") -> str:
+    return _build_grok_media_shortcut_query("image", prompt, image_path, quality=quality or "speed")
+
+
+def _build_grok_direct_video_query(
+    prompt: str,
+    image_path: str = "",
+    *,
+    duration: str = "6s",
+    resolution: str = "480p",
+) -> str:
+    return _build_grok_media_shortcut_query(
+        "video",
+        prompt,
+        image_path,
+        duration=duration or "6s",
+        resolution=resolution or "480p",
+    )
+
+
+def _build_enhanced_grok_image_args(prompt: str, image_path: str = "", *, quality: str = "speed") -> Dict[str, Any]:
+    args: Dict[str, Any] = {
+        "prompt": str(prompt or "").strip(),
+        "runtime": "grok",
+        "quality": quality or "speed",
+        "prompt_enhancement": True,
+    }
+    if image_path:
+        args["image_url"] = image_path
+    return args
+
+
+def _grok_media_option_text(kind: str, *, quality: str = "", duration: str = "", resolution: str = "") -> str:
+    parts: List[str] = []
+    if kind == "image" and quality:
+        parts.extend(["--quality", quality])
+    if kind == "video":
+        if resolution:
+            parts.extend(["--resolution", resolution])
+        if duration:
+            parts.extend(["--duration", duration])
+    return " ".join(parts)
 
 
 @singleton
@@ -264,77 +357,176 @@ class DiscordChannel(ChatChannel):
                     self.app_commands.rename(args="args")(callback)
                 ),
             )
+            self._add_slash_command(bot, command)
+
+        self._register_grok_generation_commands(bot)
+
+    def _register_grok_generation_commands(self, bot):
+        async def grok_gen_image_callback(interaction, prompt: str, image=None, quality: str = "speed"):
+            await self._handle_grok_image_interaction(
+                interaction,
+                prompt,
+                image_attachment=image,
+                quality=quality,
+                direct=False,
+            )
+
+        grok_gen_image_callback.__name__ = "discord_grok_gen_image"
+        grok_gen_image_callback.__annotations__ = {
+            "interaction": self.discord.Interaction,
+            "prompt": str,
+            "image": Optional[self.discord.Attachment],
+            "quality": str,
+        }
+        self._add_slash_command(
+            bot,
+            self.app_commands.Command(
+                name=GROK_GEN_IMAGE_COMMAND,
+                description="Grok image generation with prompt enhancement",
+                callback=self._with_grok_choices(
+                    self.app_commands.describe(
+                        prompt="Image prompt",
+                        image="Optional reference image",
+                        quality="Image quality",
+                    )(grok_gen_image_callback),
+                    quality=GROK_IMAGE_QUALITY_CHOICES,
+                ),
+            ),
+        )
+
+        async def grok_direct_gen_image_callback(interaction, prompt: str, image=None, quality: str = "speed"):
+            await self._handle_grok_image_interaction(
+                interaction,
+                prompt,
+                image_attachment=image,
+                quality=quality,
+                direct=True,
+            )
+
+        grok_direct_gen_image_callback.__name__ = "discord_grok_direct_gen_image"
+        grok_direct_gen_image_callback.__annotations__ = {
+            "interaction": self.discord.Interaction,
+            "prompt": str,
+            "image": Optional[self.discord.Attachment],
+            "quality": str,
+        }
+        self._add_slash_command(
+            bot,
+            self.app_commands.Command(
+                name=GROK_DIRECT_GEN_IMAGE_COMMAND,
+                description="Grok direct image generation without prompt enhancement",
+                callback=self._with_grok_choices(
+                    self.app_commands.describe(
+                        prompt="Image prompt",
+                        image="Optional reference image",
+                        quality="Image quality",
+                    )(grok_direct_gen_image_callback),
+                    quality=GROK_IMAGE_QUALITY_CHOICES,
+                ),
+            ),
+        )
+
+        async def grok_gen_video_callback(interaction, prompt: str, image=None, duration: str = "6s", resolution: str = "480p"):
+            await self._handle_grok_video_interaction(
+                interaction,
+                prompt,
+                image_attachment=image,
+                duration=duration,
+                resolution=resolution,
+                direct=False,
+            )
+
+        grok_gen_video_callback.__name__ = "discord_grok_gen_video"
+        grok_gen_video_callback.__annotations__ = {
+            "interaction": self.discord.Interaction,
+            "prompt": str,
+            "image": Optional[self.discord.Attachment],
+            "duration": str,
+            "resolution": str,
+        }
+        self._add_slash_command(
+            bot,
+            self.app_commands.Command(
+                name=GROK_GEN_VIDEO_COMMAND,
+                description="Grok video generation",
+                callback=self._with_grok_choices(
+                    self.app_commands.describe(
+                        prompt="Video prompt",
+                        image="Optional reference image",
+                        duration="Video duration",
+                        resolution="Video resolution",
+                    )(grok_gen_video_callback),
+                    duration=GROK_VIDEO_DURATION_CHOICES,
+                    resolution=GROK_VIDEO_RESOLUTION_CHOICES,
+                ),
+            ),
+        )
+
+        async def grok_direct_gen_video_callback(interaction, prompt: str, image=None, duration: str = "6s", resolution: str = "480p"):
+            await self._handle_grok_video_interaction(
+                interaction,
+                prompt,
+                image_attachment=image,
+                duration=duration,
+                resolution=resolution,
+                direct=True,
+            )
+
+        grok_direct_gen_video_callback.__name__ = "discord_grok_direct_gen_video"
+        grok_direct_gen_video_callback.__annotations__ = {
+            "interaction": self.discord.Interaction,
+            "prompt": str,
+            "image": Optional[self.discord.Attachment],
+            "duration": str,
+            "resolution": str,
+        }
+        self._add_slash_command(
+            bot,
+            self.app_commands.Command(
+                name=GROK_DIRECT_GEN_VIDEO_COMMAND,
+                description="Grok direct video generation",
+                callback=self._with_grok_choices(
+                    self.app_commands.describe(
+                        prompt="Video prompt",
+                        image="Optional reference image",
+                        duration="Video duration",
+                        resolution="Video resolution",
+                    )(grok_direct_gen_video_callback),
+                    duration=GROK_VIDEO_DURATION_CHOICES,
+                    resolution=GROK_VIDEO_RESOLUTION_CHOICES,
+                ),
+            ),
+        )
+
+    def _add_slash_command(self, bot, command):
+        guild = self._configured_command_guild()
+        if guild is None:
             bot.tree.add_command(command)
-            self._registered_commands.append(command_name)
+        else:
+            bot.tree.add_command(command, guild=guild)
+        self._registered_commands.append(command.name)
 
-        async def imagine_callback(interaction, prompt: str):
-            await self._handle_slash_interaction(interaction, "/grok-direct image", f"-- {prompt}")
+    def _configured_command_guild(self):
+        guild_id = str(getattr(self, "guild_id", "") or "").strip()
+        if not guild_id:
+            return None
+        return self.discord.Object(id=int(guild_id))
 
-        imagine_callback.__name__ = "discord_imagine"
-        imagine_callback.__annotations__ = {"interaction": self.discord.Interaction, "prompt": str}
-        bot.tree.add_command(
-            self.app_commands.Command(
-                name="imagine",
-                description="Grok image generation shortcut",
-                callback=self.app_commands.describe(prompt="Image prompt")(imagine_callback),
-            )
-        )
-        self._registered_commands.append("imagine")
-
-        async def image_to_image_callback(interaction, prompt: str, image):
-            await self._handle_media_shortcut_interaction(interaction, "image", prompt, image)
-
-        image_to_image_callback.__name__ = "discord_image_to_image"
-        image_to_image_callback.__annotations__ = {
-            "interaction": self.discord.Interaction,
-            "prompt": str,
-            "image": self.discord.Attachment,
-        }
-        bot.tree.add_command(
-            self.app_commands.Command(
-                name="image-to-image",
-                description="Grok image-to-image shortcut",
-                callback=self.app_commands.describe(prompt="Image edit prompt", image="Reference image")(image_to_image_callback),
-            )
-        )
-        self._registered_commands.append("image-to-image")
-
-        async def video_callback(interaction, prompt: str):
-            await self._handle_media_shortcut_interaction(interaction, "video", prompt)
-
-        video_callback.__name__ = "discord_video"
-        video_callback.__annotations__ = {"interaction": self.discord.Interaction, "prompt": str}
-        bot.tree.add_command(
-            self.app_commands.Command(
-                name="video",
-                description="Grok text-to-video shortcut",
-                callback=self.app_commands.describe(prompt="Video prompt")(video_callback),
-            )
-        )
-        self._registered_commands.append("video")
-
-        async def image_to_video_callback(interaction, prompt: str, image):
-            await self._handle_media_shortcut_interaction(interaction, "video", prompt, image)
-
-        image_to_video_callback.__name__ = "discord_image_to_video"
-        image_to_video_callback.__annotations__ = {
-            "interaction": self.discord.Interaction,
-            "prompt": str,
-            "image": self.discord.Attachment,
-        }
-        bot.tree.add_command(
-            self.app_commands.Command(
-                name="image-to-video",
-                description="Grok image-to-video shortcut",
-                callback=self.app_commands.describe(prompt="Video prompt", image="Reference image")(image_to_video_callback),
-            )
-        )
-        self._registered_commands.append("image-to-video")
+    def _with_grok_choices(self, callback, **choices):
+        decorated = callback
+        for option_name, values in choices.items():
+            decorated = self.app_commands.choices(
+                **{option_name: [self.app_commands.Choice(name=label, value=value) for label, value in values]}
+            )(decorated)
+        return decorated
 
     async def _sync_commands(self):
-        if self.guild_id:
-            guild = self.discord.Object(id=int(self.guild_id))
-            self.bot.tree.copy_global_to(guild=guild)
+        guild = self._configured_command_guild()
+        if guild is not None:
+            if _is_truthy(conf().get("discord_prune_global_commands_on_startup", True)):
+                self.bot.tree.clear_commands(guild=None)
+                global_synced = await self.bot.tree.sync()
+                logger.info("[Discord] pruned global slash command(s); global command count=%d", len(global_synced))
             synced = await self.bot.tree.sync(guild=guild)
         else:
             synced = await self.bot.tree.sync()
@@ -352,18 +544,161 @@ class DiscordChannel(ChatChannel):
         reply = await self.loop.run_in_executor(_executor, self._run_cow_cli_command, query, context)
         await self._send_reply_async(reply, context)
 
-    async def _handle_media_shortcut_interaction(self, interaction, kind: str, prompt: str, image_attachment=None):
+    async def _handle_grok_image_interaction(
+        self,
+        interaction,
+        prompt: str,
+        *,
+        image_attachment=None,
+        quality: str = "speed",
+        direct: bool = False,
+    ):
         if not self._is_allowed_interaction(interaction):
             await interaction.response.send_message("Discord channel is restricted to the configured administrator/channel.", ephemeral=True)
             return
+        prompt = str(prompt or "").strip()
+
         await interaction.response.defer(ephemeral=self.ephemeral_replies, thinking=True)
         context = self._build_interaction_context(interaction)
-        image_path = ""
-        if image_attachment is not None:
-            image_path = await self._save_interaction_image_attachment(image_attachment, str(getattr(interaction, "id", "") or "interaction"))
-        query = _build_grok_media_shortcut_query(kind, prompt, image_path)
-        reply = await self.loop.run_in_executor(_executor, self._run_cow_cli_command, query, context)
+        image_path = await self._save_optional_interaction_image(interaction, image_attachment, context)
+        if image_path is None:
+            return
+
+        if direct:
+            query = _build_grok_direct_image_query(prompt, image_path, quality=quality)
+            reply = await self.loop.run_in_executor(_executor, self._run_cow_cli_command, query, context)
+        else:
+            reply = await self.loop.run_in_executor(
+                _executor,
+                self._submit_enhanced_grok_image_job,
+                prompt,
+                image_path or "",
+                quality,
+                context,
+            )
         await self._send_reply_async(reply, context)
+
+    async def _handle_grok_video_interaction(
+        self,
+        interaction,
+        prompt: str,
+        *,
+        image_attachment=None,
+        duration: str = "6s",
+        resolution: str = "480p",
+        direct: bool = False,
+    ):
+        if not self._is_allowed_interaction(interaction):
+            await interaction.response.send_message("Discord channel is restricted to the configured administrator/channel.", ephemeral=True)
+            return
+        prompt = str(prompt or "").strip()
+
+        await interaction.response.defer(ephemeral=self.ephemeral_replies, thinking=True)
+        context = self._build_interaction_context(interaction)
+        image_path = await self._save_optional_interaction_image(interaction, image_attachment, context)
+        if image_path is None:
+            return
+
+        if direct:
+            query = _build_grok_direct_video_query(
+                prompt,
+                image_path or "",
+                duration=duration,
+                resolution=resolution,
+            )
+            reply = await self.loop.run_in_executor(_executor, self._run_cow_cli_command, query, context)
+        else:
+            reply = await self.loop.run_in_executor(
+                _executor,
+                self._submit_grok_video_job,
+                prompt,
+                image_path or "",
+                duration,
+                resolution,
+                context,
+            )
+        await self._send_reply_async(reply, context)
+
+    async def _save_optional_interaction_image(self, interaction, image_attachment, context: Context) -> Optional[str]:
+        if image_attachment is None:
+            return ""
+        image_path = await self._save_interaction_image_attachment(
+            image_attachment,
+            str(getattr(interaction, "id", "") or "interaction"),
+        )
+        if not image_path:
+            await self._send_discord_message("The uploaded file is not a supported image.", context)
+            return None
+        return image_path
+
+    def _submit_enhanced_grok_image_job(self, prompt: str, image_path: str, quality: str, context: Context) -> Reply:
+        try:
+            from agent.tools.image_generation.job_manager import get_image_generation_job_manager
+            from bridge.bridge import Bridge
+
+            profile = self._resolve_background_profile(context)
+            args = _build_enhanced_grok_image_args(prompt, image_path, quality=quality)
+            manager = get_image_generation_job_manager(Bridge().get_agent_bridge())
+            job = manager.submit(args, context, profile)
+            position = manager.queue_position(job)
+            state = "started" if position == 0 else f"queued at position {position}"
+            return Reply(
+                ReplyType.TEXT,
+                (
+                    f"Grok prompt-enhanced image task {state}. Task ID: {job.job_id}.\n"
+                    "The installed image prompt enhancer will run before submission."
+                ),
+            )
+        except Exception as e:
+            logger.warning("[Discord] enhanced Grok image submit failed: %s", e, exc_info=True)
+            return Reply(ReplyType.ERROR, f"Enhanced Grok image task failed: {e}")
+
+    def _submit_grok_video_job(
+        self,
+        prompt: str,
+        image_path: str,
+        duration: str,
+        resolution: str,
+        context: Context,
+    ) -> Reply:
+        try:
+            from agent.tools.video_generation.job_manager import get_grok_video_generation_job_manager
+            from bridge.bridge import Bridge
+
+            profile = self._resolve_background_profile(context)
+            args: Dict[str, Any] = {
+                "prompt": str(prompt or "").strip(),
+                "duration": duration or "6s",
+                "resolution": resolution or "480p",
+            }
+            if image_path:
+                args["image_url"] = image_path
+            else:
+                args["aspect_ratio"] = "16:9"
+            manager = get_grok_video_generation_job_manager(Bridge().get_agent_bridge())
+            job = manager.submit(args, context, profile)
+            position = manager.queue_position(job)
+            state = "started" if position == 0 else f"queued at position {position}"
+            return Reply(
+                ReplyType.TEXT,
+                f"Grok video generation task {state}. Task ID: {job.job_id}.\n"
+                "I will send the video to this Discord channel when it finishes.",
+            )
+        except Exception as e:
+            logger.warning("[Discord] Grok video submit failed: %s", e, exc_info=True)
+            return Reply(ReplyType.ERROR, f"Grok video task failed: {e}")
+
+    @staticmethod
+    def _resolve_background_profile(context: Context):
+        profile = context.get("_actor_profile")
+        if profile is not None:
+            return profile
+        from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile
+
+        profile = resolve_agent_user_profile(context)
+        apply_profile_to_context(context, profile)
+        context["_actor_profile"] = profile
+        return profile
 
     async def _handle_message(self, message):
         if not self._is_allowed_message(message):
