@@ -678,6 +678,8 @@ def _history_safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "supplements",
         "templates",
         "created_at",
+        "generation_status",
+        "generation_error",
     }
     record = {key: metadata.get(key) for key in allowed if key in metadata}
     for key in ("original_prompt", "enhanced_prompt"):

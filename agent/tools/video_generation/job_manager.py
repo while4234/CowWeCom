@@ -271,12 +271,14 @@ class GrokVideoGenerationJobManager:
         except subprocess.TimeoutExpired:
             final_error = f"Grok video generation timed out after {self.task_timeout} seconds."
             job.error = final_error
+            self._record_hidden_prompt(job, status="failed", error=final_error)
             self._persist_job_state(job)
             if not self._send_failure(job):
                 final_status = "delivery_failed"
         except Exception as e:
             final_error = str(e)
             job.error = final_error
+            self._record_hidden_prompt(job, status="failed", error=final_error)
             self._persist_job_state(job)
             if not self._send_failure(job):
                 final_status = "delivery_failed"
@@ -571,13 +573,24 @@ class GrokVideoGenerationJobManager:
         except Exception as e:
             logger.warning("[GrokVideoGenerationJobManager] failed to remember output for %s: %s", job.job_id, e)
 
-    def _record_hidden_prompt(self, job: GrokVideoGenerationJob) -> None:
+    def _record_hidden_prompt(
+        self,
+        job: GrokVideoGenerationJob,
+        *,
+        status: str = "",
+        error: str = "",
+    ) -> None:
         try:
             from common.image_prompt_enhancer import read_prompt_metadata, record_prompt_history
 
             metadata = read_prompt_metadata(job.output_dir)
             if not metadata:
                 return
+            metadata = dict(metadata)
+            if status:
+                metadata["generation_status"] = status
+            if error:
+                metadata["generation_error"] = str(error)
             record_prompt_history(
                 workspace_root=self.workspace_root,
                 memory_user_id=job.memory_user_id,

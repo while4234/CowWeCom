@@ -52,6 +52,11 @@ When using Grok:
   asks to see the prompt after the image is generated, use
   `image_generation_prompt_history` with `exact_only=true` so the stored final
   prompt is returned directly. Do not rewrite it again.
+- When `image_url` is present, preserve the reference subject's face, identity,
+  hair, skin tone/texture, distinctive features, and body proportions. Normal
+  rewrite and direct/raw submission both append a reference-image identity lock;
+  rewrite should not add new ethnicity, eye color, hair color, age, body type,
+  or facial traits unless the user explicitly asks to change them.
 
 The rewrite system prompt template lives in the shared prompt optimization skill:
 
@@ -63,9 +68,13 @@ Replace that file, or set `GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT` /
 `GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT_FILE`, to customize the prompt writer.
 For non-direct Grok image generation, random missing-detail fragments are
 selected 90% from `skills/image-prompt-optimization/repositories/grok/` and
-10% from other repositories when available. If the prompt contains `NSFW`,
+10% from other repositories when available. If the prompt contains `NSFW` or
+`nsfw`, treat that token as an internal control keyword, not final prompt text:
 selection prioritizes `repositories/grok/NSFW/` and can include one small
-non-priority supplement from `grok` non-NSFW files or another repository.
+non-priority supplement from safe context categories such as background,
+styling, color, or material. If the user specifies a nationality/ethnicity such
+as `Korean`, `Korea`, or `韩国`, preserve it as a mandatory stable constraint and
+filter random fragments that would introduce conflicting identity traits.
 
 Example explicit Grok request:
 

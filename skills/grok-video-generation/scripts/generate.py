@@ -72,7 +72,11 @@ class GrokXAIVideoProvider:
             "prompt_enhancement": prompt_enhancement,
             "output_dir": output_dir,
         }
-        source_path = _call_provider_generate(provider, prompt, kwargs)
+        try:
+            source_path = _call_provider_generate(provider, prompt, kwargs)
+        except Exception:
+            _write_prompt_metadata(provider, output_dir)
+            raise
         _write_prompt_metadata(provider, output_dir)
         return _copy_video_to_output(source_path, output_dir)
 

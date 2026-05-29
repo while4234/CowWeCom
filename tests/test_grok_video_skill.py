@@ -195,7 +195,7 @@ def test_grok_video_job_manager_records_hidden_prompt_history(tmp_path):
     )
 
     try:
-        manager._record_hidden_prompt(job)
+        manager._record_hidden_prompt(job, status="failed", error="content policy rejected")
         records = load_prompt_history(
             workspace_root=str(tmp_path),
             memory_user_id="user",
@@ -208,6 +208,8 @@ def test_grok_video_job_manager_records_hidden_prompt_history(tmp_path):
     assert records[0]["job_id"] == "video123"
     assert records[0]["media_type"] == "video"
     assert records[0]["enhanced_prompt"] == "Stored rewritten video prompt."
+    assert records[0]["generation_status"] == "failed"
+    assert "content policy rejected" in records[0]["generation_error"]
 
 
 def test_grok_video_script_outputs_json_only(monkeypatch, tmp_path, capsys):

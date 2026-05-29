@@ -189,8 +189,18 @@ class XAIImageGenProvider:
                 "model": options["model"],
                 "runtime": "grok_direct",
             }
-        self.last_prompt_metadata = metadata
         clean_prompt = str(metadata.get("enhanced_prompt") or clean_prompt).strip()
+        if source_image_url:
+            from common.grok_image_prompt_rewriter import apply_grok_reference_prompt_lock
+
+            clean_prompt = apply_grok_reference_prompt_lock(
+                clean_prompt,
+                media_type="image",
+                image_url=source_image_url,
+            )
+            metadata = dict(metadata)
+            metadata["enhanced_prompt"] = clean_prompt
+        self.last_prompt_metadata = metadata
         if normalized_image_url:
             payload = _build_image_to_image_payload(clean_prompt, options, normalized_image_url)
         else:

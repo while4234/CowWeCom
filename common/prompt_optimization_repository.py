@@ -22,6 +22,43 @@ DEFAULT_GROK_KEYWORD = "grok"
 DEFAULT_PREFERRED_PROBABILITY = 0.9
 NSFW_CATEGORY = "NSFW"
 NSFW_SUPPLEMENT_LIMIT = 1
+NATIONALITY_RACE_FILE = "States/Nationality-Race.txt"
+SAFE_CONTEXT_SUPPLEMENT_CATEGORIES = {"Background", "Styling", "Colors", "Materials"}
+DETAIL_SAFE_CATEGORIES = SAFE_CONTEXT_SUPPLEMENT_CATEGORIES | {"Clothing", "Props", "Concepts"}
+EAST_ASIAN_NATIONALITY_TERMS = {"asian", "east asian", "chinese", "han chinese", "japanese", "korean"}
+CONFLICTING_IDENTITY_TERMS = {
+    "blonde",
+    "blue eyes",
+    "green eyes",
+    "hazel eyes",
+    "caucasian",
+    "european",
+    "nordic",
+    "scandinavian",
+    "fair skin",
+    "platinum hair",
+    "white hair",
+    "red hair",
+    "auburn hair",
+}
+REFERENCE_UNSAFE_FRAGMENT_PATHS = (
+    "NSFW/Fetishes/Body-Type.txt",
+    "NSFW/Nudity/",
+    "Body/",
+    "States/Nationality-Race.txt",
+)
+REFERENCE_IMAGE_CONSTRAINT_TEXT = (
+    "mandatory reference image identity constraint: preserve the reference subject's exact face, "
+    "facial structure, skin texture/tone, hair, distinctive features, and general body proportions; "
+    "do not add new ethnicity, eye color, hair color, age, body type, or facial traits from random fragments"
+)
+NATIONALITY_ALIASES = (
+    (("韩国", "韩国人", "韩系", "韩裔", "南韩", "korea", "south korean", "korean"), "korean"),
+    (("中国", "中国人", "华人", "华裔", "汉族", "china", "chinese"), "chinese"),
+    (("日本", "日本人", "日系", "日裔", "japan", "japanese"), "japanese"),
+    (("东亚", "东亚人", "east asian"), "east asian"),
+    (("亚洲", "亚洲人", "亚裔", "asian"), "asian"),
+)
 
 
 def resolve_prompt_optimization_skill_dir(configured: str | None = None) -> Optional[Path]:
@@ -132,6 +169,7 @@ def select_grok_prompt_fragments(
     limit: int = 4,
     preferred_probability: float = DEFAULT_PREFERRED_PROBABILITY,
     repositories_root: str | os.PathLike[str] | None = None,
+    reference_image: bool = False,
     rng: random.Random | None = None,
 ) -> dict[str, Any]:
     root = _resolve_repositories_root(repositories_root)
@@ -140,7 +178,7 @@ def select_grok_prompt_fragments(
     nsfw_priority = _contains_nsfw_keyword(prompt) and DEFAULT_GROK_KEYWORD in repositories
     keyword = DEFAULT_GROK_KEYWORD if nsfw_priority else (explicit_keyword or _default_grok_repository(repositories))
     priority_category = NSFW_CATEGORY if nsfw_priority else ""
-    cleaned_prompt = strip_repository_keywords(prompt, repositories.keys())
+    cleaned_prompt = strip_control_keywords(strip_repository_keywords(prompt, repositories.keys()))
     if not keyword:
         return {
             "keyword": "",
@@ -158,14 +196,18 @@ def select_grok_prompt_fragments(
 
     randomizer = rng or random.SystemRandom()
     preferred = repositories.get(keyword, [])
+    constraints = _select_stable_constraints(prompt, preferred, reference_image=reference_image)
     if priority_category:
         priority = _filter_fragments_by_category(preferred, priority_category)
+        if _has_reference_image_constraint(constraints):
+            priority = _filter_reference_safe_priority_fragments(priority)
         other = [
             fragment
             for name, fragments in repositories.items()
             for fragment in fragments
             if not (name == keyword and _fragment_category_matches(fragment, priority_category))
         ]
+        other = _filter_safe_context_supplements(other, constraints=constraints)
         selected = _select_priority_fragments(
             priority,
             other,
@@ -175,6 +217,9 @@ def select_grok_prompt_fragments(
         selection_mode = "priority_with_supplement"
     else:
         other = [fragment for name, fragments in repositories.items() if name != keyword for fragment in fragments]
+        if constraints:
+            preferred = _filter_detail_safe_fragments(preferred, constraints=constraints)
+            other = _filter_detail_safe_fragments(other, constraints=constraints)
         selected = _select_weighted_fragments(
             preferred,
             other,
@@ -194,8 +239,9 @@ def select_grok_prompt_fragments(
         "selection_mode": selection_mode,
         "cleaned_prompt": cleaned_prompt,
         "preferred_probability": preferred_probability,
-        "fragment_prompt": _compose_fragment_prompt(selected),
-        "fragments": selected,
+        "constraints": constraints,
+        "fragment_prompt": _compose_fragment_prompt(constraints + selected),
+        "fragments": constraints + selected,
         "repositories_root": str(root) if root else "",
     }
 
@@ -207,6 +253,12 @@ def strip_repository_keywords(prompt: str, keywords: Any) -> str:
         if not name:
             continue
         text = re.sub(rf"(?i)(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def strip_control_keywords(prompt: str) -> str:
+    text = str(prompt or "")
+    text = re.sub(r"(?i)(?<![A-Za-z0-9_-])NSFW(?![A-Za-z0-9_-])", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -278,9 +330,169 @@ def _filter_fragments_by_category(fragments: list[dict[str, Any]], category: str
     return [fragment for fragment in fragments if _fragment_category_matches(fragment, expected)]
 
 
+def _filter_safe_context_supplements(
+    fragments: list[dict[str, Any]],
+    *,
+    constraints: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        fragment
+        for fragment in fragments
+        if _fragment_category(fragment) in SAFE_CONTEXT_SUPPLEMENT_CATEGORIES
+        and not _fragment_conflicts_with_constraints(fragment, constraints)
+    ]
+
+
+def _filter_detail_safe_fragments(
+    fragments: list[dict[str, Any]],
+    *,
+    constraints: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        fragment
+        for fragment in fragments
+        if _fragment_category(fragment) in DETAIL_SAFE_CATEGORIES
+        and not _fragment_conflicts_with_constraints(fragment, constraints)
+    ]
+
+
+def _filter_reference_safe_priority_fragments(fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        fragment
+        for fragment in fragments
+        if not _fragment_path_matches(fragment, REFERENCE_UNSAFE_FRAGMENT_PATHS)
+        and not _fragment_conflicts_with_constraints(fragment, [_reference_image_constraint()])
+    ]
+
+
+def _fragment_category(fragment: dict[str, Any]) -> str:
+    return str(fragment.get("category") or "").strip()
+
+
+def _fragment_path_matches(fragment: dict[str, Any], prefixes: tuple[str, ...]) -> bool:
+    name = str(fragment.get("file") or "").replace("\\", "/")
+    return any(name == prefix.rstrip("/") or name.startswith(prefix) for prefix in prefixes)
+
+
+def _fragment_conflicts_with_constraints(
+    fragment: dict[str, Any],
+    constraints: list[dict[str, Any]] | None,
+) -> bool:
+    if not constraints or not _has_identity_constraint(constraints):
+        return False
+    text = str(fragment.get("text") or "").lower()
+    return any(term in text for term in CONFLICTING_IDENTITY_TERMS)
+
+
+def _has_identity_constraint(constraints: list[dict[str, Any]] | None) -> bool:
+    return any(
+        str(fragment.get("constraint_type") or "").strip().lower()
+        in {"nationality", "reference_image_identity"}
+        for fragment in constraints or []
+    )
+
+
+def _has_reference_image_constraint(constraints: list[dict[str, Any]] | None) -> bool:
+    return any(
+        str(fragment.get("constraint_type") or "").strip().lower() == "reference_image_identity"
+        for fragment in constraints or []
+    )
+
+
 def _fragment_category_matches(fragment: dict[str, Any], category: str) -> bool:
     expected = str(category or "").strip().lower()
     return bool(expected) and str(fragment.get("category") or "").strip().lower() == expected
+
+
+def _select_stable_constraints(
+    prompt: str,
+    preferred: list[dict[str, Any]],
+    *,
+    reference_image: bool = False,
+) -> list[dict[str, Any]]:
+    if reference_image:
+        return [_reference_image_constraint()]
+    nationality = _find_nationality_constraint(prompt, preferred)
+    return [nationality] if nationality else []
+
+
+def _reference_image_constraint() -> dict[str, Any]:
+    return {
+        "repository": "grok",
+        "category": "Reference",
+        "file": "reference-image",
+        "line": 0,
+        "text": REFERENCE_IMAGE_CONSTRAINT_TEXT,
+        "selection_role": "constraint",
+        "constraint_type": "reference_image_identity",
+    }
+
+
+def _find_nationality_constraint(prompt: str, preferred: list[dict[str, Any]]) -> dict[str, Any] | None:
+    nationality_fragments = [
+        fragment
+        for fragment in preferred
+        if str(fragment.get("file") or "").replace("\\", "/") == NATIONALITY_RACE_FILE
+    ]
+    if not nationality_fragments:
+        return None
+
+    matched_term = _matched_nationality_term(prompt, nationality_fragments)
+    if not matched_term:
+        return None
+    for fragment in nationality_fragments:
+        if str(fragment.get("text") or "").strip().lower() == matched_term:
+            constraint = dict(fragment)
+            constraint["selection_role"] = "constraint"
+            constraint["constraint_type"] = "nationality"
+            constraint["source_text"] = fragment.get("text")
+            constraint["text"] = _nationality_constraint_text(matched_term)
+            return constraint
+    return None
+
+
+def _matched_nationality_term(prompt: str, nationality_fragments: list[dict[str, Any]]) -> str:
+    text = str(prompt or "")
+    for aliases, repository_term in NATIONALITY_ALIASES:
+        if any(_prompt_contains_term(text, alias) for alias in aliases):
+            return repository_term
+
+    repository_terms = sorted(
+        {str(fragment.get("text") or "").strip().lower() for fragment in nationality_fragments},
+        key=len,
+        reverse=True,
+    )
+    for term in repository_terms:
+        if term and _prompt_contains_term(text, term):
+            return term
+    return ""
+
+
+def _prompt_contains_term(prompt: str, term: str) -> bool:
+    text = str(prompt or "")
+    value = str(term or "").strip()
+    if not value:
+        return False
+    if re.search(r"[A-Za-z0-9]", value):
+        return bool(re.search(rf"(?i)(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9_-])", text))
+    return value in text
+
+
+def _nationality_constraint_text(term: str) -> str:
+    normalized = str(term or "").strip().lower()
+    if normalized in EAST_ASIAN_NATIONALITY_TERMS:
+        identity_label = "Korean/East Asian" if normalized == "korean" else f"{normalized}/East Asian"
+        return (
+            f"mandatory nationality/ethnicity constraint: {normalized}; keep the subject's appearance "
+            f"consistent with this request, with {identity_label} facial features, natural dark hair, "
+            "and dark brown eyes unless the user explicitly requests otherwise; do not add conflicting "
+            "identity traits from random fragments"
+        )
+    return (
+        f"mandatory nationality/ethnicity constraint: {normalized}; keep facial features, styling, "
+        "and cultural/national identity consistent with this request; do not add conflicting identity "
+        "traits from random fragments"
+    )
 
 
 def _select_weighted_fragments(

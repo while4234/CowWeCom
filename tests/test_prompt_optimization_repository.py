@@ -4,7 +4,11 @@ import sys
 from pathlib import Path
 
 from common import grok_image_prompt_rewriter
-from common.prompt_optimization_repository import select_grok_prompt_fragments, strip_repository_keywords
+from common.prompt_optimization_repository import (
+    select_grok_prompt_fragments,
+    strip_control_keywords,
+    strip_repository_keywords,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -65,9 +69,11 @@ def write_nsfw_repository_fixture(root):
 
 def write_korean_repository_fixture(root):
     (root / "grok" / "States").mkdir(parents=True)
+    (root / "grok" / "Background").mkdir()
     (root / "grok" / "Styling").mkdir()
     (root / "general").mkdir()
     (root / "grok" / "States" / "Nationality-Race.txt").write_text("korean\n", encoding="utf-8")
+    (root / "grok" / "Background" / "scene.txt").write_text("soft Seoul evening background\n", encoding="utf-8")
     (root / "grok" / "Styling" / "portrait.txt").write_text("Nordic blonde runway styling\n", encoding="utf-8")
     (root / "general" / "fallback.txt").write_text("wide cinematic frame\n", encoding="utf-8")
 
@@ -257,7 +263,7 @@ def test_nsfw_prompt_overrides_other_repository_keyword(tmp_path):
     assert_standalone_nsfw_priority_with_complement(result)
 
 
-def test_korean_prompt_adds_locked_nationality_constraint_despite_random_fragment(tmp_path):
+def test_korean_prompt_adds_locked_nationality_constraint_and_filters_conflicts(tmp_path):
     root = tmp_path / "repositories"
     write_korean_repository_fixture(root)
 
@@ -269,7 +275,9 @@ def test_korean_prompt_adds_locked_nationality_constraint_despite_random_fragmen
     )
 
     assert_korean_nationality_constraint(result)
-    assert any(fragment["text"] == "Nordic blonde runway styling" for fragment in result["fragments"])
+    selected_texts = [fragment["text"] for fragment in result["fragments"]]
+    assert "soft Seoul evening background" in selected_texts
+    assert "Nordic blonde runway styling" not in selected_texts
 
 
 def test_korea_and_chinese_korea_terms_share_same_stable_constraint(tmp_path):
@@ -299,7 +307,7 @@ def test_combined_nsfw_korean_prompt_keeps_nsfw_priority_and_nationality_constra
     write_nsfw_repository_fixture(root)
     (root / "grok" / "States").mkdir()
     (root / "grok" / "States" / "Nationality-Race.txt").write_text("korean\n", encoding="utf-8")
-    (root / "grok" / "Background" / "lighting.txt").write_text("Nordic blonde runway styling\n", encoding="utf-8")
+    (root / "grok" / "Background" / "conflict.txt").write_text("Nordic blonde runway styling\n", encoding="utf-8")
 
     result = select_grok_prompt_fragments(
         "random NSFW Korean female",
@@ -310,11 +318,31 @@ def test_combined_nsfw_korean_prompt_keeps_nsfw_priority_and_nationality_constra
 
     assert_standalone_nsfw_priority_with_complement(
         result,
-        allowed_supplement_texts=frozenset({"Nordic blonde runway styling"}),
+        allowed_supplement_texts=frozenset({"safe portrait lighting"}),
     )
     assert_korean_nationality_constraint(result)
     assert result["fragments"][-1]["selection_role"] == "supplement"
-    assert result["fragments"][-1]["text"] == "Nordic blonde runway styling"
+    assert result["fragments"][-1]["text"] == "safe portrait lighting"
+
+
+def test_reference_image_uses_identity_lock_instead_of_nationality_appearance(tmp_path):
+    root = tmp_path / "repositories"
+    write_korean_repository_fixture(root)
+
+    result = select_grok_prompt_fragments(
+        "NSFW Korean female portrait",
+        repositories_root=root,
+        limit=4,
+        reference_image=True,
+        rng=CyclingRandom(),
+    )
+
+    constraints = result["constraints"]
+    assert len(constraints) == 1
+    assert constraints[0]["constraint_type"] == "reference_image_identity"
+    assert "preserve the reference subject's exact face" in constraints[0]["text"]
+    assert all(fragment.get("constraint_type") != "nationality" for fragment in result["fragments"])
+    assert result["cleaned_prompt"] == "Korean female portrait"
 
 
 def test_grok_text_model_receives_korean_constraint_that_overrides_random_fragments(monkeypatch, tmp_path):
@@ -345,7 +373,61 @@ def test_grok_text_model_receives_korean_constraint_that_overrides_random_fragme
     assert "random fragments must not override" in user_prompt
     assert "mandatory nationality/ethnicity constraint: korean" in user_prompt
     assert "Korean/East Asian facial features" in user_prompt
-    assert "Nordic blonde runway styling" in user_prompt
+    assert "soft Seoul evening background" in user_prompt
+    assert "Nordic blonde runway styling" not in user_prompt
+
+
+def test_grok_reference_rewrite_locks_reference_identity_and_final_prompt(monkeypatch, tmp_path):
+    skill_dir = tmp_path / "image-prompt-optimization"
+    (skill_dir / "repositories").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# image-prompt-optimization\n", encoding="utf-8")
+    write_korean_repository_fixture(skill_dir / "repositories")
+    captured = {}
+
+    monkeypatch.setenv("IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
+    monkeypatch.setattr("common.prompt_optimization_repository.random.SystemRandom", lambda: FixedRandom(0.1))
+
+    def fake_call(system_prompt, user_prompt):
+        captured["user_prompt"] = user_prompt
+        return "rewrite the outfit and background"
+
+    monkeypatch.setattr(grok_image_prompt_rewriter, "_call_grok_text_model", fake_call)
+
+    result = grok_image_prompt_rewriter.rewrite_grok_image_prompt(
+        "NSFW Korean female portrait",
+        model="grok-imagine-image",
+        image_url="C:\\tmp\\ref.png",
+    )
+
+    assert "Reference image identity lock:" in result["enhanced_prompt"]
+    assert "NSFW" not in result["source_prompt"]
+    user_prompt = captured["user_prompt"]
+    assert "reference_image: provided" in user_prompt
+    assert "mandatory reference image identity constraint" in user_prompt
+    assert "mandatory nationality/ethnicity constraint" not in user_prompt
+
+
+def test_nsfw_control_keyword_is_case_insensitive_and_stripped_from_source_prompt(tmp_path):
+    root = tmp_path / "repositories"
+    write_nsfw_repository_fixture(root)
+
+    lower_result = select_grok_prompt_fragments(
+        "nsfw Korean woman portrait",
+        repositories_root=root,
+        limit=4,
+        rng=CyclingRandom(),
+    )
+    upper_result = select_grok_prompt_fragments(
+        "NSFW Korean woman portrait",
+        repositories_root=root,
+        limit=4,
+        rng=CyclingRandom(),
+    )
+
+    assert lower_result["category"] == "NSFW"
+    assert upper_result["category"] == "NSFW"
+    assert lower_result["cleaned_prompt"] == "Korean woman portrait"
+    assert upper_result["cleaned_prompt"] == "Korean woman portrait"
 
 
 def test_grok_text_model_receives_nsfw_priority_and_supplement_metadata(monkeypatch, tmp_path):
@@ -374,6 +456,26 @@ def test_grok_text_model_receives_nsfw_priority_and_supplement_metadata(monkeypa
     assert ("safe portrait lighting" in user_prompt) or ("general cinematic fallback" in user_prompt)
 
 
+def test_grok_rewrite_strips_nsfw_control_token_from_final_prompt(monkeypatch, tmp_path):
+    skill_dir = write_nsfw_repository_skill(tmp_path)
+
+    monkeypatch.setenv("IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
+    monkeypatch.setattr("common.prompt_optimization_repository.random.SystemRandom", lambda: CyclingRandom())
+    monkeypatch.setattr(
+        grok_image_prompt_rewriter,
+        "_call_grok_text_model",
+        lambda system_prompt, user_prompt: "Final prompt: NSFW cinematic portrait",
+    )
+
+    result = grok_image_prompt_rewriter.rewrite_grok_image_prompt("nsfw portrait", model="grok-imagine-image")
+
+    assert result["enhanced"] is True
+    assert result["enhanced_prompt"] == "cinematic portrait"
+    assert result["source_prompt"] == "portrait"
+
+
 def test_strip_repository_keywords_ignores_partial_words():
     assert strip_repository_keywords("use grok style", ["grok"]) == "use style"
     assert strip_repository_keywords("use mygrok style", ["grok"]) == "use mygrok style"
+    assert strip_control_keywords("use nsfw style") == "use style"
+    assert strip_control_keywords("use mynsfw style") == "use mynsfw style"

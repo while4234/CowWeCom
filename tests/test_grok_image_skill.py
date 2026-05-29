@@ -235,6 +235,36 @@ class TestGrokImageSkill(unittest.TestCase):
             self.assertEqual(calls, [("raw prompt", None, False)])
             self.assertFalse((Path(tmp) / "prompt_metadata.json").exists())
 
+    def test_grok_provider_keeps_prompt_metadata_when_xai_provider_fails(self):
+        module = load_generate_module()
+
+        class FakeXAIImageGenProvider:
+            def generate(self, prompt, *, image_url=None, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
+                raise RuntimeError("content policy rejected")
+
+        from integrations.hermes_xai import image_gen as xai_image_gen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            original = xai_image_gen.XAIImageGenProvider
+            original_route_logs = module._route_cowwecom_console_logs_to_stderr
+            xai_image_gen.XAIImageGenProvider = FakeXAIImageGenProvider
+            module._route_cowwecom_console_logs_to_stderr = lambda: None
+            try:
+                provider = module.GrokXAIProvider()
+                with patch(
+                    "common.grok_image_prompt_rewriter._call_grok_text_model",
+                    return_value="Rewritten image prompt before failure.",
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "content policy rejected"):
+                        provider.generate("Use Grok to draw a portrait", output_dir=tmp)
+            finally:
+                xai_image_gen.XAIImageGenProvider = original
+                module._route_cowwecom_console_logs_to_stderr = original_route_logs
+
+            metadata = json.loads((Path(tmp) / "prompt_metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["media_type"], "image")
+            self.assertEqual(metadata["enhanced_prompt"], "Rewritten image prompt before failure.")
+
     def test_grok_provider_supports_image_url_and_infers_reference_size(self):
         module = load_generate_module()
         calls = []

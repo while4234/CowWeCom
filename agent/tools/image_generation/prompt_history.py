@@ -107,22 +107,20 @@ class ImageGenerationPromptHistoryTool(BaseTool):
             else:
                 source_label = "Matched library templates:"
                 template_text = "\n".join(template_lines) if template_lines else "- none"
-            sections.append(
-                "\n".join(
-                    [
-                        f"Task ID: {record.get('job_id') or 'unknown'}",
-                        f"Model target: {record.get('target') or 'unknown'}",
-                        f"Media type: {record.get('media_type') or 'image'}",
-                        f"Use case: {record.get('use_case') or 'unknown'}",
-                        source_label,
-                        template_text,
-                        "Chinese prompt:" if translate else "Enhanced prompt:",
-                        "```text",
-                        prompt_text,
-                        "```",
-                    ]
-                )
-            )
+            section_lines = [
+                f"Task ID: {record.get('job_id') or 'unknown'}",
+                f"Generation status: {record.get('generation_status')}" if record.get("generation_status") else "",
+                f"Model target: {record.get('target') or 'unknown'}",
+                f"Media type: {record.get('media_type') or 'image'}",
+                f"Use case: {record.get('use_case') or 'unknown'}",
+                source_label,
+                template_text,
+                "Chinese prompt:" if translate else "Enhanced prompt:",
+                "```text",
+                prompt_text,
+                "```",
+            ]
+            sections.append("\n".join(line for line in section_lines if line))
         return ToolResult.success("\n\n---\n\n".join(sections))
 
 

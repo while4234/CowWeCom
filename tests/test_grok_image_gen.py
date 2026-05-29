@@ -146,6 +146,45 @@ def test_provider_can_skip_prompt_enhancement(monkeypatch, tmp_path):
     assert payloads[0]["prompt"] == "raw prompt"
 
 
+def test_provider_adds_reference_identity_lock_for_direct_image_edit(monkeypatch, tmp_path):
+    reference = tmp_path / "portrait.png"
+    reference_bytes = png_with_dimensions(900, 1600)
+    reference.write_bytes(reference_bytes)
+    payloads = []
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        image_gen,
+        "resolve_xai_http_credentials",
+        lambda force_refresh=False: {
+            "provider": "xai-oauth",
+            "auth_mode": "oauth_pkce",
+            "api_key": "token",
+            "base_url": "https://api.x.ai/v1",
+        },
+    )
+
+    def fake_post(url, headers, json, timeout):
+        payloads.append(json)
+        return FakePostResponse(
+            payload={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+        )
+
+    monkeypatch.setattr(image_gen.requests, "post", fake_post)
+
+    image_gen.XAIImageGenProvider().generate(
+        "change the outfit",
+        image_url=str(reference),
+        prompt_enhancement=False,
+    )
+
+    prompt = payloads[0]["prompt"]
+    assert "change the outfit" in prompt
+    assert "Reference image identity lock:" in prompt
+    assert "preserve the reference subject's exact face" in prompt
+    assert "do not invent a new person" in prompt
+
+
 def test_provider_sends_single_reference_image_payload_as_data_uri(monkeypatch, tmp_path):
     reference = tmp_path / "portrait.png"
     reference_bytes = png_with_dimensions(900, 1600)

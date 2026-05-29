@@ -39,11 +39,24 @@ skills/image-prompt-optimization/
 - If the prompt needs Grok rewriting and is not a raw/direct request, random
   missing-detail fragments are selected with this rule: 90% from
   `repositories/grok/`, 10% from other repositories when they contain fragments.
-- If the user prompt contains `NSFW`, fragment selection prioritizes
-  `repositories/grok/NSFW/` and, when available, includes one small
-  non-priority supplement from `grok` non-NSFW files or another repository.
+- If the user prompt contains `NSFW` or `nsfw`, treat it as an internal control
+  keyword: strip the literal token from the user-visible rewrite source, then
+  prioritize `repositories/grok/NSFW/` fragments and, when available, include
+  one small non-priority supplement from safe context categories such as
+  `Background`, `Styling`, `Colors`, or `Materials`.
+- If the user specifies a nationality or ethnicity such as `Korean`, `Korea`,
+  or `韩国`, add a stable mandatory constraint from
+  `repositories/grok/States/Nationality-Race.txt`; random fragments must not
+  override that constraint, and conflicting identity traits are filtered out.
+- If a reference image is provided for image-to-image or image-to-video, use a
+  stronger reference-image identity constraint instead of adding nationality or
+  other subject-appearance descriptors. The final prompt must preserve the
+  reference subject's face, facial structure, hair, skin tone/texture,
+  distinctive features, and body proportions unless the user explicitly asks to
+  change them.
 - Direct raw commands can still pass `prompt_enhancement=false` to bypass this
-  hidden optimization path.
+  hidden optimization path, but Grok reference-image tasks still append the
+  reference-image identity lock before submission.
 
 ## Adding A Prompt Category Repository
 
@@ -72,7 +85,8 @@ keyword, Grok defaults to the `grok` repository.
 
 If the user asks to see the prompt that was just polished, call
 `image_generation_prompt_history` with `exact_only=true`. That reads the stored
-last enhanced prompt; do not regenerate or rewrite the prompt again.
+last enhanced prompt even when the downstream image request failed after
+rewriting; do not regenerate or rewrite the prompt again.
 
 After changing project skills, sync the same folder to:
 

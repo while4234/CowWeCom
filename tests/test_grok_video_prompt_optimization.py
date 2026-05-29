@@ -2,6 +2,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 from common import grok_image_prompt_rewriter
 from integrations.hermes_xai import video_gen
 
@@ -94,6 +96,33 @@ def test_grok_video_provider_can_skip_prompt_rewrite(monkeypatch, tmp_path):
     assert provider.last_prompt_metadata["enhanced"] is False
 
 
+def test_grok_video_provider_adds_reference_identity_lock_when_direct(monkeypatch, tmp_path):
+    captured = {}
+    reference = tmp_path / "ref.png"
+    reference.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    output = tmp_path / "result.mp4"
+    output.write_bytes(b"\x00\x00\x00\x18ftypmp4")
+
+    def fail_rewrite(system_prompt, user_prompt):
+        raise AssertionError("rewrite should be skipped")
+
+    monkeypatch.setattr(grok_image_prompt_rewriter, "_call_grok_text_model", fail_rewrite)
+    monkeypatch.setattr(video_gen, "_save_url_video", lambda *args, **kwargs: str(output))
+
+    provider = video_gen.XAIVideoGenProvider()
+    provider._submit = lambda payload: captured.setdefault("payload", payload) or "request-1"
+    provider._poll = lambda request_id, **kwargs: {"video": {"url": "https://example.com/video.mp4"}}
+
+    provider.generate("animate the background", image_url=str(reference), prompt_enhancement=False)
+
+    prompt = captured["payload"]["prompt"]
+    assert "animate the background" in prompt
+    assert "Reference image identity lock:" in prompt
+    assert "across all frames" in prompt
+    assert "do not invent a new person" in prompt
+    assert provider.last_prompt_metadata["enhanced_prompt"] == prompt
+
+
 def test_grok_video_script_writes_prompt_metadata_for_history(monkeypatch, tmp_path):
     module = load_generate_module()
     source = tmp_path / "source.mp4"
@@ -125,3 +154,34 @@ def test_grok_video_script_writes_prompt_metadata_for_history(monkeypatch, tmp_p
     assert Path(result).name == "result.mp4"
     assert metadata["media_type"] == "video"
     assert metadata["enhanced_prompt"] == "Rewritten video prompt for history."
+
+
+def test_grok_video_script_writes_prompt_metadata_when_provider_fails(monkeypatch, tmp_path):
+    module = load_generate_module()
+    output_dir = tmp_path / "out"
+
+    class FakeProvider:
+        def __init__(self):
+            self.last_prompt_metadata = {
+                "version": "grok-model-rewrite-v2",
+                "enhanced": True,
+                "target": "grok",
+                "media_type": "video",
+                "use_case": "video_model_rewrite",
+                "original_prompt": "make a video",
+                "enhanced_prompt": "Rewritten video prompt before failure.",
+                "library": {},
+                "templates": [],
+            }
+
+        def generate(self, prompt, **kwargs):
+            raise RuntimeError("content policy rejected")
+
+    monkeypatch.setattr(video_gen, "XAIVideoGenProvider", FakeProvider)
+
+    with pytest.raises(RuntimeError, match="content policy rejected"):
+        module.GrokXAIVideoProvider().generate("make a video", output_dir=str(output_dir))
+
+    metadata = json.loads((output_dir / "prompt_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["media_type"] == "video"
+    assert metadata["enhanced_prompt"] == "Rewritten video prompt before failure."

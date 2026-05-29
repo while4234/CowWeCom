@@ -13,6 +13,7 @@ from typing import Any, Dict
 from common.prompt_optimization_repository import (
     resolve_grok_system_prompt_path,
     select_grok_prompt_fragments,
+    strip_control_keywords,
 )
 
 try:
@@ -28,6 +29,9 @@ DEFAULT_IMAGE_SYSTEM_PROMPT = """You are the Grok image prompt optimizer for Cow
 Rewrite the user's request into one complete prompt for Grok image generation.
 Use the random repository fragments only to fill missing visual details. Preserve
 the user's subject, style, names, numbers, requested text, and constraints.
+Treat NSFW/nsfw as an internal selection control keyword, not final prompt text.
+When a reference image is provided, preserve the reference face/identity and do
+not add new appearance descriptors unless explicitly requested.
 Return only the final prompt text.
 """
 
@@ -36,13 +40,17 @@ DEFAULT_VIDEO_SYSTEM_PROMPT = """You are the Grok video prompt optimizer for Cow
 Rewrite the user's request into one complete prompt for Grok video generation.
 Use the random repository fragments only to fill missing motion, camera, scene,
 lighting, and continuity details. Preserve the user's subject, action, duration,
-aspect ratio, reference-image intent, names, text, and constraints. Return only
-the final prompt text.
+aspect ratio, reference-image intent, names, text, and constraints. Treat
+NSFW/nsfw as an internal selection control keyword, not final prompt text.
+When a reference image is provided, preserve the reference face/identity across
+frames and do not add new appearance descriptors unless explicitly requested.
+Return only the final prompt text.
 """
 
 VERSION = "grok-model-rewrite-v2"
 _MAX_PROMPT_CHARS = 12000
 _DEFAULT_TIMEOUT_SECONDS = 60
+REFERENCE_IMAGE_LOCK_PREFIX = "Reference image identity lock:"
 
 
 def rewrite_grok_image_prompt(
@@ -115,7 +123,8 @@ def _rewrite_grok_media_prompt(
     if not _enabled(enabled):
         return _disabled_metadata(original, model, runtime, "disabled", media_type=media)
 
-    selection = select_grok_prompt_fragments(original)
+    has_reference_image = bool(image_url)
+    selection = select_grok_prompt_fragments(original, reference_image=has_reference_image)
     source_prompt = str(selection.get("cleaned_prompt") or original).strip() or original
     system_prompt = _resolve_system_prompt(media)
     user_prompt = _build_user_prompt(
@@ -130,9 +139,14 @@ def _rewrite_grok_media_prompt(
         aspect_ratio=aspect_ratio,
         selection=selection,
     )
-    rewritten = _clean_model_prompt(_call_grok_text_model(system_prompt, user_prompt))
+    rewritten = strip_control_keywords(_clean_model_prompt(_call_grok_text_model(system_prompt, user_prompt)))
     if not rewritten:
         return _disabled_metadata(original, model, runtime, "empty_rewrite", media_type=media)
+    rewritten = apply_grok_reference_prompt_lock(
+        rewritten,
+        media_type=media,
+        image_url=image_url,
+    )
 
     return {
         "version": VERSION,
@@ -251,7 +265,11 @@ def _build_user_prompt(
         if value:
             lines.append(f"- {key}: {value}")
     if image_url:
-        lines.append("- reference_image: provided; preserve requested identity/objects/unchanged areas")
+        lines.append(
+            "- reference_image: provided; preserve the exact subject identity, face, facial structure, "
+            "skin texture/tone, hair, distinctive features, and unchanged areas; do not add new "
+            "ethnicity, eye color, hair color, body type, age, or facial traits unless explicitly requested"
+        )
     keyword = selection.get("keyword")
     if keyword:
         lines.append(f"- matched_prompt_repository_keyword: {keyword}")
@@ -260,14 +278,38 @@ def _build_user_prompt(
                 f"- repository_selection_rule: prioritize {keyword}/{selection.get('category')} fragments; "
                 "allow one non-priority supplement when available"
             )
+            if str(selection.get("category") or "").strip().lower() == "nsfw":
+                lines.append(
+                    "- control_keyword_rule: NSFW/nsfw is an internal fragment-selection signal; "
+                    "do not copy the literal NSFW token into the final prompt"
+                )
         elif selection.get("category_forced"):
             lines.append(f"- repository_selection_rule: forced {keyword}/{selection.get('category')} category")
         else:
             lines.append(f"- repository_selection_rule: 90% from {keyword}, 10% from other repositories when available")
     fragments = selection.get("fragments") or []
+    constraints = [
+        fragment
+        for fragment in fragments
+        if str(fragment.get("selection_role") or "").strip().lower() == "constraint"
+        or fragment.get("constraint_type")
+    ]
+    random_fragments = [fragment for fragment in fragments if fragment not in constraints]
+    if constraints:
+        lines.extend(
+            [
+                "",
+                "Stable user constraints (mandatory; random fragments must not override these):",
+            ]
+        )
+        for index, fragment in enumerate(constraints, start=1):
+            lines.append(
+                f"{index}. [{fragment.get('repository')}/{fragment.get('file')}:{fragment.get('line')}] "
+                f"{fragment.get('text')}"
+            )
     lines.extend(["", "Random repository fragments for missing details:"])
-    if fragments:
-        for index, fragment in enumerate(fragments, start=1):
+    if random_fragments:
+        for index, fragment in enumerate(random_fragments, start=1):
             role = str(fragment.get("selection_role") or "fragment")
             lines.append(
                 f"{index}. ({role}) [{fragment.get('repository')}/{fragment.get('file')}:{fragment.get('line')}] "
@@ -345,6 +387,32 @@ def _clean_model_prompt(value: Any) -> str:
     if len(text) > _MAX_PROMPT_CHARS:
         text = text[:_MAX_PROMPT_CHARS].rstrip()
     return text
+
+
+def apply_grok_reference_prompt_lock(
+    prompt: str,
+    *,
+    media_type: str = "image",
+    image_url: Any = None,
+) -> str:
+    text = str(prompt or "").strip()
+    if not text or not image_url or REFERENCE_IMAGE_LOCK_PREFIX.lower() in text.lower():
+        return text
+    if str(media_type or "").strip().lower() == "video":
+        lock = (
+            f"{REFERENCE_IMAGE_LOCK_PREFIX} preserve the reference subject's exact face, facial structure, "
+            "skin texture/tone, hair, distinctive features, and general body proportions across all frames; "
+            "only change the requested motion, camera, style, clothing, objects, or environment; do not "
+            "invent a new person or add new ethnicity, eye color, hair color, age, body type, or facial traits."
+        )
+    else:
+        lock = (
+            f"{REFERENCE_IMAGE_LOCK_PREFIX} preserve the reference subject's exact face, facial structure, "
+            "skin texture/tone, hair, distinctive features, and general body proportions; only change the "
+            "requested style, clothing, objects, pose, or environment; do not invent a new person or add new "
+            "ethnicity, eye color, hair color, age, body type, or facial traits."
+        )
+    return f"{text}\n\n{lock}"
 
 
 def _strip_code_fence(text: str) -> str:

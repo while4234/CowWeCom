@@ -228,8 +228,18 @@ class XAIVideoGenProvider:
                 "original_prompt": clean_prompt,
                 "enhanced_prompt": clean_prompt,
             }
-        self.last_prompt_metadata = metadata
         clean_prompt = str(metadata.get("enhanced_prompt") or clean_prompt).strip()
+        if has_reference_images:
+            from common.grok_image_prompt_rewriter import apply_grok_reference_prompt_lock
+
+            clean_prompt = apply_grok_reference_prompt_lock(
+                clean_prompt,
+                media_type="video",
+                image_url=image_url_norm or refs,
+            )
+            metadata = dict(metadata)
+            metadata["enhanced_prompt"] = clean_prompt
+        self.last_prompt_metadata = metadata
         payload: Dict[str, Any] = {
             "model": options["model"],
             "prompt": clean_prompt,

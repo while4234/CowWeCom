@@ -294,12 +294,14 @@ class ImageGenerationJobManager:
         except subprocess.TimeoutExpired:
             final_error = f"生图任务超时（超过 {self.task_timeout} 秒）"
             job.error = final_error
+            self._record_hidden_prompt(job, status="failed", error=final_error)
             self._persist_job_state(job)
             if not self._send_failure(job):
                 final_status = "delivery_failed"
         except Exception as e:
             final_error = redact_hidden_image_prompt_text(str(e))
             job.error = final_error
+            self._record_hidden_prompt(job, status="failed", error=final_error)
             self._persist_job_state(job)
             if not self._send_failure(job):
                 final_status = "delivery_failed"
@@ -651,10 +653,21 @@ class ImageGenerationJobManager:
         except Exception as e:
             logger.warning(f"[ImageGenerationJobManager] failed to remember output for {job.job_id}: {e}")
 
-    def _record_hidden_prompt(self, job: ImageGenerationJob) -> None:
+    def _record_hidden_prompt(
+        self,
+        job: ImageGenerationJob,
+        *,
+        status: str = "",
+        error: str = "",
+    ) -> None:
         metadata = read_prompt_metadata(job.output_dir)
         if not metadata:
             return
+        metadata = dict(metadata)
+        if status:
+            metadata["generation_status"] = status
+        if error:
+            metadata["generation_error"] = redact_hidden_image_prompt_text(str(error))
         record_prompt_history(
             workspace_root=self.workspace_root,
             memory_user_id=job.memory_user_id,

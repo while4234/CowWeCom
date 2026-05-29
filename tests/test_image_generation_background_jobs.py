@@ -368,6 +368,53 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
             finally:
                 manager.shutdown(wait=False)
 
+    def test_failed_job_records_prompt_history_when_metadata_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_generate.py"
+            script.write_text(
+                "\n".join([
+                    "import json, os, sys",
+                    "args = json.loads(sys.argv[1])",
+                    "output_dir = args['output_dir']",
+                    "os.makedirs(output_dir, exist_ok=True)",
+                    "metadata = {",
+                    "    'version': 'grok-model-rewrite-v2',",
+                    "    'enhanced': True,",
+                    "    'target': 'grok',",
+                    "    'media_type': 'image',",
+                    "    'original_prompt': 'raw prompt',",
+                    "    'source_prompt': 'source prompt',",
+                    "    'enhanced_prompt': 'rewritten prompt for debugging',",
+                    "    'library': {'category': 'NSFW'},",
+                    "    'supplements': [],",
+                    "}",
+                    "with open(os.path.join(output_dir, 'prompt_metadata.json'), 'w', encoding='utf-8') as f:",
+                    "    json.dump(metadata, f, ensure_ascii=False)",
+                    "print(json.dumps({'error': 'content policy rejected'}))",
+                    "sys.exit(1)",
+                ]),
+                encoding="utf-8",
+            )
+            channel = FakeChannel()
+            manager = ImageGenerationJobManager(script_path=str(script), workspace_root=tmp, global_workers=1)
+            manager._get_channel = lambda channel_type: channel
+            job = manager.submit({"prompt": "sleep:0"}, make_context("a"), make_profile("weixin:a", "user_a", tmp))
+            try:
+                self.assertEqual(wait_for(job), "failed")
+                history_path = Path(tmp) / "users" / "user_a" / "files" / "image-generation" / "prompt-history.jsonl"
+                records = [
+                    json.loads(line)
+                    for line in history_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]["job_id"], job.job_id)
+                self.assertEqual(records[0]["enhanced_prompt"], "rewritten prompt for debugging")
+                self.assertEqual(records[0]["generation_status"], "failed")
+                self.assertIn("content policy rejected", records[0]["generation_error"])
+            finally:
+                manager.shutdown(wait=False)
+
     def test_recover_unfinished_job_sends_failure_notice(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "users" / "user_a" / "files" / "image-generation" / "orphanjob"

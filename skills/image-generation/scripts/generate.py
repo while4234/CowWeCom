@@ -137,7 +137,12 @@ def _enhance_prompt_for_provider(
 ) -> str:
     try:
         if not enabled:
-            return prompt
+            return _apply_grok_reference_prompt_lock(
+                prompt,
+                target=target,
+                media_type="image",
+                image_url=image_url,
+            )
         _ensure_cowwecom_root_on_path()
         from common.image_prompt_enhancer import enhance_image_prompt, write_prompt_metadata
 
@@ -152,11 +157,38 @@ def _enhance_prompt_for_provider(
             aspect_ratio=aspect_ratio,
             enabled=enabled,
         )
+        enhanced_prompt = _apply_grok_reference_prompt_lock(
+            str(metadata.get("enhanced_prompt") or prompt),
+            target=target,
+            media_type="image",
+            image_url=image_url,
+        )
+        metadata["enhanced_prompt"] = enhanced_prompt
         write_prompt_metadata(output_dir, metadata)
-        return str(metadata.get("enhanced_prompt") or prompt)
+        return enhanced_prompt
     except Exception as exc:
         print(f"[image-generation] prompt enhancement skipped: {exc}", file=sys.stderr)
-        return prompt
+        return _apply_grok_reference_prompt_lock(
+            prompt,
+            target=target,
+            media_type="image",
+            image_url=image_url,
+        )
+
+
+def _apply_grok_reference_prompt_lock(
+    prompt: str,
+    *,
+    target: str,
+    media_type: str,
+    image_url=None,
+) -> str:
+    if not image_url or "grok" not in str(target or "").strip().lower():
+        return str(prompt or "")
+    _ensure_cowwecom_root_on_path()
+    from common.grok_image_prompt_rewriter import apply_grok_reference_prompt_lock
+
+    return apply_grok_reference_prompt_lock(prompt, media_type=media_type, image_url=image_url)
 
 
 # ---------------------------------------------------------------------------
