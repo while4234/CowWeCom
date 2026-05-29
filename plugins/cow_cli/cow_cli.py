@@ -1594,8 +1594,10 @@ class CowCliPlugin(Plugin):
             "用法：",
             "  /grok-direct image [--ar 1:1] [--size 2K] [--quality speed|high] -- <prompt>",
             "  /grok-direct video [--ar 16:9] [--duration 6s] [--resolution 480p] -- <prompt>",
+            "  /grok-direct video --resolution 720p --duration 10s -- <prompt>",
             "",
             "默认：image 使用 speed；video 使用 480p / 16:9 / 6s。",
+            "示例：/grok-direct video --resolution 720p --duration 10s -- 城市天际线延时摄影",
             "引用/上传图片后执行 video，会自动把图片作为参考图。",
         ])
         return "\n".join(lines)
@@ -1720,6 +1722,8 @@ class CowCliPlugin(Plugin):
             ("Grok 直出", [
                 ("grok-direct", "image -- 一只穿宇航服的橘猫，电影海报风格", "/grok-direct image -- <prompt>：Grok 直出生图（默认 speed）"),
                 ("grok-direct", "video -- 城市天际线延时摄影", "/grok-direct video -- <prompt>：Grok 直出视频（默认 480p / 16:9 / 6s）"),
+                ("grok-direct", "video --resolution 720p --duration 10s -- 城市天际线延时摄影", "/grok-direct video --resolution 720p --duration 10s -- <prompt>：Grok 直出 720p / 10s 视频"),
+                ("grok-direct", "video --resolution 720p --duration 10s -- 让这张图动起来，轻微镜头推进", "/grok-direct video --resolution 720p --duration 10s -- <prompt>：上传图后直出 720p / 10s 图生视频"),
             ]),
             ("记忆与知识库", [
                 ("memory", "status", "/memory status：查看记忆索引状态"),

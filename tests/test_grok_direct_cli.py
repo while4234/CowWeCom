@@ -299,6 +299,14 @@ def test_grok_direct_image_rejects_reference_image():
     assert "只支持文生图" in result
 
 
+def test_grok_direct_usage_mentions_720p_10s_video_examples():
+    plugin = _load_cow_cli_plugin()
+
+    usage = plugin._grok_direct_usage()
+
+    assert "/grok-direct video --resolution 720p --duration 10s -- <prompt>" in usage
+
+
 def test_slash_command_suggestions_include_admin_web_commands():
     plugin = _load_cow_cli_plugin()
 
@@ -306,6 +314,8 @@ def test_slash_command_suggestions_include_admin_web_commands():
 
     assert "/grok-direct image -- 一只穿宇航服的橘猫，电影海报风格" in commands
     assert "/grok-direct video -- 城市天际线延时摄影" in commands
+    assert "/grok-direct video --resolution 720p --duration 10s -- 城市天际线延时摄影" in commands
+    assert "/grok-direct video --resolution 720p --duration 10s -- 让这张图动起来，轻微镜头推进" in commands
     assert "/backend grok" in commands
     assert "/voice on" in commands
     assert "/memory rebuild-index" in commands

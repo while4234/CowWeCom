@@ -64,6 +64,19 @@ def test_grok_bot_video_create_starts_background_task(monkeypatch):
     assert manager.submitted[0][0]["prompt"] == "make a red kite video"
 
 
+def test_grok_bot_video_create_extracts_natural_resolution_and_duration(monkeypatch):
+    manager = _patch_grok_video_background(monkeypatch)
+    context = Context(ContextType.VIDEO_CREATE, "生成视频 720p 10s 让镜头缓慢推进")
+
+    reply = object.__new__(GrokBot).reply(context.content, context)
+
+    assert reply.type == ReplyType.TEXT
+    args = manager.submitted[0][0]
+    assert args["prompt"] == "生成视频 720p 10s 让镜头缓慢推进"
+    assert args["resolution"] == "720p"
+    assert args["duration"] == "10s"
+
+
 def test_default_agent_mode_video_create_shortcuts_to_grok_video(monkeypatch):
     context = Context(ContextType.VIDEO_CREATE, "make a cat video")
     fake_conf = MagicMock()

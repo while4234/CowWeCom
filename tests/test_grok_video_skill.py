@@ -92,6 +92,24 @@ def test_grok_video_task_without_context_ref_uses_latest_recent_image(monkeypatc
     reset_image_recognition_manager(None)
 
 
+def test_grok_video_task_prefers_original_context_prompt_and_natural_options():
+    tool = _tool_with_context("生成视频 720p 10s 原始猫咪动作\n[image: C:/tmp/ref.png]")
+    tool.current_context.type = ContextType.VIDEO_CREATE
+
+    result: ToolResult = tool.execute({
+        "prompt": "polished cinematic cat commercial",
+        "duration": "6s",
+        "resolution": "480p",
+    })
+
+    assert result.status == "success"
+    args = tool.job_manager.submitted[0][0]
+    assert args["prompt"] == "生成视频 720p 10s 原始猫咪动作"
+    assert args["duration"] == "10s"
+    assert args["resolution"] == "720p"
+    assert args["image_url"] == "C:/tmp/ref.png"
+
+
 def test_grok_video_task_text_to_video_opt_out_skips_recent_image(monkeypatch, tmp_path):
     tool = _tool_with_context("文生视频，一只猫在月球奔跑")
     tool.current_context["session_id"] = "session"

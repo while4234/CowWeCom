@@ -15,6 +15,7 @@ from channel.image_recognition import (
     get_image_recognition_manager,
     requested_video_reference_image_count,
 )
+from common.video_generation_params import extract_video_generation_options
 from config import conf
 from integrations.hermes_xai.video_gen import XaiVideoGenError
 
@@ -71,15 +72,18 @@ def generate_reply(prompt: str, context=None, provider: Optional[object] = None)
 
     try:
         profile = _resolve_background_profile(context)
+        prompt_options = extract_video_generation_options(clean_prompt)
         params = {
             "prompt": clean_prompt,
-            "duration": conf().get("grok_video_duration") or 8,
-            "resolution": conf().get("grok_video_resolution") or "720p",
+            "duration": prompt_options.get("duration") or conf().get("grok_video_duration") or 8,
+            "resolution": prompt_options.get("resolution") or conf().get("grok_video_resolution") or "720p",
         }
         if image_refs:
             params["image_url"] = image_refs[0] if len(image_refs) == 1 else image_refs
+            if prompt_options.get("aspect_ratio"):
+                params["aspect_ratio"] = prompt_options["aspect_ratio"]
         else:
-            params["aspect_ratio"] = conf().get("grok_video_aspect_ratio") or "16:9"
+            params["aspect_ratio"] = prompt_options.get("aspect_ratio") or conf().get("grok_video_aspect_ratio") or "16:9"
 
         from agent.tools.video_generation.job_manager import get_grok_video_generation_job_manager
         from bridge.bridge import Bridge

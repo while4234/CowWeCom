@@ -12,6 +12,7 @@ from channel.image_recognition import (
     requested_video_reference_image_count,
 )
 from common.image_generation_routing import looks_like_media_generation_status_question
+from common.video_generation_params import extract_video_generation_options
 
 
 MAX_IMAGE_REFERENCES = MAX_VIDEO_REFERENCE_IMAGES
@@ -95,6 +96,10 @@ class GrokVideoGenerationTaskTool(BaseTool):
     def execute(self, params: Dict[str, Any]) -> ToolResult:
         params = dict(params or {})
         prompt = str(params.get("prompt", "")).strip()
+        original_prompt = self._original_video_prompt(prompt)
+        if original_prompt:
+            params["prompt"] = original_prompt
+            prompt = original_prompt
         if not prompt:
             return ToolResult.fail("Missing prompt; cannot create Grok video generation task.")
         if looks_like_media_generation_status_question(prompt):
@@ -105,6 +110,9 @@ class GrokVideoGenerationTaskTool(BaseTool):
             return ToolResult.fail("Grok video background task system is not initialized.")
         if self.current_context is None or self.profile is None:
             return ToolResult.fail("Missing chat context; cannot send Grok video generation results back.")
+
+        for key, value in extract_video_generation_options(prompt).items():
+            params[key] = value
 
         image_refs = self._select_image_refs_for_prompt(prompt, self._extract_available_image_refs(prompt))
         if not params.get("image_url") and image_refs:
@@ -137,6 +145,14 @@ class GrokVideoGenerationTaskTool(BaseTool):
             if ref and ref not in refs:
                 refs.append(ref)
         return refs
+
+    def _original_video_prompt(self, fallback: str) -> str:
+        if self.current_context is None:
+            return str(fallback or "").strip()
+        raw_content = str(getattr(self.current_context, "content", "") or "").strip()
+        if not raw_content:
+            return str(fallback or "").strip()
+        return self.IMAGE_REF_RE.sub("", raw_content).strip() or str(fallback or "").strip()
 
     def _extract_available_image_refs(self, prompt: str) -> list[str]:
         refs = self._extract_context_image_refs()
