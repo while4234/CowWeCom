@@ -136,7 +136,7 @@ class TestAgentStreamKnowledgeContext(unittest.TestCase):
             patch.object(executor, "_retrieve_markdown_knowledge", return_value=[{"snippet": "markdown"}]) as markdown,
             patch.object(executor, "_format_retrieved_knowledge", return_value="formatted"),
         ):
-            self.assertEqual(executor._build_knowledge_context_text("q"), "formatted")
+            self.assertEqual(executor._build_knowledge_context_text("UCIe q"), "formatted")
 
         backend.assert_called_once()
         markdown.assert_not_called()
@@ -226,6 +226,105 @@ class TestAgentStreamKnowledgeContext(unittest.TestCase):
         ):
             self.assertEqual(executor._build_knowledge_context_text(prompt), "")
 
+    def test_latest_context_focus_marks_recent_exchange_for_any_reply(self):
+        executor = self._executor()
+        executor.messages = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "UCIe byte map 怎么理解？"}],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "UCIe 旧答案和证据。"}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Feature list完成90% tc_list完成30"}],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "进度已记录，需要补充收获吗？"}],
+            },
+        ]
+
+        text = executor._build_latest_context_focus_text("没有")
+
+        self.assertIn("latest assistant prompt", text.lower())
+        self.assertIn("进度已记录，需要补充收获吗", text)
+        self.assertIn("Feature list完成90%", text)
+        self.assertIn("do not continue", text)
+        self.assertNotIn("UCIe 旧答案", text)
+
+    def test_short_contextual_reply_request_history_keeps_recent_turns(self):
+        executor = self._executor()
+        executor._current_user_message = "没有"
+        executor.messages = [
+            {"role": "user", "content": [{"type": "text", "text": "UCIe 问题"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "UCIe 旧答案"}]},
+            {"role": "user", "content": [{"type": "text", "text": "Feature list完成90% tc_list完成30"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "进度已记录，需要补充收获吗？"}]},
+            {"role": "user", "content": [{"type": "text", "text": "没有"}]},
+        ]
+        executor._request_runtime_context = ""
+
+        with patch("config.conf", return_value={"short_contextual_reply_keep_turns": 2}):
+            messages = executor._prepare_messages()
+
+        request_text = "\n".join(
+            block["text"]
+            for message in messages
+            for block in message.get("content", [])
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        self.assertNotIn("UCIe 旧答案", request_text)
+        self.assertIn("Feature list完成90%", request_text)
+        self.assertIn("进度已记录，需要补充收获吗", request_text)
+        self.assertTrue(request_text.rstrip().endswith("没有"))
+
+    def test_short_contextual_reply_skips_knowledge_auto_injection(self):
+        executor = self._executor()
+        executor.messages = [
+            {"role": "user", "content": [{"type": "text", "text": "UCIe byte map 怎么理解？"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "UCIe 旧答案。"}]},
+            {"role": "user", "content": [{"type": "text", "text": "Feature list完成90% tc_list完成30"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "进度已记录，需要补充收获吗？"}]},
+        ]
+
+        with (
+            patch("config.conf", return_value={
+                "knowledge_backend": {"enabled": True, "retrieval": {"auto_inject": True}},
+                "knowledge_auto_retrieval": True,
+            }),
+            patch.object(executor, "_retrieve_backend_knowledge", side_effect=AssertionError("unexpected")),
+            patch.object(executor, "_retrieve_markdown_knowledge", side_effect=AssertionError("unexpected")),
+        ):
+            self.assertEqual(executor._build_knowledge_context_text("没有"), "")
+
+    def test_knowledge_followup_uses_latest_knowledge_context_query(self):
+        executor = self._executor()
+        executor.messages = [
+            {"role": "user", "content": [{"type": "text", "text": "UCIe byte map 怎么理解？"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "UCIe 旧答案。"}]},
+        ]
+        hit = {"title": "UCIe", "source_path": "ucie.pdf", "snippet": "byte map detail", "score": 0.9}
+        captured = {}
+
+        def fake_retrieve(query, backend_conf):
+            captured["query"] = query
+            return [hit]
+
+        with (
+            patch("config.conf", return_value={
+                "knowledge_backend": {"enabled": True, "retrieval": {"auto_inject": True}},
+            }),
+            patch.object(executor, "_retrieve_backend_knowledge", side_effect=fake_retrieve),
+        ):
+            text = executor._build_knowledge_context_text("这个字段呢")
+
+        self.assertIn("UCIe byte map", captured["query"])
+        self.assertIn("Follow-up: 这个字段呢", captured["query"])
+        self.assertIn("byte map detail", text)
+
     def test_knowledge_reasoning_effort_is_xhigh_locked(self):
         captured = {}
 
@@ -277,7 +376,7 @@ class TestAgentStreamKnowledgeContext(unittest.TestCase):
             patch.object(executor, "_retrieve_markdown_knowledge", return_value=[{"snippet": "markdown"}]) as markdown,
             patch.object(executor, "_format_retrieved_knowledge", return_value="formatted"),
         ):
-            self.assertEqual(executor._build_knowledge_context_text("q"), "formatted")
+            self.assertEqual(executor._build_knowledge_context_text("UCIe q"), "formatted")
 
         backend.assert_not_called()
         markdown.assert_called_once()

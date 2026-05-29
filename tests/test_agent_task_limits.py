@@ -14,8 +14,10 @@ from common.agent_task_limits import (
     is_development_task,
     is_knowledge_task,
     is_plain_progress_update,
+    is_short_contextual_reply,
     resolve_agent_max_steps,
     resolve_agent_task_budget,
+    strip_leading_quote_context,
 )
 from common.travel_planning_gate import build_travel_planning_clarification
 from config import conf
@@ -232,6 +234,21 @@ class TestAgentTaskLimits(unittest.TestCase):
         budget = resolve_agent_task_budget(prompt, settings)
         self.assertEqual(budget.kind, "default")
         self.assertEqual(budget.max_steps, 20)
+
+    def test_short_contextual_reply_detection(self):
+        self.assertTrue(is_short_contextual_reply("没有"))
+        self.assertTrue(is_short_contextual_reply("暂时没有。"))
+        self.assertTrue(is_short_contextual_reply("不用了"))
+        self.assertTrue(is_short_contextual_reply("[引用: 需要补充收获吗？]\n没有"))
+        self.assertFalse(is_short_contextual_reply("没有 UCIe 的原文依据吗"))
+        self.assertFalse(is_short_contextual_reply("没有完成这个 feature list 的原因是接口还没定"))
+
+    def test_leading_quote_context_is_not_used_for_task_classification(self):
+        prompt = "[引用: 请参考 UCIe 协议原文说明]\nFeature list完成90% tc_list完成30"
+
+        self.assertEqual(strip_leading_quote_context(prompt), "Feature list完成90% tc_list完成30")
+        self.assertTrue(is_plain_progress_update(prompt))
+        self.assertFalse(is_knowledge_task(prompt))
 
 
 class TestAgentRunStreamMaxSteps(unittest.TestCase):

@@ -461,6 +461,7 @@ available_setting = {
     "social_bridge_auto_send": True,  # Proactively send authorized bridge messages when reachable
     "social_bridge_max_users": 100,  # Maximum bridge directory entries returned to a user
     "social_bridge_pending_retention_days": 30,  # Retain unsent bridge messages for later retry
+    "short_contextual_reply_keep_turns": 2,  # “没有/不用/好的”等短回复请求保留的最近上下文轮数
     "agent_max_context_tokens": 50000,  # Agent模式下最大上下文tokens
     "agent_max_context_turns": 20,  # Agent模式下最大上下文记忆轮次
     "agent_max_steps": 20,  # Agent模式下单次运行最大决策步数

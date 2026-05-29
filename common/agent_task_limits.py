@@ -88,6 +88,19 @@ _QUESTION_INTENT_PATTERN = re.compile(
     r"\b(what|why|how|whether|compare|explain|analy[sz]e|confirm|query|search|read|cite|citation|evidence)\b)",
     re.IGNORECASE,
 )
+_SHORT_CONTEXTUAL_REPLY_PATTERN = re.compile(
+    r"^(?:"
+    r"没有|没有了|没了|暂无|暂时没有|无|没|"
+    r"不用|不用了|不需要|不要|不补充|不需要补充|"
+    r"是|是的|对|对的|好的|好|可以|行|嗯|嗯嗯|"
+    r"no|none|nothing|not\s+now|ok|okay|yes|yep|yeah"
+    r")[。.!！~～]*$",
+    re.IGNORECASE,
+)
+_LEADING_QUOTE_CONTEXT_PATTERN = re.compile(
+    r"^\s*(?:\[引用[:：][^\n]*\]\s*)+",
+    re.IGNORECASE,
+)
 
 _DATE_OR_DURATION_PATTERN = re.compile(
     r"(\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?|\d{1,2}月\d{1,2}日|"
@@ -232,7 +245,7 @@ def is_development_task(content: Any) -> bool:
 
 def is_knowledge_task(content: Any) -> bool:
     """Return True when a request needs local/source-backed knowledge lookup."""
-    text = str(content or "").strip()
+    text = strip_leading_quote_context(content)
     if not text:
         return False
     if is_plain_progress_update(text):
@@ -240,9 +253,16 @@ def is_knowledge_task(content: Any) -> bool:
     return any(pattern.search(text) for pattern in _KNOWLEDGE_TASK_PATTERNS)
 
 
+def strip_leading_quote_context(content: Any) -> str:
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    return _LEADING_QUOTE_CONTEXT_PATTERN.sub("", text).strip()
+
+
 def is_plain_progress_update(content: Any) -> bool:
     """Return True for declarative work-progress snapshots, not questions."""
-    text = str(content or "").strip()
+    text = strip_leading_quote_context(content)
     if not text:
         return False
     if _QUESTION_INTENT_PATTERN.search(text):
@@ -251,6 +271,16 @@ def is_plain_progress_update(content: Any) -> bool:
     if percent_count < 1:
         return False
     return percent_count >= 2 or bool(_PROGRESS_STATUS_PATTERN.search(text))
+
+
+def is_short_contextual_reply(content: Any) -> bool:
+    """Return True for short replies that should bind to the latest bot prompt."""
+    text = strip_leading_quote_context(content)
+    if not text or len(text) > 32:
+        return False
+    if _QUESTION_INTENT_PATTERN.search(text):
+        return False
+    return bool(_SHORT_CONTEXTUAL_REPLY_PATTERN.match(text))
 
 
 def is_plain_status_query(content: Any) -> bool:

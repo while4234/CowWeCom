@@ -4,13 +4,19 @@ Agent Stream Execution Module - Multi-turn reasoning based on tool-call
 Provides streaming output, event system, and complete tool-call loop
 """
 import json
+import re
 import time
 from typing import List, Dict, Any, Optional, Callable, Tuple
 
 from agent.protocol.models import LLMRequest, LLMModel
 from agent.protocol.message_utils import sanitize_claude_messages, compress_turn_to_text_only
 from agent.tools.base_tool import BaseTool, ToolResult
-from common.agent_task_limits import is_knowledge_task, is_plain_progress_update
+from common.agent_task_limits import (
+    is_knowledge_task,
+    is_plain_progress_update,
+    is_short_contextual_reply,
+    strip_leading_quote_context,
+)
 from common.agent_task_runtime import TaskCancelled
 from common.codex_quota_query import query_codex_quota_json
 from common.latency import elapsed, format_seconds, hash_id, monotonic
@@ -779,6 +785,7 @@ class AgentStreamExecutor:
 
     @staticmethod
     def _looks_like_protocol_question(value: Any) -> bool:
+        value = strip_leading_quote_context(value)
         if is_plain_progress_update(value):
             return False
         text = str(value or "").lower()
@@ -2525,11 +2532,77 @@ class AgentStreamExecutor:
         """
         # Don't add system message here - it will be handled separately by the LLM adapter.
         messages = self._copy_messages_for_request()
+        self._focus_short_contextual_reply_history(messages)
         self._compact_request_tool_results(messages)
         runtime_context = getattr(self, "_request_runtime_context", "")
         if runtime_context:
             self._prepend_runtime_context(messages, runtime_context)
         return messages
+
+    def _focus_short_contextual_reply_history(self, messages: List[Dict[str, Any]]) -> None:
+        if not is_short_contextual_reply(getattr(self, "_current_user_message", "")):
+            return
+        keep_turns = self._short_contextual_reply_keep_turns()
+        before = len(messages or [])
+        self._keep_recent_real_user_turns(messages, keep_turns)
+        after = len(messages or [])
+        if after < before:
+            logger.info(
+                "[ContextFocus] Short contextual reply focused request history: "
+                "%s -> %s messages, keep_turns=%s",
+                before,
+                after,
+                keep_turns,
+            )
+
+    @staticmethod
+    def _short_contextual_reply_keep_turns() -> int:
+        try:
+            from config import conf
+
+            return max(2, int(conf().get("short_contextual_reply_keep_turns", 2) or 2))
+        except Exception:
+            return 2
+
+    @classmethod
+    def _keep_recent_real_user_turns(cls, messages: List[Dict[str, Any]], keep_turns: int) -> None:
+        if not messages:
+            return
+        turns: List[List[Dict[str, Any]]] = []
+        current: List[Dict[str, Any]] = []
+        for message in messages:
+            if cls._message_has_real_user_text(message):
+                if current:
+                    turns.append(current)
+                current = [message]
+            elif current:
+                current.append(message)
+        if current:
+            turns.append(current)
+        if len(turns) <= keep_turns:
+            return
+        kept = [message for turn in turns[-keep_turns:] for message in turn]
+        messages[:] = kept
+
+    @staticmethod
+    def _message_has_real_user_text(message: Dict[str, Any]) -> bool:
+        if message.get("role") != "user":
+            return False
+        content = message.get("content")
+        if isinstance(content, list):
+            has_tool_result = any(
+                isinstance(block, dict) and block.get("type") == "tool_result"
+                for block in content
+            )
+            if has_tool_result:
+                return False
+            return any(
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and str(block.get("text") or "").strip()
+                for block in content
+            )
+        return bool(str(content or "").strip())
 
     def _compact_request_tool_results(self, messages: List[Dict[str, Any]]) -> None:
         """Compact older oversized tool results in the request copy only."""
@@ -2609,6 +2682,7 @@ class AgentStreamExecutor:
         return max(40000, budget), max(1, keep_recent), max(2000, small_limit)
 
     def _build_request_context_text(self, user_message: str) -> str:
+        latest_context_focus = self._build_latest_context_focus_text(user_message)
         self_evolution_context = (
             self._build_self_evolution_context_text()
             if self._should_include_self_evolution_context(user_message)
@@ -2625,8 +2699,62 @@ class AgentStreamExecutor:
         self._request_knowledge_context_hash = (
             stable_metadata_hash(knowledge_context) if knowledge_context else ""
         )
-        parts = [self_evolution_context, runtime_context, knowledge_context]
+        parts = [latest_context_focus, self_evolution_context, runtime_context, knowledge_context]
         return "\n\n".join(part for part in parts if part)
+
+    def _build_latest_context_focus_text(self, user_message: str) -> str:
+        latest = self._latest_assistant_text()
+        previous_user = self._latest_user_text()
+        if not latest and not previous_user:
+            return ""
+        if latest:
+            latest = latest[:600]
+        if previous_user:
+            previous_user = previous_user[:400]
+        lines = [
+            "[Conversation focus for this request:",
+            "Interpret the newest user message against the latest assistant prompt and latest exchange first.",
+            "Use older conversation, retrieved knowledge, or older tool results only when the newest user message explicitly names, quotes, or clearly refers to that older topic, or when the latest exchange is insufficient.",
+            "If an older topic is merely present in history but not referenced by the newest user message, do not continue it.",
+        ]
+        if latest:
+            lines.append(f"Latest assistant prompt: {latest}")
+        if previous_user:
+            lines.append(f"Previous user message: {previous_user}")
+        lines.append("]")
+        return "\n".join(lines)
+
+    def _latest_assistant_text(self) -> str:
+        for message in reversed(getattr(self, "messages", []) or []):
+            if message.get("role") != "assistant":
+                continue
+            text = self._message_text(message)
+            if text:
+                return text
+        return ""
+
+    def _latest_user_text(self) -> str:
+        for message in reversed(getattr(self, "messages", []) or []):
+            if message.get("role") != "user":
+                continue
+            text = self._message_text(message)
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _message_text(message: Dict[str, Any]) -> str:
+        content = message.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = [
+                str(block.get("text") or "").strip()
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            return "\n".join(part for part in parts if part).strip()
+        return ""
 
     def _should_include_self_evolution_context(self, user_message: str) -> bool:
         try:
@@ -2684,7 +2812,11 @@ class AgentStreamExecutor:
         return "\n".join(lines)
 
     def _build_knowledge_context_text(self, user_message: str) -> str:
-        if is_plain_progress_update(user_message):
+        effective_message = strip_leading_quote_context(user_message)
+        if is_plain_progress_update(effective_message) or is_short_contextual_reply(effective_message):
+            return ""
+        retrieval_query = self._knowledge_retrieval_query_for(effective_message)
+        if not retrieval_query:
             return ""
         try:
             from config import conf
@@ -2695,9 +2827,9 @@ class AgentStreamExecutor:
             backend_auto = bool(retrieval_conf.get("auto_inject", True)) if isinstance(retrieval_conf, dict) else True
 
             if backend_enabled and backend_auto:
-                hits = self._retrieve_backend_knowledge(user_message, backend_conf)
+                hits = self._retrieve_backend_knowledge(retrieval_query, backend_conf)
             elif conf().get("knowledge_auto_retrieval", False):
-                hits = self._retrieve_markdown_knowledge(user_message)
+                hits = self._retrieve_markdown_knowledge(retrieval_query)
             else:
                 return ""
 
@@ -2705,6 +2837,47 @@ class AgentStreamExecutor:
         except Exception as e:
             logger.debug(f"[KnowledgeRetrieval] Auto retrieval skipped: {e}")
             return ""
+
+    def _knowledge_retrieval_query_for(self, user_message: str) -> str:
+        effective_message = strip_leading_quote_context(user_message)
+        if not effective_message:
+            return ""
+        latest_exchange_is_knowledge = self._latest_exchange_looks_knowledge_related()
+        if latest_exchange_is_knowledge and self._looks_like_contextual_followup(effective_message):
+            latest_user = strip_leading_quote_context(self._latest_user_text())
+            if latest_user and latest_user != effective_message:
+                return f"{latest_user}\nFollow-up: {effective_message}"
+            return effective_message
+        if self._message_requests_knowledge(effective_message):
+            return effective_message
+        if not latest_exchange_is_knowledge:
+            return ""
+        latest_user = strip_leading_quote_context(self._latest_user_text())
+        if latest_user and latest_user != effective_message:
+            return f"{latest_user}\nFollow-up: {effective_message}"
+        return effective_message
+
+    @staticmethod
+    def _looks_like_contextual_followup(value: Any) -> bool:
+        text = strip_leading_quote_context(value)
+        if not text or len(text) > 48:
+            return False
+        return bool(re.search(r"(这个|那个|这[些个]?|那[些个]?|它|其|上面|前面|刚才|继续|展开|字段|这里|那里|呢)", text))
+
+    def _latest_exchange_looks_knowledge_related(self) -> bool:
+        latest_user = strip_leading_quote_context(self._latest_user_text())
+        latest_assistant = self._latest_assistant_text()
+        return self._message_requests_knowledge(latest_user) or self._message_requests_knowledge(latest_assistant)
+
+    def _message_requests_knowledge(self, value: Any) -> bool:
+        text = strip_leading_quote_context(value)
+        if not text:
+            return False
+        return (
+            is_knowledge_task(text)
+            or self._looks_like_protocol_question(text)
+            or self._should_use_deep_knowledge(text)
+        )
 
     def _retrieve_backend_knowledge(self, user_message: str, backend_conf: dict) -> List[Dict[str, Any]]:
         from agent.knowledge.backend import get_backend_service
@@ -2730,6 +2903,7 @@ class AgentStreamExecutor:
 
     @staticmethod
     def _should_use_deep_knowledge(user_message: str) -> bool:
+        user_message = strip_leading_quote_context(user_message)
         if is_plain_progress_update(user_message):
             return False
         text = str(user_message or "").lower()

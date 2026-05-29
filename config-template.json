@@ -189,6 +189,7 @@
   "social_bridge_auto_send": true,
   "social_bridge_max_users": 100,
   "social_bridge_pending_retention_days": 30,
+  "short_contextual_reply_keep_turns": 2,
   "external_reply_inject_to_agent_context": true,
   "agent_max_context_tokens": 50000,
   "agent_max_context_turns": 20,
