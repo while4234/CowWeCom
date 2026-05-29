@@ -277,12 +277,11 @@ class DiscordChannel(ChatChannel):
         self.guild_id = str(conf().get("discord_guild_id") or "").strip()
         self.allowed_channel_ids = set(_as_str_list(conf().get("discord_allowed_channel_ids", [])))
         self.ephemeral_replies = _is_truthy(conf().get("discord_ephemeral_replies", False))
-        self.message_content_enabled = _is_truthy(conf().get("discord_message_content_enabled", False))
+        self.message_content_enabled = True
 
         intents = discord.Intents.default()
-        if self.message_content_enabled:
-            intents.message_content = True
-            intents.messages = True
+        intents.message_content = True
+        intents.messages = True
         proxy_url = _discord_proxy_url()
         bot_options = {"command_prefix": "!", "intents": intents}
         if proxy_url:
@@ -329,8 +328,6 @@ class DiscordChannel(ChatChannel):
         @bot.event
         async def on_message(message):
             if getattr(message.author, "bot", False):
-                return
-            if not self.message_content_enabled:
                 return
             await self._handle_message(message)
 

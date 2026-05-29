@@ -333,7 +333,7 @@ Discord 通道独立于微信和企业微信，适合把 CowCli 管理命令和 
 
 也可以在 Web 控制台的「通道」页选择 Discord，填写 Bot Token、Guild ID、Admin User ID 和允许的频道 ID 后连接。Bot 启动时会同步原生 Slash Commands：保留 `help`、`status`、`backend`、`config`、`skill`、`memory`、`knowledge`、`voice`、`updates`、`tokens`、`ledger` 等 CowCli 常用项目命令，并过滤无关历史命令。Grok 媒体入口统一为 `/grok-gen-image`、`/grok-gen-video`、`/grok-direct-gen-image` 和 `/grok-direct-gen-video`；四个命令的图片附件都是可选项，不上传就是文生图/文生视频，上传就是图生图/图生视频。图片质量可选 `speed` 或 `quality`，视频时长可选 `6s` 或 `10s`，分辨率可选 `480p` 或 `720p`。配置 `discord_guild_id` 时，`discord_prune_global_commands_on_startup=true` 会在启动同步前清理历史全局 Slash Commands，避免旧的 `codex-app`、`imagine`、`image-to-image` 等残留。
 
-如果本机 Chrome 通过 Clash、V2Ray 等代理访问 Discord，而 CowAgent 后台显示 `Cannot connect to host discord.com:443`，请设置 `discord_proxy` 或环境变量 `DISCORD_PROXY`，例如 `http://127.0.0.1:7897`。如果需要让 Discord 普通消息或图片附件进入同会话上下文，可开启 `discord_message_content_enabled=true`，同时在 Discord Developer Portal 为 Bot 开启 Message Content Intent；默认保持关闭，仅使用原生 Slash Commands。
+如果本机 Chrome 通过 Clash、V2Ray 等代理访问 Discord，而 CowAgent 后台显示 `Cannot connect to host discord.com:443`，请设置 `discord_proxy` 或环境变量 `DISCORD_PROXY`，例如 `http://127.0.0.1:7897`。Discord 现在会直接处理普通文本消息和图片附件，不再只靠原生 Slash Commands；仍然需要在 Discord Developer Portal 为 Bot 开启 Message Content Intent。
 
 ## Web 控制台
 
@@ -532,6 +532,8 @@ CowWeCom/
 
 ### 2026-05-29
 
+- Web 模型配置页删除了“模型后端/切换对象/保存后端”区块和对应接口，普通厂商继续在上方“模型配置”里保存；DeepSeek 这类普通后端仍然是填 API Key/Base 后点绿色“保存”，不是底部那块后端切换按钮。
+- Discord 现在默认会把普通文本和图片附件当作正常聊天消息处理，不再只依赖 Slash Commands；仍需要在 Discord Developer Portal 为 Bot 开启 Message Content Intent。
 - Grok 升级为独立受限模型后端：管理员可在 Web 端添加/保存后端 profile，白名单用户可使用个人 Grok 后端，普通用户继续共用全局 GPT 后端池且不能切换或感知后端。
 - 每日 00:00 自动切换只处理全局 GPT 后端；管理员/白名单用户的个人后端选择不会影响普通用户，Grok 后端也不再接收思考深度切换参数。
 - “当前后端”状态和当前后端额度查询会按发起人的有效后端展示：普通用户看到共享 GPT 后端，管理员/白名单用户切到 Grok 后看到自己的 Grok，不再误报全局 CAPI 月卡。

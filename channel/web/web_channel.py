@@ -1638,12 +1638,9 @@ class ConfigHandler:
 
             raw_pwd = local_config.get("web_password", "")
             masked_pwd = ("*" * len(raw_pwd)) if raw_pwd else ""
-            from common.llm_backend_router import available_actor_backends, get_llm_backend_config, load_state, status_snapshot
+            from common.llm_backend_router import status_snapshot
             admin_profile = self._web_admin_profile_or_default()
             backend_status = status_snapshot(admin_profile)
-            llm_cfg = get_llm_backend_config()
-            restricted = llm_cfg.get("restricted_backends") if isinstance(llm_cfg.get("restricted_backends"), dict) else {}
-            state = load_state()
             display_model = backend_status.get("effective_model") if backend_status.get("current_backend") == "codex" else local_config.get("model", "")
             display_bot_type = "codex" if backend_status.get("current_backend") == "codex" else (
                 "openai" if local_config.get("bot_type") == "chatGPT" else local_config.get("bot_type", "")
@@ -1667,12 +1664,6 @@ class ConfigHandler:
                 "api_keys": api_keys_masked,
                 "providers": providers,
                 "llm_backend": backend_status,
-                "model_backends": {
-                    "profiles": self._safe_backend_profiles(llm_cfg),
-                    "available_for_admin": available_actor_backends(admin_profile),
-                    "restricted_whitelist": restricted.get("whitelist") or [],
-                    "user_overrides": state.get("user_backend_overrides", {}) if isinstance(state.get("user_backend_overrides"), dict) else {},
-                },
                 "web_password_masked": masked_pwd,
                 "grok_gray_enabled": bool(local_config.get("grok_gray_enabled", False)),
             }, ensure_ascii=False)
@@ -1689,13 +1680,7 @@ class ConfigHandler:
                 return json.dumps({"status": "error", "message": "invalid request body"})
             updates = data.get("updates", {})
             updates = updates if isinstance(updates, dict) else {}
-            backend_profile_update = data.get("llm_backend_provider")
-            actor_backend_update = data.get("actor_backend")
-            if backend_profile_update is not None and not isinstance(backend_profile_update, dict):
-                return json.dumps({"status": "error", "message": "invalid backend provider payload"})
-            if actor_backend_update is not None and not isinstance(actor_backend_update, dict):
-                return json.dumps({"status": "error", "message": "invalid actor backend payload"})
-            if not updates and backend_profile_update is None and actor_backend_update is None:
+            if not updates:
                 return json.dumps({"status": "error", "message": "no updates provided"})
 
             local_config = conf()
@@ -1730,8 +1715,7 @@ class ConfigHandler:
                 applied[key] = value
 
             if not applied and not codex_selected:
-                if backend_profile_update is None and actor_backend_update is None:
-                    return json.dumps({"status": "error", "message": "no valid keys to update"})
+                return json.dumps({"status": "error", "message": "no valid keys to update"})
 
             config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__)))), "config.json")
@@ -1759,57 +1743,6 @@ class ConfigHandler:
                 applied["actor_backend"] = {"target": "__admin__", "backend": "codex"}
                 if codex_model:
                     applied["codex_model"] = codex_model
-            if backend_profile_update is not None:
-                from common.llm_backend_router import BACKEND_GROK, get_llm_backend_config
-
-                llm_cfg = get_llm_backend_config()
-                backend = self._backend_profile_id(backend_profile_update.get("backend"))
-                if not backend:
-                    return json.dumps({"status": "error", "message": "unsupported backend"})
-                providers_cfg = llm_cfg.setdefault("providers", {})
-                provider_cfg = providers_cfg.setdefault(backend, {})
-                for src_key, dst_key in (
-                    ("label", "label"),
-                    ("model", "model"),
-                    ("api_base", "api_base"),
-                    ("wire_api", "wire_api"),
-                    ("auth", "auth"),
-                ):
-                    value = backend_profile_update.get(src_key)
-                    if value is not None:
-                        provider_cfg[dst_key] = str(value).strip()
-                local_config["llm_backend"] = llm_cfg
-                file_cfg["llm_backend"] = llm_cfg
-                applied["llm_backend_provider"] = backend
-                if backend == BACKEND_GROK:
-                    model = str(provider_cfg.get("model") or "").strip()
-                    api_base = str(provider_cfg.get("api_base") or "").strip()
-                    wire_api = str(provider_cfg.get("wire_api") or "").strip()
-                    if model:
-                        local_config["grok_model"] = model
-                        file_cfg["grok_model"] = model
-                    if api_base:
-                        local_config["grok_api_base"] = api_base
-                        file_cfg["grok_api_base"] = api_base
-                    if wire_api:
-                        local_config["grok_wire_api"] = wire_api
-                        file_cfg["grok_wire_api"] = wire_api
-            if actor_backend_update is not None:
-                from common.llm_backend_router import set_user_backend_override
-
-                target_profile = self._backend_target_profile(actor_backend_update.get("target"))
-                if target_profile is None:
-                    return json.dumps({"status": "error", "message": "backend target is required"})
-                set_user_backend_override(
-                    target_profile,
-                    actor_backend_update.get("backend"),
-                    manual=True,
-                    reason="web_config",
-                )
-                applied["actor_backend"] = {
-                    "target": actor_backend_update.get("target"),
-                    "backend": actor_backend_update.get("backend"),
-                }
             file_cfg.update(applied)
             file_cfg.pop("llm_backend_current", None)
             file_cfg.pop("codex_model", None)
@@ -1823,7 +1756,7 @@ class ConfigHandler:
             # Reset Bridge so that bot routing reflects the new config.
             # Without this, Bridge keeps its cached bot instance (e.g. LinkAIBot)
             # even after the user switches bot_type / use_linkai / model in UI.
-            bridge_routing_keys = {"bot_type", "use_linkai", "model", "llm_backend_current", "llm_backend_provider", "actor_backend"}
+            bridge_routing_keys = {"bot_type", "use_linkai", "model", "llm_backend_current"}
             if any(k in applied for k in bridge_routing_keys):
                 try:
                     from bridge.bridge import Bridge

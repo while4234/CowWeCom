@@ -407,7 +407,7 @@ available_setting = {
     "discord_proxy": "",  # 可选：Discord 连接代理，例如 http://127.0.0.1:7897；也可使用 DISCORD_PROXY 环境变量
     "discord_command_sync_on_startup": True,  # 启动时同步原生 Slash Commands
     "discord_prune_global_commands_on_startup": True,  # 配置 Guild 时清理历史全局 Slash Commands
-    "discord_message_content_enabled": False,  # 可选：开启普通消息/附件处理，需要 Discord Message Content Intent
+    "discord_message_content_enabled": True,  # 兼容旧配置字段；Discord 普通文本现在默认按聊天消息处理，但仍需开启 Message Content Intent
     "discord_ephemeral_replies": False,  # Slash Command 回复是否仅调用者可见
     # 微信配置
     "weixin_token": "",  # 微信登录后获取的bot_token，留空则启动时自动扫码登录

@@ -293,6 +293,34 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertEqual(context["_discord_channel_id"], "300")
         self.assertEqual(context["_discord_guild_id"], "200")
 
+    def test_message_event_forwards_plain_text_without_message_content_flag(self):
+        async def run():
+            channel = _discord_channel_instance()
+            channel.message_content_enabled = False
+            captured = {}
+
+            class FakeBot:
+                def event(self, callback):
+                    captured[callback.__name__] = callback
+                    return callback
+
+            async def fake_handle_message(message):
+                captured["message"] = message
+
+            channel._handle_message = fake_handle_message
+            channel._register_bot_events(FakeBot())
+
+            message = types.SimpleNamespace(
+                author=types.SimpleNamespace(bot=False),
+                content="hello discord",
+            )
+            await captured["on_message"](message)
+            return captured
+
+        captured = asyncio.run(run())
+        self.assertIn("message", captured)
+        self.assertEqual(captured["message"].content, "hello discord")
+
     @patch("channel.discord.discord_channel.PluginManager")
     def test_run_cow_cli_command_invokes_loaded_plugin(self, manager_cls):
         channel = _discord_channel_instance()

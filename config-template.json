@@ -179,7 +179,7 @@
   "discord_proxy": "",
   "discord_command_sync_on_startup": true,
   "discord_prune_global_commands_on_startup": true,
-  "discord_message_content_enabled": false,
+  "discord_message_content_enabled": true,
   "discord_ephemeral_replies": false,
   "weixin_instances": {},
   "web_host": "",
