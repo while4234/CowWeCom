@@ -2,6 +2,7 @@ from models.bot_factory import create_bot
 from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
 from common import const
+from common.image_generation_routing import explicit_gpt_image_requested
 from common.log import logger
 from common.singleton import singleton
 from config import conf
@@ -135,10 +136,13 @@ class Bridge(object):
                 if is_grok_video_provider():
                     return generate_reply(query, context)
             if context and context.type == ContextType.IMAGE_CREATE:
+                explicit_gpt_image = explicit_gpt_image_requested(query)
                 from models.grok.grok_image import generate_reply, is_grok_image_provider
 
-                if is_grok_image_provider():
+                if not explicit_gpt_image and (task_backend == BACKEND_GROK or is_grok_image_provider()):
                     return generate_reply(query, context)
+                if explicit_gpt_image and task_backend == BACKEND_GROK:
+                    task_backend = get_current_backend()
             if not (context and context.get("is_scheduled_task")):
                 note_user_visible_model_call(task_backend, request_kind="chat_reply")
             if task_backend == BACKEND_GROK:

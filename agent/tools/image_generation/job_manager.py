@@ -21,6 +21,7 @@ from common.image_prompt_enhancer import (
     record_prompt_history,
     redact_hidden_image_prompt_text,
 )
+from common.image_generation_routing import default_image_runtime_for_profile
 from common.log import logger
 from common.utils import expand_path
 from config import conf
@@ -133,7 +134,7 @@ class ImageGenerationJobManager:
             getattr(profile, "memory_user_id", "")
             or self._context_get(context, "memory_user_id", "unknown")
         )
-        job_args = self._clean_args(args)
+        job_args = self._clean_args(args, profile=profile)
         dedupe_key = (actor_id, self._args_signature(job_args))
         now = time.time()
 
@@ -454,13 +455,16 @@ class ImageGenerationJobManager:
         except (TypeError, ValueError):
             return None
 
-    def _clean_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def _clean_args(self, args: Dict[str, Any], profile: Any = None) -> Dict[str, Any]:
         allowed = ("prompt", "size", "aspect_ratio", "quality", "image_url", "runtime")
         cleaned = {k: v for k, v in (args or {}).items() if k in allowed and v not in (None, "")}
         cleaned["prompt"] = str(cleaned.get("prompt", "")).strip()
-        runtime = self._configured_runtime()
-        if runtime:
-            cleaned.setdefault("runtime", runtime)
+        if not cleaned.get("runtime"):
+            cleaned["runtime"] = default_image_runtime_for_profile(
+                cleaned["prompt"],
+                profile,
+                configured_runtime=self._configured_runtime(),
+            )
         return cleaned
 
     def _ensure_default_broker_env(self, env: Dict[str, str], runtime: Any = None) -> None:

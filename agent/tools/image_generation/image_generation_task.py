@@ -41,9 +41,12 @@ class ImageGenerationTaskTool(BaseTool):
             "runtime": {
                 "type": "string",
                 "description": (
-                    "Optional provider runtime. Leave omitted for the default Codex image runtime. "
-                    "Pass grok only when the user explicitly asks for Grok, xAI, X.ai, or Grok account image generation. "
-                    "Do not pass grok just because the user asks for quality, speed, high quality, or a quick draft."
+                    "Optional provider runtime. Leave omitted by default; the background worker follows the active "
+                    "model backend, so Grok backend users generate images with Grok and GPT backend users use the "
+                    "default Codex/GPT image runtime. Pass codex_auth only when a Grok-backend user explicitly asks "
+                    "for GPT/OpenAI/Codex image generation. Pass grok when the user explicitly asks for Grok, xAI, "
+                    "X.ai, or Grok account image generation. Do not switch runtime just because the user asks for "
+                    "quality, speed, high quality, or a quick draft."
                 ),
             },
             "image_url": {

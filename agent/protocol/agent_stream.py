@@ -20,6 +20,7 @@ from common.llm_backend_router import (
     BACKEND_CAPI_MONTHLY,
     BACKEND_CODEX,
     BACKEND_GROK,
+    backend_supports_reasoning_effort,
     get_current_backend,
     is_capi_quota_exhausted_error,
     is_capi_runtime_fallback_error,
@@ -397,7 +398,7 @@ class AgentStreamExecutor:
         logging and reasoning-update event emission across all channels.
         """
         from config import conf
-        return bool(conf().get("enable_thinking", False))
+        return bool(conf().get("enable_thinking", False)) and backend_supports_reasoning_effort(self._active_backend())
 
     def _should_render_thinking_inline(self) -> bool:
         """Whether ``<think>...</think>`` blocks embedded directly in ``content``
@@ -409,7 +410,11 @@ class AgentStreamExecutor:
         """
         from config import conf
         channel_type = getattr(self.model, 'channel_type', '') or ''
-        return conf().get("enable_thinking", False) and channel_type == 'web'
+        return (
+            conf().get("enable_thinking", False)
+            and channel_type == 'web'
+            and backend_supports_reasoning_effort(self._active_backend())
+        )
 
     def _filter_think_tags(self, text: str) -> str:
         """
@@ -825,7 +830,11 @@ class AgentStreamExecutor:
         thinking_enabled = self._is_thinking_enabled()
         self._request_runtime_context = self._build_request_context_text(user_message)
         self._reasoning_effort_decision = resolve_reasoning_effort_for_task(user_message, self.model)
-        if self._reasoning_effort_decision is None and self._current_task_kind == "knowledge":
+        if (
+            self._reasoning_effort_decision is None
+            and self._current_task_kind == "knowledge"
+            and backend_supports_reasoning_effort(self._active_backend())
+        ):
             self._reasoning_effort_decision = self._knowledge_reasoning_effort_decision()
         self._voice_mode_decision = resolve_grok_voice_mode_decision(
             self.model,
@@ -1304,10 +1313,11 @@ class AgentStreamExecutor:
             if self._voice_mode_decision.max_output_tokens:
                 request.max_tokens = self._voice_mode_decision.max_output_tokens
                 request.max_output_tokens = self._voice_mode_decision.max_output_tokens
-            request.reasoning_effort = self._voice_mode_decision.selected_effort
-            request.reasoning_effort_locked = True
-            request.reasoning_effort_decision_source = self._voice_mode_decision.source
-        elif self._reasoning_effort_decision:
+            if backend_supports_reasoning_effort(getattr(request, "backend", "") or self._active_backend()):
+                request.reasoning_effort = self._voice_mode_decision.selected_effort
+                request.reasoning_effort_locked = True
+                request.reasoning_effort_decision_source = self._voice_mode_decision.source
+        elif self._reasoning_effort_decision and backend_supports_reasoning_effort(getattr(request, "backend", "") or self._active_backend()):
             request.reasoning_effort = self._reasoning_effort_decision.selected_effort
             request.reasoning_effort_locked = True
             request.reasoning_effort_decision_source = self._reasoning_effort_decision.decision_source

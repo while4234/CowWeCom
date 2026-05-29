@@ -31,6 +31,7 @@ from common.llm_backend_router import (
     BACKEND_GROK,
     GPT_BACKENDS,
     USER_BACKEND_DEFAULT,
+    backend_supports_reasoning_effort,
     can_use_restricted_backend,
     get_codex_model,
     get_current_backend,
@@ -216,6 +217,30 @@ class AgentLLMModel(LLMModel):
     def _is_grok_bot_type(bot_type: str) -> bool:
         return str(bot_type or "").strip().lower() in {const.GROK, const.XAI}
 
+    def _route_supports_reasoning_effort(self, backend: str, bot_type: str) -> bool:
+        return (not self._is_grok_bot_type(bot_type)) and backend_supports_reasoning_effort(backend)
+
+    def _apply_reasoning_kwargs(self, kwargs: dict, request: LLMRequest, route_backend: str, bot_type: str) -> None:
+        if not self._route_supports_reasoning_effort(route_backend, bot_type):
+            return
+
+        thinking_enabled = bool(conf().get("enable_thinking", False))
+        kwargs['thinking'] = (
+            {"type": "enabled"} if thinking_enabled
+            else {"type": "disabled"}
+        )
+        request_effort = getattr(request, 'reasoning_effort', None)
+        effort_locked = bool(getattr(request, 'reasoning_effort_locked', False))
+        if effort_locked:
+            kwargs['reasoning_effort_locked'] = True
+            effort = request_effort
+        elif thinking_enabled or request_effort:
+            effort = request_effort or conf().get("model_reasoning_effort") or conf().get("reasoning_effort", "high")
+        else:
+            effort = None
+        if effort in ("none", "low", "medium", "high", "xhigh", "max"):
+            kwargs['reasoning_effort'] = effort
+
     def _resolve_model_for_bot_type(self, cur_bot_type: str, requested_model: Optional[str] = None) -> str:
         if self._is_grok_bot_type(cur_bot_type):
             model = get_grok_model()
@@ -330,30 +355,7 @@ class AgentLLMModel(LLMModel):
                 if user_label:
                     kwargs['user_label'] = user_label
 
-                # Thinking mode is a global toggle independent of the channel.
-                # IM channels (WeChat/WeCom/DingTalk/Feishu) won't render the
-                # reasoning trace, but still benefit from the higher answer
-                # quality the thinking pass produces.
-                from config import conf
-                thinking_enabled = bool(conf().get("enable_thinking", False))
-                kwargs['thinking'] = (
-                    {"type": "enabled"} if thinking_enabled
-                    else {"type": "disabled"}
-                )
-                # Reasoning effort is only meaningful when thinking is on.
-                # Bots that don't understand the kwarg drop it silently.
-                request_effort = getattr(request, 'reasoning_effort', None)
-                effort_locked = bool(getattr(request, 'reasoning_effort_locked', False))
-                if effort_locked:
-                    kwargs['reasoning_effort_locked'] = True
-                if effort_locked:
-                    effort = request_effort
-                elif thinking_enabled or request_effort:
-                    effort = request_effort or conf().get("model_reasoning_effort") or conf().get("reasoning_effort", "high")
-                else:
-                    effort = None
-                if effort in ("none", "low", "medium", "high", "xhigh", "max"):
-                    kwargs['reasoning_effort'] = effort
+                self._apply_reasoning_kwargs(kwargs, request, route_backend, cur_bot_type)
 
                 self._record_project_optimizer_request(request, kwargs)
                 self._note_user_visible_model_call(request)
@@ -418,30 +420,7 @@ class AgentLLMModel(LLMModel):
                 if user_label:
                     kwargs['user_label'] = user_label
 
-                # Thinking mode is a global toggle independent of the channel.
-                # IM channels (WeChat/WeCom/DingTalk/Feishu) won't render the
-                # reasoning trace, but still benefit from the higher answer
-                # quality the thinking pass produces.
-                from config import conf
-                thinking_enabled = bool(conf().get("enable_thinking", False))
-                kwargs['thinking'] = (
-                    {"type": "enabled"} if thinking_enabled
-                    else {"type": "disabled"}
-                )
-                # Reasoning effort is only meaningful when thinking is on.
-                # Bots that don't understand the kwarg drop it silently.
-                request_effort = getattr(request, 'reasoning_effort', None)
-                effort_locked = bool(getattr(request, 'reasoning_effort_locked', False))
-                if effort_locked:
-                    kwargs['reasoning_effort_locked'] = True
-                if effort_locked:
-                    effort = request_effort
-                elif thinking_enabled or request_effort:
-                    effort = request_effort or conf().get("model_reasoning_effort") or conf().get("reasoning_effort", "high")
-                else:
-                    effort = None
-                if effort in ("none", "low", "medium", "high", "xhigh", "max"):
-                    kwargs['reasoning_effort'] = effort
+                self._apply_reasoning_kwargs(kwargs, request, route_backend, cur_bot_type)
 
                 self._record_project_optimizer_request(request, kwargs)
                 self._note_user_visible_model_call(request)

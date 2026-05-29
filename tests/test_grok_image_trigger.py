@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from bridge.context import Context, ContextType
+from bridge.bridge import Bridge
 from bridge.reply import Reply, ReplyType
 from channel.channel import Channel
 from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
@@ -83,6 +84,54 @@ def test_non_grok_image_create_keeps_agent_mode(monkeypatch):
 
     assert TestChannel().build_reply_content("draw normally", context) == "agent-reply"
     assert called == [("draw normally", context, False)]
+
+
+def test_active_grok_profile_image_create_routes_to_grok_without_text_to_image_flag(monkeypatch):
+    bridge_cls = _singleton_class(Bridge)
+    bridge = object.__new__(bridge_cls)
+    context = Context(ContextType.IMAGE_CREATE, "draw a cat")
+    context["_actor_profile"] = SimpleNamespace(actor_id="admin", is_admin=True)
+    calls = []
+
+    def fake_grok_reply(prompt, ctx):
+        calls.append((prompt, ctx))
+        return Reply(ReplyType.IMAGE, "grok.png")
+
+    monkeypatch.setattr("bridge.bridge.get_current_backend_for_profile", lambda profile: "grok")
+    monkeypatch.setattr("models.grok.grok_image.is_grok_image_provider", lambda: False)
+    monkeypatch.setattr("models.grok.grok_image.generate_reply", fake_grok_reply)
+
+    reply = bridge.fetch_reply_content("draw a cat", context)
+
+    assert reply.type == ReplyType.IMAGE
+    assert reply.content == "grok.png"
+    assert calls == [("draw a cat", context)]
+
+
+def test_active_grok_profile_image_create_explicit_gpt_bypasses_grok(monkeypatch):
+    bridge_cls = _singleton_class(Bridge)
+    bridge = object.__new__(bridge_cls)
+    context = Context(ContextType.IMAGE_CREATE, "Use GPT to draw a cat")
+    context["_actor_profile"] = SimpleNamespace(actor_id="admin", is_admin=True)
+    grok_calls = []
+
+    class FakeChatBot:
+        def reply(self, query, ctx):
+            return Reply(ReplyType.IMAGE_URL, "gpt-image-url")
+
+    monkeypatch.setattr("bridge.bridge.get_current_backend_for_profile", lambda profile: "grok")
+    monkeypatch.setattr("common.llm_backend_router.get_current_backend", lambda: "capi")
+    monkeypatch.setattr("common.llm_backend_quota_refresh.note_user_visible_model_call", lambda *args, **kwargs: None)
+    monkeypatch.setattr("common.capi_monthly_monitor.maybe_check_capi_monthly_after_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr("models.grok.grok_image.is_grok_image_provider", lambda: False)
+    monkeypatch.setattr("models.grok.grok_image.generate_reply", lambda *args, **kwargs: grok_calls.append(args))
+    monkeypatch.setattr(bridge, "get_bot", lambda typename: FakeChatBot())
+
+    reply = bridge.fetch_reply_content("Use GPT to draw a cat", context)
+
+    assert reply.type == ReplyType.IMAGE_URL
+    assert reply.content == "gpt-image-url"
+    assert grok_calls == []
 
 
 def test_wecom_bot_declares_image_reply_supported():

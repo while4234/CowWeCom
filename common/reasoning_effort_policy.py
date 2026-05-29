@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from common.llm_backend_router import get_current_backend, get_effective_model
+from common.llm_backend_router import backend_supports_reasoning_effort, get_current_backend, get_effective_model
 from common.llm_usage_tracker import stable_metadata_hash
 from common.log import logger
 from common.utils import expand_path
@@ -93,6 +93,8 @@ def resolve_reasoning_effort_for_task(user_message: str, model_adapter: Any) -> 
         return None
 
     active_backend = _model_active_backend(model_adapter)
+    if not backend_supports_reasoning_effort(active_backend):
+        return None
     main_model = get_effective_model(active_backend)
     chat_scope = _chat_scope(model_adapter)
     input_is_voice = _model_input_is_voice(model_adapter)

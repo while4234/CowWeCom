@@ -12,7 +12,7 @@ from bridge.agent_bridge import AgentBridge, AgentLLMModel
 from bridge.context import Context
 from bridge.reply import ReplyType
 from common import reasoning_effort_policy
-from common.llm_backend_router import BACKEND_CAPI
+from common.llm_backend_router import BACKEND_CAPI, BACKEND_GROK
 from common.reasoning_effort_policy import (
     classify_local_task,
     resolve_reasoning_effort_for_task,
@@ -77,6 +77,12 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertEqual(decision.selected_effort, "xhigh")
         self.assertEqual(decision.decision_source, "local")
         self.assertEqual(model.calls, [])
+
+    def test_policy_disabled_for_grok_backend(self):
+        model = FakePolicyModel()
+        model._active_backend = lambda: BACKEND_GROK
+
+        self.assertIsNone(resolve_reasoning_effort_for_task("write a python script", model))
 
     def test_local_simple_im_uses_medium(self):
         effort, rule = classify_local_task("你好")
@@ -721,6 +727,25 @@ class TestAgentLLMModelReasoningEffort(unittest.TestCase):
 
         self.assertEqual(load_state().get("quota_refresh", {}), {})
         schedule.assert_not_called()
+
+    def test_grok_route_does_not_forward_thinking_or_reasoning_effort(self):
+        conf()["enable_thinking"] = True
+        conf()["model_reasoning_effort"] = "xhigh"
+        adapter = AgentLLMModel(None)
+        fake_bot = FakeBot()
+        request = LLMRequest(
+            messages=[{"role": "user", "content": "x"}],
+            reasoning_effort="medium",
+        )
+        request.reasoning_effort_locked = True
+
+        with patch("bridge.agent_bridge.get_current_backend_for_profile", return_value=BACKEND_GROK), \
+             patch.object(adapter, "_create_bot_for_route", return_value=fake_bot):
+            adapter.call(request)
+
+        self.assertNotIn("thinking", fake_bot.kwargs)
+        self.assertNotIn("reasoning_effort", fake_bot.kwargs)
+        self.assertNotIn("reasoning_effort_locked", fake_bot.kwargs)
 
 
 class FakeOpenAICompatibleBot(OpenAICompatibleBot):

@@ -17,10 +17,14 @@ generation completes.
 
 Provider routing is strict:
 
-- Use the default Codex image runtime when the user asks for image generation
-  without naming a provider.
+- Leave `runtime` omitted when the user asks for image generation without naming
+  a provider. The background worker follows the active model backend: Grok
+  backend users generate with Grok, while GPT backend users use the default
+  Codex/GPT image runtime.
 - Do not switch providers because the user says quality, high quality, speed,
   fast, draft, or similar preference words.
+- Pass `"runtime": "codex_auth"` only when a Grok-backend user explicitly asks
+  for GPT, OpenAI, Codex, or ChatGPT image generation.
 - Pass `"runtime": "grok"` only when the user explicitly asks to use Grok, xAI,
   X.ai, a Grok account, or the Grok web image generator.
 - Inside Grok runtime, quality mode is also explicit-only: use it only when the
@@ -194,7 +198,7 @@ Parameters:
 | `quality` | string | no | auto | `low` / `medium` / `high` |
 | `size` | string | no | auto | `1K`, `2K`, `4K`, or pixel value such as `1024x1024` |
 | `aspect_ratio` | string | no | null | `1:1`, `3:2`, `2:3`, `16:9`, `9:16` |
-| `runtime` | string | no | env | Omit for the default Codex runtime; use `grok` only for explicit Grok/xAI requests |
+| `runtime` | string | no | active backend/env | Omit by default; use `codex_auth` only for explicit GPT/OpenAI/Codex image requests on Grok backend, and `grok` only for explicit Grok/xAI requests |
 
 On success:
 

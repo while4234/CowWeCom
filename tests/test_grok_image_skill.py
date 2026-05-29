@@ -49,12 +49,12 @@ def make_profile(root: str):
 
 
 class TestGrokImageSkill(unittest.TestCase):
-    def test_tool_schema_keeps_grok_runtime_explicit_only(self):
+    def test_tool_schema_describes_active_backend_default(self):
         runtime = ImageGenerationTaskTool.params["properties"]["runtime"]
 
-        self.assertIn("default Codex", runtime["description"])
-        self.assertIn("explicitly asks for Grok", runtime["description"])
-        self.assertIn("Do not pass grok just because", runtime["description"])
+        self.assertIn("follows the active model backend", runtime["description"])
+        self.assertIn("Grok backend users", runtime["description"])
+        self.assertIn("explicitly asks for GPT", runtime["description"])
 
     def test_tool_passes_explicit_grok_runtime_to_background_job(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -78,12 +78,43 @@ class TestGrokImageSkill(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             manager = ImageGenerationJobManager(script_path=str(SCRIPT), workspace_root=tmp, global_workers=1)
             try:
-                cleaned = manager._clean_args({"prompt": "high quality quick sticker", "quality": "high"})
+                cleaned = manager._clean_args(
+                    {"prompt": "high quality quick sticker", "quality": "high"},
+                    profile=make_profile(tmp),
+                )
             finally:
                 manager.shutdown(wait=False)
 
             self.assertEqual(cleaned["runtime"], "codex_auth")
             self.assertNotEqual(cleaned["runtime"], "grok")
+
+    def test_job_manager_defaults_to_grok_runtime_for_active_grok_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = ImageGenerationJobManager(script_path=str(SCRIPT), workspace_root=tmp, global_workers=1)
+            try:
+                with patch("common.llm_backend_router.get_current_backend_for_profile", return_value="grok"):
+                    cleaned = manager._clean_args(
+                        {"prompt": "draw a cinematic portrait", "quality": "high"},
+                        profile=make_profile(tmp),
+                    )
+            finally:
+                manager.shutdown(wait=False)
+
+            self.assertEqual(cleaned["runtime"], "grok")
+
+    def test_job_manager_uses_codex_when_active_grok_prompt_explicitly_requests_gpt_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = ImageGenerationJobManager(script_path=str(SCRIPT), workspace_root=tmp, global_workers=1)
+            try:
+                with patch("common.llm_backend_router.get_current_backend_for_profile", return_value="grok"):
+                    cleaned = manager._clean_args(
+                        {"prompt": "Use GPT to draw a cinematic portrait", "quality": "high"},
+                        profile=make_profile(tmp),
+                    )
+            finally:
+                manager.shutdown(wait=False)
+
+            self.assertEqual(cleaned["runtime"], "codex_auth")
 
     def test_generate_script_builds_grok_provider_only_for_grok_runtime(self):
         module = load_generate_module()
@@ -158,11 +189,11 @@ class TestGrokImageSkill(unittest.TestCase):
         self.assertIs(console_handler.stream, sys.__stderr__)
         self.assertIn(original_stream, module._DETACHED_COWWECOM_LOG_STREAMS)
 
-    def test_grok_skill_doc_forbids_quality_only_provider_switch(self):
+    def test_grok_skill_doc_describes_active_backend_default(self):
         text = (PROJECT_ROOT / "skills" / "grok-image-generation" / "SKILL.md").read_text(encoding="utf-8")
 
-        self.assertIn("If the user only says high quality", text)
-        self.assertIn("keep the default Codex runtime", text)
+        self.assertIn("active model backend is Grok", text)
+        self.assertIn('"runtime": "codex_auth"', text)
         self.assertIn('"runtime": "grok"', text)
 
 

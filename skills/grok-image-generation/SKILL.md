@@ -1,6 +1,6 @@
 ---
 name: grok-image-generation
-description: Use only when the user explicitly asks to generate an image with Grok, xAI, X.ai, a Grok account, or the Grok web image generator. Do not use this skill for ordinary image requests that only mention quality or speed preferences.
+description: Use when the active model backend is Grok or when the user explicitly asks to generate an image with Grok, xAI, X.ai, a Grok account, or the Grok web image generator. Do not use this skill for ordinary image requests from GPT-backend users that only mention quality or speed preferences.
 metadata:
   cowagent:
     always: true
@@ -8,22 +8,27 @@ metadata:
 
 # Grok Image Generation
 
-Use this skill only for explicit Grok/xAI image requests.
+Use this skill for image requests while the active model backend is Grok, or for
+explicit Grok/xAI image requests.
 
 Provider selection rule:
 
 - If the user asks to generate, draw, create, design, or make an image without
-  mentioning Grok, xAI, X.ai, Grok account, or Grok web image generation, use
-  the normal `image-generation` skill and leave `runtime` omitted.
+  mentioning a provider, leave `runtime` omitted. The runtime uses Grok when the
+  user's active model backend is Grok; GPT-backend users stay on the default
+  Codex/GPT image runtime.
 - If the user only says high quality, quality mode, speed mode, fast, quick,
-  draft, or similar preference words, keep the default Codex runtime unless
-  Grok/xAI is also explicitly mentioned.
+  draft, or similar preference words, keep the active backend default. Do not
+  switch a GPT-backend user to Grok, and do not switch a Grok-backend user to
+  GPT.
+- If a Grok-backend user explicitly asks for GPT, OpenAI, Codex, or ChatGPT
+  image generation, use `image_generation_task` with `"runtime": "codex_auth"`.
 - If Grok/xAI is explicitly mentioned, use `image_generation_task` with
   `"runtime": "grok"`.
 
 Grok PR3 supports text-to-image only. For image editing, image fusion, or video,
 tell the user Grok mode is not supported for that operation yet and use the
-default Codex image runtime when the user accepts that path.
+default Codex/GPT image runtime when the user accepts that path.
 
 When using Grok:
 
@@ -57,11 +62,21 @@ Example explicit Grok request:
 }
 ```
 
-Example ordinary request that must remain Codex:
+Example ordinary request on a Grok backend; omit runtime so it stays Grok:
 
 ```json
 {
   "prompt": "Draw a quick cute sticker of a smiling coffee cup",
+  "quality": "speed"
+}
+```
+
+Example explicit GPT image request from a Grok-backend user:
+
+```json
+{
+  "prompt": "Use GPT to draw a quick cute sticker of a smiling coffee cup",
+  "runtime": "codex_auth",
   "quality": "speed"
 }
 ```
