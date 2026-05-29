@@ -976,6 +976,7 @@ class WebChannel(ChatChannel):
             '/api/grok/login/start', 'GrokLoginStartHandler',
             '/api/grok/login/poll', 'GrokLoginPollHandler',
             '/api/grok/login/manual', 'GrokLoginManualHandler',
+            '/api/grok/account/select', 'GrokAccountSelectHandler',
             '/api/grok/logout', 'GrokLogoutHandler',
             '/api/grok/test', 'GrokTestHandler',
             '/api/weixin/qrlogin', 'WeixinQrHandler',
@@ -1130,7 +1131,8 @@ class GrokStatusHandler:
         try:
             from integrations.hermes_xai.auth import get_xai_oauth_status
 
-            return json.dumps(get_xai_oauth_status(), ensure_ascii=False)
+            query = web.input(account_id="")
+            return json.dumps(get_xai_oauth_status(account_id=str(query.get("account_id") or "")), ensure_ascii=False)
         except Exception as e:
             logger.error(f"[GrokOAuth] status API error: {_safe_grok_error(e)}")
             return json.dumps({"logged_in": False, "needs_reauth": True, "message": _safe_grok_error(e)})
@@ -1141,9 +1143,16 @@ class GrokLoginStartHandler:
         _require_auth()
         web.header('Content-Type', 'application/json; charset=utf-8')
         try:
+            try:
+                body = json.loads(web.data() or b"{}")
+            except Exception:
+                body = {}
             from integrations.hermes_xai.auth import start_xai_oauth_login
 
-            payload = start_xai_oauth_login()
+            payload = start_xai_oauth_login(
+                account_name=str(body.get("account_name") or body.get("name") or "").strip(),
+                account_id=str(body.get("account_id") or "").strip(),
+            )
             response = dict(payload)
             response["status"] = "pending"
             return json.dumps(response, ensure_ascii=False)
@@ -1205,11 +1214,38 @@ class GrokLogoutHandler:
         _require_auth()
         web.header('Content-Type', 'application/json; charset=utf-8')
         try:
+            try:
+                body = json.loads(web.data() or b"{}")
+            except Exception:
+                body = {}
             from integrations.hermes_xai.auth import logout_xai_oauth
 
-            return json.dumps({"status": "success", **logout_xai_oauth()}, ensure_ascii=False)
+            return json.dumps(
+                {"status": "success", **logout_xai_oauth(account_id=str(body.get("account_id") or ""))},
+                ensure_ascii=False,
+            )
         except Exception as e:
             logger.error(f"[GrokOAuth] logout error: {_safe_grok_error(e)}")
+            return json.dumps({"status": "error", "message": _safe_grok_error(e)}, ensure_ascii=False)
+
+
+class GrokAccountSelectHandler:
+    def POST(self):
+        _require_auth()
+        web.header('Content-Type', 'application/json; charset=utf-8')
+        try:
+            try:
+                body = json.loads(web.data() or b"{}")
+            except Exception:
+                body = {}
+            account_id = str(body.get("account_id") or "").strip()
+            if not account_id:
+                return json.dumps({"status": "error", "message": "account_id required"}, ensure_ascii=False)
+            from integrations.hermes_xai.auth import select_xai_oauth_account
+
+            return json.dumps({"status": "success", **select_xai_oauth_account(account_id)}, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[GrokOAuth] account select error: {_safe_grok_error(e)}")
             return json.dumps({"status": "error", "message": _safe_grok_error(e)}, ensure_ascii=False)
 
 
@@ -1218,14 +1254,20 @@ class GrokTestHandler:
         _require_auth()
         web.header('Content-Type', 'application/json; charset=utf-8')
         try:
+            try:
+                body = json.loads(web.data() or b"{}")
+            except Exception:
+                body = {}
             from integrations.hermes_xai.xai_http import resolve_xai_http_credentials
 
-            creds = resolve_xai_http_credentials()
+            creds = resolve_xai_http_credentials(account_id=str(body.get("account_id") or ""))
             return json.dumps({
                 "status": "success",
                 "provider": creds.get("provider"),
                 "auth_mode": creds.get("auth_mode"),
                 "base_url": creds.get("base_url"),
+                "account_id": creds.get("account_id"),
+                "account_name": creds.get("account_name"),
             }, ensure_ascii=False)
         except Exception as e:
             logger.error(f"[GrokOAuth] test API error: {_safe_grok_error(e)}")
@@ -1333,13 +1375,7 @@ class ChatHandler:
 class GrokPageHandler:
     def GET(self):
         _require_auth()
-        web.header('Cache-Control', 'no-cache, no-store, must-revalidate')
-        web.header('Pragma', 'no-cache')
-        file_path = os.path.join(os.path.dirname(__file__), 'grok.html')
-        with open(file_path, 'r', encoding='utf-8') as f:
-            html = f.read()
-        cache_bust = str(int(time.time()))
-        return html.replace('assets/js/grok.js', f'assets/js/grok.js?v={cache_bust}')
+        raise web.seeother('/chat')
 
 
 class ConfigHandler:
@@ -1500,7 +1536,7 @@ class ConfigHandler:
         "zhipu_ai_api_key", "dashscope_api_key", "moonshot_api_key",
         "ark_api_key", "minimax_api_key", "linkai_api_key", "custom_api_key", "grok_api_key",
         "grok_model", "grok_wire_api", "grok_proxy", "grok_auth_file", "grok_auth_prefer_oauth",
-        "grok_gray_enabled", "grok_import_hermes_auth", "grok_import_hermes_auth_overwrite",
+        "grok_import_hermes_auth", "grok_import_hermes_auth_overwrite",
         "agent_max_context_tokens", "agent_max_context_turns", "agent_max_steps",
         "agent_development_max_steps", "agent_complex_planning_max_steps",
         "enable_thinking", "web_password",
@@ -1515,13 +1551,19 @@ class ConfigHandler:
 
     def _visible_provider_models(self, local_config):
         providers = OrderedDict(self.PROVIDER_MODELS)
-        if not local_config.get("grok_gray_enabled", False):
-            providers.pop("grok", None)
         return providers
 
     @staticmethod
     def _safe_backend_profiles(llm_cfg):
         providers = llm_cfg.get("providers") if isinstance(llm_cfg.get("providers"), dict) else {}
+        auto_cfg = llm_cfg.get("auto_switch") if isinstance(llm_cfg.get("auto_switch"), dict) else {}
+        raw_fallbacks = auto_cfg.get("fallback_backends") or []
+        if isinstance(raw_fallbacks, str):
+            fallback_ids = {item.strip() for item in raw_fallbacks.split(",") if item.strip()}
+        elif isinstance(raw_fallbacks, (list, tuple, set)):
+            fallback_ids = {str(item).strip() for item in raw_fallbacks if str(item).strip()}
+        else:
+            fallback_ids = set()
         result = {}
         for backend, provider in providers.items():
             if not isinstance(provider, dict):
@@ -1530,11 +1572,127 @@ class ConfigHandler:
                 "label": provider.get("label") or backend,
                 "model": provider.get("model") or "",
                 "api_base": provider.get("api_base") or provider.get("base_url") or "",
+                "api_base_env": provider.get("api_base_env") or "",
+                "api_key_configured": bool(provider.get("api_key") or provider.get("api_key_env")),
+                "api_key_masked": ConfigHandler._mask_key(str(provider.get("api_key") or "")),
+                "api_key_env": provider.get("api_key_env") or "",
                 "wire_api": provider.get("wire_api") or "",
                 "auth": provider.get("auth") or "",
+                "enabled": provider.get("enabled", True) is not False,
+                "request_timeout_seconds": provider.get("request_timeout_seconds", ""),
+                "connectivity_timeout_seconds": provider.get("connectivity_timeout_seconds", ""),
+                "include_in_auto_switch": str(backend) in fallback_ids,
             }
             result[str(backend)] = public
         return result
+
+    @classmethod
+    def _backend_status_payload(cls, profile=None):
+        from common.llm_backend_router import get_llm_backend_config, status_snapshot
+
+        profile = profile or cls._web_admin_profile_or_default()
+        llm_cfg = get_llm_backend_config()
+        backend_status = status_snapshot(profile)
+        backend_status["provider_profiles"] = cls._safe_backend_profiles(llm_cfg)
+        auto_cfg = llm_cfg.get("auto_switch") if isinstance(llm_cfg.get("auto_switch"), dict) else {}
+        backend_status["auto_switch_config"] = {
+            "enabled": bool(auto_cfg.get("enabled", True)),
+            "fallback_backends": list(auto_cfg.get("fallback_backends") or []),
+        }
+        return backend_status
+
+    @staticmethod
+    def _coerce_backend_timeout(value, default=""):
+        if value in (None, ""):
+            return default
+        try:
+            return max(1.0, min(float(value), 600.0))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _normalize_backend_wire_api(value):
+        raw = str(value or "").strip().lower()
+        if raw in {"response", "responses", "openai_responses", "openai-responses"}:
+            return "responses"
+        if raw in {"", "openai", "chat", "chat_completion", "chat-completion", "chat_completions", "chat-completions"}:
+            return "chat_completions"
+        return raw
+
+    @staticmethod
+    def _normalize_fallback_backends(value):
+        if isinstance(value, str):
+            raw_items = [item.strip() for item in value.split(",")]
+        elif isinstance(value, (list, tuple, set)):
+            raw_items = [str(item or "").strip() for item in value]
+        else:
+            raw_items = []
+        result = []
+        for item in raw_items:
+            backend = ConfigHandler._backend_profile_id(item)
+            if backend and backend not in result:
+                result.append(backend)
+        return result
+
+    @classmethod
+    def _apply_llm_backend_provider_update(cls, local_config, file_cfg, update):
+        if not isinstance(update, dict):
+            raise ValueError("llm_backend_provider must be an object")
+        provider_id = cls._backend_profile_id(update.get("id") or update.get("backend") or update.get("provider"))
+        if not provider_id:
+            raise ValueError("backend id is required")
+        if provider_id in {"codex", "grok"}:
+            raise ValueError("codex/grok use dedicated backend settings")
+
+        from common.llm_backend_router import get_llm_backend_config, set_current_backend
+
+        llm_cfg = get_llm_backend_config()
+        providers = llm_cfg.setdefault("providers", {})
+        existing = providers.get(provider_id) if isinstance(providers.get(provider_id), dict) else {}
+        provider = dict(existing or {})
+        provider["label"] = str(update.get("label") or provider.get("label") or provider_id).strip() or provider_id
+        provider["auth"] = "api_key"
+        provider["enabled"] = bool(update.get("enabled", provider.get("enabled", True)))
+
+        for field in ("model", "api_base", "api_key_env", "api_base_env", "wire_api"):
+            if field in update:
+                provider[field] = str(update.get(field) or "").strip()
+        if "wire_api" in update:
+            provider["wire_api"] = cls._normalize_backend_wire_api(update.get("wire_api"))
+        if update.get("api_key"):
+            provider["api_key"] = str(update.get("api_key") or "").strip()
+        elif update.get("clear_api_key"):
+            provider["api_key"] = ""
+
+        request_timeout = cls._coerce_backend_timeout(
+            update.get("request_timeout_seconds"),
+            provider.get("request_timeout_seconds", 120),
+        )
+        connectivity_timeout = cls._coerce_backend_timeout(
+            update.get("connectivity_timeout_seconds"),
+            provider.get("connectivity_timeout_seconds", 12),
+        )
+        provider["request_timeout_seconds"] = request_timeout or 120
+        provider["connectivity_timeout_seconds"] = connectivity_timeout or 12
+        providers[provider_id] = provider
+
+        auto_cfg = llm_cfg.setdefault("auto_switch", {})
+        fallback_backends = cls._normalize_fallback_backends(auto_cfg.get("fallback_backends") or [])
+        if "include_in_auto_switch" in update:
+            include = bool(update.get("include_in_auto_switch"))
+            if include and provider_id not in fallback_backends:
+                fallback_backends.append(provider_id)
+            if not include:
+                fallback_backends = [item for item in fallback_backends if item != provider_id]
+            auto_cfg["fallback_backends"] = fallback_backends
+
+        local_config["llm_backend"] = llm_cfg
+        file_cfg["llm_backend"] = llm_cfg
+        if update.get("set_current"):
+            set_current_backend(provider_id, manual=True, reason="web_backend_provider")
+        safe_profile = cls._safe_backend_profiles(llm_cfg).get(provider_id, {})
+        safe_profile["id"] = provider_id
+        return safe_profile
 
     @staticmethod
     def _backend_profile_id(value: str) -> str:
@@ -1638,9 +1796,14 @@ class ConfigHandler:
 
             raw_pwd = local_config.get("web_password", "")
             masked_pwd = ("*" * len(raw_pwd)) if raw_pwd else ""
-            from common.llm_backend_router import status_snapshot
             admin_profile = self._web_admin_profile_or_default()
-            backend_status = status_snapshot(admin_profile)
+            backend_status = self._backend_status_payload(admin_profile)
+            try:
+                from integrations.hermes_xai.auth import get_xai_oauth_status
+
+                grok_status = get_xai_oauth_status()
+            except Exception as grok_err:
+                grok_status = {"logged_in": False, "needs_reauth": True, "message": _safe_grok_error(grok_err), "accounts": []}
             display_model = backend_status.get("effective_model") if backend_status.get("current_backend") == "codex" else local_config.get("model", "")
             display_bot_type = "codex" if backend_status.get("current_backend") == "codex" else (
                 "openai" if local_config.get("bot_type") == "chatGPT" else local_config.get("bot_type", "")
@@ -1664,8 +1827,9 @@ class ConfigHandler:
                 "api_keys": api_keys_masked,
                 "providers": providers,
                 "llm_backend": backend_status,
+                "grok": grok_status,
+                "grok_accounts": grok_status.get("accounts", []),
                 "web_password_masked": masked_pwd,
-                "grok_gray_enabled": bool(local_config.get("grok_gray_enabled", False)),
             }, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Error getting config: {e}")
@@ -1679,15 +1843,20 @@ class ConfigHandler:
             if not isinstance(data, dict):
                 return json.dumps({"status": "error", "message": "invalid request body"})
             updates = data.get("updates", {})
+            if not updates and "llm_backend_provider" in data:
+                updates = {"llm_backend_provider": data.get("llm_backend_provider")}
             updates = updates if isinstance(updates, dict) else {}
             if not updates:
                 return json.dumps({"status": "error", "message": "no updates provided"})
+            provider_update = updates.pop("llm_backend_provider", None)
 
             local_config = conf()
             applied = {}
-            codex_selected = str(updates.get("bot_type") or "").strip().lower() == const.CODEX
-            codex_model = updates.get("model") if codex_selected else None
-            if codex_selected:
+            selected_bot_type = str(updates.get("bot_type") or "").strip().lower()
+            codex_selected = selected_bot_type == const.CODEX
+            grok_selected = selected_bot_type in {const.GROK, const.XAI}
+            backend_model = updates.get("model") if (codex_selected or grok_selected) else None
+            if codex_selected or grok_selected:
                 updates = dict(updates)
                 updates.pop("bot_type", None)
                 updates.pop("model", None)
@@ -1706,7 +1875,6 @@ class ConfigHandler:
                     "use_linkai",
                     "enable_thinking",
                     "grok_auth_prefer_oauth",
-                    "grok_gray_enabled",
                     "grok_import_hermes_auth",
                     "grok_import_hermes_auth_overwrite",
                 ):
@@ -1714,7 +1882,7 @@ class ConfigHandler:
                 local_config[key] = value
                 applied[key] = value
 
-            if not applied and not codex_selected:
+            if not applied and not codex_selected and not grok_selected and provider_update is None:
                 return json.dumps({"status": "error", "message": "no valid keys to update"})
 
             config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -1730,8 +1898,8 @@ class ConfigHandler:
                 llm_cfg = get_llm_backend_config()
                 providers = llm_cfg.setdefault("providers", {})
                 codex_cfg = providers.setdefault("codex", {})
-                if codex_model:
-                    codex_cfg["model"] = codex_model
+                if backend_model:
+                    codex_cfg["model"] = backend_model
                 local_config["llm_backend"] = llm_cfg
                 file_cfg["llm_backend"] = llm_cfg
                 set_user_backend_override(
@@ -1741,9 +1909,36 @@ class ConfigHandler:
                     reason="web_config",
                 )
                 applied["actor_backend"] = {"target": "__admin__", "backend": "codex"}
-                if codex_model:
-                    applied["codex_model"] = codex_model
-            file_cfg.update(applied)
+                if backend_model:
+                    applied["codex_model"] = backend_model
+            if grok_selected:
+                from common.llm_backend_router import get_llm_backend_config, set_user_backend_override
+
+                llm_cfg = get_llm_backend_config()
+                providers = llm_cfg.setdefault("providers", {})
+                grok_cfg = providers.setdefault("grok", {})
+                if backend_model:
+                    grok_cfg["model"] = backend_model
+                grok_cfg.setdefault("auth", "account")
+                local_config["llm_backend"] = llm_cfg
+                file_cfg["llm_backend"] = llm_cfg
+                set_user_backend_override(
+                    self._web_admin_profile_or_default(),
+                    "grok",
+                    manual=True,
+                    reason="web_config",
+                )
+                applied["actor_backend"] = {"target": "__admin__", "backend": "grok"}
+                if backend_model:
+                    applied["grok_model"] = backend_model
+            if provider_update is not None:
+                applied["llm_backend_provider"] = self._apply_llm_backend_provider_update(
+                    local_config,
+                    file_cfg,
+                    provider_update,
+                )
+            file_updates = {k: v for k, v in applied.items() if k != "llm_backend_provider"}
+            file_cfg.update(file_updates)
             file_cfg.pop("llm_backend_current", None)
             file_cfg.pop("codex_model", None)
             file_cfg.pop("llm_backend_provider", None)
@@ -1757,7 +1952,7 @@ class ConfigHandler:
             # Without this, Bridge keeps its cached bot instance (e.g. LinkAIBot)
             # even after the user switches bot_type / use_linkai / model in UI.
             bridge_routing_keys = {"bot_type", "use_linkai", "model", "llm_backend_current"}
-            if any(k in applied for k in bridge_routing_keys):
+            if provider_update is not None or any(k in applied for k in bridge_routing_keys):
                 try:
                     from bridge.bridge import Bridge
                     Bridge().reset_bot()
@@ -1765,10 +1960,8 @@ class ConfigHandler:
                 except Exception as reset_err:
                     logger.warning(f"[WebChannel] Failed to reset bridge: {reset_err}")
 
-            from common.llm_backend_router import status_snapshot
-
             return json.dumps(
-                {"status": "success", "applied": applied, "llm_backend": status_snapshot(self._web_admin_profile_or_default())},
+                {"status": "success", "applied": applied, "llm_backend": self._backend_status_payload(self._web_admin_profile_or_default())},
                 ensure_ascii=False,
             )
         except Exception as e:

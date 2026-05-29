@@ -33,6 +33,7 @@ def main(argv: list[str]) -> int:
             duration=_optional_text(args.get("duration")),
             resolution=_optional_text(args.get("resolution")),
             quality=_optional_text(args.get("quality")),
+            prompt_enhancement=_prompt_enhancement_enabled(args),
             output_dir=str(output_dir),
         )
         print(json.dumps({"videos": [{"url": video_path}]}, ensure_ascii=False), flush=True)
@@ -54,6 +55,7 @@ class GrokXAIVideoProvider:
         duration: str | None = None,
         resolution: str | None = None,
         quality: str | None = None,
+        prompt_enhancement: bool = True,
         output_dir: str,
     ) -> str:
         from integrations.hermes_xai import video_gen as xai_video_gen
@@ -67,6 +69,7 @@ class GrokXAIVideoProvider:
             "duration": duration,
             "resolution": resolution,
             "quality": quality,
+            "prompt_enhancement": prompt_enhancement,
             "output_dir": output_dir,
         }
         source_path = _call_provider_generate(provider, prompt, kwargs)
@@ -80,6 +83,21 @@ def _parse_args(argv: list[str]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("job argument must be a JSON object")
     return payload
+
+
+def _prompt_enhancement_enabled(args: Dict[str, Any]) -> bool:
+    for key in ("prompt_enhancement", "enhance_prompt", "image_prompt_enhancement"):
+        if key in args and _falsey(args.get(key)):
+            return False
+    return True
+
+
+def _falsey(value: Any) -> bool:
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value == 0
+    return str(value or "").strip().lower() in {"0", "false", "no", "off", "disabled"}
 
 
 def _call_provider_generate(provider: Any, prompt: str, kwargs: Dict[str, Any]) -> str:

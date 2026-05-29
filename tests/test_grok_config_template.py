@@ -19,6 +19,11 @@ class TestGrokConfigTemplate(unittest.TestCase):
         self.assertIs(self.template["grok_oauth_accept_bare_code"], False)
         self.assertIs(self.template["grok_import_hermes_auth"], True)
         self.assertIs(self.template["grok_import_hermes_auth_overwrite"], False)
+        self.assertNotIn("grok_gray_enabled", self.template)
+
+        from config import available_setting
+
+        self.assertNotIn("grok_gray_enabled", available_setting)
 
     def test_template_exposes_grok_tts_and_voice_mode_defaults(self):
         expected = {

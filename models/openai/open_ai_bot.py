@@ -18,7 +18,11 @@ from models.openai.open_ai_session import OpenAISession
 from models.session_manager import SessionManager
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
-from common.llm_backend_router import get_effective_openai_api_config, normalize_backend
+from common.llm_backend_router import (
+    get_effective_openai_api_config,
+    is_custom_backend,
+    resolve_selectable_backend,
+)
 from common.log import logger
 from config import conf
 
@@ -29,10 +33,11 @@ user_session = dict()
 class OpenAIBot(Bot, OpenAIImage, OpenAICompatibleBot):
     def __init__(self, backend_override=None):
         super().__init__()
-        self._backend_override = normalize_backend(backend_override) if backend_override else None
+        self._backend_override = resolve_selectable_backend(backend_override) if backend_override else None
         routed = get_effective_openai_api_config(self._backend_override)
-        self._api_key = routed.get("api_key") or conf().get("open_ai_api_key")
-        self._api_base = routed.get("api_base") or conf().get("open_ai_api_base") or None
+        allow_global_openai_fallback = not self._backend_override or not is_custom_backend(self._backend_override)
+        self._api_key = routed.get("api_key") or (conf().get("open_ai_api_key") if allow_global_openai_fallback else "")
+        self._api_base = routed.get("api_base") or (conf().get("open_ai_api_base") if allow_global_openai_fallback else None) or None
         self._proxy = conf().get("proxy") or None
         self._http_client = OpenAIHTTPClient(
             api_key=self._api_key,
@@ -56,9 +61,11 @@ class OpenAIBot(Bot, OpenAIImage, OpenAICompatibleBot):
     def get_api_config(self):
         """Get API configuration for OpenAI-compatible base class"""
         routed = get_effective_openai_api_config(self._backend_override)
+        custom_backend = bool(self._backend_override and is_custom_backend(self._backend_override))
+        allow_global_openai_fallback = not custom_backend
         return {
-            'api_key': routed.get("api_key") or conf().get("open_ai_api_key"),
-            'api_base': routed.get("api_base") or conf().get("open_ai_api_base"),
+            'api_key': routed.get("api_key") or (conf().get("open_ai_api_key") if allow_global_openai_fallback else ""),
+            'api_base': routed.get("api_base") or (conf().get("open_ai_api_base") if allow_global_openai_fallback else ""),
             'model': routed.get("model") or conf().get("model", "text-davinci-003"),
             'request_timeout_seconds': routed.get("request_timeout_seconds"),
             'default_temperature': conf().get("temperature", 0.9),
@@ -67,10 +74,11 @@ class OpenAIBot(Bot, OpenAIImage, OpenAICompatibleBot):
             'default_presence_penalty': conf().get("presence_penalty", 0.0),
             'wire_api': (
                 routed.get("wire_api")
-                or conf().get("open_ai_wire_api")
-                or conf().get("openai_wire_api")
-                or conf().get("wire_api")
+                or (conf().get("open_ai_wire_api") if allow_global_openai_fallback else "")
+                or (conf().get("openai_wire_api") if allow_global_openai_fallback else "")
+                or (conf().get("wire_api") if allow_global_openai_fallback else "")
             ),
+            'custom_backend': custom_backend,
         }
 
     def _get_http_client(self) -> OpenAIHTTPClient:
@@ -121,6 +129,8 @@ class OpenAIBot(Bot, OpenAIImage, OpenAICompatibleBot):
         try:
             call_args = dict(self.args)
             timeout = call_args.pop("request_timeout", None) or call_args.pop("timeout", None)
+            if self._backend_override and is_custom_backend(self._backend_override) and not self._api_base:
+                raise ValueError("custom OpenAI-compatible backend requires api_base")
             response = self._http_client.completions(
                 timeout=timeout,
                 prompt=str(session),

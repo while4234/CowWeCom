@@ -27,14 +27,19 @@ class TestGrokHttpCredentials(unittest.TestCase):
             "auth_mode": "oauth_pkce",
             "api_key": "oauth-access-token",
             "base_url": "https://api.x.ai/v1",
+            "account_id": "work",
+            "account_name": "Work Grok",
         }
         with patch("integrations.hermes_xai.xai_http.conf", return_value=self._fake_conf({"grok_api_key": "fallback"})):
-            with patch("integrations.hermes_xai.xai_http.resolve_xai_oauth_runtime_credentials", return_value=oauth_creds):
-                creds = xai_http.resolve_xai_http_credentials()
+            with patch("integrations.hermes_xai.xai_http.resolve_xai_oauth_runtime_credentials", return_value=oauth_creds) as resolver:
+                creds = xai_http.resolve_xai_http_credentials(account_id="work")
 
         self.assertEqual(creds["provider"], "xai-oauth")
         self.assertEqual(creds["auth_mode"], "oauth_pkce")
         self.assertEqual(creds["api_key"], "oauth-access-token")
+        self.assertEqual(creds["account_id"], "work")
+        self.assertEqual(creds["account_name"], "Work Grok")
+        resolver.assert_called_once_with(force_refresh=False, account_id="work")
 
     def test_resolve_falls_back_to_env_api_key(self):
         with patch.dict(os.environ, {"XAI_API_KEY": "env-key"}, clear=False):

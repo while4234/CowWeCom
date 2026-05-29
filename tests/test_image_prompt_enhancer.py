@@ -1,8 +1,10 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from agent.tools.image_generation.prompt_history import ImageGenerationPromptHistoryTool
 from bridge.context import Context, ContextType
@@ -17,7 +19,7 @@ from common.image_prompt_enhancer import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_ROOT = PROJECT_ROOT / "skills" / "image-generation" / "references" / "nano-banana-pro"
+REFERENCE_ROOT = PROJECT_ROOT / "skills" / "image-prompt-optimization" / "references" / "nano-banana-pro"
 
 
 def write_fixture_library(root: Path):
@@ -89,23 +91,47 @@ class TestImagePromptEnhancer(unittest.TestCase):
         self.assertTrue((REFERENCE_ROOT / "profile-avatar.json").exists())
         self.assertTrue((REFERENCE_ROOT / "social-media-post.json").exists())
 
-    def test_grok_defaults_to_portrait_prompt_shape(self):
+    def test_grok_uses_model_rewrite_instead_of_prompt_library(self):
         with tempfile.TemporaryDirectory() as tmp:
             library = Path(tmp)
             write_fixture_library(library)
 
-            result = enhance_image_prompt(
-                "grok 帮我生成一张高级感人物写真",
-                target="grok",
-                model="grok-imagine-image",
-                library_dir=str(library),
-            )
+            with patch(
+                "common.grok_image_prompt_rewriter._call_grok_text_model",
+                return_value="Final prompt\uff1a A polished Grok prompt with cinematic lighting.",
+            ) as rewrite_call:
+                result = enhance_image_prompt(
+                    "grok 帮我生成一张高级感人物写真",
+                    target="grok",
+                    model="grok-imagine-image",
+                    library_dir=str(library),
+                )
 
         self.assertTrue(result["enhanced"])
-        self.assertEqual(result["use_case"], "portrait")
-        self.assertIn(ENHANCED_PROMPT_MARKER, result["enhanced_prompt"])
-        self.assertIn("Grok Imagine portrait prompt", result["enhanced_prompt"])
-        self.assertEqual(result["templates"][0]["category_slug"], "profile-avatar")
+        self.assertEqual(result["version"], "grok-model-rewrite-v2")
+        self.assertEqual(result["use_case"], "image_model_rewrite")
+        self.assertEqual(result["enhanced_prompt"], "A polished Grok prompt with cinematic lighting.")
+        self.assertEqual(result["templates"], [])
+        self.assertEqual(result["library"]["name"], "image-prompt-optimization")
+        self.assertEqual(rewrite_call.call_count, 1)
+        system_prompt, user_prompt = rewrite_call.call_args.args
+        self.assertIn("Grok image prompt optimizer", system_prompt)
+        self.assertIn("grok 帮我生成一张高级感人物写真", user_prompt)
+
+    def test_global_disable_skips_grok_model_rewrite(self):
+        with patch.dict(os.environ, {"IMAGE_PROMPT_ENHANCEMENT_ENABLED": "false"}):
+            with patch("common.grok_image_prompt_rewriter._call_grok_text_model") as rewrite_call:
+                result = enhance_image_prompt(
+                    "grok 帮我生成一张高级感人物写真",
+                    target="grok",
+                    model="grok-imagine-image",
+                    enabled=True,
+                )
+
+        self.assertFalse(result["enhanced"])
+        self.assertEqual(result["disabled_reason"], "disabled")
+        self.assertEqual(result["enhanced_prompt"], "grok 帮我生成一张高级感人物写真")
+        rewrite_call.assert_not_called()
 
     def test_gpt_routes_flowcharts_to_infographic_prompt_shape(self):
         with tempfile.TemporaryDirectory() as tmp:

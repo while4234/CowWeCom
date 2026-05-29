@@ -10,32 +10,45 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-class TestGrokWebGray(unittest.TestCase):
+class TestGrokConsoleLogin(unittest.TestCase):
     def _fake_conf(self, values=None):
-        data = {"grok_gray_enabled": False}
+        data = {}
         if values:
             data.update(values)
         fake_conf = MagicMock()
         fake_conf.get.side_effect = lambda key, default=None: data.get(key, default)
         return fake_conf
 
-    def test_grok_provider_hidden_by_default(self):
+    def test_grok_provider_visible_in_console_by_default(self):
         from channel.web.web_channel import ConfigHandler
 
         providers = ConfigHandler()._visible_provider_models(self._fake_conf())
 
-        self.assertNotIn("grok", providers)
+        self.assertIn("grok", providers)
         self.assertIn("openai", providers)
         self.assertIn("deepseek", providers)
 
-    def test_grok_provider_visible_when_gray_enabled(self):
+    def test_legacy_grok_page_redirects_to_console(self):
+        import channel.web.web_channel as web_channel
         from channel.web.web_channel import ConfigHandler
 
-        providers = ConfigHandler()._visible_provider_models(
-            self._fake_conf({"grok_gray_enabled": True})
-        )
+        providers = ConfigHandler()._visible_provider_models(self._fake_conf())
 
         self.assertIn("grok", providers)
+        with patch.object(web_channel, "_require_auth", return_value=None):
+            web_channel.web.ctx.path = "/grok"
+            web_channel.web.ctx.home = ""
+            web_channel.web.ctx.headers = []
+            try:
+                with self.assertRaises(web_channel.web.HTTPError):
+                    web_channel.GrokPageHandler().GET()
+            finally:
+                try:
+                    del web_channel.web.ctx.path
+                    del web_channel.web.ctx.home
+                    del web_channel.web.ctx.headers
+                except AttributeError:
+                    pass
 
     def _assert_no_secret_fields(self, payload):
         serialized = json.dumps(payload, ensure_ascii=False)
@@ -56,6 +69,7 @@ class TestGrokWebGray(unittest.TestCase):
 
         with patch.object(web_channel, "_require_auth", return_value=None), \
                 patch.object(web_channel.web, "header", return_value=None), \
+                patch.object(web_channel.web, "input", return_value={"account_id": ""}), \
                 patch(
                     "integrations.hermes_xai.auth.get_xai_oauth_status",
                     return_value={
@@ -65,6 +79,7 @@ class TestGrokWebGray(unittest.TestCase):
                         "email": "",
                         "expires_at": 0,
                         "needs_reauth": False,
+                        "accounts": [],
                     },
                 ):
             status_payload = json.loads(web_channel.GrokStatusHandler().GET())
@@ -73,6 +88,7 @@ class TestGrokWebGray(unittest.TestCase):
 
         with patch.object(web_channel, "_require_auth", return_value=None), \
                 patch.object(web_channel.web, "header", return_value=None), \
+                patch.object(web_channel.web, "data", return_value=b'{}'), \
                 patch(
                     "integrations.hermes_xai.auth.start_xai_oauth_login",
                     return_value={
@@ -80,14 +96,18 @@ class TestGrokWebGray(unittest.TestCase):
                         "state": "pending",
                         "redirect_uri": "http://127.0.0.1:56121/callback",
                         "manual_paste_supported": True,
+                        "account_id": "default",
+                        "account_name": "Default",
                     },
                 ):
             start_payload = json.loads(web_channel.GrokLoginStartHandler().POST())
 
         self._assert_no_secret_fields(start_payload)
+        self.assertEqual(start_payload["account_id"], "default")
 
         with patch.object(web_channel, "_require_auth", return_value=None), \
                 patch.object(web_channel.web, "header", return_value=None), \
+                patch.object(web_channel.web, "data", return_value=b'{"account_id":"work"}'), \
                 patch(
                     "integrations.hermes_xai.xai_http.resolve_xai_http_credentials",
                     return_value={
@@ -95,11 +115,15 @@ class TestGrokWebGray(unittest.TestCase):
                         "provider": "xai-oauth",
                         "auth_mode": "oauth_pkce",
                         "base_url": "https://api.x.ai/v1",
+                        "account_id": "work",
+                        "account_name": "Work Grok",
                     },
-                ):
+                ) as resolver:
             test_payload = json.loads(web_channel.GrokTestHandler().POST())
 
         self._assert_no_secret_fields(test_payload)
+        self.assertEqual(test_payload["account_id"], "work")
+        resolver.assert_called_once_with(account_id="work")
 
     def test_grok_manual_handler_can_finish_pending_loopback_callback(self):
         import channel.web.web_channel as web_channel
@@ -148,6 +172,7 @@ class TestGrokWebGray(unittest.TestCase):
 
         with patch.object(web_channel, "_require_auth", return_value=None), \
                 patch.object(web_channel.web, "header", return_value=None), \
+                patch.object(web_channel.web, "input", return_value={"account_id": ""}), \
                 patch(
                     "integrations.hermes_xai.auth.get_xai_oauth_status",
                     side_effect=RuntimeError(secret_message),
@@ -166,25 +191,25 @@ class TestGrokWebGray(unittest.TestCase):
         ):
             self.assertNotIn(secret, serialized)
 
-    def test_grok_web_config_can_toggle_gray_and_import_flags(self):
+    def test_grok_web_config_exposes_console_account_flags(self):
         import channel.web.web_channel as web_channel
 
         self.assertIn("grok_proxy", web_channel.ConfigHandler.EDITABLE_KEYS)
-        self.assertIn("grok_gray_enabled", web_channel.ConfigHandler.EDITABLE_KEYS)
+        self.assertNotIn("grok_gray_enabled", web_channel.ConfigHandler.EDITABLE_KEYS)
         self.assertIn("grok_import_hermes_auth", web_channel.ConfigHandler.EDITABLE_KEYS)
         self.assertIn("grok_import_hermes_auth_overwrite", web_channel.ConfigHandler.EDITABLE_KEYS)
 
-    def test_grok_login_page_reports_start_errors_without_empty_link(self):
+    def test_console_has_grok_account_login_controls(self):
         script = open(
-            os.path.join(os.path.dirname(__file__), "..", "channel", "web", "static", "js", "grok.js"),
+            os.path.join(os.path.dirname(__file__), "..", "channel", "web", "static", "js", "console.js"),
             encoding="utf-8",
         ).read()
 
-        self.assertIn("data.status === 'error'", script)
-        self.assertIn("Grok login did not return an authorization link.", script)
-        self.assertIn("link.removeAttribute('href')", script)
+        self.assertIn("startGrokAccountLogin", script)
+        self.assertIn("/api/grok/account/select", script)
+        self.assertIn("cfg-grok-account-name", script)
 
-    def test_backend_profile_payload_is_rejected_without_regular_updates(self):
+    def test_config_handler_accepts_backend_profile_payload(self):
         import channel.web.web_channel as web_channel
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -212,8 +237,40 @@ class TestGrokWebGray(unittest.TestCase):
                     patch.object(web_channel, "__file__", fake_file):
                 result = json.loads(web_channel.ConfigHandler().POST())
 
-        self.assertEqual(result["status"], "error")
-        self.assertEqual(result["message"], "no updates provided")
+        self.assertEqual(result["status"], "success")
+        self.assertIn("llm_backend_provider", result["applied"])
+
+    def test_model_config_grok_selection_sets_admin_backend_not_global_bot_type(self):
+        import channel.web.web_channel as web_channel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_conf = {
+                "llm_backend": {
+                    "current_backend": "capi",
+                    "state_path": os.path.join(tmp, "state.json"),
+                    "providers": {"grok": {"model": "grok-4.3", "auth": "account"}},
+                }
+            }
+            fake_file = os.path.join(tmp, "channel", "web", "web_channel.py")
+            payload = {"updates": {"bot_type": "grok", "model": "grok-4.3"}}
+
+            with patch.object(web_channel, "_require_auth", return_value=None), \
+                    patch.object(web_channel.web, "header", return_value=None), \
+                    patch.object(web_channel.web, "data", return_value=json.dumps(payload).encode()), \
+                    patch.object(web_channel, "conf", return_value=fake_conf), \
+                    patch("config.conf", return_value=fake_conf), \
+                    patch.object(web_channel, "__file__", fake_file):
+                result = json.loads(web_channel.ConfigHandler().POST())
+
+            config_json = os.path.join(tmp, "config.json")
+            with open(config_json, encoding="utf-8") as handle:
+                saved = json.load(handle)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["applied"]["actor_backend"]["backend"], "grok")
+        self.assertNotIn("bot_type", saved)
+        self.assertNotIn("model", saved)
+        self.assertEqual(saved["llm_backend"]["providers"]["grok"]["model"], "grok-4.3")
 
 
 if __name__ == "__main__":

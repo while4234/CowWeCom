@@ -538,6 +538,205 @@
                                                            cursor-pointer transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
                                                     onclick="saveModelConfig()" data-i18n="config_save">保存</button>
                                         </div>
+                                        <!-- LLM Backend Providers -->
+                                        <div class="pt-4 border-t border-slate-100 dark:border-white/10">
+                                            <div class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                                                <div class="min-w-0">
+                                                    <label class="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-1.5" data-i18n="config_backend_profiles">后端提供方</label>
+                                                    <div id="cfg-backend-providers-list" class="flex flex-wrap gap-1.5"></div>
+                                                </div>
+                                                <div class="w-full md:w-56">
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5" data-i18n="config_backend_select">已有后端</label>
+                                                    <select id="cfg-backend-provider-select"
+                                                            class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                   bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                   focus:outline-none focus:border-primary-500 transition-colors">
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            <div class="grid gap-3 mt-4 md:grid-cols-2">
+                                                <div>
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5" data-i18n="config_backend_id">后端 ID</label>
+                                                    <input id="cfg-backend-provider-id" type="text" autocomplete="off"
+                                                           class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                  bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                  focus:outline-none focus:border-primary-500 font-mono transition-colors"
+                                                           data-i18n-placeholder="config_backend_id_hint" placeholder="openai-main">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5" data-i18n="config_backend_label">显示名称</label>
+                                                    <input id="cfg-backend-provider-label" type="text" autocomplete="off"
+                                                           class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                  bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                  focus:outline-none focus:border-primary-500 transition-colors"
+                                                           data-i18n-placeholder="config_backend_label_hint" placeholder="OpenAI Main">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5" data-i18n="config_backend_model">模型</label>
+                                                    <input id="cfg-backend-provider-model" type="text" autocomplete="off"
+                                                           class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                  bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                  focus:outline-none focus:border-primary-500 font-mono transition-colors"
+                                                           data-i18n-placeholder="config_backend_model_hint" placeholder="gpt-4.1-mini">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">API Base</label>
+                                                    <input id="cfg-backend-provider-api-base" type="text" autocomplete="off"
+                                                           class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                  bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                  focus:outline-none focus:border-primary-500 font-mono transition-colors"
+                                                           data-i18n-placeholder="config_backend_api_base_hint" placeholder="https://api.openai.com/v1">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5">API Key</label>
+                                                    <input id="cfg-backend-provider-api-key" type="text" autocomplete="off" data-1p-ignore data-lpignore="true"
+                                                           class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                  bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                  focus:outline-none focus:border-primary-500 font-mono transition-colors"
+                                                           placeholder="sk-...">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5" data-i18n="config_backend_api_key_env">Key 环境变量</label>
+                                                    <input id="cfg-backend-provider-api-key-env" type="text" autocomplete="off"
+                                                           class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                  bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                  focus:outline-none focus:border-primary-500 font-mono transition-colors"
+                                                           data-i18n-placeholder="config_backend_api_key_env_hint" placeholder="OPENAI_API_KEY">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5" data-i18n="config_backend_api_base_env">Base 环境变量</label>
+                                                    <input id="cfg-backend-provider-api-base-env" type="text" autocomplete="off"
+                                                           class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                  bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                  focus:outline-none focus:border-primary-500 font-mono transition-colors"
+                                                           data-i18n-placeholder="config_backend_api_base_env_hint" placeholder="OPENAI_API_BASE">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5" data-i18n="config_backend_wire_api">协议</label>
+                                                    <select id="cfg-backend-provider-wire-api"
+                                                            class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                   bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                   focus:outline-none focus:border-primary-500 transition-colors">
+                                                        <option value="openai">OpenAI</option>
+                                                        <option value="responses">OpenAI Responses</option>
+                                                    </select>
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5" data-i18n="config_backend_timeout">请求超时</label>
+                                                    <input id="cfg-backend-provider-request-timeout" type="number" min="1" step="1"
+                                                           class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                  bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                  focus:outline-none focus:border-primary-500 font-mono transition-colors"
+                                                           data-i18n-placeholder="config_backend_timeout_hint" placeholder="120">
+                                                </div>
+                                                <div>
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5" data-i18n="config_backend_connectivity_timeout">连通性超时</label>
+                                                    <input id="cfg-backend-provider-connectivity-timeout" type="number" min="1" step="1"
+                                                           class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                  bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                  focus:outline-none focus:border-primary-500 font-mono transition-colors"
+                                                           data-i18n-placeholder="config_backend_connectivity_timeout_hint" placeholder="15">
+                                                </div>
+                                            </div>
+                                            <div class="flex flex-col gap-3 mt-4 sm:flex-row sm:items-center sm:justify-between">
+                                                <div class="flex flex-wrap gap-4">
+                                                    <label class="inline-flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+                                                        <input id="cfg-backend-provider-set-current" type="checkbox"
+                                                               class="h-4 w-4 rounded border-slate-300 text-primary-500 focus:ring-primary-500">
+                                                        <span data-i18n="config_backend_set_current">设为当前</span>
+                                                    </label>
+                                                    <label class="inline-flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+                                                        <input id="cfg-backend-provider-include-auto" type="checkbox"
+                                                               class="h-4 w-4 rounded border-slate-300 text-primary-500 focus:ring-primary-500">
+                                                        <span data-i18n="config_backend_include_auto">加入自动切换</span>
+                                                    </label>
+                                                </div>
+                                                <div class="flex items-center justify-end gap-3">
+                                                    <span id="cfg-backend-provider-status" class="text-xs text-primary-500 opacity-0 transition-opacity duration-300"></span>
+                                                    <button id="cfg-backend-provider-save" type="button"
+                                                            class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 dark:bg-slate-100 dark:hover:bg-white
+                                                                   text-white dark:text-slate-900 text-sm font-medium cursor-pointer transition-colors duration-150
+                                                                   disabled:opacity-50 disabled:cursor-not-allowed"
+                                                            onclick="saveBackendProviderConfig()">
+                                                        <i class="fas fa-floppy-disk mr-1.5"></i><span data-i18n="config_backend_save">保存后端</span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <!-- Grok Accounts -->
+                                        <div class="pt-4 border-t border-slate-100 dark:border-white/10">
+                                            <div class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                                                <div class="min-w-0">
+                                                    <label class="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-1.5" data-i18n="config_grok_accounts">Grok 账号</label>
+                                                    <div id="cfg-grok-account-list" class="flex flex-wrap gap-1.5"></div>
+                                                </div>
+                                                <div class="w-full md:w-56">
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5" data-i18n="config_grok_select">当前账号</label>
+                                                    <select id="cfg-grok-account-select"
+                                                            class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                   bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                   focus:outline-none focus:border-primary-500 transition-colors">
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            <div class="grid gap-3 mt-4 md:grid-cols-[1fr_auto]">
+                                                <div>
+                                                    <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5" data-i18n="config_grok_account_name">账号名称</label>
+                                                    <input id="cfg-grok-account-name" type="text" autocomplete="off"
+                                                           class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                  bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                  focus:outline-none focus:border-primary-500 transition-colors"
+                                                           data-i18n-placeholder="config_grok_account_name_hint" placeholder="Work Grok">
+                                                </div>
+                                                <div class="flex flex-wrap items-end gap-2">
+                                                    <button id="cfg-grok-login-start" type="button"
+                                                            class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 dark:bg-slate-100 dark:hover:bg-white
+                                                                   text-white dark:text-slate-900 text-sm font-medium cursor-pointer transition-colors duration-150"
+                                                            onclick="startGrokAccountLogin()">
+                                                        <i class="fas fa-right-to-bracket mr-1.5"></i><span data-i18n="config_grok_login">登录</span>
+                                                    </button>
+                                                    <button id="cfg-grok-login-poll" type="button"
+                                                            class="px-3 py-2 rounded-lg border border-slate-200 dark:border-white/10 text-sm text-slate-600
+                                                                   dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/10 transition-colors"
+                                                            onclick="pollGrokAccountLogin()">
+                                                        <i class="fas fa-satellite-dish mr-1.5"></i><span data-i18n="config_grok_poll">轮询</span>
+                                                    </button>
+                                                    <button id="cfg-grok-test" type="button"
+                                                            class="px-3 py-2 rounded-lg border border-slate-200 dark:border-white/10 text-sm text-slate-600
+                                                                   dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/10 transition-colors"
+                                                            onclick="testGrokAccount()">
+                                                        <i class="fas fa-plug-circle-check mr-1.5"></i><span data-i18n="config_grok_test">检查</span>
+                                                    </button>
+                                                    <button id="cfg-grok-logout" type="button"
+                                                            class="px-3 py-2 rounded-lg border border-red-200 dark:border-red-500/30 text-sm text-red-600
+                                                                   dark:text-red-200 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                                                            onclick="logoutGrokAccount()">
+                                                        <i class="fas fa-right-from-bracket mr-1.5"></i><span data-i18n="config_grok_logout">退出</span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div id="cfg-grok-login-box" class="mt-3 hidden rounded-lg bg-slate-50 dark:bg-white/5 p-3">
+                                                <div class="text-xs font-medium text-slate-500 dark:text-slate-400" data-i18n="config_grok_authorize_url">登录链接</div>
+                                                <a id="cfg-grok-authorize-url" class="mt-1 block break-all text-xs text-primary-600 dark:text-primary-300 underline" target="_blank" rel="noopener noreferrer"></a>
+                                            </div>
+                                            <div class="mt-3">
+                                                <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1.5" data-i18n="config_grok_callback">Callback URL</label>
+                                                <textarea id="cfg-grok-callback-url" rows="2"
+                                                          class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
+                                                                 bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
+                                                                 focus:outline-none focus:border-primary-500 font-mono transition-colors"
+                                                          placeholder="http://127.0.0.1:56121/callback?code=...&state=..."></textarea>
+                                            </div>
+                                            <div class="flex items-center justify-end gap-3 mt-3">
+                                                <span id="cfg-grok-status" class="text-xs text-primary-500 opacity-0 transition-opacity duration-300"></span>
+                                                <button id="cfg-grok-manual" type="button"
+                                                        class="px-4 py-2 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-sm font-medium
+                                                               cursor-pointer transition-colors duration-150"
+                                                        onclick="manualCompleteGrokLogin()">
+                                                    <i class="fas fa-clipboard-check mr-1.5"></i><span data-i18n="config_grok_manual">提交回调</span>
+                                                </button>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
 

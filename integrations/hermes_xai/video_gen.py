@@ -88,6 +88,7 @@ class XAIVideoGenProvider:
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = dict(config or {})
+        self.last_prompt_metadata: Dict[str, Any] = {}
 
     @property
     def name(self) -> str:
@@ -131,6 +132,7 @@ class XAIVideoGenProvider:
         model: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
         poll_interval_seconds: Optional[int] = None,
+        prompt_enhancement: Any = True,
     ) -> str:
         """Generate a video and return a local MP4 file path."""
         clean_prompt = str(prompt or "").strip()
@@ -187,6 +189,47 @@ class XAIVideoGenProvider:
                 maximum=600.0,
             ),
         }
+        if prompt_enhancement:
+            try:
+                from common.grok_image_prompt_rewriter import rewrite_grok_video_prompt
+
+                metadata = rewrite_grok_video_prompt(
+                    clean_prompt,
+                    model=options["model"],
+                    runtime="grok_video",
+                    image_url=image_url_norm or refs,
+                    duration=options["duration"],
+                    size=options["resolution"],
+                    aspect_ratio=options["aspect_ratio"],
+                    enabled=True,
+                )
+            except Exception as exc:
+                logger.warning("[GrokVideo] prompt rewrite failed; using original prompt: %s", exc)
+                metadata = {
+                    "version": "grok-model-rewrite-v2",
+                    "enhanced": False,
+                    "disabled_reason": "grok_rewrite_failed",
+                    "target": "grok",
+                    "media_type": "video",
+                    "model": options["model"],
+                    "runtime": "grok_video",
+                    "original_prompt": clean_prompt,
+                    "enhanced_prompt": clean_prompt,
+                }
+        else:
+            metadata = {
+                "version": "grok-model-rewrite-v2",
+                "enhanced": False,
+                "disabled_reason": "disabled",
+                "target": "grok",
+                "media_type": "video",
+                "model": options["model"],
+                "runtime": "grok_video",
+                "original_prompt": clean_prompt,
+                "enhanced_prompt": clean_prompt,
+            }
+        self.last_prompt_metadata = metadata
+        clean_prompt = str(metadata.get("enhanced_prompt") or clean_prompt).strip()
         payload: Dict[str, Any] = {
             "model": options["model"],
             "prompt": clean_prompt,

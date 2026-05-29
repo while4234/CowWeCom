@@ -60,6 +60,7 @@ with machine setup notes and any required user-provided keys.
 | `fund-invest-advisor` | Run local fund DCA, allocation, rebalancing, fund-type, and risk-preference planning helpers. | No external API key; calculations are local scenarios only. |
 | `github` | Perform GitHub repository, fork, PR, release, issue, and comment operations. | `GITHUB_TOKEN`; also needs `git`, `curl`, and `jq`. |
 | `grok-image-generation` | Route explicit Grok/xAI image requests to the logged-in Grok account while keeping ordinary image requests on Codex. | Local Grok/xAI OAuth login through CowWeCom. |
+| `image-prompt-optimization` | Shared hidden prompt repositories, Grok rewrite templates, and random prompt fragment helpers for image/video generation. | No API key for repository lookup; Grok rewriting uses the logged-in Grok account. |
 | `image-generation` | Generate/edit images through background jobs. | Local Codex login, or one configured image provider API key. |
 | `knowledge-wiki` | Maintain a local structured knowledge wiki. | No API key. |
 | `markdown-converter` | Convert PDF, Office, HTML, CSV/JSON/XML, images, audio, archives, YouTube URLs, and EPUBs to Markdown. | No external API key; converter dependencies may be installed locally. |

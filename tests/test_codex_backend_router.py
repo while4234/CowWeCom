@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from common import const
 from common.codex_quota_logic import decide_codex_auto_switch
 from common.llm_backend_router import (
     BACKEND_CAPI,
@@ -17,6 +18,7 @@ from common.llm_backend_router import (
     evaluate_auto_switch,
     evaluate_midnight_backend_route,
     get_effective_openai_api_config,
+    get_effective_chat_bot_type,
     get_current_backend_for_profile,
     get_current_backend,
     get_effective_model,
@@ -26,8 +28,10 @@ from common.llm_backend_router import (
     describe_status,
     record_capi_quota_check,
     record_codex_quota_check,
+    resolve_configured_chat_bot_type,
     select_capi_runtime_fallback_backend,
     select_backend_after_monthly_quota_low,
+    set_current_backend,
     set_user_backend_override,
     save_state,
 )
@@ -356,6 +360,29 @@ class TestCodexBackendRouter(unittest.TestCase):
 
         self.assertEqual(backend, BACKEND_CODEX)
 
+    def test_monthly_runtime_quota_fallback_uses_configured_custom_before_codex(self):
+        conf()["llm_backend"]["providers"] = {
+            "capi": {"api_key": "QUOTA-KEY"},
+            "capi_monthly": {"api_key": "MONTHLY-KEY"},
+            "custom_fast": {
+                "model": "gpt-custom",
+                "api_base": "https://custom.example/v1",
+                "api_key": "CUSTOM-KEY",
+            },
+        }
+        conf()["llm_backend"]["auto_switch"]["fallback_backends"] = ["custom_fast"]
+        now = datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60)
+
+        with patch("common.llm_backend_router.check_capi_connectivity", return_value=True):
+            backend = select_capi_runtime_fallback_backend(
+                BACKEND_CAPI_MONTHLY,
+                "insufficient_quota: monthly quota exhausted (Status: 402)",
+                quota_payload=weekly_payload(used_percent=5),
+                now=now,
+            )
+
+        self.assertEqual(backend, "custom_fast")
+
     def test_monthly_runtime_quota_fallback_uses_quota_card_when_codex_over_average(self):
         conf()["llm_backend"]["providers"] = {
             "capi": {"api_key": "QUOTA-KEY"},
@@ -677,6 +704,200 @@ class TestCodexBackendRouter(unittest.TestCase):
         self.assertIn("custom_fast", available_actor_backends(admin))
         self.assertEqual(routed["backend"], "custom_fast")
         self.assertEqual(routed["model"], "gpt-custom")
+
+    def test_global_custom_backend_uses_saved_provider(self):
+        conf()["llm_backend"]["providers"]["custom_fast"] = {
+            "label": "Custom Fast",
+            "model": "gpt-custom",
+            "api_base": "https://custom.example/v1",
+            "wire_api": "responses",
+            "api_key": "CUSTOM-KEY",
+        }
+
+        set_current_backend("custom_fast", reason="unit_test")
+        routed = get_effective_openai_api_config()
+
+        self.assertEqual(get_current_backend(), "custom_fast")
+        self.assertEqual(get_effective_model(), "gpt-custom")
+        self.assertEqual(routed["backend"], "custom_fast")
+        self.assertEqual(routed["api_key"], "CUSTOM-KEY")
+        self.assertEqual(routed["api_base"], "https://custom.example/v1")
+
+    def test_unknown_backend_selection_is_rejected(self):
+        with self.assertRaises(ValueError):
+            set_current_backend("missing_provider", reason="unit_test")
+
+        self.assertEqual(get_current_backend(), BACKEND_CAPI)
+
+    def test_unknown_backend_config_lookup_is_rejected(self):
+        with self.assertRaises(ValueError):
+            get_effective_openai_api_config("missing_provider")
+
+    def test_unknown_backend_model_lookup_and_probe_fail_closed(self):
+        with self.assertRaises(ValueError):
+            get_effective_model("missing_provider")
+
+        self.assertFalse(check_capi_connectivity("missing_provider"))
+
+    def test_global_grok_bot_type_is_ignored_without_restricted_backend(self):
+        previous_bot_type = conf().get("bot_type")
+        previous_model = conf().get("model")
+        try:
+            conf()["bot_type"] = "grok"
+            conf()["model"] = "grok-4.3"
+
+            self.assertEqual(resolve_configured_chat_bot_type(), const.OPENAI)
+            self.assertEqual(get_effective_chat_bot_type("grok-4.3", BACKEND_CAPI), const.OPENAI)
+        finally:
+            if previous_bot_type is None:
+                conf().pop("bot_type", None)
+            else:
+                conf()["bot_type"] = previous_bot_type
+            if previous_model is None:
+                conf().pop("model", None)
+            else:
+                conf()["model"] = previous_model
+
+    def test_custom_provider_does_not_inherit_capi_credentials(self):
+        conf()["llm_backend"]["providers"] = {
+            "capi": {
+                "api_key": "CAPI-KEY",
+                "api_base": "https://capi.example/v1",
+                "model": "gpt-capi",
+            },
+            "custom_fast": {
+                "model": "gpt-custom",
+            },
+        }
+
+        with patch.dict("os.environ", {}, clear=True):
+            routed = get_effective_openai_api_config("custom_fast")
+
+        self.assertEqual(routed["backend"], "custom_fast")
+        self.assertEqual(routed["api_key"], "")
+        self.assertEqual(routed["api_base"], "")
+        self.assertEqual(routed["model"], "gpt-custom")
+
+    def test_midnight_connectivity_failure_uses_configured_custom_fallback(self):
+        conf()["llm_backend"]["providers"]["custom_fast"] = {
+            "label": "Custom Fast",
+            "model": "gpt-custom",
+            "api_base": "https://custom.example/v1",
+            "api_key": "CUSTOM-KEY",
+        }
+        conf()["llm_backend"]["auto_switch"]["fallback_backends"] = ["custom_fast"]
+        checked = []
+
+        state = evaluate_midnight_backend_route(
+            quota_payload=weekly_payload(used_percent=99),
+            capi_connectivity_checker=lambda backend: checked.append(backend) or backend == "custom_fast",
+            now=datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60),
+        )
+
+        self.assertEqual(checked, [BACKEND_CAPI, "custom_fast"])
+        self.assertEqual(state["current_backend"], "custom_fast")
+        self.assertEqual(state["auto"]["last_decision"], "switched_to_custom_fast")
+        self.assertEqual(state["auto"]["last_reason"], f"capi_connectivity_failed:{BACKEND_CAPI}")
+
+    def test_monthly_low_quota_uses_configured_custom_fallback(self):
+        conf()["llm_backend"]["providers"]["custom_fast"] = {
+            "label": "Custom Fast",
+            "model": "gpt-custom",
+            "api_base": "https://custom.example/v1",
+            "api_key": "CUSTOM-KEY",
+        }
+        conf()["llm_backend"]["auto_switch"]["fallback_backends"] = ["custom_fast"]
+
+        with patch("common.llm_backend_router.check_capi_connectivity", return_value=True):
+            state = select_backend_after_monthly_quota_low(
+                weekly_payload(used_percent=5),
+                now=datetime.fromtimestamp(4102444800 - 6 * 24 * 60 * 60),
+            )
+
+        self.assertEqual(state["current_backend"], "custom_fast")
+        self.assertEqual(state["auto"]["last_decision"], "monthly_low_switched_to_custom_fast")
+
+    def test_chatgpt_backend_override_uses_custom_provider_model(self):
+        previous_model = conf().get("model")
+        try:
+            conf()["model"] = "global-model"
+            conf()["llm_backend"]["providers"]["custom_fast"] = {
+                "model": "provider-model",
+                "api_base": "https://custom.example/v1",
+                "api_key": "CUSTOM-KEY",
+            }
+
+            from models.chatgpt.chat_gpt_bot import ChatGPTBot
+
+            bot = ChatGPTBot(backend_override="custom_fast")
+
+            self.assertEqual(bot.args["model"], "provider-model")
+        finally:
+            if previous_model is None:
+                conf().pop("model", None)
+            else:
+                conf()["model"] = previous_model
+
+    def test_chatgpt_custom_backend_does_not_use_global_openai_credentials(self):
+        previous_key = conf().get("open_ai_api_key")
+        previous_base = conf().get("open_ai_api_base")
+        try:
+            conf()["open_ai_api_key"] = "GLOBAL-OPENAI-KEY"
+            conf()["open_ai_api_base"] = "https://global.example/v1"
+            conf()["llm_backend"]["providers"]["custom_fast"] = {
+                "model": "provider-model",
+            }
+
+            from models.chatgpt.chat_gpt_bot import ChatGPTBot
+
+            bot = ChatGPTBot(backend_override="custom_fast")
+
+            self.assertEqual(bot._api_key, "")
+            self.assertIsNone(bot._api_base)
+        finally:
+            if previous_key is None:
+                conf().pop("open_ai_api_key", None)
+            else:
+                conf()["open_ai_api_key"] = previous_key
+            if previous_base is None:
+                conf().pop("open_ai_api_base", None)
+            else:
+                conf()["open_ai_api_base"] = previous_base
+
+    def test_chatgpt_custom_backend_with_key_requires_explicit_base(self):
+        conf()["llm_backend"]["providers"]["custom_fast"] = {
+            "model": "provider-model",
+            "api_key": "CUSTOM-KEY",
+        }
+
+        from models.chatgpt.chat_gpt_bot import ChatGPTBot
+
+        bot = ChatGPTBot(backend_override="custom_fast")
+        with patch.object(bot, "_get_http_client") as client_factory:
+            result = bot.call_with_tools(
+                messages=[{"role": "user", "content": "hi"}],
+                stream=False,
+                model="provider-model",
+            )
+
+        self.assertTrue(result["error"])
+        self.assertIn("requires api_base", result["message"])
+        client_factory.assert_not_called()
+
+    def test_chatgpt_custom_backend_plain_chat_requires_explicit_base(self):
+        conf()["llm_backend"]["providers"]["custom_fast"] = {
+            "model": "provider-model",
+            "api_key": "CUSTOM-KEY",
+        }
+
+        from models.chatgpt.chat_gpt_bot import ChatGPTBot
+
+        bot = ChatGPTBot(backend_override="custom_fast")
+        with self.assertRaisesRegex(ValueError, "requires api_base"):
+            bot._create_model_response(
+                messages=[{"role": "user", "content": "hi"}],
+                model="provider-model",
+            )
 
 
 if __name__ == "__main__":

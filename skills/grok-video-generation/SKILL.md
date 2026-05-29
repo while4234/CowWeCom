@@ -33,6 +33,14 @@ The tool supports:
 
 At most 7 image references are passed to the provider.
 
+Hidden prompt rewriting is automatic for normal Grok video generation. The
+runtime uses `skills/image-prompt-optimization/templates/grok_video_system_prompt.txt`,
+optional random fragments from `skills/image-prompt-optimization/repositories/`,
+and Grok's own text model before submitting the final prompt to xAI video
+generation. If the prompt contains `grokSfw`, missing-detail fragments are
+selected 90% from `repositories/grokSfw/` and 10% from other repositories when
+available. Raw direct calls may pass `prompt_enhancement=false` to bypass this.
+
 Example text-to-video task:
 
 ```json

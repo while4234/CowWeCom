@@ -6,7 +6,13 @@ from common.image_generation_routing import explicit_gpt_image_requested
 from common.log import logger
 from common.singleton import singleton
 from config import conf
-from common.llm_backend_router import BACKEND_CODEX, BACKEND_GROK, get_current_backend_for_profile, get_effective_chat_bot_type
+from common.llm_backend_router import (
+    BACKEND_CODEX,
+    BACKEND_GROK,
+    get_current_backend_for_profile,
+    get_effective_chat_bot_type,
+    is_custom_backend,
+)
 from translate.factory import create_translator
 from voice.factory import create_voice
 
@@ -22,9 +28,10 @@ class Bridge(object):
         }
         # 这边取配置的模型
         bot_type = conf().get("bot_type")
-        if self.btype["chat"] == const.CODEX:
+        bot_type_norm = str(bot_type or "").strip().lower()
+        if self.btype["chat"] in {const.CODEX, const.GROK}:
             pass
-        elif bot_type and str(bot_type).strip().lower() != const.CODEX:
+        elif bot_type and bot_type_norm not in {const.CODEX, const.GROK, const.XAI}:
             self.btype["chat"] = bot_type
         else:
             model_type = conf().get("model") or const.GPT_41_MINI
@@ -68,7 +75,7 @@ class Bridge(object):
             if model_type and isinstance(model_type, str):
                 lowered_model_type = model_type.lower()
                 if lowered_model_type.startswith("grok") or lowered_model_type == const.XAI:
-                    self.btype["chat"] = const.GROK
+                    logger.warning("[Bridge] Ignoring global Grok model hint; use the restricted Grok backend profile")
 
             if model_type and isinstance(model_type, str):
                 lowered_model_type = model_type.lower()
@@ -147,7 +154,7 @@ class Bridge(object):
                 note_user_visible_model_call(task_backend, request_kind="chat_reply")
             if task_backend == BACKEND_GROK:
                 reply = self.find_chat_bot(BACKEND_GROK).reply(query, context)
-            elif task_backend != get_current_backend():
+            elif task_backend != get_current_backend() or is_custom_backend(task_backend):
                 reply = self.find_backend_chat_bot(task_backend).reply(query, context)
             else:
                 reply = self.get_bot("chat").reply(query, context)

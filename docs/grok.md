@@ -1,6 +1,6 @@
 # Grok / xAI 使用文档
 
-本文说明 CowWeCom 的 Grok/xAI 原生账号能力。Grok 相关协议能力继续复用 `integrations/hermes_xai/` 中前序 PR 迁移自 Hermes 的 OAuth、Responses、TTS、图片和视频实现；PR5 只补文档、配置、只读迁移、Web 状态和回归测试。
+本文说明 CowWeCom 的 Grok/xAI 原生账号能力。Grok 相关协议能力继续复用 `integrations/hermes_xai/` 中迁移自 Hermes 的 OAuth、Responses、TTS、图片和视频实现，并在 Web 控制台统一管理登录账号。
 
 不要把 access token、refresh token、authorization code、code verifier、完整 callback URL、API key 写入日志、群聊、Issue、README 或提交记录。
 
@@ -8,8 +8,8 @@
 
 CowWeCom 当前支持：
 
-- Grok OAuth 登录。
-- Grok Chat，`bot_type=grok` 或 `bot_type=xai` 时启用。
+- Grok OAuth 登录，支持多个命名账号并在控制台切换当前账号。
+- Grok Chat，通过 Web 控制台把管理员/白名单用户的个人模型后端切到 Grok 后启用；`bot_type=grok/xai` 仅保留兼容旧配置。
 - Grok TTS。
 - 企业微信语音模式，覆盖 `wechatcom_app` 和 `wecom_bot`。
 - Grok 图片生成，支持文生图和单张参考图图生图。
@@ -21,25 +21,27 @@ CowWeCom 当前支持：
 
 推荐在 Web 管理页完成 Grok 登录：
 
-1. 打开 CowWeCom Web 管理页，进入 Grok 登录页或 Grok 登录卡片。
-2. 点击“登录 Grok”。
+1. 打开 CowWeCom Web 控制台，进入“配置 / 模型配置 / Grok 账号”。
+2. 填写一个账号名称，点击“登录”。
 3. 默认使用 loopback 回调：`http://127.0.0.1:56121/callback`。
 4. 本地部署通常可以自动完成：浏览器授权后，后端收到 loopback callback，Web 页面轮询到登录成功。
 5. 远程部署或 loopback 端口不可用时，使用 manual paste。
 6. token 保存到 CowWeCom auth store，默认是项目内 `data/auth/grok_auth.json`，也可用 `grok_auth_file` 指定。
 7. CowWeCom 不写回 Hermes auth store。
 
-运行时优先使用 CowWeCom OAuth token；没有可用 OAuth 时，才回退到 `grok_api_key` 或 `XAI_API_KEY`。OAuth bearer 只允许发往 xAI 域名。
+旧 `/grok` 灰度登录入口不再承载登录页面，只会回到 Web 控制台。
+
+运行时优先使用控制台选中的 CowWeCom OAuth token；没有可用 OAuth 时，才回退到 `grok_api_key` 或 `XAI_API_KEY`。OAuth bearer 只允许发往 xAI 域名。默认账号继续使用 `providers.xai-oauth`；命名账号使用 `providers.xai-oauth:<account_id>`，Web/API 状态只返回账号名、邮箱、过期时间等安全字段。
 
 ## 远程部署 Manual Paste
 
 远程服务器、容器或浏览器无法访问服务端 loopback 时，按下面流程完成：
 
-1. 在 CowWeCom Web 管理页点击登录，复制返回的 `authorize_url` 到浏览器。
+1. 在 CowWeCom Web 控制台的 Grok 账号区点击登录，复制返回的 `authorize_url` 到浏览器。
 2. 在浏览器完成 xAI/Grok 登录授权。
 3. 浏览器跳转到 `http://127.0.0.1:56121/callback?...`，页面可能打不开，这是远程部署的正常现象。
 4. 复制浏览器地址栏完整 callback URL。
-5. 粘贴到 CowWeCom Web 页面的 manual paste 输入框。
+5. 粘贴到 CowWeCom Web 控制台 Grok 账号区的 manual paste 输入框。
 6. CowWeCom 后端校验 `state`，再用当前 PKCE 会话换 token。
 
 也可以粘贴只包含 `code` 和 `state` 的 query string，例如：
@@ -122,16 +124,28 @@ PR5 支持只读导入 Hermes 的 xAI OAuth 登录态：
 | `grok_video_poll_interval_seconds` | `5` | 视频任务轮询间隔。 |
 | `grok_video_download_timeout_seconds` | `120` | MP4 下载超时。 |
 
-最小 Grok Chat 配置示例：
+最小 Grok Chat 后端配置示例：
 
 ```json
 {
-  "bot_type": "grok",
-  "grok_model": "grok-4.3",
+  "llm_backend": {
+    "providers": {
+      "grok": {
+        "model": "grok-4.3",
+        "auth": "account"
+      }
+    },
+    "restricted_backends": {
+      "enabled": true,
+      "allowed_backends": ["grok"]
+    }
+  },
   "grok_proxy": "http://127.0.0.1:7897",
   "grok_auth_prefer_oauth": true
 }
 ```
+
+保存后在 Web 控制台登录 Grok 账号，并将管理员或白名单用户的个人后端切到 Grok；普通用户仍使用共享 GPT 后端池。
 
 ## 语音模式规则
 
@@ -169,6 +183,10 @@ Grok 语音回复分为两种模式：
 - 通过现有图片生成前缀触发。
 - `text_to_image=grok` 或 `text_to_image=xai` 时使用 Grok 图片生成。
 - 使用同一套 Grok OAuth / API key 凭据。
+- 普通 Grok 生图不会使用 YouMind/Nano Banana Pro 本地提示词库；运行时会把用户原始 prompt 加上 `skills/image-prompt-optimization/templates/grok_image_system_prompt.txt` 系统模板和可选随机仓库片段，交给 Grok 文本模型重写成完整最终 prompt，再提交给 Grok。
+- 可直接替换 `skills/image-prompt-optimization/templates/grok_image_system_prompt.txt` 调整 Grok 生图提示词重写规则；也可用 `GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT` 或 `GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT_FILE` 覆盖。
+- 如果 prompt 包含 `grokSfw`，系统会把这个关键词当作隐藏仓库触发词并从最终视觉请求中移除；缺少细节的随机补全 90% 从 `skills/image-prompt-optimization/repositories/grokSfw/` 选择，10% 从其他仓库选择。后续可在该目录中添加 UTF-8 `.txt`，每行一条可随机片段。
+- `/grok-direct image` 会继续端到端跳过提示词重写，把原始 prompt 直接提交给 Grok。
 - 图生图 v1 只支持一张参考图，可使用本地路径、`file://`、HTTP/HTTPS URL 或 data URI；有参考图时使用 xAI image edit `/images/edits`，纯文生图保持 `/images/generations`；未显式指定比例/尺寸时会尽量按参考图尺寸推断比例和 1k/2k 分辨率。
 - xAI 返回 b64 或 URL 后，CowWeCom 先保存成本地文件，再发送本地图片。
 - 不直接向用户发送远端 URL。
@@ -177,6 +195,7 @@ Grok 语音回复分为两种模式：
 
 视频生成：
 
+- 普通 Grok 视频生成会使用 `skills/image-prompt-optimization/templates/grok_video_system_prompt.txt` 和同一套随机仓库规则，先由 Grok 文本模型重写最终视频 prompt；`/grok-direct video` 继续使用 `prompt_enhancement=false` 跳过重写。
 - 通过 `video_create_prefix` 触发，例如 `生成视频 夕阳下的城市航拍，电影感`。
 - 引用单图：引用图片后发 `生成视频 让这张图里的车驶过雨夜街道`。
 - 上文单图：先发图，再发 `参考上面发的图片生成一个镜头推进的视频`。

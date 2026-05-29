@@ -171,13 +171,32 @@ def enhance_image_prompt(
     if not _is_enabled(enabled):
         return _disabled_metadata(original, target, "disabled")
 
+    target_name = _normalize_target(target)
+    if target_name == "grok":
+        try:
+            from common.grok_image_prompt_rewriter import rewrite_grok_image_prompt
+
+            return rewrite_grok_image_prompt(
+                original,
+                model=model,
+                runtime=runtime,
+                image_url=image_url,
+                quality=quality,
+                size=size,
+                aspect_ratio=aspect_ratio,
+                enabled=True,
+            )
+        except Exception as exc:
+            logger.warning("[ImagePromptEnhancer] Grok prompt rewrite failed; using original prompt: %s", exc)
+            return _disabled_metadata(original, target, "grok_rewrite_failed")
+
     library = _resolve_library_dir(library_dir)
     manifest = _load_manifest(library)
-    use_case = _detect_use_case(original, target=target)
-    templates = _find_templates(library, manifest, original, use_case, target=target)
+    use_case = _detect_use_case(original, target=target_name)
+    templates = _find_templates(library, manifest, original, use_case, target=target_name)
     enhanced = _build_enhanced_prompt(
         original,
-        target=_normalize_target(target),
+        target=target_name,
         model=model,
         runtime=runtime,
         use_case=use_case,
@@ -191,7 +210,7 @@ def enhance_image_prompt(
     return {
         "version": "youmind-full-library-v1",
         "enhanced": True,
-        "target": _normalize_target(target),
+        "target": target_name,
         "model": model or "",
         "runtime": runtime or "",
         "use_case": use_case,
@@ -322,21 +341,30 @@ def load_prompt_history(
 
 
 def _is_enabled(enabled: Any = None) -> bool:
-    if enabled is not None:
-        return str(enabled).strip().lower() not in {"0", "false", "no", "off"}
+    if enabled is not None and _is_disabled_flag(enabled):
+        return False
     for key in (
         "SKILL_IMAGE_GENERATION_PROMPT_ENHANCEMENT_ENABLED",
         "IMAGE_PROMPT_ENHANCEMENT_ENABLED",
     ):
         value = os.environ.get(key)
         if value is not None:
-            return str(value).strip().lower() not in {"0", "false", "no", "off"}
+            return not _is_disabled_flag(value)
     try:
         from config import conf
 
-        return bool(conf().get("image_prompt_enhancement_enabled", True))
+        configured = conf().get("image_prompt_enhancement_enabled", True)
+        if _is_disabled_flag(configured):
+            return False
+        if enabled is None:
+            return bool(configured)
     except Exception:
-        return True
+        pass
+    return True
+
+
+def _is_disabled_flag(value: Any) -> bool:
+    return str(value).strip().lower() in {"0", "false", "no", "off", "disabled"}
 
 
 def _disabled_metadata(prompt: str, target: str, reason: str) -> Dict[str, Any]:
@@ -354,35 +382,12 @@ def _disabled_metadata(prompt: str, target: str, reason: str) -> Dict[str, Any]:
 
 
 def _resolve_library_dir(configured: str | None = None) -> Optional[Path]:
-    candidates = [
-        configured,
-        os.environ.get("SKILL_IMAGE_GENERATION_PROMPT_LIBRARY_DIR"),
-        os.environ.get("IMAGE_PROMPT_LIBRARY_DIR"),
-    ]
     try:
-        from config import conf
+        from common.prompt_optimization_repository import resolve_nano_banana_library_dir
 
-        candidates.extend(
-            [
-                conf().get("image_prompt_library_dir"),
-                (conf().get("skill", {}).get("image-generation", {}) or {}).get("prompt_library_dir")
-                if isinstance(conf().get("skill", {}), dict)
-                else "",
-            ]
-        )
-    except Exception:
-        pass
-    module_root = Path(__file__).resolve().parents[1]
-    candidates.append(str(module_root / "skills" / "image-generation" / "references" / "nano-banana-pro"))
-    candidates.append(str(Path.cwd().parent / "references" / "nano-banana-pro"))
-    candidates.append(str(Path.cwd() / "references" / "nano-banana-pro"))
-    candidates.append(str(Path.cwd().parents[1] / "references" / "nano-banana-pro") if len(Path.cwd().parents) > 1 else "")
-    for candidate in candidates:
-        if not candidate:
-            continue
-        path = Path(str(candidate)).expanduser()
-        if (path / "manifest.json").is_file():
-            return path.resolve()
+        return resolve_nano_banana_library_dir(configured)
+    except Exception as exc:
+        logger.debug("[ImagePromptEnhancer] prompt optimization skill lookup failed: %s", exc)
     return None
 
 

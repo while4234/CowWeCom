@@ -26,9 +26,10 @@ Provider selection rule:
 - If Grok/xAI is explicitly mentioned, use `image_generation_task` with
   `"runtime": "grok"`.
 
-Grok PR3 supports text-to-image only. For image editing, image fusion, or video,
-tell the user Grok mode is not supported for that operation yet and use the
-default Codex/GPT image runtime when the user accepts that path.
+Grok image generation supports text-to-image and single-reference image editing.
+For multi-image fusion, tell the user Grok image mode is not supported for that
+operation yet and use the default Codex/GPT image runtime when the user accepts
+that path.
 
 When using Grok:
 
@@ -41,14 +42,27 @@ When using Grok:
   mode, `speed` or `fast` for speed mode.
 - If quality/speed is not explicit, omit `quality`; Grok defaults to the fast
   model. Do not infer quality mode from the image type alone.
-- Hidden prompt enhancement is automatic after Grok model selection. The runtime
-  uses the full YouMind Nano Banana Pro library and adapts the final prompt for
-  high-aesthetic people/portrait photography by default, unless the user
-  explicitly asks for a non-portrait image such as a poster, product visual, or
-  diagram.
+- Hidden prompt rewriting is automatic after Grok model selection. Grok uses the
+  shared `image-prompt-optimization` skill and Grok's own text model, not the
+  current GPT/Codex backend. The runtime sends the user's visual request plus
+  `templates/grok_image_system_prompt.txt` and optional random repository
+  fragments to Grok, then sends the returned final prompt directly to Grok image
+  generation.
 - Do not display the enhanced prompt during generation. If the user explicitly
   asks to see the prompt after the image is generated, use
   `image_generation_prompt_history`.
+
+The rewrite system prompt template lives in the shared prompt optimization skill:
+
+```text
+skills/image-prompt-optimization/templates/grok_image_system_prompt.txt
+```
+
+Replace that file, or set `GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT` /
+`GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT_FILE`, to customize the prompt writer.
+If the prompt contains `grokSfw`, random missing-detail fragments are selected
+90% from `skills/image-prompt-optimization/repositories/grokSfw/` and 10% from
+other repositories when available.
 
 Example explicit Grok request:
 

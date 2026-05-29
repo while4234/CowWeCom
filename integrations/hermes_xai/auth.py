@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 import threading
@@ -34,6 +35,7 @@ from .proxy import xai_request_kwargs
 
 AUTH_STORE_VERSION = 1
 PROVIDER_ID = "xai-oauth"
+DEFAULT_ACCOUNT_ID = "default"
 AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 
 DEFAULT_XAI_OAUTH_BASE_URL = "https://api.x.ai/v1"
@@ -89,6 +91,8 @@ class _LoginSession:
     redirect_uri: str
     discovery: Dict[str, str]
     authorize_url: str
+    account_id: str = DEFAULT_ACCOUNT_ID
+    account_name: str = "Default"
     server: Optional[ThreadingHTTPServer] = None
     thread: Optional[threading.Thread] = None
     callback: Optional[Dict[str, Any]] = None
@@ -98,12 +102,14 @@ class _LoginSession:
     completed_at: float = 0.0
 
 
-def start_xai_oauth_login() -> dict:
+def start_xai_oauth_login(account_name: str = "", account_id: str = "") -> dict:
     """Start an xAI OAuth login and return a safe browser URL payload."""
     global _active_login
 
     with _login_lock:
         _stop_login_session(_active_login)
+        normalized_account_id = _normalize_account_id(account_id or account_name)
+        display_name = _display_account_name(account_name, normalized_account_id)
         discovery = _xai_oauth_discovery()
         server = None
         thread = None
@@ -129,6 +135,8 @@ def start_xai_oauth_login() -> dict:
                 nonce=nonce,
             )
             _active_login = _LoginSession(
+                account_id=normalized_account_id,
+                account_name=display_name,
                 state=state,
                 nonce=nonce,
                 code_verifier=code_verifier,
@@ -150,6 +158,8 @@ def start_xai_oauth_login() -> dict:
             "state": "pending",
             "redirect_uri": redirect_uri,
             "manual_paste_supported": True,
+            "account_id": normalized_account_id,
+            "account_name": display_name,
         }
         if bind_message:
             response["message"] = bind_message
@@ -216,15 +226,17 @@ def poll_xai_oauth_login() -> dict:
         return {
             "status": session.status,
             "message": session.message,
+            "account_id": session.account_id,
+            "account_name": session.account_name,
             "auth": get_xai_oauth_status() if session.status == "complete" else None,
         }
 
 
-def read_xai_oauth_tokens() -> dict:
+def read_xai_oauth_tokens(account_id: str = "") -> dict:
     """Read the CowWeCom xai-oauth provider state, including tokens."""
     _import_hermes_xai_auth_if_enabled()
     with _store_lock:
-        state = _read_provider_state()
+        state = _read_provider_state(account_id=account_id)
     tokens = state.get("tokens") if isinstance(state, dict) else None
     if not isinstance(tokens, dict) or not tokens.get("access_token"):
         raise AuthError(
@@ -240,6 +252,8 @@ def save_xai_oauth_tokens(
     *,
     discovery: dict | None = None,
     redirect_uri: str = "",
+    account_id: str = "",
+    account_name: str = "",
 ) -> None:
     """Persist token state atomically without logging token contents."""
     if not isinstance(tokens, dict):
@@ -262,13 +276,17 @@ def save_xai_oauth_tokens(
     with _store_lock:
         store = _load_auth_store()
         providers = store.setdefault("providers", {})
-        previous = providers.get(PROVIDER_ID) if isinstance(providers.get(PROVIDER_ID), dict) else {}
+        normalized_account_id = _normalize_account_id(account_id)
+        provider_id = _provider_id_for_account(normalized_account_id)
+        previous = providers.get(provider_id) if isinstance(providers.get(provider_id), dict) else {}
         previous_tokens = previous.get("tokens") if isinstance(previous.get("tokens"), dict) else {}
         if not token_state.get("refresh_token") and previous_tokens.get("refresh_token"):
             token_state["refresh_token"] = previous_tokens["refresh_token"]
         state = dict(previous)
         state.update({
             "provider": PROVIDER_ID,
+            "account_id": normalized_account_id,
+            "account_name": _display_account_name(account_name or previous.get("account_name"), normalized_account_id),
             "auth_mode": "oauth_pkce",
             "base_url": _xai_validate_inference_base_url(
                 conf().get("grok_api_base", ""),
@@ -283,15 +301,16 @@ def save_xai_oauth_tokens(
             state["profile"] = profile
         if discovery:
             state["discovery"] = _sanitize_discovery(discovery)
-        providers[PROVIDER_ID] = state
-        store["active_provider"] = PROVIDER_ID
+        providers[provider_id] = state
+        store["active_provider"] = provider_id
         _save_auth_store(store)
 
 
-def refresh_xai_oauth(force: bool = False) -> dict:
+def refresh_xai_oauth(force: bool = False, account_id: str = "") -> dict:
     """Refresh the xAI access token if needed and persist the updated token."""
     with _store_lock:
-        state = _read_provider_state()
+        state = _read_provider_state(account_id=account_id)
+        normalized_account_id = str(state.get("account_id") or _normalize_account_id(account_id))
         tokens = dict(state.get("tokens") or {})
         access_token = str(tokens.get("access_token") or "").strip()
         refresh_token = str(tokens.get("refresh_token") or "").strip()
@@ -318,19 +337,22 @@ def refresh_xai_oauth(force: bool = False) -> dict:
             refreshed,
             discovery=discovery,
             redirect_uri=str(state.get("redirect_uri") or _default_redirect_uri()),
+            account_id=normalized_account_id,
+            account_name=str(state.get("account_name") or ""),
         )
-        return get_xai_oauth_status()
+        return get_xai_oauth_status(account_id=normalized_account_id)
 
 
-def resolve_xai_oauth_runtime_credentials(force_refresh: bool = False) -> dict:
+def resolve_xai_oauth_runtime_credentials(force_refresh: bool = False, account_id: str = "") -> dict:
     """Return xAI OAuth credentials for runtime HTTP calls."""
     _import_hermes_xai_auth_if_enabled()
-    state = read_xai_oauth_tokens()
+    state = read_xai_oauth_tokens(account_id=account_id)
+    normalized_account_id = str(state.get("account_id") or _normalize_account_id(account_id))
     tokens = dict(state.get("tokens") or {})
     access_token = str(tokens.get("access_token") or "").strip()
     if force_refresh or _xai_token_state_is_expiring(tokens, access_token):
-        refresh_xai_oauth(force=force_refresh)
-        state = read_xai_oauth_tokens()
+        refresh_xai_oauth(force=force_refresh, account_id=normalized_account_id)
+        state = read_xai_oauth_tokens(account_id=normalized_account_id)
         tokens = dict(state.get("tokens") or {})
         access_token = str(tokens.get("access_token") or "").strip()
     if not access_token:
@@ -346,35 +368,47 @@ def resolve_xai_oauth_runtime_credentials(force_refresh: bool = False) -> dict:
             fallback=DEFAULT_XAI_OAUTH_BASE_URL,
         ),
         "provider": PROVIDER_ID,
+        "account_id": normalized_account_id,
+        "account_name": str(state.get("account_name") or ""),
         "auth_mode": "oauth_pkce",
     }
 
 
-def logout_xai_oauth() -> dict:
+def logout_xai_oauth(account_id: str = "") -> dict:
     """Remove the xai-oauth provider state from CowWeCom's auth store."""
     global _active_login
 
+    requested_account_id = str(account_id or "").strip()
     with _login_lock:
-        _stop_login_session(_active_login)
-        _active_login = None
+        normalized_account_id = _normalize_account_id(requested_account_id)
+        if not _active_login or not requested_account_id or _active_login.account_id == normalized_account_id:
+            _stop_login_session(_active_login)
+            _active_login = None
     with _store_lock:
         store = _load_auth_store()
         providers = store.setdefault("providers", {})
+        provider_id = (
+            _provider_id_for_account(normalized_account_id)
+            if requested_account_id
+            else _select_provider_id(store)
+        )
         if isinstance(providers, dict):
-            providers.pop(PROVIDER_ID, None)
-        if store.get("active_provider") == PROVIDER_ID:
-            store["active_provider"] = ""
+            providers.pop(provider_id, None)
+        if store.get("active_provider") == provider_id:
+            store["active_provider"] = _first_xai_provider_id(providers) or ""
         _save_auth_store(store)
     return get_xai_oauth_status()
 
 
-def get_xai_oauth_status() -> dict:
+def get_xai_oauth_status(account_id: str = "") -> dict:
     """Return a token-free Grok OAuth status payload."""
     _import_hermes_xai_auth_if_enabled()
     try:
-        state = _read_provider_state()
+        state = _read_provider_state(account_id=account_id)
     except AuthError:
-        return _logged_out_status(needs_reauth=True)
+        status = _logged_out_status(needs_reauth=True)
+        status["accounts"] = list_xai_oauth_accounts()
+        return status
 
     tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else {}
     access_token = str(tokens.get("access_token") or "").strip()
@@ -387,9 +421,12 @@ def get_xai_oauth_status() -> dict:
     elif expires_at and float(expires_at) <= time.time():
         needs_reauth = not bool(refresh_token)
     profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
-    return {
+    normalized_account_id = str(state.get("account_id") or _normalize_account_id(account_id))
+    status = {
         "logged_in": logged_in,
         "provider": PROVIDER_ID if logged_in else "",
+        "account_id": normalized_account_id,
+        "account_name": str(state.get("account_name") or _display_account_name("", normalized_account_id)),
         "base_url": _xai_validate_inference_base_url(
             str(state.get("base_url") or conf().get("grok_api_base", "")),
             fallback=DEFAULT_XAI_OAUTH_BASE_URL,
@@ -398,6 +435,62 @@ def get_xai_oauth_status() -> dict:
         "expires_at": expires_at,
         "needs_reauth": needs_reauth,
     }
+    status["accounts"] = list_xai_oauth_accounts()
+    return status
+
+
+def list_xai_oauth_accounts() -> list[dict]:
+    """Return token-free statuses for all saved Grok OAuth accounts."""
+    try:
+        store = _load_auth_store()
+    except Exception:
+        return []
+    providers = store.get("providers") if isinstance(store.get("providers"), dict) else {}
+    active_provider = str(store.get("active_provider") or "")
+    accounts = []
+    for provider_id in sorted(providers):
+        if not _is_xai_provider_id(provider_id):
+            continue
+        state = providers.get(provider_id)
+        if not isinstance(state, dict):
+            continue
+        account_id = str(state.get("account_id") or _account_id_from_provider_id(provider_id))
+        tokens = state.get("tokens") if isinstance(state.get("tokens"), dict) else {}
+        access_token = str(tokens.get("access_token") or "").strip()
+        refresh_token = str(tokens.get("refresh_token") or "").strip()
+        expires_at = _coerce_expires_at(tokens.get("expires_at")) or _access_token_exp(access_token) or 0
+        profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+        accounts.append(
+            {
+                "account_id": account_id,
+                "account_name": str(state.get("account_name") or _display_account_name("", account_id)),
+                "logged_in": bool(access_token and refresh_token),
+                "active": provider_id == active_provider or (not active_provider and provider_id == PROVIDER_ID),
+                "provider": PROVIDER_ID,
+                "base_url": _xai_validate_inference_base_url(
+                    str(state.get("base_url") or conf().get("grok_api_base", "")),
+                    fallback=DEFAULT_XAI_OAUTH_BASE_URL,
+                ),
+                "email": str(profile.get("email") or "") if profile else "",
+                "expires_at": expires_at,
+                "needs_reauth": bool(state) and not bool(access_token and refresh_token),
+            }
+        )
+    return accounts
+
+
+def select_xai_oauth_account(account_id: str) -> dict:
+    """Make a saved Grok OAuth account the active runtime account."""
+    normalized_account_id = _normalize_account_id(account_id)
+    provider_id = _provider_id_for_account(normalized_account_id)
+    with _store_lock:
+        store = _load_auth_store()
+        providers = store.get("providers") if isinstance(store.get("providers"), dict) else {}
+        if provider_id not in providers:
+            raise AuthError("Grok account was not found.", code="xai_account_missing", relogin_required=True)
+        store["active_provider"] = provider_id
+        _save_auth_store(store)
+    return get_xai_oauth_status(account_id=normalized_account_id)
 
 
 def import_hermes_xai_auth_if_available() -> dict:
@@ -553,6 +646,76 @@ def _provider_has_oauth_tokens(state: Any) -> bool:
     return bool(tokens.get("access_token") and tokens.get("refresh_token"))
 
 
+def _normalize_account_id(value: Any = "") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return DEFAULT_ACCOUNT_ID
+    lowered = raw.lower()
+    if lowered in {DEFAULT_ACCOUNT_ID, PROVIDER_ID}:
+        return DEFAULT_ACCOUNT_ID
+    prefix = f"{PROVIDER_ID}:"
+    if lowered.startswith(prefix):
+        raw = raw[len(prefix):]
+    slug = re.sub(r"[^a-z0-9_-]+", "-", raw.lower()).strip("-_")
+    if not slug or not slug[0].isalpha():
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:10]
+        slug = f"acct-{digest}"
+    return slug[:64]
+
+
+def _display_account_name(value: Any, account_id: str) -> str:
+    text = str(value or "").strip()
+    if text:
+        return text[:80]
+    return "Default" if account_id == DEFAULT_ACCOUNT_ID else account_id
+
+
+def _provider_id_for_account(account_id: str) -> str:
+    normalized = _normalize_account_id(account_id)
+    if normalized == DEFAULT_ACCOUNT_ID:
+        return PROVIDER_ID
+    return f"{PROVIDER_ID}:{normalized}"
+
+
+def _account_id_from_provider_id(provider_id: str) -> str:
+    text = str(provider_id or "").strip()
+    if text == PROVIDER_ID:
+        return DEFAULT_ACCOUNT_ID
+    prefix = f"{PROVIDER_ID}:"
+    if text.startswith(prefix):
+        return _normalize_account_id(text[len(prefix):])
+    return DEFAULT_ACCOUNT_ID
+
+
+def _is_xai_provider_id(provider_id: str) -> bool:
+    text = str(provider_id or "").strip()
+    return text == PROVIDER_ID or text.startswith(f"{PROVIDER_ID}:")
+
+
+def _first_xai_provider_id(providers: Any) -> str:
+    if not isinstance(providers, dict):
+        return ""
+    if PROVIDER_ID in providers:
+        return PROVIDER_ID
+    candidates = sorted(key for key in providers if _is_xai_provider_id(key))
+    return candidates[0] if candidates else ""
+
+
+def _select_provider_id(store: Dict[str, Any], account_id: str = "") -> str:
+    providers = store.get("providers") if isinstance(store.get("providers"), dict) else {}
+    if account_id:
+        return _provider_id_for_account(_normalize_account_id(account_id))
+    active = str(store.get("active_provider") or "")
+    if active in providers and _is_xai_provider_id(active):
+        return active
+    if PROVIDER_ID in providers:
+        return PROVIDER_ID
+    candidates = sorted(key for key in providers if _is_xai_provider_id(key))
+    if len(candidates) == 1:
+        return candidates[0]
+    return PROVIDER_ID
+
+
 def _copy_hermes_xai_tokens(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -651,7 +814,13 @@ def _complete_login_session(session: _LoginSession, callback: Dict[str, Any]) ->
         "expires_in": token_payload.get("expires_in"),
         "token_type": str(token_payload.get("token_type") or "Bearer").strip() or "Bearer",
     }
-    save_xai_oauth_tokens(tokens, discovery=session.discovery, redirect_uri=session.redirect_uri)
+    save_xai_oauth_tokens(
+        tokens,
+        discovery=session.discovery,
+        redirect_uri=session.redirect_uri,
+        account_id=session.account_id,
+        account_name=session.account_name,
+    )
     session.status = "complete"
     session.message = ""
     session.completed_at = time.time()
@@ -660,12 +829,13 @@ def _complete_login_session(session: _LoginSession, callback: Dict[str, Any]) ->
     return get_xai_oauth_status()
 
 
-def _read_provider_state() -> Dict[str, Any]:
+def _read_provider_state(account_id: str = "") -> Dict[str, Any]:
     store = _load_auth_store()
     providers = store.get("providers")
     if not isinstance(providers, dict):
         return {}
-    state = providers.get(PROVIDER_ID)
+    provider_id = _select_provider_id(store, account_id=account_id)
+    state = providers.get(provider_id)
     return dict(state) if isinstance(state, dict) else {}
 
 

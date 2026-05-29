@@ -167,7 +167,6 @@ available_setting = {
     "grok_auth_file": "",  # Grok OAuth auth store; defaults to data/auth/grok_auth.json
     "grok_auth_prefer_oauth": True,  # Prefer Web OAuth tokens before API key fallback
     "grok_oauth_accept_bare_code": False,  # Optional legacy manual paste: accept bare authorization code only with active PKCE login
-    "grok_gray_enabled": False,  # Show Grok in normal Web model provider selection only for gray testing
     "grok_import_hermes_auth": True,  # Read-only import from ~/.hermes/auth.json when CowWeCom auth store is absent
     "grok_import_hermes_auth_overwrite": False,  # Do not overwrite CowWeCom xai-oauth unless explicitly enabled
     "grok_wire_api": "responses",  # Grok uses Responses API
@@ -244,8 +243,13 @@ available_setting = {
     "image_proxy": True,  # 是否需要图片代理，国内访问LinkAI时需要
     "image_create_prefix": ["画图", "生图", "生成图片", "生成图", "绘图", "出图"],  # 开启图片生成的显式前缀
     "concurrency_in_session": 1,  # 同一会话最多有多少条消息在处理中，大于1可能乱序
-    "image_prompt_enhancement_enabled": True,  # Hidden YouMind prompt-library enhancement for GPT/Grok image generation
-    "image_prompt_library_dir": "",  # Optional full YouMind prompt library override; defaults to skills/image-generation/references/nano-banana-pro
+    "image_prompt_enhancement_enabled": True,  # Hidden prompt processing: YouMind for GPT/Codex, Grok-model rewrite for Grok media
+    "image_prompt_optimization_skill_dir": "",  # Optional image-prompt-optimization skill root override
+    "image_prompt_library_dir": "",  # Optional Nano Banana Pro library override; defaults to skills/image-prompt-optimization/references/nano-banana-pro
+    "grok_image_prompt_rewrite_system_prompt": "",  # Optional inline Grok image rewrite system prompt
+    "grok_image_prompt_rewrite_system_prompt_file": "",  # Optional Grok image rewrite template file override
+    "grok_video_prompt_rewrite_system_prompt": "",  # Optional inline Grok video rewrite system prompt
+    "grok_video_prompt_rewrite_system_prompt_file": "",  # Optional Grok video rewrite template file override
     "image_create_size": "256x256",  # 图片大小,可选有 256x256, 512x512, 1024x1024 (dall-e-3默认为1024x1024)
     "image_create_format": "png",  # OpenAI GPT Image output format: png, jpeg, or webp
     "image_create_quality": "",  # OpenAI GPT Image quality: auto, low, medium, or high
@@ -496,6 +500,10 @@ available_setting = {
             "runtime": "codex_auth",
             "codex_auth_file": "",
             "prompt_enhancement_enabled": True,
+            "prompt_library_dir": "",
+        },
+        "image-prompt-optimization": {
+            "root": "",
             "prompt_library_dir": "",
         }
     },  # Per-skill runtime config; nested keys flatten to SKILL_<NAME>_<KEY> env vars at startup

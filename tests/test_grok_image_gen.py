@@ -5,6 +5,7 @@ import logging
 
 import pytest
 
+from common import grok_image_prompt_rewriter
 from integrations.hermes_xai import image_gen
 from integrations.hermes_xai.auth import AuthError
 
@@ -47,6 +48,11 @@ def test_provider_posts_images_generation_with_oauth_token_and_payload(monkeypat
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(image_gen, "resolve_xai_http_credentials", fake_resolver)
     monkeypatch.setattr(image_gen.requests, "post", fake_post)
+    monkeypatch.setattr(
+        grok_image_prompt_rewriter,
+        "_call_grok_text_model",
+        lambda system_prompt, user_prompt: "A rewritten Grok prompt for a calm cinematic lake.",
+    )
 
     with caplog.at_level(logging.INFO):
         path = image_gen.XAIImageGenProvider().generate(
@@ -61,8 +67,8 @@ def test_provider_posts_images_generation_with_oauth_token_and_payload(monkeypat
     assert post_call[1] == "https://api.x.ai/v1/images/generations"
     assert post_call[2]["Authorization"] == "Bearer oauth-access-token"
     assert post_call[3]["model"] == "grok-imagine-image-quality"
-    assert "paint a calm lake" in post_call[3]["prompt"]
-    assert "[CowWeCom hidden image prompt enhancement]" in post_call[3]["prompt"]
+    assert post_call[3]["prompt"] == "A rewritten Grok prompt for a calm cinematic lake."
+    assert "[CowWeCom hidden image prompt enhancement]" not in post_call[3]["prompt"]
     assert post_call[3]["aspect_ratio"] == "16:9"
     assert post_call[3]["resolution"] == "2k"
     assert "image" not in post_call[3]
@@ -237,6 +243,11 @@ def test_provider_refreshes_once_on_401(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(image_gen, "resolve_xai_http_credentials", fake_resolver)
     monkeypatch.setattr(image_gen.requests, "post", fake_post)
+    monkeypatch.setattr(
+        grok_image_prompt_rewriter,
+        "_call_grok_text_model",
+        lambda system_prompt, user_prompt: "retry image",
+    )
 
     path = image_gen.XAIImageGenProvider().generate("retry image")
 
@@ -271,6 +282,11 @@ def test_provider_sanitizes_http_errors(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(image_gen, "resolve_xai_http_credentials", fake_resolver)
     monkeypatch.setattr(image_gen.requests, "post", fake_post)
+    monkeypatch.setattr(
+        grok_image_prompt_rewriter,
+        "_call_grok_text_model",
+        lambda system_prompt, user_prompt: "fail image",
+    )
 
     with pytest.raises(image_gen.XaiImageGenError) as exc_info:
         image_gen.XAIImageGenProvider().generate("fail image")
@@ -295,6 +311,11 @@ def test_provider_timeout_returns_clear_error(monkeypatch, tmp_path):
         },
     )
     monkeypatch.setattr(image_gen.requests, "post", lambda *args, **kwargs: (_ for _ in ()).throw(image_gen.requests.Timeout()))
+    monkeypatch.setattr(
+        grok_image_prompt_rewriter,
+        "_call_grok_text_model",
+        lambda system_prompt, user_prompt: "slow image",
+    )
 
     with pytest.raises(image_gen.XaiImageGenError) as exc_info:
         image_gen.XAIImageGenProvider().generate("slow image", resolution="bad")
@@ -309,6 +330,11 @@ def test_provider_reports_missing_grok_login(monkeypatch):
         lambda force_refresh=False: (_ for _ in ()).throw(
             AuthError("Grok account is not logged in.", code="xai_auth_missing", relogin_required=True)
         ),
+    )
+    monkeypatch.setattr(
+        grok_image_prompt_rewriter,
+        "_call_grok_text_model",
+        lambda system_prompt, user_prompt: "login please",
     )
 
     with pytest.raises(image_gen.XaiImageGenError) as exc_info:

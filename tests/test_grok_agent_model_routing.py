@@ -93,12 +93,16 @@ class TestGrokAgentModelRouting(unittest.TestCase):
             model="deepseek-v4-flash",
         )
 
-    def _run_agent_call(self, bot_type):
+    def _run_grok_agent_call(self, request_backend=""):
         client = _FakeResponsesClient()
-        fake_conf = self._fake_conf(bot_type)
+        fake_conf = self._fake_conf("")
+        request = self._request()
+        if request_backend:
+            request.backend = request_backend
 
         with patch("config.conf", return_value=fake_conf), \
                 patch("common.llm_backend_router.is_codex_active", return_value=False), \
+                patch("bridge.agent_bridge.get_current_backend_for_profile", return_value="grok"), \
                 patch("bridge.agent_bridge.conf", return_value=fake_conf), \
                 patch("models.grok.grok_bot.conf", return_value=fake_conf), \
                 patch(
@@ -110,22 +114,37 @@ class TestGrokAgentModelRouting(unittest.TestCase):
                         "auth_mode": "oauth_pkce",
                     },
                 ), \
+                patch("models.grok.grok_bot.GrokBot._get_http_client", return_value=client), \
                 patch.object(OpenAICompatibleBot, "_get_http_client", return_value=client):
             model = AgentLLMModel(bridge=MagicMock())
-            result = model.call(self._request())
+            model.set_actor_profile(self._admin_profile())
+            result = model.call(request)
 
         self.assertEqual(result["choices"][0]["message"]["content"], "ok")
         return client.calls[0]
 
     def test_agent_grok_uses_grok_model_in_responses_payload(self):
-        call = self._run_agent_call("grok")
+        call = self._run_grok_agent_call()
 
         self.assertEqual(call["model"], "grok-4.3")
 
     def test_agent_xai_alias_uses_grok_model_in_responses_payload(self):
-        call = self._run_agent_call("xai")
+        call = self._run_grok_agent_call("xai")
 
         self.assertEqual(call["model"], "grok-4.3")
+
+    def test_global_grok_bot_type_without_backend_uses_openai_route(self):
+        fake_conf = self._fake_conf("grok")
+
+        with patch("config.conf", return_value=fake_conf), \
+                patch("bridge.agent_bridge.get_current_backend_for_profile", return_value="capi"), \
+                patch("bridge.agent_bridge.conf", return_value=fake_conf):
+            model = AgentLLMModel(bridge=MagicMock())
+            bot_type, routed_model, route_backend = model._resolve_request_route(self._request())
+
+        self.assertEqual(bot_type, const.DEEPSEEK)
+        self.assertEqual(routed_model, "deepseek-v4-flash")
+        self.assertEqual(route_backend, "capi")
 
     def test_grok_bot_direct_call_ignores_non_grok_model_kwarg(self):
         from models.grok.grok_bot import GrokBot
@@ -144,6 +163,7 @@ class TestGrokAgentModelRouting(unittest.TestCase):
                         "auth_mode": "oauth_pkce",
                     },
                 ), \
+                patch("models.grok.grok_bot.GrokBot._get_http_client", return_value=client), \
                 patch.object(OpenAICompatibleBot, "_get_http_client", return_value=client):
             bot = GrokBot()
             result = bot.call_with_tools(
@@ -219,6 +239,16 @@ class TestGrokAgentModelRouting(unittest.TestCase):
         self.assertEqual(bot_type, const.OPENAI)
         self.assertEqual(routed_model, "gpt-4.1-mini")
         self.assertEqual(route_backend, "capi")
+
+    def test_unknown_request_backend_is_rejected(self):
+        model = AgentLLMModel(bridge=MagicMock())
+        request = LLMRequest(
+            messages=[{"role": "user", "content": "hi"}],
+            backend="missing_provider",
+        )
+
+        with self.assertRaisesRegex(ValueError, "unsupported request backend"):
+            model._resolve_request_route(request)
 
     def test_user_visible_call_counter_uses_request_backend_override(self):
         model = AgentLLMModel(bridge=MagicMock())

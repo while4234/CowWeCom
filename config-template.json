@@ -22,7 +22,6 @@
   "grok_auth_file": "",
   "grok_auth_prefer_oauth": true,
   "grok_oauth_accept_bare_code": false,
-  "grok_gray_enabled": false,
   "grok_import_hermes_auth": true,
   "grok_import_hermes_auth_overwrite": false,
   "grok_wire_api": "responses",
@@ -113,7 +112,12 @@
   "grok_video_generation_global_workers": 2,
   "grok_video_generation_actor_workers": 2,
   "image_prompt_enhancement_enabled": true,
+  "image_prompt_optimization_skill_dir": "",
   "image_prompt_library_dir": "",
+  "grok_image_prompt_rewrite_system_prompt": "",
+  "grok_image_prompt_rewrite_system_prompt_file": "",
+  "grok_video_prompt_rewrite_system_prompt": "",
+  "grok_video_prompt_rewrite_system_prompt_file": "",
   "image_create_size": "256x256",
   "image_create_format": "png",
   "image_create_quality": "",
@@ -287,7 +291,8 @@
       "respect_manual_override": true,
       "prefer_capi_monthly_at_check_time": true,
       "monthly_post_task_check_enabled": true,
-      "monthly_min_remaining_percent": 10
+      "monthly_min_remaining_percent": 10,
+      "fallback_backends": []
     },
     "quota_refresh": {
       "enabled": true,
@@ -408,6 +413,10 @@
       "runtime": "codex_auth",
       "codex_auth_file": "",
       "prompt_enhancement_enabled": true,
+      "prompt_library_dir": ""
+    },
+    "image-prompt-optimization": {
+      "root": "",
       "prompt_library_dir": ""
     }
   }

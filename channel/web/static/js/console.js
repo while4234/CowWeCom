@@ -63,6 +63,54 @@ const I18N = {
         config_save_error: '保存失败',
         config_custom_option: '自定义...',
         config_custom_tip: '接口需遵循 OpenAI API 协议',
+        config_backend_profiles: '后端提供方',
+        config_backend_select: '已有后端',
+        config_backend_new: '新增后端',
+        config_backend_empty: '暂无后端',
+        config_backend_id: '后端 ID',
+        config_backend_id_hint: 'openai-main',
+        config_backend_label: '显示名称',
+        config_backend_label_hint: 'OpenAI Main',
+        config_backend_model: '模型',
+        config_backend_model_hint: 'gpt-4.1-mini',
+        config_backend_api_base_hint: 'https://api.openai.com/v1',
+        config_backend_api_key_env: 'Key 环境变量',
+        config_backend_api_key_env_hint: 'OPENAI_API_KEY',
+        config_backend_api_base_env: 'Base 环境变量',
+        config_backend_api_base_env_hint: 'OPENAI_API_BASE',
+        config_backend_wire_api: '协议',
+        config_backend_timeout: '请求超时',
+        config_backend_timeout_hint: '120',
+        config_backend_connectivity_timeout: '连通性超时',
+        config_backend_connectivity_timeout_hint: '15',
+        config_backend_set_current: '设为当前',
+        config_backend_include_auto: '加入自动切换',
+        config_backend_save: '保存后端',
+        config_backend_saved: '后端已保存',
+        config_backend_required: '请填写后端 ID 和模型',
+        config_backend_number_error: '超时需为正数',
+        config_backend_save_error: '后端保存失败',
+        config_grok_accounts: 'Grok 账号',
+        config_grok_select: '当前账号',
+        config_grok_new: '新增账号',
+        config_grok_empty: '暂无 Grok 账号',
+        config_grok_account_name: '账号名称',
+        config_grok_account_name_hint: 'Work Grok',
+        config_grok_login: '登录',
+        config_grok_poll: '轮询',
+        config_grok_test: '检查',
+        config_grok_logout: '退出',
+        config_grok_authorize_url: '登录链接',
+        config_grok_callback: 'Callback URL',
+        config_grok_manual: '提交回调',
+        config_grok_name_required: '请填写账号名称',
+        config_grok_callback_required: '请填写回调 URL',
+        config_grok_login_started: 'Grok 登录已开始',
+        config_grok_login_done: 'Grok 登录完成',
+        config_grok_selected: '账号已切换',
+        config_grok_checked: '凭据可用',
+        config_grok_logged_out: '账号已退出',
+        config_grok_error: 'Grok 操作失败',
         config_security: '安全设置', config_password: '访问密码',
         config_password_hint: '留空则不启用密码保护',
         config_password_changed: '密码已更新，请重新登录',
@@ -193,6 +241,54 @@ const I18N = {
         config_save_error: 'Save failed',
         config_custom_option: 'Custom...',
         config_custom_tip: 'API must follow OpenAI protocol.',
+        config_backend_profiles: 'Backend Providers',
+        config_backend_select: 'Existing backend',
+        config_backend_new: 'New backend',
+        config_backend_empty: 'No backends',
+        config_backend_id: 'Backend ID',
+        config_backend_id_hint: 'openai-main',
+        config_backend_label: 'Display name',
+        config_backend_label_hint: 'OpenAI Main',
+        config_backend_model: 'Model',
+        config_backend_model_hint: 'gpt-4.1-mini',
+        config_backend_api_base_hint: 'https://api.openai.com/v1',
+        config_backend_api_key_env: 'Key env var',
+        config_backend_api_key_env_hint: 'OPENAI_API_KEY',
+        config_backend_api_base_env: 'Base env var',
+        config_backend_api_base_env_hint: 'OPENAI_API_BASE',
+        config_backend_wire_api: 'Wire API',
+        config_backend_timeout: 'Request timeout',
+        config_backend_timeout_hint: '120',
+        config_backend_connectivity_timeout: 'Connectivity timeout',
+        config_backend_connectivity_timeout_hint: '15',
+        config_backend_set_current: 'Set current',
+        config_backend_include_auto: 'Include in auto switch',
+        config_backend_save: 'Save backend',
+        config_backend_saved: 'Backend saved',
+        config_backend_required: 'Backend ID and model required',
+        config_backend_number_error: 'Timeouts must be positive',
+        config_backend_save_error: 'Backend save failed',
+        config_grok_accounts: 'Grok Accounts',
+        config_grok_select: 'Current account',
+        config_grok_new: 'New account',
+        config_grok_empty: 'No Grok accounts',
+        config_grok_account_name: 'Account name',
+        config_grok_account_name_hint: 'Work Grok',
+        config_grok_login: 'Log in',
+        config_grok_poll: 'Poll',
+        config_grok_test: 'Check',
+        config_grok_logout: 'Log out',
+        config_grok_authorize_url: 'Login URL',
+        config_grok_callback: 'Callback URL',
+        config_grok_manual: 'Submit callback',
+        config_grok_name_required: 'Account name required',
+        config_grok_callback_required: 'Callback URL required',
+        config_grok_login_started: 'Grok login started',
+        config_grok_login_done: 'Grok login complete',
+        config_grok_selected: 'Account selected',
+        config_grok_checked: 'Credentials available',
+        config_grok_logged_out: 'Account logged out',
+        config_grok_error: 'Grok action failed',
         config_security: 'Security', config_password: 'Password',
         config_password_hint: 'Leave empty to disable password protection',
         config_password_changed: 'Password updated, please re-login',
@@ -2603,6 +2699,14 @@ let configProviders = {};
 let configApiBases = {};
 let configApiKeys = {};
 let configCurrentModel = '';
+let configLlmBackendStatus = {};
+let configBackendProviderProfiles = [];
+let configGrokStatus = {};
+let configGrokAccounts = [];
+let grokLoginPollTimer = null;
+let grokLoginPollAttempts = 0;
+const GROK_LOGIN_POLL_INTERVAL_MS = 1500;
+const GROK_LOGIN_POLL_MAX_ATTEMPTS = 120;
 let cfgProviderValue = '';
 let cfgModelValue = '';
 
@@ -2662,7 +2766,10 @@ function initConfigView(data) {
     configApiBases = data.api_bases || {};
     configApiKeys = data.api_keys || {};
     configCurrentModel = data.model || '';
-    renderBackendStatus(data.llm_backend);
+    const llmBackend = getLlmBackendFromConfigResponse(data);
+    renderBackendStatus(llmBackend);
+    renderBackendProviderProfiles(llmBackend);
+    renderGrokAccounts(data.grok || { accounts: data.grok_accounts || [] });
 
     const providerEl = document.getElementById('cfg-provider');
     const providerOpts = Object.entries(configProviders).map(([pid, p]) => ({ value: pid, label: p.label }));
@@ -2714,9 +2821,10 @@ function initConfigView(data) {
 }
 
 function renderBackendStatus(status) {
+    configLlmBackendStatus = status || {};
     const wrap = document.getElementById('cfg-backend-status');
     if (!wrap) return;
-    const backend = status || {};
+    const backend = configLlmBackendStatus;
     const current = backend.current_backend || '';
     const model = backend.effective_model || '';
     const auto = backend.auto || {};
@@ -2741,6 +2849,601 @@ function renderBackendStatus(status) {
     }
     if (autoEl) autoEl.textContent = autoLabel || '--';
     wrap.classList.remove('hidden');
+}
+
+function getLlmBackendFromConfigResponse(data) {
+    if (!data) return {};
+    return data.llm_backend || (data.data && data.data.llm_backend) || (data.config && data.config.llm_backend) || {};
+}
+
+function normalizeBackendProviderProfile(profile, fallbackId) {
+    if (typeof profile === 'string') {
+        const id = profile.trim();
+        return id ? { id, label: id, wire_api: 'openai' } : null;
+    }
+    const source = profile && typeof profile === 'object' ? profile : {};
+    const id = String(source.id || source.backend_id || source.name || fallbackId || '').trim();
+    if (!id) return null;
+    return {
+        id,
+        label: String(source.label || source.display_name || source.name || id),
+        model: String(source.model || source.effective_model || source.default_model || ''),
+        api_base: String(source.api_base || source.base_url || source.endpoint || ''),
+        api_key_env: String(source.api_key_env || ''),
+        api_base_env: String(source.api_base_env || ''),
+        wire_api: String(source.wire_api || 'openai'),
+        request_timeout_seconds: source.request_timeout_seconds ?? '',
+        connectivity_timeout_seconds: source.connectivity_timeout_seconds ?? '',
+        include_in_auto_switch: source.include_in_auto_switch === true || source.include_in_auto_switch === 'true',
+        api_key_masked: String(source.api_key_masked || source.masked_api_key || source.api_key_preview || '')
+    };
+}
+
+function getBackendProviderProfiles(status) {
+    const backend = status || {};
+    const rawProfiles = backend.provider_profiles || backend.providers || {};
+    const entries = Array.isArray(rawProfiles)
+        ? rawProfiles.map(profile => [profile && (profile.id || profile.backend_id || profile.name), profile])
+        : Object.entries(rawProfiles);
+
+    return entries
+        .map(([id, profile]) => normalizeBackendProviderProfile(profile, id))
+        .filter(Boolean)
+        .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function getAutoBackendIds(status) {
+    const auto = (status && status.auto) || {};
+    const candidates = [
+        auto.provider_ids,
+        auto.providers,
+        auto.backend_ids,
+        auto.backends,
+        auto.candidate_backends,
+        auto.include_backend_ids
+    ];
+    const ids = candidates.find(Array.isArray) || [];
+    return new Set(ids.map(id => String(id)));
+}
+
+function renderBackendProviderProfiles(status, selectedId) {
+    const backend = status || {};
+    configLlmBackendStatus = backend;
+    configBackendProviderProfiles = getBackendProviderProfiles(backend);
+    bindBackendProviderProfileForm();
+    renderBackendProviderChips(backend);
+    renderBackendProviderSelect(selectedId || backend.current_backend || '');
+}
+
+function renderBackendProviderChips(backend) {
+    const listEl = document.getElementById('cfg-backend-providers-list');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    if (!configBackendProviderProfiles.length) {
+        const empty = document.createElement('span');
+        empty.className = 'text-xs text-slate-400 dark:text-slate-500';
+        empty.textContent = t('config_backend_empty');
+        listEl.appendChild(empty);
+        return;
+    }
+
+    const current = backend.current_backend || '';
+    const autoIds = getAutoBackendIds(backend);
+    configBackendProviderProfiles.forEach(profile => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = [
+            'max-w-full rounded-md px-2 py-1 text-xs font-mono transition-colors',
+            profile.id === current
+                ? 'bg-primary-50 text-primary-700 ring-1 ring-primary-200 dark:bg-primary-900/30 dark:text-primary-200 dark:ring-primary-700/50'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white/15'
+        ].join(' ');
+        chip.title = profile.label || profile.id;
+        chip.dataset.backendId = profile.id;
+        chip.addEventListener('click', () => selectBackendProviderProfile(profile.id));
+
+        const idText = document.createElement('span');
+        idText.className = 'truncate align-middle';
+        idText.textContent = profile.id;
+        chip.appendChild(idText);
+
+        if (profile.include_in_auto_switch || autoIds.has(profile.id)) {
+            const autoMark = document.createElement('span');
+            autoMark.className = 'ml-1 text-[10px] uppercase opacity-70';
+            autoMark.textContent = 'auto';
+            chip.appendChild(autoMark);
+        }
+        listEl.appendChild(chip);
+    });
+}
+
+function renderBackendProviderSelect(selectedId) {
+    const select = document.getElementById('cfg-backend-provider-select');
+    if (!select) return;
+    select.innerHTML = '';
+    select.appendChild(new Option(t('config_backend_new'), '__new__'));
+    configBackendProviderProfiles.forEach(profile => {
+        const label = profile.label && profile.label !== profile.id
+            ? `${profile.id} - ${profile.label}`
+            : profile.id;
+        select.appendChild(new Option(label, profile.id));
+    });
+
+    const hasSelected = configBackendProviderProfiles.some(profile => profile.id === selectedId);
+    select.value = hasSelected ? selectedId : '__new__';
+    if (select.value === '__new__') {
+        clearBackendProviderForm();
+    } else {
+        fillBackendProviderForm(select.value);
+    }
+}
+
+function bindBackendProviderProfileForm() {
+    const select = document.getElementById('cfg-backend-provider-select');
+    if (select && !select._cfgBound) {
+        select.addEventListener('change', () => {
+            if (select.value === '__new__') {
+                clearBackendProviderForm();
+            } else {
+                fillBackendProviderForm(select.value);
+            }
+        });
+        select._cfgBound = true;
+    }
+
+    const keyInput = document.getElementById('cfg-backend-provider-api-key');
+    if (keyInput && !keyInput._cfgBound) {
+        keyInput.addEventListener('focus', function() {
+            if (this.dataset.masked === '1') {
+                this.value = '';
+                this.dataset.masked = '';
+                this.classList.remove('cfg-key-masked');
+            }
+        });
+        keyInput.addEventListener('input', function() {
+            this.dataset.masked = '';
+            this.classList.remove('cfg-key-masked');
+        });
+        keyInput._cfgBound = true;
+    }
+}
+
+function selectBackendProviderProfile(id) {
+    const select = document.getElementById('cfg-backend-provider-select');
+    if (select) select.value = id;
+    fillBackendProviderForm(id);
+}
+
+function setBackendProviderInputValue(id, value) {
+    const input = document.getElementById(id);
+    if (input) input.value = value == null ? '' : String(value);
+}
+
+function setBackendProviderWireApi(value) {
+    const select = document.getElementById('cfg-backend-provider-wire-api');
+    if (!select) return;
+    const raw = String(value || 'openai').trim().toLowerCase();
+    const wireApi = ['responses', 'openai_responses', 'openai-responses'].includes(raw)
+        ? 'responses'
+        : 'openai';
+    if (!Array.from(select.options).some(option => option.value === wireApi)) {
+        select.appendChild(new Option(wireApi, wireApi));
+    }
+    select.value = wireApi;
+}
+
+function clearBackendProviderForm() {
+    [
+        'cfg-backend-provider-id',
+        'cfg-backend-provider-label',
+        'cfg-backend-provider-model',
+        'cfg-backend-provider-api-base',
+        'cfg-backend-provider-api-key',
+        'cfg-backend-provider-api-key-env',
+        'cfg-backend-provider-api-base-env',
+        'cfg-backend-provider-request-timeout',
+        'cfg-backend-provider-connectivity-timeout'
+    ].forEach(id => setBackendProviderInputValue(id, ''));
+    setBackendProviderWireApi('openai');
+
+    const keyInput = document.getElementById('cfg-backend-provider-api-key');
+    if (keyInput) {
+        keyInput.dataset.masked = '';
+        keyInput.classList.remove('cfg-key-masked');
+    }
+    const setCurrent = document.getElementById('cfg-backend-provider-set-current');
+    const includeAuto = document.getElementById('cfg-backend-provider-include-auto');
+    if (setCurrent) setCurrent.checked = false;
+    if (includeAuto) includeAuto.checked = false;
+}
+
+function fillBackendProviderForm(id) {
+    const profile = configBackendProviderProfiles.find(item => item.id === id);
+    if (!profile) {
+        clearBackendProviderForm();
+        setBackendProviderInputValue('cfg-backend-provider-id', id || '');
+        return;
+    }
+
+    setBackendProviderInputValue('cfg-backend-provider-id', profile.id);
+    setBackendProviderInputValue('cfg-backend-provider-label', profile.label === profile.id ? '' : profile.label);
+    setBackendProviderInputValue('cfg-backend-provider-model', profile.model);
+    setBackendProviderInputValue('cfg-backend-provider-api-base', profile.api_base);
+    setBackendProviderInputValue('cfg-backend-provider-api-key-env', profile.api_key_env);
+    setBackendProviderInputValue('cfg-backend-provider-api-base-env', profile.api_base_env);
+    setBackendProviderWireApi(profile.wire_api || 'openai');
+    setBackendProviderInputValue('cfg-backend-provider-request-timeout', profile.request_timeout_seconds);
+    setBackendProviderInputValue('cfg-backend-provider-connectivity-timeout', profile.connectivity_timeout_seconds);
+
+    const keyInput = document.getElementById('cfg-backend-provider-api-key');
+    if (keyInput) {
+        keyInput.value = profile.api_key_masked || '';
+        keyInput.dataset.masked = profile.api_key_masked ? '1' : '';
+        keyInput.classList.toggle('cfg-key-masked', !!profile.api_key_masked);
+    }
+
+    const autoIds = getAutoBackendIds(configLlmBackendStatus);
+    const setCurrent = document.getElementById('cfg-backend-provider-set-current');
+    const includeAuto = document.getElementById('cfg-backend-provider-include-auto');
+    if (setCurrent) setCurrent.checked = profile.id === configLlmBackendStatus.current_backend;
+    if (includeAuto) includeAuto.checked = profile.include_in_auto_switch || autoIds.has(profile.id);
+}
+
+function readBackendProviderValue(id) {
+    const input = document.getElementById(id);
+    return input ? input.value.trim() : '';
+}
+
+function readBackendProviderTimeout(id) {
+    const raw = readBackendProviderValue(id);
+    if (!raw) return undefined;
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
+}
+
+function buildBackendProviderPayload() {
+    const id = readBackendProviderValue('cfg-backend-provider-id');
+    const model = readBackendProviderValue('cfg-backend-provider-model');
+    if (!id || !model) return { error: 'config_backend_required' };
+
+    const requestTimeout = readBackendProviderTimeout('cfg-backend-provider-request-timeout');
+    const connectivityTimeout = readBackendProviderTimeout('cfg-backend-provider-connectivity-timeout');
+    if (requestTimeout === null || connectivityTimeout === null) {
+        return { error: 'config_backend_number_error' };
+    }
+
+    const keyInput = document.getElementById('cfg-backend-provider-api-key');
+    const apiBase = readBackendProviderValue('cfg-backend-provider-api-base');
+    const apiKeyEnv = readBackendProviderValue('cfg-backend-provider-api-key-env');
+    const apiBaseEnv = readBackendProviderValue('cfg-backend-provider-api-base-env');
+    const payload = {
+        id,
+        label: readBackendProviderValue('cfg-backend-provider-label') || id,
+        model,
+        wire_api: readBackendProviderValue('cfg-backend-provider-wire-api') || 'openai',
+        set_current: !!document.getElementById('cfg-backend-provider-set-current')?.checked,
+        include_in_auto_switch: !!document.getElementById('cfg-backend-provider-include-auto')?.checked
+    };
+
+    payload.api_base = apiBase;
+    if (apiKeyEnv) payload.api_key_env = apiKeyEnv;
+    if (apiBaseEnv) payload.api_base_env = apiBaseEnv;
+
+    const apiKey = keyInput ? keyInput.value.trim() : '';
+    if (apiKey && keyInput.dataset.masked !== '1') {
+        payload.api_key = apiKey;
+    }
+    if (requestTimeout !== undefined) payload.request_timeout_seconds = requestTimeout;
+    if (connectivityTimeout !== undefined) payload.connectivity_timeout_seconds = connectivityTimeout;
+    return { payload };
+}
+
+function upsertLocalBackendProviderProfile(payload) {
+    const profiles = configBackendProviderProfiles.filter(profile => profile.id !== payload.id);
+    profiles.push(normalizeBackendProviderProfile(payload, payload.id));
+    const providerProfiles = {};
+    profiles.filter(Boolean).forEach(profile => {
+        providerProfiles[profile.id] = profile;
+    });
+    configLlmBackendStatus = {
+        ...configLlmBackendStatus,
+        current_backend: payload.set_current ? payload.id : configLlmBackendStatus.current_backend,
+        effective_model: payload.set_current ? payload.model : configLlmBackendStatus.effective_model,
+        provider_profiles: providerProfiles
+    };
+    if (!appConfig.llm_backend) appConfig.llm_backend = {};
+    appConfig.llm_backend = configLlmBackendStatus;
+}
+
+function normalizeGrokAccount(account) {
+    const source = account && typeof account === 'object' ? account : {};
+    const accountId = String(source.account_id || source.id || '').trim();
+    if (!accountId) return null;
+    return {
+        account_id: accountId,
+        account_name: String(source.account_name || source.name || source.label || accountId),
+        email: String(source.email || ''),
+        logged_in: source.logged_in === true,
+        active: source.active === true,
+        needs_reauth: source.needs_reauth === true,
+        expires_at: source.expires_at || 0,
+        base_url: String(source.base_url || '')
+    };
+}
+
+function renderGrokAccounts(status) {
+    configGrokStatus = status || {};
+    const rawAccounts = Array.isArray(configGrokStatus.accounts) ? configGrokStatus.accounts : [];
+    configGrokAccounts = rawAccounts.map(normalizeGrokAccount).filter(Boolean);
+    if (!configGrokAccounts.length && configGrokStatus.account_id) {
+        const single = normalizeGrokAccount(configGrokStatus);
+        if (single) configGrokAccounts = [single];
+    }
+    bindGrokAccountControls();
+    renderGrokAccountChips();
+    renderGrokAccountSelect();
+}
+
+function renderGrokAccountChips() {
+    const listEl = document.getElementById('cfg-grok-account-list');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    if (!configGrokAccounts.length) {
+        const empty = document.createElement('span');
+        empty.className = 'text-xs text-slate-400 dark:text-slate-500';
+        empty.textContent = t('config_grok_empty');
+        listEl.appendChild(empty);
+        return;
+    }
+    configGrokAccounts.forEach(account => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = [
+            'max-w-full rounded-md px-2 py-1 text-xs transition-colors',
+            account.active
+                ? 'bg-primary-50 text-primary-700 ring-1 ring-primary-200 dark:bg-primary-900/30 dark:text-primary-200 dark:ring-primary-700/50'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white/15'
+        ].join(' ');
+        chip.dataset.accountId = account.account_id;
+        chip.title = account.email || account.account_id;
+        chip.addEventListener('click', () => selectGrokAccount(account.account_id));
+
+        const name = document.createElement('span');
+        name.className = 'truncate align-middle';
+        name.textContent = account.account_name || account.account_id;
+        chip.appendChild(name);
+
+        if (account.needs_reauth) {
+            const mark = document.createElement('span');
+            mark.className = 'ml-1 text-[10px] uppercase text-amber-500';
+            mark.textContent = 'reauth';
+            chip.appendChild(mark);
+        } else if (account.logged_in) {
+            const mark = document.createElement('span');
+            mark.className = 'ml-1 text-[10px] uppercase opacity-70';
+            mark.textContent = 'ok';
+            chip.appendChild(mark);
+        }
+        listEl.appendChild(chip);
+    });
+}
+
+function renderGrokAccountSelect() {
+    const select = document.getElementById('cfg-grok-account-select');
+    if (!select) return;
+    const previous = select.value;
+    select.innerHTML = '';
+    select.appendChild(new Option(t('config_grok_new'), '__new__'));
+    configGrokAccounts.forEach(account => {
+        const email = account.email ? ` · ${account.email}` : '';
+        select.appendChild(new Option(`${account.account_name || account.account_id}${email}`, account.account_id));
+    });
+    const active = configGrokAccounts.find(account => account.active) || configGrokAccounts[0];
+    const desired = configGrokAccounts.some(account => account.account_id === previous)
+        ? previous
+        : (active ? active.account_id : '__new__');
+    select.value = desired;
+    syncGrokAccountFormFromSelection();
+}
+
+function bindGrokAccountControls() {
+    const select = document.getElementById('cfg-grok-account-select');
+    if (select && !select._cfgBound) {
+        select.addEventListener('change', () => {
+            syncGrokAccountFormFromSelection();
+            if (select.value && select.value !== '__new__') {
+                selectGrokAccount(select.value);
+            }
+        });
+        select._cfgBound = true;
+    }
+}
+
+function syncGrokAccountFormFromSelection() {
+    const select = document.getElementById('cfg-grok-account-select');
+    const nameInput = document.getElementById('cfg-grok-account-name');
+    if (!select || !nameInput) return;
+    if (select.value === '__new__') {
+        nameInput.value = '';
+        return;
+    }
+    const account = configGrokAccounts.find(item => item.account_id === select.value);
+    nameInput.value = account ? (account.account_name || account.account_id) : '';
+}
+
+function selectedGrokAccountId() {
+    const select = document.getElementById('cfg-grok-account-select');
+    return select && select.value !== '__new__' ? select.value : '';
+}
+
+function currentGrokAccountName() {
+    const input = document.getElementById('cfg-grok-account-name');
+    return input ? input.value.trim() : '';
+}
+
+function setGrokLoginLink(data) {
+    const box = document.getElementById('cfg-grok-login-box');
+    const link = document.getElementById('cfg-grok-authorize-url');
+    if (!box || !link) return;
+    const url = data && data.authorize_url ? String(data.authorize_url) : '';
+    box.classList.toggle('hidden', !url);
+    if (url) {
+        link.href = url;
+        link.textContent = url;
+    } else {
+        link.removeAttribute('href');
+        link.textContent = '';
+    }
+}
+
+async function grokRequestJson(url, options = {}) {
+    const response = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        ...options
+    });
+    const data = await response.json();
+    if (!response.ok || data.status === 'error') {
+        throw new Error((data && data.message) || `HTTP ${response.status}`);
+    }
+    return data;
+}
+
+async function refreshGrokAccounts(options = {}) {
+    try {
+        const data = await grokRequestJson('/api/grok/status');
+        renderGrokAccounts(data);
+        if (!options.silent) showStatus('cfg-grok-status', 'config_saved', false);
+        return data;
+    } catch (error) {
+        if (!options.silent) showStatus('cfg-grok-status', 'config_grok_error', true);
+        throw error;
+    }
+}
+
+function stopGrokLoginPolling() {
+    if (grokLoginPollTimer) {
+        window.clearInterval(grokLoginPollTimer);
+        grokLoginPollTimer = null;
+    }
+    grokLoginPollAttempts = 0;
+}
+
+function startGrokLoginPolling() {
+    stopGrokLoginPolling();
+    grokLoginPollTimer = window.setInterval(async () => {
+        grokLoginPollAttempts += 1;
+        try {
+            const data = await pollGrokAccountLogin({ silent: true });
+            if (data.status === 'complete' || data.status === 'failed' || grokLoginPollAttempts >= GROK_LOGIN_POLL_MAX_ATTEMPTS) {
+                stopGrokLoginPolling();
+            }
+        } catch (_) {
+            stopGrokLoginPolling();
+        }
+    }, GROK_LOGIN_POLL_INTERVAL_MS);
+}
+
+async function startGrokAccountLogin() {
+    const accountId = selectedGrokAccountId();
+    const accountName = currentGrokAccountName();
+    if (!accountId && !accountName) {
+        showStatus('cfg-grok-status', 'config_grok_name_required', true);
+        return;
+    }
+    try {
+        const data = await grokRequestJson('/api/grok/login/start', {
+            method: 'POST',
+            body: JSON.stringify({ account_id: accountId, account_name: accountName })
+        });
+        setGrokLoginLink(data);
+        showStatus('cfg-grok-status', 'config_grok_login_started', false);
+        startGrokLoginPolling();
+    } catch (error) {
+        showStatus('cfg-grok-status', 'config_grok_error', true);
+    }
+}
+
+async function pollGrokAccountLogin(options = {}) {
+    try {
+        const data = await grokRequestJson('/api/grok/login/poll');
+        if (data.status === 'complete') {
+            stopGrokLoginPolling();
+            setGrokLoginLink(null);
+            await refreshGrokAccounts({ silent: true });
+            if (!options.silent) showStatus('cfg-grok-status', 'config_grok_login_done', false);
+        } else if (data.status === 'failed') {
+            stopGrokLoginPolling();
+            if (!options.silent) showStatus('cfg-grok-status', 'config_grok_error', true);
+        }
+        return data;
+    } catch (error) {
+        if (!options.silent) showStatus('cfg-grok-status', 'config_grok_error', true);
+        throw error;
+    }
+}
+
+async function manualCompleteGrokLogin() {
+    const input = document.getElementById('cfg-grok-callback-url');
+    const callbackUrl = input ? input.value.trim() : '';
+    if (!callbackUrl) {
+        showStatus('cfg-grok-status', 'config_grok_callback_required', true);
+        return;
+    }
+    try {
+        await grokRequestJson('/api/grok/login/manual', {
+            method: 'POST',
+            body: JSON.stringify({ callback_url: callbackUrl })
+        });
+        if (input) input.value = '';
+        stopGrokLoginPolling();
+        setGrokLoginLink(null);
+        await refreshGrokAccounts({ silent: true });
+        showStatus('cfg-grok-status', 'config_grok_login_done', false);
+    } catch (error) {
+        showStatus('cfg-grok-status', 'config_grok_error', true);
+    }
+}
+
+async function selectGrokAccount(accountId) {
+    if (!accountId) return;
+    try {
+        const data = await grokRequestJson('/api/grok/account/select', {
+            method: 'POST',
+            body: JSON.stringify({ account_id: accountId })
+        });
+        renderGrokAccounts(data);
+        showStatus('cfg-grok-status', 'config_grok_selected', false);
+    } catch (error) {
+        showStatus('cfg-grok-status', 'config_grok_error', true);
+    }
+}
+
+async function testGrokAccount() {
+    try {
+        await grokRequestJson('/api/grok/test', {
+            method: 'POST',
+            body: JSON.stringify({ account_id: selectedGrokAccountId() })
+        });
+        showStatus('cfg-grok-status', 'config_grok_checked', false);
+    } catch (error) {
+        showStatus('cfg-grok-status', 'config_grok_error', true);
+    }
+}
+
+async function logoutGrokAccount() {
+    try {
+        await grokRequestJson('/api/grok/logout', {
+            method: 'POST',
+            body: JSON.stringify({ account_id: selectedGrokAccountId() })
+        });
+        stopGrokLoginPolling();
+        setGrokLoginLink(null);
+        await refreshGrokAccounts({ silent: true });
+        showStatus('cfg-grok-status', 'config_grok_logged_out', false);
+    } catch (error) {
+        showStatus('cfg-grok-status', 'config_grok_error', true);
+    }
 }
 
 function detectProvider(model) {
@@ -2920,8 +3623,10 @@ function saveModelConfig() {
     .then(data => {
         if (data.status === 'success') {
             configCurrentModel = model;
-            if (data.llm_backend) {
-                renderBackendStatus(data.llm_backend);
+            const llmBackend = getLlmBackendFromConfigResponse(data);
+            if (Object.keys(llmBackend).length) {
+                renderBackendStatus(llmBackend);
+                renderBackendProviderProfiles(llmBackend);
             }
             if (data.applied) {
                 const keyInput = document.getElementById('cfg-api-key');
@@ -2951,6 +3656,43 @@ function saveModelConfig() {
         }
     })
     .catch(() => showStatus('cfg-model-status', 'config_save_error', true))
+    .finally(() => { btn.disabled = false; });
+}
+
+function saveBackendProviderConfig() {
+    const result = buildBackendProviderPayload();
+    if (result.error) {
+        showStatus('cfg-backend-provider-status', result.error, true);
+        return;
+    }
+
+    const payload = result.payload;
+    const btn = document.getElementById('cfg-backend-provider-save');
+    btn.disabled = true;
+    fetch('/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates: { llm_backend_provider: payload } })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.status === 'success') {
+            const llmBackend = getLlmBackendFromConfigResponse(data);
+            if (Object.keys(llmBackend).length) {
+                appConfig.llm_backend = llmBackend;
+                renderBackendStatus(llmBackend);
+                renderBackendProviderProfiles(llmBackend, payload.id);
+            } else {
+                upsertLocalBackendProviderProfile(payload);
+                renderBackendStatus(configLlmBackendStatus);
+                renderBackendProviderProfiles(configLlmBackendStatus, payload.id);
+            }
+            showStatus('cfg-backend-provider-status', 'config_backend_saved', false);
+        } else {
+            showStatus('cfg-backend-provider-status', 'config_backend_save_error', true);
+        }
+    })
+    .catch(() => showStatus('cfg-backend-provider-status', 'config_backend_save_error', true))
     .finally(() => { btn.disabled = false; });
 }
 

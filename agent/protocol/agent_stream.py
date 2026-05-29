@@ -30,6 +30,7 @@ from common.llm_backend_router import (
     get_current_backend,
     is_capi_quota_exhausted_error,
     is_capi_runtime_fallback_error,
+    is_openai_compatible_backend,
     select_capi_runtime_fallback_backend,
     set_current_backend,
 )
@@ -1577,16 +1578,17 @@ class AgentStreamExecutor:
             ])
 
             current_backend = self._active_backend()
+            openai_compatible_backend = is_openai_compatible_backend(current_backend)
             quota_exhausted = is_capi_quota_exhausted_error(error_str)
             capi_runtime_fallback_error = (
-                current_backend in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY}
+                openai_compatible_backend
                 and is_capi_runtime_fallback_error(error_str)
             )
             if capi_runtime_fallback_error:
                 is_retryable = True
             fallback_attempted = set(_capi_fallback_attempted or set())
             should_runtime_fallback = (
-                    current_backend in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY}
+                    openai_compatible_backend
                     and current_backend not in fallback_attempted
                     and capi_runtime_fallback_error
                     and (

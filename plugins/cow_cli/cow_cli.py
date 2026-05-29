@@ -1432,6 +1432,7 @@ class CowCliPlugin(Plugin):
             "prompt": prompt,
             "duration": options.get("duration") or "6s",
             "resolution": options.get("resolution") or "480p",
+            "prompt_enhancement": False,
         }
         if options.get("aspect_ratio"):
             params["aspect_ratio"] = options["aspect_ratio"]

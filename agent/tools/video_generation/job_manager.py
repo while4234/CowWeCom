@@ -449,7 +449,7 @@ class GrokVideoGenerationJobManager:
             return None
 
     def _clean_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        allowed = ("prompt", "image_url", "aspect_ratio", "duration", "resolution", "quality")
+        allowed = ("prompt", "image_url", "aspect_ratio", "duration", "resolution", "quality", "prompt_enhancement")
         cleaned = {k: v for k, v in (args or {}).items() if k in allowed and v not in (None, "", [])}
         cleaned["prompt"] = str(cleaned.get("prompt", "")).strip()
         return cleaned

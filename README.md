@@ -55,7 +55,7 @@ CowWeCom 的目标不是做一个“所有平台都写在 README 里的通用机
 | 长期记忆 | 按用户和会话隔离的记忆文件、每日深度整理、记忆检索和管理 |
 | 知识库 | 本地知识库、协议/规范公共知识后端、上传构建索引、LLM 学习文档生成、可追溯检索 |
 | Skills | 项目内置 Skills 启动同步到运行工作区，可按需启用、禁用、校验和扩展 |
-| 图像/视频生成 | 使用本项目 `image-generation` Skill，支持按当前模型后端选择 GPT/Codex 或 Grok 生图、Grok 单图图生图、后台任务和结果回传；切到 Grok 后默认生图走 Grok，显式说 GPT/OpenAI/Codex 生图才回到 GPT/Codex；仅图片生成会用 YouMind 全量提示词库做本地隐藏润色，视频生成不做本地提示词润色；视频生成走 `grok-video-generation`，支持文生视频、刚发图后的单图生视频和最多 7 张参考图的视频生成；管理员可用 `/grok-direct image|video` 直出命令绕过 Agent 提示词润色和图片隐藏增强，图片和视频都可复用可解析图片或最近图片作为参考图 |
+| 图像/视频生成 | 使用本项目 `image-generation` Skill，支持按当前模型后端选择 GPT/Codex 或 Grok 生图、Grok 单图图生图、后台任务和结果回传；切到 Grok 后默认生图走 Grok，显式说 GPT/OpenAI/Codex 生图才回到 GPT/Codex；`image-prompt-optimization` Skill 集中保存 YouMind/Nano Banana Pro 仓库、Grok 重写模板和随机片段仓库；GPT/Codex 图片继续按默认筛选规则润色，Grok 图片/视频默认用 Grok 文本模型按模板和仓库片段重写；管理员可用 `/grok-direct image|video` 直出命令绕过 Agent 提示词润色和隐藏增强/重写，图片和视频都可复用可解析图片或最近图片作为参考图 |
 | 后端路由 | Codex、OpenAI-compatible/CAPI 等 GPT 后端路由，支持额度查询、自动切换、推理强度策略，以及管理员/白名单独立 Grok 后端 |
 | 安全隔离 | 管理员/普通用户角色、普通用户文件访问边界、敏感路径保护、Web 管理接口认证 |
 
@@ -195,11 +195,11 @@ Grok 现在作为独立、受限的模型后端接入 `llm_backend.providers.gro
 
 管理员和白名单用户可以在聊天中直接用自然语言快速切换个人模型后端，例如“切换后端到 Grok / xAI”会在 CowCli 本地命令层写入个人 Grok override，并在 Agent 执行前完成；“切回 GPT 后端”会清除个人 override，回到共享 GPT 后端池。这个本地切换不触发 Agent、不修改普通用户的全局 GPT 后端；查询“当前后端”或“当前后端额度”时会按发起人的有效后端展示，普通用户看到共享 GPT 后端，管理员/白名单用户看到自己的个人后端，普通用户发送同类后端切换话术仍会被拒绝。
 
-Grok/xAI 原生账号登录仍在 `/grok` 完成，文字聊天模型由受限后端 profile 控制，不再要求把普通用户的全局 `bot_type` 改成 Grok。Grok 图片生成复用同一 OAuth 凭据：当管理员或白名单用户把个人模型后端切到 Grok 后，普通生图默认走 Grok；如果此时要走 GPT/OpenAI/Codex 生图，需要在请求里明确说明。仅说质量或速度偏好不会切换生图提供方。管理员还可以直接发送 `/grok-direct image -- <prompt>` 或 `/grok-direct video -- <prompt>`，绕过 Agent/LLM 的提示词分析和润色，把原始 prompt 提交到 Grok 后台任务；默认生图为 speed，默认视频为 `480p / 16:9 / 6s`。`/grok-direct image` 会同时跳过 YouMind 隐式提示词增强；`/grok-direct video` 会使用消息中可解析的上传、回复或引用图片作为视频参考图，并在企业微信智能机器人里支持先发图片、随后说“生成视频 ...”或“参考上图/上面几张生成视频”时自动补齐同会话最近图片。若企业微信引用旧图事件只携带纯文本、不携带图片内容或可追溯 msgid，机器人无法知道引用的是哪张旧图。
+Grok/xAI 原生账号登录现在在 Web 控制台的模型配置页完成，`/grok` 旧灰度页会回到控制台；控制台可新增多个命名 Grok 账号、轮询/粘贴 callback 完成 OAuth、切换当前账号、检查凭据并退出指定账号。文字聊天模型由受限后端 profile 控制，不再要求把普通用户的全局 `bot_type` 改成 Grok。Grok 图片生成复用当前选中的 Grok OAuth 凭据：当管理员或白名单用户把个人模型后端切到 Grok 后，普通生图默认走 Grok；如果此时要走 GPT/OpenAI/Codex 生图，需要在请求里明确说明。仅说质量或速度偏好不会切换生图提供方。管理员还可以直接发送 `/grok-direct image -- <prompt>` 或 `/grok-direct video -- <prompt>`，绕过 Agent/LLM 的提示词分析和润色，把原始 prompt 提交到 Grok 后台任务；默认生图为 speed，默认视频为 `480p / 16:9 / 6s`。`/grok-direct image` 会同时跳过 Grok 模型提示词重写；`/grok-direct video` 会使用消息中可解析的上传、回复或引用图片作为视频参考图，并在企业微信智能机器人里支持先发图片、随后说“生成视频 ...”或“参考上图/上面几张生成视频”时自动补齐同会话最近图片。若企业微信引用旧图事件只携带纯文本、不携带图片内容或可追溯 msgid，机器人无法知道引用的是哪张旧图。
 
 国内网络环境中如果 Web Grok 登录报 `xAI OIDC discovery failed` 或直连 `auth.x.ai` 超时，请在 Web 配置或 ignored 的 `config.json` 中设置 `grok_proxy`，例如 `http://127.0.0.1:7897`。该代理会覆盖 Grok OAuth discovery/token 交换、Grok Chat、TTS、图片/视频生成、生成结果下载和视频后台子进程；为空时会复用全局 `proxy` 或 `discord_proxy`。
 
-Grok 生图支持 `grok-imagine-image` 速度模型和 `grok-imagine-image-quality` 质量模型；只有用户明确说 Grok 高质量、quality mode、高清、高质量、精细等类似要求时才使用质量模型，否则 Grok 默认使用快速模型，并把 xAI 返回的 URL 或 b64 图片先落成本地文件再发送。Grok 图生图 v1 支持一张参考图，可接收本地路径、`file://`、HTTP/HTTPS URL 或 data URI；有参考图时走 xAI image edit `/images/edits`，纯文生图保持 `/images/generations`；未显式指定比例/尺寸时会尽量按参考图尺寸推断比例和 1k/2k 分辨率，明确写了 `16:9`、`1K`、`1024x1024` 等参数时不会被参考图覆盖。先上传一张图片后，管理员可用 `/grok-direct image -- 换成电影海报风格`、`/grok-direct image --quality quality -- 换成高质量摄影棚风格` 或 `/grok-direct image --ar 16:9 -- 改成横版封面` 做原始 prompt 图生图；`/grok-direct image` 不做自动提示词润色，而自然语言“参考上图生成图片 / 按照这张图改成 ...”会走普通 Grok 生图链路并继续启用短提示词优化。图片生成会在模型调用前隐式检索 `skills/image-generation/references/nano-banana-pro/` 中的 YouMind 全量提示词库：GPT/Codex 作为全能生图路线按用途适配，Grok 默认偏向人物写真与高审美人像；隐藏提示词只写入用户工作区历史，普通前台消息不展示。Grok 视频生成使用同一 OAuth 凭据和 `grok-imagine-video`，配置项为 `video_generation_provider=xai`、`video_create_prefix`、`grok_video_model`、`grok_video_duration`、`grok_video_aspect_ratio`、`grok_video_resolution`、`grok_video_timeout_seconds`、`grok_video_poll_interval_seconds`、`grok_video_download_timeout_seconds`、`grok_video_generation_global_workers` 和 `grok_video_generation_actor_workers`；微信/企业微信/Web 里可直接说“生成视频 720p 10s ...”，本地会识别 `720p`、`480p`、`10s` 等明确视频参数，且所有视频生成路径都使用用户原始文本提交，不做本地提示词润色。默认会向上使用同会话最近 1 张已发送或已上传图片作为参考图，也可以先发多张图片后说“参考上面发的 3 张图片生成 ... 视频”。明确说“文生视频”或“不参考图”时不会自动带图。带参考图且未显式指定比例时，视频比例会按参考图尺寸推断；普通 Grok 视频和 `/grok-direct video` 都提交后台任务，完成后回发 MP4，视频后台支持同一用户并行生成。生成结果总是先下载为本地 MP4，再用 `ReplyType.VIDEO` 发送，不直接把 xAI 远端 URL 发给用户；Web 端会把后台完成的本地图片/视频注册为可打开或下载的临时链接。OAuth token 默认写入 CowWeCom 的 `data/auth/grok_auth.json`，也可以用 `grok_auth_file` 指定；`grok_import_hermes_auth=true` 时可在 CowWeCom auth store 缺失时只读导入 Hermes 的 `providers.xai-oauth`，不会写回 Hermes auth store；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。手动粘贴登录默认要求完整 callback URL 或同时包含 `code` 和 `state` 的查询字符串；裸授权码兼容需显式开启 `grok_oauth_accept_bare_code=true`，且必须存在当前 PKCE 登录会话。Web 状态/测试接口只返回登录状态、邮箱、过期时间等安全字段，不返回 access token、refresh token、authorization code 或 code_verifier。完整配置和排障见 [docs/grok.md](docs/grok.md)。
+Grok 生图支持 `grok-imagine-image` 速度模型和 `grok-imagine-image-quality` 质量模型；只有用户明确说 Grok 高质量、quality mode、高清、高质量、精细等类似要求时才使用质量模型，否则 Grok 默认使用快速模型，并把 xAI 返回的 URL 或 b64 图片先落成本地文件再发送。Grok 图生图 v1 支持一张参考图，可接收本地路径、`file://`、HTTP/HTTPS URL 或 data URI；有参考图时走 xAI image edit `/images/edits`，纯文生图保持 `/images/generations`；未显式指定比例/尺寸时会尽量按参考图尺寸推断比例和 1k/2k 分辨率，明确写了 `16:9`、`1K`、`1024x1024` 等参数时不会被参考图覆盖。先上传一张图片后，管理员可用 `/grok-direct image -- 换成电影海报风格`、`/grok-direct image --quality quality -- 换成高质量摄影棚风格` 或 `/grok-direct image --ar 16:9 -- 改成横版封面` 做原始 prompt 图生图；`/grok-direct image` 不做自动提示词润色，而自然语言“参考上图生成图片 / 按照这张图改成 ...”会走普通 Grok 生图链路并启用 Grok 专属提示词重写。隐藏提示词处理现在集中在 `skills/image-prompt-optimization/`：GPT/Codex 继续隐式检索 `references/nano-banana-pro/` 中的 YouMind 全量提示词库并按默认分类筛选规则适配；Grok 图片和普通 Grok 视频不再走 GPT，而是用 Grok 文本模型读取 `templates/grok_image_system_prompt.txt` / `templates/grok_video_system_prompt.txt` 和随机仓库片段后重写最终 prompt。若 prompt 包含 `grokSfw`，系统会从最终视觉请求中移除该关键词，缺少细节的随机补全 90% 来自 `repositories/grokSfw/`，10% 来自其他仓库；后续可把对应分类的 UTF-8 `.txt` 放入该目录，每行一条片段。隐藏提示词只写入用户工作区历史，普通前台消息不展示。Grok 视频生成使用当前选中的 Grok OAuth 凭据和 `grok-imagine-video`，配置项为 `video_generation_provider=xai`、`video_create_prefix`、`grok_video_model`、`grok_video_duration`、`grok_video_aspect_ratio`、`grok_video_resolution`、`grok_video_timeout_seconds`、`grok_video_poll_interval_seconds`、`grok_video_download_timeout_seconds`、`grok_video_generation_global_workers` 和 `grok_video_generation_actor_workers`；微信/企业微信/Web 里可直接说“生成视频 720p 10s ...”，本地会识别 `720p`、`480p`、`10s` 等明确视频参数，普通 Grok 视频会先做 Grok 专属 prompt 重写，`/grok-direct video` 继续使用原始 prompt。默认会向上使用同会话最近 1 张已发送或已上传图片作为参考图，也可以先发多张图片后说“参考上面发的 3 张图片生成 ... 视频”。明确说“文生视频”或“不参考图”时不会自动带图。带参考图且未显式指定比例时，视频比例会按参考图尺寸推断；普通 Grok 视频和 `/grok-direct video` 都提交后台任务，完成后回发 MP4，视频后台支持同一用户并行生成。生成结果总是先下载为本地 MP4，再用 `ReplyType.VIDEO` 发送，不直接把 xAI 远端 URL 发给用户；Web 端会把后台完成的本地图片/视频注册为可打开或下载的临时链接。OAuth token 默认写入 CowWeCom 的 `data/auth/grok_auth.json`，默认账号沿用 `providers.xai-oauth`，命名账号写入 `providers.xai-oauth:<account_id>`；也可以用 `grok_auth_file` 指定 auth store。`grok_import_hermes_auth=true` 时可在 CowWeCom auth store 缺失时只读导入 Hermes 的默认 `providers.xai-oauth`，不会写回 Hermes auth store；`grok_api_key` 和 `XAI_API_KEY` 只作为未登录时的 fallback。手动粘贴登录默认要求完整 callback URL 或同时包含 `code` 和 `state` 的查询字符串；裸授权码兼容需显式开启 `grok_oauth_accept_bare_code=true`，且必须存在当前 PKCE 登录会话。Web 状态/测试接口只返回登录状态、账号名称、邮箱、过期时间等安全字段，不返回 access token、refresh token、authorization code 或 code_verifier。完整配置和排障见 [docs/grok.md](docs/grok.md)。
 
 图片生成现在只在用户明确说“画图 / 生图 / 生成图片 / 绘图 / 出图”或明确要求编辑、融合图片时触发；引用或发送图片后问“看这张图是什么”“找一下来源”等普通识图问题不会进入生图工具。微信和企业微信发送图片前会按配置的最大宽高和字节上限自动规整，避免超大生成图或引用图在上传阶段失败。
 
@@ -441,7 +441,7 @@ public_document_knowledge/
 
 | 类型 | 示例 |
 | --- | --- |
-| 图像/视频生成 | `image-generation` 默认跟随当前模型后端：普通 GPT 后端用户走 Codex/GPT 生图，已切到 Grok 的管理员/白名单用户走 Grok 生图；显式说 GPT/OpenAI/Codex 生图才在 Grok 后端下回到 GPT/Codex；图片生成后台会用 YouMind 全量提示词库分别做 GPT/Codex 全能润色和 Grok 人像审美适配；`grok-video-generation` 通过已登录 Grok 账号后台生成 MP4 并回传视频，视频不做本地提示词润色；管理员可用 `/grok-direct` 直出图片/视频 |
+| 图像/视频生成 | `image-generation` 默认跟随当前模型后端：普通 GPT 后端用户走 Codex/GPT 生图，已切到 Grok 的管理员/白名单用户走 Grok 生图；显式说 GPT/OpenAI/Codex 生图才在 Grok 后端下回到 GPT/Codex；`image-prompt-optimization` 统一保存 YouMind 库、Grok 模板和随机片段仓库，GPT/Codex 图片按默认筛选规则润色，Grok 图片/普通视频用 Grok 文本模型重写；`grok-video-generation` 通过已登录 Grok 账号后台生成 MP4 并回传视频；管理员可用 `/grok-direct` 直出图片/视频 |
 | 企业微信能力 | `wecom-cli`，用于企业微信相关资料和操作辅助 |
 | Git 与发布安全 | `github`、`safe-github-upload`、`code-update` |
 | 项目运维 | `project-restart`，管理员说“重启/重启项目/重启服务”时默认触发，安全重启当前 CowWechat 服务 |
@@ -532,26 +532,18 @@ CowWeCom/
 
 ### 2026-05-29
 
-- Web 模型配置页删除了“模型后端/切换对象/保存后端”区块和对应接口，普通厂商继续在上方“模型配置”里保存；DeepSeek 这类普通后端仍然是填 API Key/Base 后点绿色“保存”，不是底部那块后端切换按钮。
-- Discord 现在默认会把普通文本和图片附件当作正常聊天消息处理，不再只依赖 Slash Commands；仍需要在 Discord Developer Portal 为 Bot 开启 Message Content Intent。
-- 多通道运行的生命周期管理收紧：`discord,wecom_bot` 会作为独立通道并行运行，同名通道启动会去重，Web 端短时间重复保存导致的同名通道并发重启会在核心 `ChannelManager` 层合并，避免企业微信 Bot WebSocket 被本机重复连接抢占。
-- Grok 升级为独立受限模型后端：管理员可在 Web 端添加/保存后端 profile，白名单用户可使用个人 Grok 后端，普通用户继续共用全局 GPT 后端池且不能切换或感知后端。
-- 每日 00:00 自动切换只处理全局 GPT 后端；管理员/白名单用户的个人后端选择不会影响普通用户，Grok 后端也不再接收思考深度切换参数。
-- “当前后端”状态和当前后端额度查询会按发起人的有效后端展示：普通用户看到共享 GPT 后端，管理员/白名单用户切到 Grok 后看到自己的 Grok，不再误报全局 CAPI 月卡。
-- 图像生成触发收紧为显式“画图/生图/生成图片/绘图/出图”等说法；引用图片后的普通问答、生成失败追问和宽高/字节限制处理更稳。
-- 新增管理员专用 `/grok-direct image|video` 直出模式，原始 prompt 直接提交 Grok 后台任务；Web 端命令菜单同步 CowCli 管理员命令并补充 720p/10s 示例，直出图片硬跳过本地提示词润色，图生视频可复用可解析消息图片或同会话最近图片作为参考图，未明确数量时只取最近 1 张，明确“参考上面 N 张”时最多取最近 7 张；普通 Grok 视频和直出视频都后台执行，视频任务可并行生成，参考图默认跟随图片比例；自然语言“生成视频 720p 10s ...”会识别分辨率和时长，视频生成不做本地提示词润色。
-- Grok 图片后端补齐单图图生图：有参考图时会使用 xAI image edit `/images/edits`，纯文生图仍使用 `/images/generations`；`image_url` 支持本地路径、`file://`、HTTP/HTTPS URL 和 data URI，未显式尺寸/比例时按参考图推断，`prompt_enhancement=false` 会端到端跳过润色。
-- Web、企业微信和微信入口补齐 Grok 单图图生图：先上传一张图片后可用 `/grok-direct image -- ...` 直出改图，或用“参考上图生成图片 / 按照这张图改成 ...”自然语言触发；普通文生图和明确“不参考图片/纯文生图”不会误带最近图片，v1 仍只支持一张参考图。
-- Grok/xAI HTTP 代理独立成 `grok_proxy`：Web 登录的 OIDC discovery/token 交换、Grok Chat、TTS、图片/视频生成、媒体下载和视频后台子进程都会走同一代理；未配置时可复用全局 `proxy` 或 `discord_proxy`，Web 登录错误也会直接显示到页面。
-- Grok 视频后台任务在视频已生成但投递失败后，不再在 CowAgent 重启时重复发送 “Grok video generation finished” 完成通知；投递失败状态现在作为终态保留，启动恢复只处理真正未完成的排队/运行中任务。
-- Discord 通道收敛 Slash Commands：保留 `backend`、`status`、`config`、`skill`、`memory`、`knowledge` 等常用项目命令，清理无关历史命令；Grok 媒体入口统一为 `/grok-gen-image`、`/grok-gen-video`、`/grok-direct-gen-image`、`/grok-direct-gen-video`，图片附件可选并配套质量、时长、分辨率下拉选项。
-- Agent 上下文聚焦和纯进度快照识别更稳：类似 `Feature list完成90% tc_list完成30%` 的工作进度汇报不会触发公共协议知识库自动检索或协议问答路径；后续“没有/不用/好的”等回复会优先绑定最近 BOT 提问，避免旧协议问答串扰；私聊图片识别新增默认关闭的非账单主动回复开关，只缓存识图信息，账单自动记账仍会回执。
+- Web 控制台重新收拢模型后端管理：普通厂商仍在模型配置区保存；新增/保存自定义 OpenAI-compatible 后端 profile 时可选择 Chat Completions 或 Responses 协议、填写 key/base/env/timeout，并可显式加入自动切换候选；自定义后端不会再继承 CAPI/OpenAI 全局凭据。
+- Grok 登录从旧 `/grok` 灰度页迁入 Web 控制台模型配置页，支持多个命名 Grok OAuth 账号、当前账号切换、轮询/manual callback、凭据检查和指定账号退出；`/grok` 旧入口会回到控制台。
+- Grok 继续作为管理员/白名单可用的受限后端，普通用户仍共用全局 GPT 后端池；“当前后端”和额度状态按发起人的有效后端展示，Grok 不参与全局自动切换，CAPI 月卡低额和运行时失败可落到已显式加入的自定义 fallback 后端。
+- Grok 图片/视频能力补齐：支持单图图生图、显式 `/grok-direct image|video` 直出、视频 720p/10s 等参数解析、同会话最近图片参考、后台并行任务、代理统一走 `grok_proxy`；新增 `image-prompt-optimization` Skill 集中保存 YouMind 库、Grok 模板和 `grokSfw` 随机片段仓库，普通 Grok 生图/视频默认用 Grok 文本模型重写提示词，不再复用 GPT 或 YouMind 本地库，并避免重启后重复发送已终态失败的视频完成通知。
+- Discord 和多通道运行继续加固：Discord 支持普通文本/图片附件进入正常聊天流，Slash Commands 收敛为项目命令与 Grok 媒体入口，多通道同名启动和 Web 重复保存会在核心生命周期层去重。
+- Agent 上下文、识图和知识触发更稳：进度快照和短确认不会误触发协议知识问答，私聊图片识别默认只缓存非账单信息，账单自动记账仍保留回执。
 
 ### 2026-05-28
 
-- Grok/xAI 原生账号能力继续扩展：OAuth 灰度登录、文字对话、TTS、图片生成和视频生成复用同一登录态；PR 5 补齐 [docs/grok.md](docs/grok.md)、Hermes auth 只读导入、Web 状态脱敏和核心回归测试。
+- Grok/xAI 原生账号能力继续扩展：早期 OAuth 登录、文字对话、TTS、图片生成和视频生成复用同一登录态；PR 5 补齐 [docs/grok.md](docs/grok.md)、Hermes auth 只读导入、Web 状态脱敏和核心回归测试；后续登录入口已迁入 Web 控制台。
 - Grok/xAI 图片/视频生成加固：xAI 返回 URL 只允许公开 HTTPS 下载，逐跳校验 redirect、DNS、Content-Type 和大小上限，生成文件统一落到 `tmp/grok_media/`，发送成功、失败或 fallback 后清理本次生成文件。
-- 图像生成新增隐藏式提示词增强：内置 YouMind 全量 Nano Banana Pro 提示词库，GPT/Codex 按海报、人物、产品、流程图等用途检索润色，Grok 默认偏向高审美人物写真；普通回复不展示隐藏提示词，用户明确要求时可查看最近一次生成提示词。
+- 图像生成在 2026-05-28 新增隐藏式提示词增强：内置 YouMind 全量 Nano Banana Pro 提示词库，GPT/Codex 按海报、人物、产品、流程图等用途检索润色；Grok 已在 2026-05-29 改为单独模型重写分支，普通回复不展示隐藏提示词，用户明确要求时可查看最近一次生成提示词。
 - Grok/xAI 视频生成接入 PR 4：新增文生视频、单图生视频、多图参考视频、`VIDEO_CREATE` 前缀和 `grok-video-generation` 后台 Skill；WeCom Bot 现在优先识别 `video_create_prefix`，并会在刚发图片后直接“生成视频 ...”时自动带入最近参考图。
 - Grok/xAI 企业微信语音回复改为“双模式”规则：低延迟 low 模式与语音会话模式分开说明；语音会话模式允许企业微信应用/WeCom Bot 中语音输入优先语音回复，文字输入和个人微信仍不新增语音发送。
 - Agent 和本地工具体验继续收口：同轮重复工具调用结果改成短引用，本机 token 用量查询支持用户别名合并，语音模式支持 `/voice on|off` 热切换，账单截图识别优先保留截图中的精确金额，账单补充说明不再误走本地查询/额度查询快路径。

@@ -79,14 +79,19 @@ class ImageGenerationPromptHistoryTool(BaseTool):
                 category = item.get("category_slug") or ""
                 template_id = item.get("id") or ""
                 template_lines.append(f"- {category} #{template_id}: {title}".strip())
-            template_text = "\n".join(template_lines) if template_lines else "- none"
+            if str(record.get("version") or "").startswith("grok-model-rewrite"):
+                source_label = "Prompt rewrite source:"
+                template_text = "- Grok text model with image-prompt-optimization rewrite templates"
+            else:
+                source_label = "Matched library templates:"
+                template_text = "\n".join(template_lines) if template_lines else "- none"
             sections.append(
                 "\n".join(
                     [
                         f"Task ID: {record.get('job_id') or 'unknown'}",
                         f"Model target: {record.get('target') or 'unknown'}",
                         f"Use case: {record.get('use_case') or 'unknown'}",
-                        "Matched library templates:",
+                        source_label,
                         template_text,
                         "Enhanced prompt:",
                         "```text",

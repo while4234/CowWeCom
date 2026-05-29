@@ -29,11 +29,11 @@ def has_xai_credentials() -> bool:
     return bool(_get_config_or_env("XAI_API_KEY", "grok_api_key"))
 
 
-def resolve_xai_http_credentials(force_refresh: bool = False) -> Dict[str, str]:
+def resolve_xai_http_credentials(force_refresh: bool = False, account_id: str = "") -> Dict[str, str]:
     """Resolve Grok bearer credentials: OAuth first, API key fallback second."""
     if _config_bool("grok_auth_prefer_oauth", True):
         try:
-            creds = resolve_xai_oauth_runtime_credentials(force_refresh=force_refresh)
+            creds = resolve_xai_oauth_runtime_credentials(force_refresh=force_refresh, account_id=account_id)
             access_token = str(creds.get("api_key") or "").strip()
             if access_token:
                 return {
@@ -41,6 +41,8 @@ def resolve_xai_http_credentials(force_refresh: bool = False) -> Dict[str, str]:
                     "auth_mode": "oauth_pkce",
                     "api_key": access_token,
                     "base_url": str(creds.get("base_url") or DEFAULT_XAI_OAUTH_BASE_URL).rstrip("/"),
+                    "account_id": str(creds.get("account_id") or ""),
+                    "account_name": str(creds.get("account_name") or ""),
                 }
         except AuthError:
             if force_refresh:

@@ -34,17 +34,20 @@ Provider routing is strict:
 
 Prompt enhancement is automatic and hidden:
 
-- CowWeCom ships the full YouMind Nano Banana Pro prompt reference library under
-  `references/nano-banana-pro/` and uses it as a local retrieval source.
+- GPT/Codex image generation uses the full YouMind Nano Banana Pro prompt
+  reference library under `../image-prompt-optimization/references/nano-banana-pro/`
+  as a local retrieval source.
+- Grok image generation does not use the YouMind library. It has a separate
+  rewrite branch in `../image-prompt-optimization/`: the runtime sends the
+  user's prompt plus `templates/grok_image_system_prompt.txt` and optional random
+  repository fragments to Grok's text model, then sends only the model-returned
+  final prompt to Grok image generation.
 - Do not manually paste the enhanced prompt into chat before generation. The
-  runtime silently searches the library, adapts the matched template grammar to
-  the selected model, and sends only the hidden enhanced prompt to the image
-  backend.
+  runtime silently prepares the final prompt and keeps it out of ordinary status
+  messages.
 - GPT/Codex image generation is all-purpose: portraits, posters, product
   visuals, infographics, flowcharts, UI mockups, comics, icons, and edits all use
   the library category that best matches the request.
-- Grok image generation is biased toward high-aesthetic people and portrait
-  photography by default, while still respecting explicit non-portrait requests.
 - If the user explicitly asks to see the prompt after an image is generated,
   call `image_generation_prompt_history` and show the stored hidden prompt. Do
   not reveal it otherwise.

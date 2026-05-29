@@ -87,6 +87,7 @@ DEFAULT_LLM_BACKEND_CONFIG: Dict[str, Any] = {
         "prefer_capi_monthly_at_check_time": True,
         "monthly_post_task_check_enabled": True,
         "monthly_min_remaining_percent": 10,
+        "fallback_backends": [],
     },
     "quota_refresh": {
         "enabled": True,
@@ -122,7 +123,7 @@ def get_codex_provider_config() -> Dict[str, Any]:
 def get_capi_provider_config(backend: Optional[str] = None) -> Dict[str, Any]:
     cfg = get_llm_backend_config()
     providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
-    normalized = normalize_backend(backend or get_current_backend())
+    normalized = resolve_selectable_backend(str(backend)) if str(backend or "").strip() else get_current_backend()
     base = deep_merge(DEFAULT_LLM_BACKEND_CONFIG["providers"]["capi"], providers.get("capi", {}))
     if normalized == BACKEND_CAPI_MONTHLY:
         monthly = deep_merge(DEFAULT_LLM_BACKEND_CONFIG["providers"]["capi_monthly"], providers.get("capi_monthly", {}))
@@ -133,8 +134,49 @@ def get_capi_provider_config(backend: Optional[str] = None) -> Dict[str, Any]:
         return merged
     provider = providers.get(normalized)
     if normalized not in {BACKEND_CAPI, BACKEND_CODEX, BACKEND_GROK} and isinstance(provider, Mapping):
-        return deep_merge(base, provider)
+        custom_defaults = deep_merge(
+            base,
+            {
+                "api_key": "",
+                "api_key_env": "",
+                "api_base": "",
+                "api_base_env": "",
+                "wire_api": "",
+                "model": "",
+            },
+        )
+        return deep_merge(custom_defaults, provider)
     return base
+
+
+def is_custom_backend(backend: Optional[str]) -> bool:
+    if backend is None:
+        return False
+    try:
+        normalized = resolve_selectable_backend(str(backend))
+    except ValueError:
+        normalized = str(backend or "").strip().lower()
+    return _custom_backend_allowed(normalized)
+
+
+def is_global_backend_allowed(backend: Optional[str]) -> bool:
+    if backend is None:
+        return False
+    try:
+        normalized = resolve_selectable_backend(str(backend))
+    except ValueError:
+        return False
+    return normalized in GPT_BACKENDS or _custom_backend_allowed(normalized)
+
+
+def is_openai_compatible_backend(backend: Optional[str]) -> bool:
+    if backend is None:
+        return False
+    try:
+        normalized = resolve_selectable_backend(str(backend))
+    except ValueError:
+        return False
+    return normalized in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY} or _custom_backend_allowed(normalized)
 
 
 def resolve_provider_value(provider: Mapping[str, Any], value_key: str, env_key: str) -> str:
@@ -166,18 +208,24 @@ def get_effective_openai_api_config(backend: Optional[str] = None) -> Dict[str, 
     """Return route-aware OpenAI-compatible API settings for the active CAPI backend."""
     from config import conf
 
-    normalized_backend = normalize_backend(backend or get_current_backend())
+    if backend is not None and str(backend or "").strip():
+        normalized_backend = resolve_selectable_backend(str(backend))
+    else:
+        normalized_backend = get_current_backend()
     provider = get_capi_provider_config(normalized_backend)
+    custom_backend = _custom_backend_allowed(normalized_backend)
     api_key = resolve_provider_value(provider, "api_key", "api_key_env")
-    api_base = resolve_provider_value(provider, "api_base", "api_base_env") or str(conf().get("open_ai_api_base") or "")
+    api_base = resolve_provider_value(provider, "api_base", "api_base_env")
+    if not api_base and not custom_backend:
+        api_base = str(conf().get("open_ai_api_base") or "")
     wire_api = str(
         provider.get("wire_api")
-        or conf().get("open_ai_wire_api")
-        or conf().get("openai_wire_api")
-        or conf().get("wire_api")
+        or ("" if custom_backend else conf().get("open_ai_wire_api"))
+        or ("" if custom_backend else conf().get("openai_wire_api"))
+        or ("" if custom_backend else conf().get("wire_api"))
         or ""
     )
-    model = str(provider.get("model") or conf().get("model") or const.GPT_41_MINI)
+    model = str(provider.get("model") or ("" if custom_backend else conf().get("model")) or const.GPT_41_MINI)
     return {
         "api_key": api_key,
         "api_base": api_base,
@@ -202,6 +250,47 @@ def has_capi_credentials(backend: Optional[str] = None) -> bool:
     return bool(resolve_provider_value(provider, "api_key", "api_key_env"))
 
 
+def configured_auto_fallback_backends(*, exclude: Optional[set[str]] = None) -> list[str]:
+    cfg = get_llm_backend_config()
+    auto_cfg = cfg.get("auto_switch", {}) if isinstance(cfg.get("auto_switch"), Mapping) else {}
+    raw_backends = auto_cfg.get("fallback_backends") or []
+    if isinstance(raw_backends, str):
+        raw_backends = [item.strip() for item in raw_backends.split(",")]
+    excluded = {normalize_backend(item) for item in (exclude or set()) if str(item or "").strip()}
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw_backends if isinstance(raw_backends, (list, tuple, set)) else []:
+        try:
+            normalized = resolve_selectable_backend(str(item or ""))
+        except ValueError:
+            continue
+        if (
+            not normalized
+            or normalized == USER_BACKEND_DEFAULT
+            or normalized == BACKEND_GROK
+            or normalized in excluded
+            or normalized in seen
+            or not is_global_backend_allowed(normalized)
+        ):
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def select_auto_fallback_backend(
+    *,
+    exclude: Optional[set[str]] = None,
+    connectivity_checker: Optional[Callable[[str], bool]] = None,
+) -> str:
+    checker = connectivity_checker or check_capi_connectivity
+    for backend in configured_auto_fallback_backends(exclude=exclude):
+        if is_openai_compatible_backend(backend) and not _run_capi_connectivity_check(backend, checker):
+            continue
+        return backend
+    return BACKEND_CODEX
+
+
 def is_capi_backend(backend: Optional[str]) -> bool:
     if backend is None:
         return False
@@ -210,8 +299,15 @@ def is_capi_backend(backend: Optional[str]) -> bool:
 
 def check_capi_connectivity(backend: Optional[str] = None, *, timeout_seconds: Optional[float] = None) -> bool:
     """Probe the OpenAI-compatible endpoint used by the selected CAPI backend."""
-    normalized_backend = normalize_backend(backend or get_current_backend())
-    if not is_capi_backend(normalized_backend):
+    try:
+        normalized_backend = (
+            resolve_selectable_backend(str(backend))
+            if str(backend or "").strip()
+            else get_current_backend()
+        )
+    except ValueError:
+        return False
+    if not is_openai_compatible_backend(normalized_backend):
         return True
 
     from config import conf
@@ -223,10 +319,11 @@ def check_capi_connectivity(backend: Optional[str] = None, *, timeout_seconds: O
     model = str(routed.get("model") or "").strip()
     api_key = str(routed.get("api_key") or "").strip()
     api_base = str(routed.get("api_base") or "").strip()
-    if not model or not api_key:
+    custom_backend = _custom_backend_allowed(normalized_backend)
+    if not model or not api_key or (custom_backend and not api_base):
         logger.warning(
-            "[LLMBackend] CAPI connectivity probe skipped: missing model or API key "
-            "(backend=%s)",
+            "[LLMBackend] CAPI connectivity probe skipped: missing model, API key, "
+            "or custom API base (backend=%s)",
             normalized_backend,
         )
         return False
@@ -430,11 +527,15 @@ def select_capi_runtime_fallback_backend(
                 quota_decision.reason,
             )
             if quota_decision.should_switch:
-                return BACKEND_CODEX
+                return select_auto_fallback_backend(exclude={normalized})
+
+        configured_fallback = select_auto_fallback_backend(exclude={normalized})
+        if configured_fallback != BACKEND_CODEX:
+            return configured_fallback
 
         if has_capi_credentials(BACKEND_CAPI):
             return BACKEND_CAPI
-    return BACKEND_CODEX
+    return select_auto_fallback_backend(exclude={normalized})
 
 
 def _stringify_error(error: Any) -> str:
@@ -513,7 +614,7 @@ def get_current_backend() -> str:
     state = load_state()
     backend = str(state.get("current_backend") or get_llm_backend_config().get("current_backend") or BACKEND_CAPI)
     normalized = normalize_backend(backend)
-    return normalized if normalized in GPT_BACKENDS else BACKEND_CAPI
+    return normalized if is_global_backend_allowed(normalized) else BACKEND_CAPI
 
 
 def get_current_backend_for_profile(profile: Any = None) -> str:
@@ -525,7 +626,10 @@ def get_current_backend_for_profile(profile: Any = None) -> str:
     if not override:
         return global_backend
     backend = str(override.get("current_backend") or "").strip()
-    normalized = normalize_backend(backend)
+    try:
+        normalized = resolve_selectable_backend(backend, allow_user_default=True)
+    except ValueError:
+        return global_backend
     if normalized in GPT_BACKENDS:
         return normalized
     if normalized in RESTRICTED_BACKENDS and _restricted_backend_allowed(normalized):
@@ -537,6 +641,8 @@ def get_current_backend_for_profile(profile: Any = None) -> str:
 
 def normalize_backend(value: str) -> str:
     raw = str(value or "").strip().lower()
+    if not raw:
+        return BACKEND_CAPI
     if raw in {USER_BACKEND_DEFAULT, "global", "default", "auto", "gpt"}:
         return USER_BACKEND_DEFAULT
     if raw in {BACKEND_CODEX, "openai-codex", "codex-direct"}:
@@ -547,7 +653,28 @@ def normalize_backend(value: str) -> str:
         return BACKEND_CAPI_MONTHLY
     if _custom_backend_allowed(raw):
         return raw
-    return BACKEND_CAPI
+    return raw
+
+
+def resolve_selectable_backend(value: str, *, allow_user_default: bool = False) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        raise ValueError("backend is required")
+    if raw in {USER_BACKEND_DEFAULT, "global", "default", "auto", "gpt"}:
+        if allow_user_default:
+            return USER_BACKEND_DEFAULT
+        raise ValueError(f"unsupported backend: {value}")
+    if raw in {BACKEND_CAPI, "openai", "openai-compatible", "capi-openai", "quota", "quota-card"}:
+        return BACKEND_CAPI
+    if raw in {BACKEND_CODEX, "openai-codex", "codex-direct"}:
+        return BACKEND_CODEX
+    if raw in {BACKEND_GROK, const.XAI, "xai-oauth", "grok-account"}:
+        return BACKEND_GROK
+    if raw in {BACKEND_CAPI_MONTHLY, "capi-monthly", "capi_month", "capi-month", "monthly", "month"}:
+        return BACKEND_CAPI_MONTHLY
+    if _custom_backend_allowed(raw):
+        return raw
+    raise ValueError(f"unsupported backend: {value}")
 
 
 def can_use_restricted_backend(profile: Any = None) -> bool:
@@ -611,7 +738,9 @@ def _custom_backend_allowed(backend: str) -> bool:
         return False
     providers = cfg.get("providers") if isinstance(cfg.get("providers"), Mapping) else {}
     provider = providers.get(normalized)
-    return isinstance(provider, Mapping)
+    if not isinstance(provider, Mapping):
+        return False
+    return provider.get("enabled", True) is not False
 
 
 def _user_backend_override_for_profile(profile: Any) -> Dict[str, Any]:
@@ -668,7 +797,7 @@ def backend_supports_reasoning_effort(backend: Optional[str] = None) -> bool:
 
 
 def get_effective_model(backend: Optional[str] = None) -> str:
-    normalized_backend = normalize_backend(backend or get_current_backend())
+    normalized_backend = resolve_selectable_backend(str(backend)) if str(backend or "").strip() else get_current_backend()
     if normalized_backend == BACKEND_CODEX:
         return get_codex_model()
     if normalized_backend == BACKEND_GROK:
@@ -682,12 +811,17 @@ def get_effective_model(backend: Optional[str] = None) -> str:
 
 
 def get_effective_chat_bot_type(model_name: Optional[str] = None, backend: Optional[str] = None) -> str:
-    normalized_backend = normalize_backend(backend or get_current_backend())
+    normalized_backend = resolve_selectable_backend(str(backend)) if str(backend or "").strip() else get_current_backend()
     if normalized_backend == BACKEND_CODEX:
         return const.CODEX
     if normalized_backend == BACKEND_GROK:
         return const.GROK
-    return resolve_configured_chat_bot_type(model_name)
+    if _custom_backend_allowed(normalized_backend):
+        return const.OPENAI
+    resolved = resolve_configured_chat_bot_type(model_name)
+    if resolved in {const.GROK, const.XAI}:
+        return const.OPENAI
+    return resolved
 
 
 def resolve_configured_chat_bot_type(model_name: Optional[str] = None) -> str:
@@ -697,7 +831,8 @@ def resolve_configured_chat_bot_type(model_name: Optional[str] = None) -> str:
         return const.LINKAI
     configured_bot_type = conf().get("bot_type")
     if configured_bot_type:
-        if str(configured_bot_type).strip().lower() == BACKEND_CODEX:
+        configured = str(configured_bot_type).strip().lower()
+        if configured in {BACKEND_CODEX, BACKEND_GROK, const.XAI}:
             return const.OPENAI
         return configured_bot_type
 
@@ -750,8 +885,8 @@ def resolve_configured_chat_bot_type(model_name: Optional[str] = None) -> str:
 
 
 def set_current_backend(backend: str, *, manual: bool = True, reason: str = "") -> Dict[str, Any]:
-    normalized = normalize_backend(backend)
-    if normalized not in GPT_BACKENDS:
+    normalized = resolve_selectable_backend(backend)
+    if not is_global_backend_allowed(normalized):
         raise ValueError(f"unsupported global backend: {backend}")
     state = load_state()
     state["current_backend"] = normalized
@@ -780,7 +915,7 @@ def set_user_backend_override(
 ) -> Dict[str, Any]:
     if not can_use_restricted_backend(profile):
         raise PermissionError("restricted backend access denied")
-    normalized = normalize_backend(backend)
+    normalized = resolve_selectable_backend(backend, allow_user_default=True)
     state = load_state()
     key = _profile_backend_key(profile)
     if not key:
@@ -1170,7 +1305,7 @@ def evaluate_midnight_backend_route(
     checker = capi_connectivity_checker or check_capi_connectivity
     if bool(auto_cfg.get("prefer_capi_monthly_at_check_time", True)) and has_capi_monthly_credentials():
         if not _run_capi_connectivity_check(BACKEND_CAPI_MONTHLY, checker):
-            return _record_capi_connectivity_fallback(BACKEND_CAPI_MONTHLY, now=now)
+            return _record_capi_connectivity_fallback(BACKEND_CAPI_MONTHLY, checker=checker, now=now)
         record_auto_check(
             decision="switched_to_capi_monthly",
             reason="daily_monthly_card_reset",
@@ -1180,7 +1315,7 @@ def evaluate_midnight_backend_route(
         return record_monthly_daily_reset(now=now)
 
     if not _run_capi_connectivity_check(BACKEND_CAPI, checker):
-        return _record_capi_connectivity_fallback(BACKEND_CAPI, now=now)
+        return _record_capi_connectivity_fallback(BACKEND_CAPI, checker=checker, now=now)
 
     payload = quota_payload
     if payload is None and quota_payload_factory is not None:
@@ -1205,12 +1340,18 @@ def _run_capi_connectivity_check(backend: str, checker: Callable[[str], bool]) -
         return False
 
 
-def _record_capi_connectivity_fallback(backend: str, *, now: datetime) -> Dict[str, Any]:
+def _record_capi_connectivity_fallback(
+    backend: str,
+    *,
+    checker: Optional[Callable[[str], bool]] = None,
+    now: datetime,
+) -> Dict[str, Any]:
     normalized = normalize_backend(backend)
+    target_backend = select_auto_fallback_backend(exclude={normalized}, connectivity_checker=checker)
     return record_auto_check(
-        decision="switched_to_codex",
+        decision="switched_to_{}".format(target_backend),
         reason=f"capi_connectivity_failed:{normalized}",
-        switched_backend=BACKEND_CODEX,
+        switched_backend=target_backend,
         now=now,
     )
 
@@ -1229,7 +1370,7 @@ def select_backend_after_monthly_quota_low(
         fair_share_days=int(auto_cfg.get("fair_share_days", 7) or 7),
         min_remaining_percent=float(auto_cfg.get("min_remaining_percent", 15) or 15),
     )
-    target = BACKEND_CODEX if quota_decision.should_switch else BACKEND_CAPI
+    target = select_auto_fallback_backend(exclude={BACKEND_CAPI_MONTHLY}) if quota_decision.should_switch else BACKEND_CAPI
     return record_auto_check(
         decision="monthly_low_switched_to_{}".format(target),
         reason=quota_decision.reason,

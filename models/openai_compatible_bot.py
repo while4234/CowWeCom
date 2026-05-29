@@ -144,6 +144,8 @@ class OpenAICompatibleBot:
             # Make API call with proper configuration
             api_key = api_config.get('api_key')
             api_base = api_config.get('api_base')
+            if api_config.get('custom_backend') and not api_base:
+                raise ValueError("custom OpenAI-compatible backend requires api_base")
             
             if stream:
                 return self._handle_stream_response(request_params, api_key, api_base, api_config)

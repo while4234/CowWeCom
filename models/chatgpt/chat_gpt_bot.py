@@ -20,7 +20,11 @@ from models.openai.responses_api_adapter import (
 )
 import requests
 from common import const
-from common.llm_backend_router import get_effective_openai_api_config, normalize_backend
+from common.llm_backend_router import (
+    get_effective_openai_api_config,
+    is_custom_backend,
+    resolve_selectable_backend,
+)
 from models.bot import Bot
 from models.openai_compatible_bot import OpenAICompatibleBot
 from models.chatgpt.chat_gpt_session import ChatGPTSession
@@ -38,15 +42,17 @@ from models.baidu.baidu_wenxin_session import BaiduWenxinSession
 class ChatGPTBot(Bot, OpenAIImage, OpenAICompatibleBot):
     def __init__(self, backend_override=None):
         super().__init__()
-        self._backend_override = normalize_backend(backend_override) if backend_override else None
+        self._backend_override = resolve_selectable_backend(backend_override) if backend_override else None
         # Resolve api key / base from config (no global SDK state anymore).
         if conf().get("bot_type") == "custom" and not self._backend_override:
+            routed = {}
             self._api_key = conf().get("custom_api_key", "")
             self._api_base = conf().get("custom_api_base") or None
         else:
             routed = get_effective_openai_api_config(self._backend_override)
-            self._api_key = routed.get("api_key") or conf().get("open_ai_api_key")
-            self._api_base = routed.get("api_base") or conf().get("open_ai_api_base") or None
+            allow_global_openai_fallback = not self._backend_override or not is_custom_backend(self._backend_override)
+            self._api_key = routed.get("api_key") or (conf().get("open_ai_api_key") if allow_global_openai_fallback else "")
+            self._api_base = routed.get("api_base") or (conf().get("open_ai_api_base") if allow_global_openai_fallback else None) or None
         self._proxy = conf().get("proxy") or None
         self._http_client = OpenAIHTTPClient(
             api_key=self._api_key,
@@ -55,8 +61,8 @@ class ChatGPTBot(Bot, OpenAIImage, OpenAICompatibleBot):
         )
         if conf().get("rate_limit_chatgpt"):
             self.tb4chatgpt = TokenBucket(conf().get("rate_limit_chatgpt", 20))
-        conf_model = conf().get("model") or "gpt-3.5-turbo"
-        self.sessions = SessionManager(ChatGPTSession, model=conf().get("model") or "gpt-3.5-turbo")
+        conf_model = routed.get("model") or conf().get("model") or "gpt-3.5-turbo"
+        self.sessions = SessionManager(ChatGPTSession, model=conf_model)
         # o1相关模型不支持system prompt，暂时用文心模型的session
 
         self.args = {
@@ -81,6 +87,8 @@ class ChatGPTBot(Bot, OpenAIImage, OpenAICompatibleBot):
         """Get API configuration for OpenAI-compatible base class"""
         is_custom = conf().get("bot_type") == "custom" and not self._backend_override
         routed = get_effective_openai_api_config(self._backend_override)
+        custom_backend = bool(self._backend_override and is_custom_backend(self._backend_override))
+        allow_wire_api_fallback = not custom_backend
         return {
             'api_key': conf().get("custom_api_key") if is_custom else routed.get("api_key"),
             'api_base': conf().get("custom_api_base") if is_custom else routed.get("api_base"),
@@ -91,19 +99,28 @@ class ChatGPTBot(Bot, OpenAIImage, OpenAICompatibleBot):
             'default_presence_penalty': conf().get("presence_penalty", 0.0),
             'wire_api': (
                 routed.get("wire_api")
-                or conf().get("open_ai_wire_api")
-                or conf().get("openai_wire_api")
-                or conf().get("wire_api")
+                or ("chat_completions" if custom_backend else "")
+                or (conf().get("open_ai_wire_api") if allow_wire_api_fallback else "")
+                or (conf().get("openai_wire_api") if allow_wire_api_fallback else "")
+                or (conf().get("wire_api") if allow_wire_api_fallback else "")
             ),
+            'custom_backend': custom_backend,
         }
 
     def _get_http_client(self) -> OpenAIHTTPClient:
         """Override the default HTTP client to reuse our pre-configured one."""
         return self._http_client
 
+    def _resolve_request_api_base(self, api_base=None):
+        resolved = api_base or self._api_base
+        if self._backend_override and is_custom_backend(self._backend_override) and not resolved:
+            raise ValueError("custom OpenAI-compatible backend requires api_base")
+        return resolved
+
     def _create_model_response(self, *, messages, api_key=None, api_base=None,
                                timeout=None, **params):
         """Call the configured OpenAI wire API and return chat-completion shape."""
+        api_base = self._resolve_request_api_base(api_base)
         if is_responses_wire_api(self._get_wire_api(self.get_api_config())):
             response_payload = build_responses_payload(
                 {
@@ -115,7 +132,7 @@ class ChatGPTBot(Bot, OpenAIImage, OpenAICompatibleBot):
             )
             events = self._http_client.responses(
                 api_key=api_key or None,
-                api_base=self._responses_api_base(api_base or self._api_base),
+                api_base=self._responses_api_base(api_base),
                 timeout=timeout,
                 stream=True,
                 **response_payload,
@@ -234,9 +251,9 @@ class ChatGPTBot(Bot, OpenAIImage, OpenAICompatibleBot):
             mime_type = mime_type_map.get(extension, "image/jpeg")
             
             # Get model and API config
-            is_custom = conf().get("bot_type") == "custom"
-            routed = get_effective_openai_api_config()
-            model = context.get("gpt_model") or conf().get("model", "gpt-4o")
+            is_custom = conf().get("bot_type") == "custom" and not self._backend_override
+            routed = get_effective_openai_api_config(self._backend_override)
+            model = context.get("gpt_model") or routed.get("model") or conf().get("model", "gpt-4o")
             api_key = context.get("openai_api_key") or (conf().get("custom_api_key") if is_custom else routed.get("api_key"))
             api_base = conf().get("custom_api_base") if is_custom else routed.get("api_base")
             

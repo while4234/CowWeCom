@@ -99,6 +99,7 @@ def test_grok_direct_video_defaults_and_uses_context_image_refs():
     assert args["resolution"] == "480p"
     assert "aspect_ratio" not in args
     assert args["duration"] == "6s"
+    assert args["prompt_enhancement"] is False
     assert args["image_url"] == "C:/tmp/ref.png"
 
 

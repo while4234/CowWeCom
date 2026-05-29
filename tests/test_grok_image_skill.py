@@ -179,12 +179,16 @@ class TestGrokImageSkill(unittest.TestCase):
             module._route_cowwecom_console_logs_to_stderr = lambda: None
             try:
                 provider = module.GrokXAIProvider()
-                paths = provider.generate(
-                    "Use Grok for a high quality product poster",
-                    size="2K",
-                    aspect_ratio="3:4",
-                    output_dir=tmp,
-                )
+                with patch(
+                    "common.grok_image_prompt_rewriter._call_grok_text_model",
+                    return_value="Rewritten product poster prompt for Grok.",
+                ):
+                    paths = provider.generate(
+                        "Use Grok for a high quality product poster",
+                        size="2K",
+                        aspect_ratio="3:4",
+                        output_dir=tmp,
+                    )
             finally:
                 xai_image_gen.XAIImageGenProvider = original
                 module._route_cowwecom_console_logs_to_stderr = original_route_logs
@@ -195,6 +199,7 @@ class TestGrokImageSkill(unittest.TestCase):
             self.assertEqual(calls[0]["resolution"], "2k")
             self.assertEqual(calls[0]["aspect_ratio"], "3:4")
             self.assertEqual(calls[0]["model"], "grok-imagine-image-quality")
+            self.assertEqual(calls[0]["prompt"], "Rewritten product poster prompt for Grok.")
             self.assertIsNone(calls[0]["image_url"])
             self.assertFalse(calls[0]["prompt_enhancement"])
 
@@ -259,7 +264,11 @@ class TestGrokImageSkill(unittest.TestCase):
             module._route_cowwecom_console_logs_to_stderr = lambda: None
             try:
                 provider = module.GrokXAIProvider()
-                paths = provider.generate("turn this into a poster", image_url=str(reference), output_dir=tmp)
+                with patch(
+                    "common.grok_image_prompt_rewriter._call_grok_text_model",
+                    return_value="Rewritten reference edit prompt for Grok.",
+                ):
+                    paths = provider.generate("turn this into a poster", image_url=str(reference), output_dir=tmp)
             finally:
                 xai_image_gen.XAIImageGenProvider = original
                 module._route_cowwecom_console_logs_to_stderr = original_route_logs
@@ -294,12 +303,16 @@ class TestGrokImageSkill(unittest.TestCase):
             module._route_cowwecom_console_logs_to_stderr = lambda: None
             try:
                 provider = module.GrokXAIProvider()
-                provider.generate(
-                    "make it 16:9 cinematic",
-                    image_url=str(reference),
-                    aspect_ratio="16:9",
-                    output_dir=tmp,
-                )
+                with patch(
+                    "common.grok_image_prompt_rewriter._call_grok_text_model",
+                    return_value="Rewritten wide movie still prompt for Grok.",
+                ):
+                    provider.generate(
+                        "make it 16:9 cinematic",
+                        image_url=str(reference),
+                        aspect_ratio="16:9",
+                        output_dir=tmp,
+                    )
             finally:
                 xai_image_gen.XAIImageGenProvider = original
                 module._route_cowwecom_console_logs_to_stderr = original_route_logs
@@ -324,6 +337,11 @@ class TestGrokImageSkill(unittest.TestCase):
         self.assertIn("active model backend is Grok", text)
         self.assertIn('"runtime": "codex_auth"', text)
         self.assertIn('"runtime": "grok"', text)
+        self.assertIn("image-prompt-optimization", text)
+        self.assertIn("Grok's own text model", text)
+        self.assertTrue(
+            (PROJECT_ROOT / "skills" / "image-prompt-optimization" / "templates" / "grok_image_system_prompt.txt").exists()
+        )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from channel.web import web_channel
 from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
 from channel.image_recognition import ImageRecognitionManager, reset_image_recognition_manager
+from config import conf
 
 
 def _singleton_class(factory):
@@ -225,6 +226,66 @@ class WebAdminPrivacyTest(unittest.TestCase):
         self.assertIn("discord_proxy", keys)
         token_field = next(field for field in discord_def["fields"] if field["key"] == "discord_bot_token")
         self.assertEqual(token_field["type"], "secret")
+
+    def test_config_handler_can_save_custom_backend_provider_safely(self):
+        previous_llm_backend = conf().get("llm_backend")
+        try:
+            conf()["llm_backend"] = {
+                "current_backend": "capi",
+                "providers": {"codex": {"model": "gpt-5.5"}},
+                "auto_switch": {"enabled": True, "fallback_backends": []},
+            }
+            file_cfg = {}
+
+            result = web_channel.ConfigHandler._apply_llm_backend_provider_update(
+                conf(),
+                file_cfg,
+                {
+                    "id": "deepseek_card",
+                    "label": "DeepSeek Card",
+                    "model": "deepseek-chat",
+                    "api_base": "https://api.deepseek.com/v1",
+                    "api_key": "TEST-KEY",
+                    "wire_api": "chat",
+                    "include_in_auto_switch": True,
+                },
+            )
+
+            provider = conf()["llm_backend"]["providers"]["deepseek_card"]
+            self.assertEqual(provider["model"], "deepseek-chat")
+            self.assertEqual(provider["api_key"], "TEST-KEY")
+            self.assertEqual(provider["wire_api"], "chat_completions")
+            self.assertEqual(
+                file_cfg["llm_backend"]["providers"]["deepseek_card"]["api_base"],
+                "https://api.deepseek.com/v1",
+            )
+            self.assertEqual(
+                file_cfg["llm_backend"]["providers"]["deepseek_card"]["wire_api"],
+                "chat_completions",
+            )
+            self.assertEqual(conf()["llm_backend"]["auto_switch"]["fallback_backends"], ["deepseek_card"])
+            self.assertEqual(result["id"], "deepseek_card")
+            self.assertTrue(result["api_key_configured"])
+            self.assertNotIn("api_key", result)
+
+            web_channel.ConfigHandler._apply_llm_backend_provider_update(
+                conf(),
+                file_cfg,
+                {
+                    "id": "deepseek_card",
+                    "model": "deepseek-chat",
+                    "wire_api": "responses",
+                },
+            )
+            self.assertEqual(
+                conf()["llm_backend"]["providers"]["deepseek_card"]["wire_api"],
+                "responses",
+            )
+        finally:
+            if previous_llm_backend is None:
+                conf().pop("llm_backend", None)
+            else:
+                conf()["llm_backend"] = previous_llm_backend
 
     def test_console_allows_discord_in_connect_dropdown(self):
         console_js = Path(__file__).resolve().parents[1] / "channel" / "web" / "static" / "js" / "console.js"

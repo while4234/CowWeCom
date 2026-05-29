@@ -40,7 +40,9 @@ from common.llm_backend_router import (
     get_effective_model,
     get_effective_openai_api_config,
     get_grok_model,
+    is_custom_backend,
     normalize_backend,
+    resolve_selectable_backend,
     set_current_backend,
     set_user_backend_override,
 )
@@ -131,6 +133,8 @@ class AgentLLMModel(LLMModel):
     def model(self):
         active_backend = self._active_backend()
         raw_model = get_effective_model(active_backend)
+        if is_custom_backend(active_backend):
+            return raw_model
         return self._resolve_model_for_bot_type(self._resolve_bot_type(raw_model, active_backend), raw_model)
 
     @model.setter
@@ -165,7 +169,10 @@ class AgentLLMModel(LLMModel):
         return set_current_backend(backend, manual=manual, reason=reason)
 
     def _allowed_request_backend(self, backend: str) -> str:
-        normalized = normalize_backend(backend)
+        try:
+            normalized = resolve_selectable_backend(backend, allow_user_default=True)
+        except ValueError as exc:
+            raise ValueError(f"unsupported request backend: {backend}") from exc
         if normalized == USER_BACKEND_DEFAULT:
             return get_current_backend()
         if self._actor_profile is None:
@@ -190,7 +197,8 @@ class AgentLLMModel(LLMModel):
             return const.LINKAI
         # Support custom bot type configuration
         configured_bot_type = conf().get("bot_type")
-        if configured_bot_type and str(configured_bot_type).strip().lower() != const.CODEX:
+        configured_norm = str(configured_bot_type or "").strip().lower()
+        if configured_bot_type and configured_norm not in {const.CODEX, const.GROK, const.XAI}:
             return configured_bot_type
        
         if not model_name or not isinstance(model_name, str):
@@ -209,6 +217,8 @@ class AgentLLMModel(LLMModel):
             return const.MODELSCOPE
         lowered_model = model_name.lower()
         for prefix, btype in self._MODEL_PREFIX_MAP:
+            if btype == const.GROK:
+                continue
             if lowered_model.startswith(prefix):
                 return btype
         return const.OPENAI
@@ -252,7 +262,7 @@ class AgentLLMModel(LLMModel):
         """Lazy load the bot, re-create when model or bot_type changes"""
         active_backend = self._active_backend()
         raw_model = get_effective_model(active_backend)
-        cur_bot_type = self._resolve_bot_type(raw_model, active_backend)
+        cur_bot_type = const.OPENAI if is_custom_backend(active_backend) else self._resolve_bot_type(raw_model, active_backend)
         cur_model = self._resolve_model_for_bot_type(cur_bot_type, raw_model)
         route_backend = active_backend if active_backend != USER_BACKEND_DEFAULT else get_current_backend()
         return self._get_bot_for_route(cur_bot_type, cur_model, route_backend)
@@ -275,7 +285,7 @@ class AgentLLMModel(LLMModel):
             return const.CODEX, getattr(request, "model", None) or get_codex_model(), active_backend
         if active_backend == BACKEND_GROK:
             return const.GROK, get_grok_model(), active_backend
-        cur_bot_type = self._resolve_bot_type(raw_model, active_backend)
+        cur_bot_type = const.OPENAI if is_custom_backend(active_backend) else self._resolve_bot_type(raw_model, active_backend)
         route_backend = active_backend if active_backend != USER_BACKEND_DEFAULT else get_current_backend()
         return cur_bot_type, self._resolve_model_for_bot_type(cur_bot_type, getattr(request, "model", None) or raw_model), route_backend
 
@@ -297,6 +307,10 @@ class AgentLLMModel(LLMModel):
     def _create_bot_for_route(cur_bot_type: str, backend: str = ""):
         from models.bot_factory import create_bot
 
+        if backend and is_custom_backend(backend):
+            from models.chatgpt.chat_gpt_bot import ChatGPTBot
+
+            return ChatGPTBot(backend_override=backend)
         if backend and backend != BACKEND_GROK and cur_bot_type in {const.OPENAI, const.CHATGPT, const.CUSTOM}:
             from models.chatgpt.chat_gpt_bot import ChatGPTBot
 

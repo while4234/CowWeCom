@@ -259,6 +259,54 @@ class TestGrokAuth(unittest.TestCase):
         self.assertNotIn("refresh-secret", serialized)
         self.assertNotIn("code", serialized)
 
+    def test_multiple_named_accounts_are_listed_and_selectable(self):
+        discovery = {
+            "issuer": auth.XAI_OAUTH_ISSUER,
+            "authorization_endpoint": "https://auth.x.ai/oauth2/auth",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+        }
+        auth.save_xai_oauth_tokens(
+            {
+                "access_token": _jwt_with_exp(time.time() + 3600),
+                "refresh_token": "work-refresh-secret",
+                "id_token": _jwt_with_payload({"email": "work@example.com"}),
+                "expires_in": 3600,
+            },
+            discovery=discovery,
+            redirect_uri=auth._default_redirect_uri(),
+            account_id="work",
+            account_name="Work Grok",
+        )
+        auth.save_xai_oauth_tokens(
+            {
+                "access_token": _jwt_with_exp(time.time() + 3600),
+                "refresh_token": "personal-refresh-secret",
+                "id_token": _jwt_with_payload({"email": "personal@example.com"}),
+                "expires_in": 3600,
+            },
+            discovery=discovery,
+            redirect_uri=auth._default_redirect_uri(),
+            account_id="personal",
+            account_name="Personal Grok",
+        )
+
+        status = auth.get_xai_oauth_status()
+        self.assertEqual(status["account_id"], "personal")
+        self.assertEqual(status["email"], "personal@example.com")
+        accounts = {item["account_id"]: item for item in status["accounts"]}
+        self.assertEqual(accounts["work"]["account_name"], "Work Grok")
+        self.assertEqual(accounts["personal"]["account_name"], "Personal Grok")
+
+        selected = auth.select_xai_oauth_account("work")
+        self.assertEqual(selected["account_id"], "work")
+        self.assertEqual(selected["email"], "work@example.com")
+        creds = auth.resolve_xai_oauth_runtime_credentials()
+        self.assertEqual(creds["account_id"], "work")
+        self.assertEqual(creds["account_name"], "Work Grok")
+        serialized = json.dumps(selected, ensure_ascii=False)
+        self.assertNotIn("work-refresh-secret", serialized)
+        self.assertNotIn("personal-refresh-secret", serialized)
+
     def test_import_hermes_auth_copies_only_xai_provider_without_returning_tokens(self):
         hermes_home = os.path.join(self.tmp.name, "hermes")
         os.makedirs(hermes_home)
