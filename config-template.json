@@ -80,6 +80,7 @@
   "knowledge_auto_retrieval_min_score": 0.1,
   "knowledge_auto_retrieval_max_chars": 4000,
   "single_chat_image_recognition": true,
+  "single_chat_image_recognition_auto_reply": false,
   "single_chat_image_recognition_prompt": "请先识别这张图片，再结合当前短期对话上下文和可用的长期记忆来回答用户。不要只给图片说明；如果图片与已知偏好、任务、人物或正在讨论的事情相关，请把这些上下文一起用于回复。图中文字请提取关键内容；看不清时说明不确定之处。",
   "background_image_recognition_enabled": true,
   "image_recognition_result_ttl_seconds": 86400,

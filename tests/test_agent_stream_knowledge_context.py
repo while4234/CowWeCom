@@ -210,6 +210,22 @@ class TestAgentStreamKnowledgeContext(unittest.TestCase):
         self.assertFalse(executor._should_use_deep_knowledge("今天是否要带伞"))
         self.assertTrue(executor._should_use_deep_knowledge("请确认 UCIe 协议 Step 12 的原文依据"))
 
+    def test_plain_work_progress_snapshot_skips_knowledge_auto_injection(self):
+        executor = self._executor()
+        prompt = "Feature list\u5b8c\u621090% tc_list\u5b8c\u621030%"
+
+        self.assertFalse(executor._should_use_deep_knowledge(prompt))
+        self.assertFalse(executor._looks_like_protocol_question(prompt))
+        with (
+            patch("config.conf", return_value={
+                "knowledge_backend": {"enabled": True, "retrieval": {"auto_inject": True}},
+                "knowledge_auto_retrieval": True,
+            }),
+            patch.object(executor, "_retrieve_backend_knowledge", side_effect=AssertionError("unexpected")),
+            patch.object(executor, "_retrieve_markdown_knowledge", side_effect=AssertionError("unexpected")),
+        ):
+            self.assertEqual(executor._build_knowledge_context_text(prompt), "")
+
     def test_knowledge_reasoning_effort_is_xhigh_locked(self):
         captured = {}
 

@@ -13,6 +13,7 @@ from common.agent_task_limits import (
     is_complex_planning_task,
     is_development_task,
     is_knowledge_task,
+    is_plain_progress_update,
     resolve_agent_max_steps,
     resolve_agent_task_budget,
 )
@@ -216,6 +217,21 @@ class TestAgentTaskLimits(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.assertFalse(is_knowledge_task(prompt))
                 self.assertEqual(resolve_agent_task_budget(prompt, settings).max_steps, 20)
+
+    def test_plain_work_progress_snapshot_is_not_knowledge_task(self):
+        settings = {
+            "agent_max_steps": 20,
+            "agent_development_max_steps": 40,
+            "agent_knowledge_max_steps": 40,
+            "agent_complex_planning_max_steps": 40,
+        }
+        prompt = "Feature list\u5b8c\u621090% tc_list\u5b8c\u621030%"
+
+        self.assertTrue(is_plain_progress_update(prompt))
+        self.assertFalse(is_knowledge_task(prompt))
+        budget = resolve_agent_task_budget(prompt, settings)
+        self.assertEqual(budget.kind, "default")
+        self.assertEqual(budget.max_steps, 20)
 
 
 class TestAgentRunStreamMaxSteps(unittest.TestCase):

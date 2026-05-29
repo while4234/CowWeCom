@@ -102,6 +102,10 @@ class ChatChannel(Channel):
         return bool(conf().get("single_chat_image_recognition", True))
 
     @staticmethod
+    def _single_chat_image_recognition_auto_reply_enabled() -> bool:
+        return bool(conf().get("single_chat_image_recognition_auto_reply", False))
+
+    @staticmethod
     def _background_image_recognition_enabled() -> bool:
         return bool(conf().get("background_image_recognition_enabled", True))
 
@@ -169,7 +173,11 @@ class ChatChannel(Channel):
                     time.sleep(wait_seconds)
                 if manager.is_auto_reply_suppressed(getattr(done_record, "record_id", "")):
                     return
-                text = manager.public_reply_for(done_record, context=context)
+                text = manager.proactive_private_reply_for(
+                    done_record,
+                    context=context,
+                    allow_non_bill=self._single_chat_image_recognition_auto_reply_enabled(),
+                )
                 if text:
                     self._send_plain_text(context, text)
 
@@ -260,6 +268,8 @@ class ChatChannel(Channel):
 
     def _compose_private_image_recognition_context(self, context: Context):
         if context.get("isgroup", False) or not self._single_chat_image_recognition_enabled():
+            return None
+        if not self._single_chat_image_recognition_auto_reply_enabled():
             return None
 
         image_path = str(context.content or "").strip()

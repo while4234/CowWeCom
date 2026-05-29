@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Optional, Callable, Tuple
 from agent.protocol.models import LLMRequest, LLMModel
 from agent.protocol.message_utils import sanitize_claude_messages, compress_turn_to_text_only
 from agent.tools.base_tool import BaseTool, ToolResult
-from common.agent_task_limits import is_knowledge_task
+from common.agent_task_limits import is_knowledge_task, is_plain_progress_update
 from common.agent_task_runtime import TaskCancelled
 from common.codex_quota_query import query_codex_quota_json
 from common.latency import elapsed, format_seconds, hash_id, monotonic
@@ -779,6 +779,8 @@ class AgentStreamExecutor:
 
     @staticmethod
     def _looks_like_protocol_question(value: Any) -> bool:
+        if is_plain_progress_update(value):
+            return False
         text = str(value or "").lower()
         triggers = (
             "ucie", "pcie", "cxl", "amba", "axi", "mbinit", "mbtrain", "phyretrain",
@@ -2682,6 +2684,8 @@ class AgentStreamExecutor:
         return "\n".join(lines)
 
     def _build_knowledge_context_text(self, user_message: str) -> str:
+        if is_plain_progress_update(user_message):
+            return ""
         try:
             from config import conf
 
@@ -2726,6 +2730,8 @@ class AgentStreamExecutor:
 
     @staticmethod
     def _should_use_deep_knowledge(user_message: str) -> bool:
+        if is_plain_progress_update(user_message):
+            return False
         text = str(user_message or "").lower()
         strong_triggers = (
             "协议", "规范", "标准", "spec", "specification", "protocol", "chapter", "section",

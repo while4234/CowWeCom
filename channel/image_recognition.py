@@ -640,6 +640,27 @@ class ImageRecognitionManager:
         )
         return reference > 0 and float(now or time.time()) - reference <= window
 
+    def proactive_private_reply_for(
+        self,
+        record: Optional[ImageRecognitionRecord],
+        intent: str = "default",
+        user_text: str = "",
+        context: Any = None,
+        allow_non_bill: bool = False,
+    ) -> str:
+        if not record:
+            return ""
+        latest = self.get_record(record.record_id) or record
+        if latest.status == "done" and latest.result:
+            ledger_reply = self._ledger_bill_reply(latest, context)
+            if ledger_reply:
+                return ledger_reply
+            if not allow_non_bill:
+                return ""
+        elif not allow_non_bill:
+            return ""
+        return self.format_public_reply(latest, intent, user_text, context=context)
+
     def public_reply_for(
         self,
         record: Optional[ImageRecognitionRecord],

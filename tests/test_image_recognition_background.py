@@ -253,6 +253,43 @@ class TestImageRecognitionManager(unittest.TestCase):
             self.assertIn("当前称呼：小刘", prompt)
             self.assertIn("今天中午随便吃点", prompt)
 
+    def test_proactive_private_reply_default_suppresses_non_bill_casual_reply(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            record = ImageRecognitionRecord(
+                record_id="record-non-bill",
+                session_id="session-non-bill",
+                channel_type="wecom_bot",
+                image_hash="hash-non-bill",
+                image_path=str(Path(workspace) / "scene.png"),
+                is_group=False,
+                status="done",
+                result="A desk with a keyboard and monitor.",
+                completed_at=time.time(),
+            )
+            with manager._lock:
+                manager._records[record.record_id] = record
+            context = Context(
+                ContextType.IMAGE,
+                record.image_path,
+                kwargs={"session_id": "session-non-bill", "memory_user_id": "u1"},
+            )
+
+            with patch.object(ImageRecognitionManager, "_ledger_bill_reply", return_value="") as ledger_reply, \
+                    patch.object(ImageRecognitionManager, "_synthesize_casual_reply", return_value="casual") as synthesize:
+                reply = manager.proactive_private_reply_for(record, context=context)
+
+            self.assertEqual(reply, "")
+            ledger_reply.assert_called_once()
+            synthesize.assert_not_called()
+
+            with patch.object(ImageRecognitionManager, "_ledger_bill_reply", return_value=""), \
+                    patch.object(ImageRecognitionManager, "_synthesize_casual_reply", return_value="casual") as synthesize:
+                reply = manager.proactive_private_reply_for(record, context=context, allow_non_bill=True)
+
+            self.assertEqual(reply, "casual")
+            synthesize.assert_called_once()
+
     def test_private_bill_screenshot_auto_records_and_group_does_not(self):
         with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as db_root:
             conf()["agent_workspace"] = workspace
@@ -296,8 +333,8 @@ class TestImageRecognitionManager(unittest.TestCase):
                 },
             )
             with patch.dict(os.environ, {"CHINA_EXPENSE_LEDGER_DB": str(db_path)}):
-                private_reply = manager.public_reply_for(private_record, context=context)
-                group_reply = manager.public_reply_for(group_record, context=context)
+                private_reply = manager.proactive_private_reply_for(private_record, context=context, allow_non_bill=False)
+                group_reply = manager.proactive_private_reply_for(group_record, context=context, allow_non_bill=False)
 
             self.assertIn("已记账", private_reply)
             self.assertIn("已默认记为今天", private_reply)
@@ -445,7 +482,7 @@ class TestImageRecognitionManager(unittest.TestCase):
                             "user_id": "u1",
                             "chat_id": "chat-dup",
                             "source_type": "manual",
-                            "occurred_at": "2026-05-26T12:35:27+08:00",
+                            "occurred_at": f"{time.strftime('%Y-%m-%d')}T12:35:27+08:00",
                             "amount": "31.00",
                             "direction": "expense",
                             "category": "餐饮",
@@ -541,10 +578,64 @@ class TestWeixinImageRecognition(unittest.TestCase):
         conf().update(self._config_backup)
         reset_image_recognition_manager(None)
 
+    def test_weixin_private_image_default_silent_records_background_context(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            conf()["agent_workspace"] = workspace
+            conf()["single_chat_image_recognition"] = True
+            conf().pop("single_chat_image_recognition_auto_reply", None)
+            conf()["image_recognition_followup_wait_seconds"] = 0
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            reset_image_recognition_manager(manager)
+
+            channel = WeixinChannel()
+            channel.channel_type = "weixin"
+            channel.api = SimpleNamespace(cdn_base_url="https://cdn.example.test")
+            channel._resolve_wechat_profile = lambda raw_user_id, context_token, raw_msg: {
+                "wechat_id": "",
+                "nickname": "",
+            }
+            channel._remember_social_bridge_user = lambda *args, **kwargs: None
+            produced = []
+            sent = []
+            channel.produce = produced.append
+            channel._send_plain_text = lambda context, text, *args, **kwargs: sent.append(text)
+
+            def fake_download(cdn_base_url, encrypt_param, aes_key, save_path):
+                Path(save_path).write_bytes(PNG_BYTES)
+
+            raw_msg = {
+                "message_type": 1,
+                "message_id": "wx-image-silent",
+                "from_user_id": "wx-user-silent",
+                "to_user_id": "bot",
+                "context_token": "ctx-token",
+                "item_list": [
+                    {
+                        "type": 2,
+                        "image_item": {
+                            "aeskey": "unused",
+                            "media": {"encrypt_query_param": "encrypted"},
+                        },
+                    }
+                ],
+            }
+
+            with patch("channel.weixin.weixin_message.download_media_from_cdn", side_effect=fake_download), \
+                    patch.object(ImageRecognitionManager, "_recognize_image", return_value="Weixin silent summary."), \
+                    patch.object(ImageRecognitionManager, "_synthesize_casual_reply", return_value="should not send") as synthesize:
+                channel._process_message(raw_msg)
+                followup_context = manager.build_followup_context("wx-user-silent", wait_seconds=2)
+
+            self.assertEqual(produced, [])
+            self.assertEqual(sent, [])
+            self.assertIn("Weixin silent summary.", followup_context)
+            synthesize.assert_not_called()
+
     def test_weixin_private_image_registers_background_job_without_foreground_queue(self):
         with tempfile.TemporaryDirectory() as workspace:
             conf()["agent_workspace"] = workspace
             conf()["single_chat_image_recognition"] = True
+            conf()["single_chat_image_recognition_auto_reply"] = True
             conf()["image_recognition_followup_wait_seconds"] = 0
             manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
             reset_image_recognition_manager(manager)

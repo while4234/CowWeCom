@@ -63,6 +63,32 @@ _KNOWLEDGE_TASK_PATTERNS = tuple(
     )
 )
 
+_PERCENT_PROGRESS_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])(?:100|[1-9]?\d)\s*%|(?:100|[1-9]?\d)\s*(?:percent|pct)\b",
+    re.IGNORECASE,
+)
+_PROGRESS_STATUS_PATTERN = re.compile(
+    r"("
+    r"完成|进度|当前|目标|本周|今日|今天|昨天|日报|周报|汇报|"
+    r"\b(done|complete|completed|progress|current|target|status|report)\b"
+    r").{0,12}"
+    r"((?<![A-Za-z0-9_])(?:100|[1-9]?\d)\s*%|(?:100|[1-9]?\d)\s*(?:percent|pct)\b)"
+    r"|"
+    r"((?<![A-Za-z0-9_])(?:100|[1-9]?\d)\s*%|(?:100|[1-9]?\d)\s*(?:percent|pct)\b)"
+    r".{0,12}"
+    r"("
+    r"完成|进度|当前|目标|本周|今日|今天|昨天|日报|周报|汇报|"
+    r"\b(done|complete|completed|progress|current|target|status|report)\b"
+    r")",
+    re.IGNORECASE,
+)
+_QUESTION_INTENT_PATTERN = re.compile(
+    r"(\?|？|吗|呢|么|如何|怎么|为什么|为何|是否|能否|是不是|"
+    r"请问|查询|查一下|解释|说明|分析|对比|区别|确认|依据|原文|引用|"
+    r"\b(what|why|how|whether|compare|explain|analy[sz]e|confirm|query|search|read|cite|citation|evidence)\b)",
+    re.IGNORECASE,
+)
+
 _DATE_OR_DURATION_PATTERN = re.compile(
     r"(\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?|\d{1,2}月\d{1,2}日|"
     r"明天|后天|大后天|下周|周[一二三四五六日天]|星期[一二三四五六日天]|"
@@ -209,7 +235,22 @@ def is_knowledge_task(content: Any) -> bool:
     text = str(content or "").strip()
     if not text:
         return False
+    if is_plain_progress_update(text):
+        return False
     return any(pattern.search(text) for pattern in _KNOWLEDGE_TASK_PATTERNS)
+
+
+def is_plain_progress_update(content: Any) -> bool:
+    """Return True for declarative work-progress snapshots, not questions."""
+    text = str(content or "").strip()
+    if not text:
+        return False
+    if _QUESTION_INTENT_PATTERN.search(text):
+        return False
+    percent_count = len(_PERCENT_PROGRESS_PATTERN.findall(text))
+    if percent_count < 1:
+        return False
+    return percent_count >= 2 or bool(_PROGRESS_STATUS_PATTERN.search(text))
 
 
 def is_plain_status_query(content: Any) -> bool:

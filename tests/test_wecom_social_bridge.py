@@ -199,6 +199,7 @@ class TestWecomBotSocialBridge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as workspace:
             conf()["agent_workspace"] = workspace
             conf()["single_chat_image_recognition"] = True
+            conf().pop("single_chat_image_recognition_auto_reply", None)
             conf()["image_recognition_followup_wait_seconds"] = 0
             produced = []
             self.channel.produce = produced.append
@@ -210,7 +211,7 @@ class TestWecomBotSocialBridge(unittest.TestCase):
 
             with patch("channel.wecom_bot.wecom_bot_message._decrypt_media", return_value=PNG_BYTES), \
                     patch.object(ImageRecognitionManager, "_recognize_image", return_value="A small test image."), \
-                    patch.object(ImageRecognitionManager, "_synthesize_casual_reply", return_value=""):
+                    patch.object(ImageRecognitionManager, "_synthesize_casual_reply", return_value="should not send") as synthesize:
                 self.channel._handle_msg_callback(
                     {
                         "cmd": "aibot_msg_callback",
@@ -225,20 +226,18 @@ class TestWecomBotSocialBridge(unittest.TestCase):
                         },
                     }
                 )
-                deadline = time.time() + 1
-                while not sent and time.time() < deadline:
-                    time.sleep(0.01)
+                followup_context = manager.build_followup_context("wecom-user-image", wait_seconds=2)
 
             self.assertEqual(produced, [])
+            self.assertEqual(sent, [])
             self.assertEqual(get_file_cache().get("wecom-user-image"), [])
-            followup_context = manager.build_followup_context("wecom-user-image", wait_seconds=2)
             record = manager.latest_for_session("wecom-user-image")
             self.assertIsNotNone(record)
             self.assertEqual(record.status, "done")
             self.assertTrue(Path(record.image_path).exists())
             self.assertIn("A small test image.", followup_context)
             self.assertIn("[image:", followup_context)
-            self.assertTrue(any("A small test image." in text for text in sent))
+            synthesize.assert_not_called()
 
     def test_group_image_stays_cached_for_explicit_followup(self):
         with tempfile.TemporaryDirectory() as workspace:
@@ -267,10 +266,10 @@ class TestWecomBotSocialBridge(unittest.TestCase):
                         },
                     }
                 )
+                followup_context = manager.build_followup_context("group-image-chat", wait_seconds=2)
 
             self.assertEqual(produced, [])
             self.assertEqual(get_file_cache().get("group-image-chat"), [])
-            followup_context = manager.build_followup_context("group-image-chat", wait_seconds=2)
             record = manager.latest_for_session("group-image-chat")
             self.assertIsNotNone(record)
             self.assertEqual(record.status, "done")
