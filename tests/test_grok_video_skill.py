@@ -11,6 +11,7 @@ from agent.tools.video_generation.job_manager import GrokVideoGenerationJob, Gro
 from bridge.context import Context, ContextType
 from bridge.reply import ReplyType
 from channel.image_recognition import ImageRecognitionManager, reset_image_recognition_manager
+from common.image_prompt_enhancer import load_prompt_history, write_prompt_metadata
 
 
 class FakeJobManager:
@@ -163,6 +164,50 @@ def test_grok_video_job_completion_sends_video_reply(tmp_path):
     assert sent[0][0] == ReplyType.TEXT
     assert sent[1] == (ReplyType.VIDEO, str(video_path), "")
     assert "prompt" not in manager._job_state_payload(job)
+
+
+def test_grok_video_job_manager_records_hidden_prompt_history(tmp_path):
+    manager = GrokVideoGenerationJobManager(workspace_root=str(tmp_path))
+    output_dir = tmp_path / "video-job"
+    output_dir.mkdir()
+    write_prompt_metadata(
+        str(output_dir),
+        {
+            "version": "grok-model-rewrite-v2",
+            "enhanced": True,
+            "target": "grok",
+            "media_type": "video",
+            "use_case": "video_model_rewrite",
+            "original_prompt": "make a video",
+            "enhanced_prompt": "Stored rewritten video prompt.",
+            "library": {},
+            "templates": [],
+        },
+    )
+    job = GrokVideoGenerationJob(
+        job_id="video123",
+        actor_id="actor",
+        memory_user_id="user",
+        args={},
+        output_dir=str(output_dir),
+        context_snapshot={"session_id": "session"},
+        output_path=str(output_dir / "result.mp4"),
+    )
+
+    try:
+        manager._record_hidden_prompt(job)
+        records = load_prompt_history(
+            workspace_root=str(tmp_path),
+            memory_user_id="user",
+            session_id="session",
+            limit=1,
+        )
+    finally:
+        manager.shutdown(wait=False)
+
+    assert records[0]["job_id"] == "video123"
+    assert records[0]["media_type"] == "video"
+    assert records[0]["enhanced_prompt"] == "Stored rewritten video prompt."
 
 
 def test_grok_video_script_outputs_json_only(monkeypatch, tmp_path, capsys):

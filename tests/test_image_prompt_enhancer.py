@@ -218,6 +218,36 @@ class TestImagePromptEnhancer(unittest.TestCase):
         self.assertIn("Enhanced prompt:", result.result)
         self.assertIn(ENHANCED_PROMPT_MARKER, result.result)
 
+    def test_prompt_history_tool_can_return_exact_stored_prompt_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            expected = "Exact polished prompt from the last Grok job."
+            record_prompt_history(
+                workspace_root=tmp,
+                memory_user_id="user_a",
+                session_id="session-a",
+                job_id="job123",
+                output_path=str(Path(tmp) / "out.png"),
+                metadata={
+                    "version": "grok-model-rewrite-v2",
+                    "enhanced": True,
+                    "target": "grok",
+                    "use_case": "image_model_rewrite",
+                    "original_prompt": "draw",
+                    "enhanced_prompt": expected,
+                    "library": {},
+                    "templates": [],
+                },
+            )
+
+            tool = ImageGenerationPromptHistoryTool()
+            tool.profile = SimpleNamespace(memory_user_id="user_a", shared_workspace=tmp)
+            tool.current_context = Context(ContextType.TEXT, "show the exact prompt")
+            tool.current_context["session_id"] = "session-a"
+            result = tool.execute({"exact_only": True})
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.result, expected)
+
     def test_redacts_hidden_prompt_from_error_text(self):
         text = (
             "API rejected prompt: "

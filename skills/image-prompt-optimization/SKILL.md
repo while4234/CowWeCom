@@ -39,9 +39,9 @@ skills/image-prompt-optimization/
 - If the prompt needs Grok rewriting and is not a raw/direct request, random
   missing-detail fragments are selected with this rule: 90% from
   `repositories/grok/`, 10% from other repositories when they contain fragments.
-- If the user prompt contains `NSFW`, fragment selection is forced to the
-  `repositories/grok/NSFW/` category and does not use the 10% other-repository
-  branch.
+- If the user prompt contains `NSFW`, fragment selection prioritizes
+  `repositories/grok/NSFW/` and, when available, includes one small
+  non-priority supplement from `grok` non-NSFW files or another repository.
 - Direct raw commands can still pass `prompt_enhancement=false` to bypass this
   hidden optimization path.
 
@@ -66,9 +66,13 @@ half-body editorial framing, relaxed pose, clear face, balanced negative space
 ```
 
 To add another keyword later, create another folder such as
-`repositories/myKeyword/`; when that exact keyword appears in the user's prompt,
+  `repositories/myKeyword/`; when that exact keyword appears in the user's prompt,
 the same 90% matched-repository / 10% other-repository rule applies. Without a
 keyword, Grok defaults to the `grok` repository.
+
+If the user asks to see the prompt that was just polished, call
+`image_generation_prompt_history` with `exact_only=true`. That reads the stored
+last enhanced prompt; do not regenerate or rewrite the prompt again.
 
 After changing project skills, sync the same folder to:
 

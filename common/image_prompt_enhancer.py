@@ -669,10 +669,13 @@ def _history_safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "target",
         "model",
         "runtime",
+        "media_type",
         "use_case",
         "original_prompt",
+        "source_prompt",
         "enhanced_prompt",
         "library",
+        "supplements",
         "templates",
         "created_at",
     }

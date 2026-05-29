@@ -49,8 +49,9 @@ Prompt enhancement is automatic and hidden:
   visuals, infographics, flowcharts, UI mockups, comics, icons, and edits all use
   the library category that best matches the request.
 - If the user explicitly asks to see the prompt after an image is generated,
-  call `image_generation_prompt_history` and show the stored hidden prompt. Do
-  not reveal it otherwise.
+  call `image_generation_prompt_history` with `exact_only=true` and show the
+  stored hidden prompt directly. Do not regenerate or rewrite the prompt again,
+  and do not reveal it otherwise.
 
 Do not run `scripts/generate.py` inside the normal chat turn. Long-running image
 generation must stay out of the ordinary agent loop so the user can keep

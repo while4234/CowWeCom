@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover - standalone import fallback
 DEFAULT_GROK_KEYWORD = "grok"
 DEFAULT_PREFERRED_PROBABILITY = 0.9
 NSFW_CATEGORY = "NSFW"
+NSFW_SUPPLEMENT_LIMIT = 1
 
 
 def resolve_prompt_optimization_skill_dir(configured: str | None = None) -> Optional[Path]:
@@ -136,48 +137,64 @@ def select_grok_prompt_fragments(
     root = _resolve_repositories_root(repositories_root)
     repositories = _load_text_repositories(root)
     explicit_keyword = _first_matching_repository_keyword(prompt, repositories)
-    force_nsfw = _contains_nsfw_keyword(prompt) and DEFAULT_GROK_KEYWORD in repositories
-    keyword = DEFAULT_GROK_KEYWORD if force_nsfw else (explicit_keyword or _default_grok_repository(repositories))
-    forced_category = NSFW_CATEGORY if force_nsfw else ""
+    nsfw_priority = _contains_nsfw_keyword(prompt) and DEFAULT_GROK_KEYWORD in repositories
+    keyword = DEFAULT_GROK_KEYWORD if nsfw_priority else (explicit_keyword or _default_grok_repository(repositories))
+    priority_category = NSFW_CATEGORY if nsfw_priority else ""
     cleaned_prompt = strip_repository_keywords(prompt, repositories.keys())
     if not keyword:
         return {
             "keyword": "",
             "keyword_hit": False,
-            "category": "",
+            "category": priority_category,
             "category_forced": False,
+            "category_priority": bool(priority_category),
+            "selection_mode": "none",
             "cleaned_prompt": cleaned_prompt,
             "preferred_probability": preferred_probability,
+            "fragment_prompt": "",
             "fragments": [],
             "repositories_root": str(root) if root else "",
         }
 
     randomizer = rng or random.SystemRandom()
     preferred = repositories.get(keyword, [])
-    if forced_category:
-        preferred = _filter_fragments_by_category(preferred, forced_category)
-    other = [fragment for name, fragments in repositories.items() if name != keyword for fragment in fragments]
-    selected: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for _ in range(max(int(limit or 0), 0)):
-        use_preferred = bool(forced_category) or randomizer.random() < preferred_probability
-        pool = preferred if use_preferred else other
-        fallback = [] if forced_category else (other if use_preferred else preferred)
-        fragment = _pick_fragment(pool, fallback, randomizer)
-        if not fragment:
-            continue
-        key = f"{fragment.get('repository')}::{fragment.get('file')}::{fragment.get('line')}::{fragment.get('text')}"
-        if key in seen:
-            continue
-        selected.append(fragment)
-        seen.add(key)
+    if priority_category:
+        priority = _filter_fragments_by_category(preferred, priority_category)
+        other = [
+            fragment
+            for name, fragments in repositories.items()
+            for fragment in fragments
+            if not (name == keyword and _fragment_category_matches(fragment, priority_category))
+        ]
+        selected = _select_priority_fragments(
+            priority,
+            other,
+            limit=max(int(limit or 0), 0),
+            randomizer=randomizer,
+        )
+        selection_mode = "priority_with_supplement"
+    else:
+        other = [fragment for name, fragments in repositories.items() if name != keyword for fragment in fragments]
+        selected = _select_weighted_fragments(
+            preferred,
+            other,
+            limit=max(int(limit or 0), 0),
+            preferred_probability=preferred_probability,
+            preferred_repository=keyword,
+            randomizer=randomizer,
+        )
+        selection_mode = "weighted_repository"
     return {
         "keyword": keyword,
         "keyword_hit": bool(explicit_keyword and explicit_keyword == keyword),
-        "category": forced_category,
-        "category_forced": bool(forced_category),
+        "category": priority_category,
+        "category_forced": bool(priority_category),
+        "category_priority": bool(priority_category),
+        "category_exclusive": False,
+        "selection_mode": selection_mode,
         "cleaned_prompt": cleaned_prompt,
-        "preferred_probability": 1.0 if forced_category else preferred_probability,
+        "preferred_probability": preferred_probability,
+        "fragment_prompt": _compose_fragment_prompt(selected),
         "fragments": selected,
         "repositories_root": str(root) if root else "",
     }
@@ -258,15 +275,107 @@ def _contains_nsfw_keyword(prompt: str) -> bool:
 
 def _filter_fragments_by_category(fragments: list[dict[str, Any]], category: str) -> list[dict[str, Any]]:
     expected = str(category or "").strip().lower()
-    return [fragment for fragment in fragments if str(fragment.get("category") or "").strip().lower() == expected]
+    return [fragment for fragment in fragments if _fragment_category_matches(fragment, expected)]
+
+
+def _fragment_category_matches(fragment: dict[str, Any], category: str) -> bool:
+    expected = str(category or "").strip().lower()
+    return bool(expected) and str(fragment.get("category") or "").strip().lower() == expected
+
+
+def _select_weighted_fragments(
+    preferred: list[dict[str, Any]],
+    other: list[dict[str, Any]],
+    *,
+    limit: int,
+    preferred_probability: float,
+    preferred_repository: str,
+    randomizer: random.Random,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for _ in range(limit):
+        use_preferred = randomizer.random() < preferred_probability
+        pool = preferred if use_preferred else other
+        fallback = other if use_preferred else preferred
+        fragment = _pick_fragment(pool, fallback, randomizer, seen=seen)
+        if not fragment:
+            continue
+        fragment["selection_role"] = (
+            "preferred" if str(fragment.get("repository") or "") == str(preferred_repository or "") else "supplement"
+        )
+        selected.append(fragment)
+        seen.add(_fragment_key(fragment))
+    return selected
+
+
+def _select_priority_fragments(
+    priority: list[dict[str, Any]],
+    supplement: list[dict[str, Any]],
+    *,
+    limit: int,
+    randomizer: random.Random,
+) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    supplement_slots = min(NSFW_SUPPLEMENT_LIMIT, max(limit - 1, 0)) if supplement else 0
+    priority_slots = max(limit - supplement_slots, 0)
+
+    for _ in range(priority_slots):
+        fragment = _pick_fragment(priority, [], randomizer, seen=seen)
+        if not fragment:
+            break
+        fragment["selection_role"] = "priority"
+        selected.append(fragment)
+        seen.add(_fragment_key(fragment))
+
+    for _ in range(supplement_slots):
+        fragment = _pick_fragment(supplement, [], randomizer, seen=seen)
+        if not fragment:
+            continue
+        fragment["selection_role"] = "supplement"
+        selected.append(fragment)
+        seen.add(_fragment_key(fragment))
+
+    while len(selected) < limit:
+        fragment = _pick_fragment(priority, supplement, randomizer, seen=seen)
+        if not fragment:
+            break
+        fragment["selection_role"] = "priority" if _fragment_category_matches(fragment, NSFW_CATEGORY) else "supplement"
+        selected.append(fragment)
+        seen.add(_fragment_key(fragment))
+    return selected
 
 
 def _pick_fragment(
     pool: list[dict[str, Any]],
     fallback: list[dict[str, Any]],
     randomizer: random.Random,
+    *,
+    seen: set[str] | None = None,
 ) -> dict[str, Any] | None:
-    source = pool or fallback
+    source = _unseen_fragments(pool, seen) or _unseen_fragments(fallback, seen)
     if not source:
         return None
     return dict(randomizer.choice(source))
+
+
+def _unseen_fragments(fragments: list[dict[str, Any]], seen: set[str] | None) -> list[dict[str, Any]]:
+    if not seen:
+        return fragments
+    return [fragment for fragment in fragments if _fragment_key(fragment) not in seen]
+
+
+def _fragment_key(fragment: dict[str, Any]) -> str:
+    return f"{fragment.get('repository')}::{fragment.get('file')}::{fragment.get('line')}::{fragment.get('text')}"
+
+
+def _compose_fragment_prompt(fragments: list[dict[str, Any]]) -> str:
+    lines = []
+    for fragment in fragments:
+        role = str(fragment.get("selection_role") or "fragment")
+        lines.append(f"- {role}: {fragment.get('text')}")
+    return "\n".join(lines)

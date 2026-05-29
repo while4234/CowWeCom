@@ -191,6 +191,7 @@ class GrokVideoGenerationJobManager:
             output_path = self._recoverable_output_path(job)
             if output_path:
                 job.output_path = output_path
+                self._record_hidden_prompt(job)
                 delivered = self._send_completion(job) if notify else True
                 job.status = "succeeded" if delivered else "delivery_failed"
                 if not delivered:
@@ -262,6 +263,7 @@ class GrokVideoGenerationJobManager:
                 raise RuntimeError(result.get("error") or "generator completed without a video")
             job.output_path = os.path.abspath(expand_path(str(video_path)))
             self._persist_job_state(job)
+            self._record_hidden_prompt(job)
             delivered = self._send_completion(job)
             final_status = "succeeded" if delivered else "delivery_failed"
             if not delivered:
@@ -568,6 +570,24 @@ class GrokVideoGenerationJobManager:
             )
         except Exception as e:
             logger.warning("[GrokVideoGenerationJobManager] failed to remember output for %s: %s", job.job_id, e)
+
+    def _record_hidden_prompt(self, job: GrokVideoGenerationJob) -> None:
+        try:
+            from common.image_prompt_enhancer import read_prompt_metadata, record_prompt_history
+
+            metadata = read_prompt_metadata(job.output_dir)
+            if not metadata:
+                return
+            record_prompt_history(
+                workspace_root=self.workspace_root,
+                memory_user_id=job.memory_user_id,
+                session_id=str(job.context_snapshot.get("session_id") or ""),
+                job_id=job.job_id,
+                output_path=str(job.output_path or ""),
+                metadata=metadata,
+            )
+        except Exception as e:
+            logger.warning("[GrokVideoGenerationJobManager] failed to record hidden prompt for %s: %s", job.job_id, e)
 
 
 _manager: Optional[GrokVideoGenerationJobManager] = None

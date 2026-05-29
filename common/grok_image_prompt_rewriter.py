@@ -152,7 +152,11 @@ def _rewrite_grok_media_prompt(
             "keyword_hit": bool(selection.get("keyword_hit")),
             "category": str(selection.get("category") or ""),
             "category_forced": bool(selection.get("category_forced")),
+            "category_priority": bool(selection.get("category_priority")),
+            "category_exclusive": bool(selection.get("category_exclusive")),
+            "selection_mode": str(selection.get("selection_mode") or ""),
             "preferred_probability": selection.get("preferred_probability"),
+            "fragment_prompt": str(selection.get("fragment_prompt") or ""),
         },
         "templates": [],
         "supplements": selection.get("fragments") or [],
@@ -251,7 +255,12 @@ def _build_user_prompt(
     keyword = selection.get("keyword")
     if keyword:
         lines.append(f"- matched_prompt_repository_keyword: {keyword}")
-        if selection.get("category_forced"):
+        if selection.get("selection_mode") == "priority_with_supplement":
+            lines.append(
+                f"- repository_selection_rule: prioritize {keyword}/{selection.get('category')} fragments; "
+                "allow one non-priority supplement when available"
+            )
+        elif selection.get("category_forced"):
             lines.append(f"- repository_selection_rule: forced {keyword}/{selection.get('category')} category")
         else:
             lines.append(f"- repository_selection_rule: 90% from {keyword}, 10% from other repositories when available")
@@ -259,8 +268,9 @@ def _build_user_prompt(
     lines.extend(["", "Random repository fragments for missing details:"])
     if fragments:
         for index, fragment in enumerate(fragments, start=1):
+            role = str(fragment.get("selection_role") or "fragment")
             lines.append(
-                f"{index}. [{fragment.get('repository')}/{fragment.get('file')}:{fragment.get('line')}] "
+                f"{index}. ({role}) [{fragment.get('repository')}/{fragment.get('file')}:{fragment.get('line')}] "
                 f"{fragment.get('text')}"
             )
     else:

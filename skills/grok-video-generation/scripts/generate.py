@@ -73,6 +73,7 @@ class GrokXAIVideoProvider:
             "output_dir": output_dir,
         }
         source_path = _call_provider_generate(provider, prompt, kwargs)
+        _write_prompt_metadata(provider, output_dir)
         return _copy_video_to_output(source_path, output_dir)
 
 
@@ -141,6 +142,18 @@ def _extract_video_path(result: Any) -> str:
     if isinstance(result, list) and result:
         return _extract_video_path(result[0])
     raise ValueError("xAI video provider returned no video path")
+
+
+def _write_prompt_metadata(provider: Any, output_dir: str) -> None:
+    metadata = getattr(provider, "last_prompt_metadata", None)
+    if not isinstance(metadata, dict):
+        return
+    try:
+        from common.image_prompt_enhancer import write_prompt_metadata
+
+        write_prompt_metadata(output_dir, metadata)
+    except Exception as exc:
+        print(f"[grok-video-generation] prompt metadata skipped: {exc}", file=sys.stderr, flush=True)
 
 
 def _copy_video_to_output(source_path: str, output_dir: str) -> str:

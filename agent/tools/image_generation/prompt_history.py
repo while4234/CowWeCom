@@ -9,13 +9,13 @@ from config import conf
 
 
 class ImageGenerationPromptHistoryTool(BaseTool):
-    """Reveal hidden image-generation prompts only on explicit user request."""
+    """Reveal hidden media-generation prompts only on explicit user request."""
 
     name = "image_generation_prompt_history"
     description = (
-        "Return the hidden enhanced prompt used for a recent image generation task. "
+        "Return the hidden enhanced prompt used for a recent image or Grok video generation task. "
         "Use this only when the user explicitly asks to see, inspect, copy, or debug "
-        "the prompt used for a generated image. Do not call it during normal image "
+        "the prompt used for a generated image/video. Do not call it during normal media "
         "generation or ordinary follow-up chat."
     )
     params = {
@@ -23,11 +23,15 @@ class ImageGenerationPromptHistoryTool(BaseTool):
         "properties": {
             "job_id": {
                 "type": "string",
-                "description": "Optional image generation task id. Omit to get the most recent prompt in this chat.",
+                "description": "Optional image/video generation task id. Omit to get the most recent prompt in this chat.",
             },
             "limit": {
                 "type": "integer",
                 "description": "Optional number of recent prompts to return, default 1.",
+            },
+            "exact_only": {
+                "type": "boolean",
+                "description": "Return only the exact stored enhanced prompt text. Use this for requests like 'show the prompt you just polished'.",
             },
         },
     }
@@ -68,7 +72,11 @@ class ImageGenerationPromptHistoryTool(BaseTool):
             limit=int(params.get("limit") or 1),
         )
         if not records:
-            return ToolResult.fail("No hidden image prompt was found for the recent image generation tasks in this chat.")
+            return ToolResult.fail("No hidden media prompt was found for the recent generation tasks in this chat.")
+
+        if _truthy(params.get("exact_only") or params.get("raw")):
+            prompts = [str(record.get("enhanced_prompt") or "") for record in records]
+            return ToolResult.success("\n\n---\n\n".join(prompt for prompt in prompts if prompt))
 
         sections = []
         for record in records:
@@ -90,6 +98,7 @@ class ImageGenerationPromptHistoryTool(BaseTool):
                     [
                         f"Task ID: {record.get('job_id') or 'unknown'}",
                         f"Model target: {record.get('target') or 'unknown'}",
+                        f"Media type: {record.get('media_type') or 'image'}",
                         f"Use case: {record.get('use_case') or 'unknown'}",
                         source_label,
                         template_text,
@@ -101,3 +110,11 @@ class ImageGenerationPromptHistoryTool(BaseTool):
                 )
             )
         return ToolResult.success("\n\n---\n\n".join(sections))
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "raw", "exact"}

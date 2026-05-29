@@ -1,5 +1,20 @@
+import importlib.util
+import json
+from pathlib import Path
+
 from common import grok_image_prompt_rewriter
 from integrations.hermes_xai import video_gen
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = PROJECT_ROOT / "skills" / "grok-video-generation" / "scripts" / "generate.py"
+
+
+def load_generate_module():
+    spec = importlib.util.spec_from_file_location("grok_video_generation_generate", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class FixedRandom:
@@ -77,3 +92,36 @@ def test_grok_video_provider_can_skip_prompt_rewrite(monkeypatch, tmp_path):
 
     assert captured["payload"]["prompt"] == "raw video prompt"
     assert provider.last_prompt_metadata["enhanced"] is False
+
+
+def test_grok_video_script_writes_prompt_metadata_for_history(monkeypatch, tmp_path):
+    module = load_generate_module()
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"\x00\x00\x00\x18ftypmp4")
+    output_dir = tmp_path / "out"
+
+    class FakeProvider:
+        def __init__(self):
+            self.last_prompt_metadata = {
+                "version": "grok-model-rewrite-v2",
+                "enhanced": True,
+                "target": "grok",
+                "media_type": "video",
+                "use_case": "video_model_rewrite",
+                "original_prompt": "make a video",
+                "enhanced_prompt": "Rewritten video prompt for history.",
+                "library": {},
+                "templates": [],
+            }
+
+        def generate(self, prompt, **kwargs):
+            return str(source)
+
+    monkeypatch.setattr(video_gen, "XAIVideoGenProvider", FakeProvider)
+
+    result = module.GrokXAIVideoProvider().generate("make a video", output_dir=str(output_dir))
+
+    metadata = json.loads((output_dir / "prompt_metadata.json").read_text(encoding="utf-8"))
+    assert Path(result).name == "result.mp4"
+    assert metadata["media_type"] == "video"
+    assert metadata["enhanced_prompt"] == "Rewritten video prompt for history."

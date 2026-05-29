@@ -50,7 +50,8 @@ When using Grok:
   generation.
 - Do not display the enhanced prompt during generation. If the user explicitly
   asks to see the prompt after the image is generated, use
-  `image_generation_prompt_history`.
+  `image_generation_prompt_history` with `exact_only=true` so the stored final
+  prompt is returned directly. Do not rewrite it again.
 
 The rewrite system prompt template lives in the shared prompt optimization skill:
 
@@ -63,7 +64,8 @@ Replace that file, or set `GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT` /
 For non-direct Grok image generation, random missing-detail fragments are
 selected 90% from `skills/image-prompt-optimization/repositories/grok/` and
 10% from other repositories when available. If the prompt contains `NSFW`,
-selection is forced to `repositories/grok/NSFW/`.
+selection prioritizes `repositories/grok/NSFW/` and can include one small
+non-priority supplement from `grok` non-NSFW files or another repository.
 
 Example explicit Grok request:
 
