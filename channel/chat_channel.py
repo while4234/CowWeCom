@@ -13,6 +13,14 @@ from channel.image_recognition import get_image_recognition_manager
 from common.agent_task_limits import resolve_agent_task_budget
 from common.agent_task_runtime import SessionRuntime, TaskPolicy
 from common.grok_voice_mode import is_grok_text_to_voice_provider
+from common.image_generation_routing import (
+    active_backend_is_grok_for_context,
+    explicit_image_generation_requested,
+    explicit_video_generation_requested,
+    looks_like_media_generation_status_question,
+    match_image_create_prefix,
+    match_video_create_prefix,
+)
 from common.latency import elapsed, format_seconds, hash_id, monotonic
 from common import memory
 from integrations.hermes_xai.media_download import cleanup_generated_reply_media
@@ -516,14 +524,18 @@ class ChatChannel(Channel):
                     logger.info("[chat_channel]receive single chat msg, but checkprefix didn't match")
                     return None
             content = content.strip()
-            video_match_prefix = check_prefix(content, conf().get("video_create_prefix", []))
+            video_match_prefix = match_video_create_prefix(content, conf().get("video_create_prefix", []))
             if video_match_prefix:
                 content = content.replace(video_match_prefix, "", 1)
                 context.type = ContextType.VIDEO_CREATE
+            elif self._should_promote_grok_media_create(context, content, explicit_video_generation_requested):
+                context.type = ContextType.VIDEO_CREATE
             else:
-                img_match_prefix = check_prefix(content, conf().get("image_create_prefix",[""]))
+                img_match_prefix = match_image_create_prefix(content, conf().get("image_create_prefix", [""]))
                 if img_match_prefix:
                     content = content.replace(img_match_prefix, "", 1)
+                    context.type = ContextType.IMAGE_CREATE
+                elif self._should_promote_grok_media_create(context, content, explicit_image_generation_requested):
                     context.type = ContextType.IMAGE_CREATE
                 else:
                     context.type = ContextType.TEXT
@@ -721,6 +733,12 @@ class ChatChannel(Channel):
                 logger.warning("[chat_channel] unknown context type: {}".format(context.type))
                 return
         return reply
+
+    @staticmethod
+    def _should_promote_grok_media_create(context: Context, content: str, detector) -> bool:
+        if looks_like_media_generation_status_question(content):
+            return False
+        return bool(detector(content) and active_backend_is_grok_for_context(context))
 
     def _decorate_reply(self, context: Context, reply: Reply) -> Reply:
         if reply and reply.type:

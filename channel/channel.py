@@ -5,6 +5,7 @@ Message sending channel abstract class
 from bridge.bridge import Bridge
 from bridge.context import Context, ContextType
 from bridge.reply import *
+from common.image_generation_routing import active_backend_is_grok_for_context
 from common.log import logger
 from config import conf
 
@@ -75,13 +76,13 @@ class Channel(object):
         if context and context.type == ContextType.VIDEO_CREATE:
             from models.grok.grok_video import is_grok_video_provider
 
-            if is_grok_video_provider():
+            if is_grok_video_provider() or active_backend_is_grok_for_context(context):
                 return Bridge().fetch_reply_content(query, context)
 
         if context and context.type == ContextType.IMAGE_CREATE:
             from models.grok.grok_image import is_grok_image_provider
 
-            if is_grok_image_provider():
+            if is_grok_image_provider() or active_backend_is_grok_for_context(context):
                 return Bridge().fetch_reply_content(query, context)
 
         # Check if agent mode is enabled

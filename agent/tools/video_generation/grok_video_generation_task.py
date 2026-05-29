@@ -4,6 +4,7 @@ import re
 from typing import Any, Dict
 
 from agent.tools.base_tool import BaseTool, ToolResult
+from common.image_generation_routing import looks_like_media_generation_status_question
 
 
 MAX_IMAGE_REFERENCES = 7
@@ -78,6 +79,10 @@ class GrokVideoGenerationTaskTool(BaseTool):
         prompt = str(params.get("prompt", "")).strip()
         if not prompt:
             return ToolResult.fail("Missing prompt; cannot create Grok video generation task.")
+        if looks_like_media_generation_status_question(prompt):
+            return ToolResult.fail(
+                "Grok video generation was not started because the current request looks like a status or failure question, not a new video request."
+            )
         if self.job_manager is None:
             return ToolResult.fail("Grok video background task system is not initialized.")
         if self.current_context is None or self.profile is None:

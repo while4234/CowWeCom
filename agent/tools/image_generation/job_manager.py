@@ -301,10 +301,16 @@ class ImageGenerationJobManager:
             if not self._send_failure(job):
                 final_status = "delivery_failed"
 
+        completed_at = time.time()
+        self._persist_job_state(
+            job,
+            status=final_status,
+            error=final_error,
+            completed_at=completed_at,
+        )
         job.status = final_status
         job.error = final_error
-        job.completed_at = time.time()
-        self._persist_job_state(job)
+        job.completed_at = completed_at
 
     def _invoke_generator(self, job: ImageGenerationJob) -> Dict[str, Any]:
         if not os.path.exists(self.script_path):
@@ -346,13 +352,13 @@ class ImageGenerationJobManager:
     def _state_file_path(self, job: ImageGenerationJob) -> str:
         return os.path.join(job.output_dir, JOB_STATE_FILE)
 
-    def _persist_job_state(self, job: ImageGenerationJob) -> None:
+    def _persist_job_state(self, job: ImageGenerationJob, **overrides: Any) -> None:
         try:
             os.makedirs(job.output_dir, exist_ok=True)
             state_path = self._state_file_path(job)
             tmp_path = f"{state_path}.{uuid.uuid4().hex}.tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(self._job_state_payload(job), f, ensure_ascii=False, indent=2, sort_keys=True)
+                json.dump(self._job_state_payload(job, overrides), f, ensure_ascii=False, indent=2, sort_keys=True)
             for attempt in range(3):
                 try:
                     os.replace(tmp_path, state_path)
@@ -375,8 +381,8 @@ class ImageGenerationJobManager:
             logger.warning(f"[ImageGenerationJobManager] failed to persist job state {job.job_id}: {e}")
 
     @staticmethod
-    def _job_state_payload(job: ImageGenerationJob) -> Dict[str, Any]:
-        return {
+    def _job_state_payload(job: ImageGenerationJob, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = {
             "job_id": job.job_id,
             "actor_id": job.actor_id,
             "memory_user_id": job.memory_user_id,
@@ -389,6 +395,9 @@ class ImageGenerationJobManager:
             "output_path": job.output_path,
             "error": job.error,
         }
+        if overrides:
+            payload.update(overrides)
+        return payload
 
     def _iter_state_files(self):
         root = Path(self.workspace_root) / "users"

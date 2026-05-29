@@ -14,9 +14,10 @@ from bridge.reply import Reply, ReplyType
 from channel.chat_channel import ChatChannel
 from channel.wechatcom.wechatcomapp_client import WechatComAppClient
 from channel.wechatcom.wechatcomapp_message import WechatComAppMessage
+from common.image_send_limits import image_send_dimensions_from_config, prepare_image_for_send
 from common.log import logger
 from common.singleton import singleton
-from common.utils import compress_imgfile, fsize, split_string_by_utf8_length, convert_webp_to_png, remove_markdown_symbol
+from common.utils import compress_imgfile, fsize, split_string_by_utf8_length, remove_markdown_symbol
 from config import conf, subscribe_msg
 from integrations.hermes_xai.media_download import (
     cleanup_generated_reply_media,
@@ -30,6 +31,7 @@ REMOTE_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/web
 REMOTE_VIDEO_CONTENT_TYPES = {"video/mp4", "application/octet-stream"}
 MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024
 MAX_REMOTE_VIDEO_BYTES = 512 * 1024 * 1024
+WECHATCOM_IMAGE_MAX_BYTES = 10 * 1024 * 1024 - 1
 
 
 @singleton
@@ -133,6 +135,7 @@ class WechatComAppChannel(ChatChannel):
         elif reply.type == ReplyType.IMAGE_URL:  # 从网络下载图片
             img_url = reply.content
             download_path = ""
+            prepared_path = ""
             download_handle = None
             image_storage = None
             try:
@@ -144,27 +147,13 @@ class WechatComAppChannel(ChatChannel):
                     max_bytes=MAX_REMOTE_IMAGE_BYTES,
                     timeout=30.0,
                 )
-                download_handle = open(download_path, "rb")
+                prepared_path = self._prepare_image_path(download_path)
+                if not prepared_path:
+                    logger.error("[wechatcom] image too large after normalization: {}".format(download_path))
+                    return False
+                download_handle = open(prepared_path, "rb")
                 image_storage = download_handle
-                sz = fsize(image_storage)
-                if sz >= 10 * 1024 * 1024:
-                    logger.info("[wechatcom] image too large, ready to compress, sz={}".format(sz))
-                    compressed_storage = compress_imgfile(image_storage, 10 * 1024 * 1024 - 1)
-                    download_handle.close()
-                    download_handle = None
-                    image_storage = compressed_storage
-                    logger.info("[wechatcom] image compressed, sz={}".format(fsize(image_storage)))
                 image_storage.seek(0)
-                if os.path.splitext(download_path)[1].lower() == ".webp":
-                    try:
-                        converted_storage = convert_webp_to_png(image_storage)
-                        if download_handle is not None:
-                            download_handle.close()
-                            download_handle = None
-                        image_storage = converted_storage
-                    except Exception as e:
-                        logger.error(f"Failed to convert image: {e}")
-                        return False
                 try:
                     response = self.client.media.upload("image", image_storage)
                     logger.debug("[wechatcom] upload image response: {}".format(response))
@@ -190,20 +179,27 @@ class WechatComAppChannel(ChatChannel):
                 except Exception:
                     pass
                 remove_file_quietly(download_path)
+                if prepared_path and prepared_path != download_path:
+                    remove_file_quietly(prepared_path)
         elif reply.type == ReplyType.IMAGE:  # 从文件读取图片
             image_storage = reply.content
             close_after_upload = False
+            prepared_path = ""
             if isinstance(image_storage, str):
                 if not os.path.exists(image_storage):
                     logger.error("[wechatcom] image file not found: {}".format(image_storage))
                     return False
-                image_storage = open(image_storage, "rb")
+                prepared_path = self._prepare_image_path(image_storage)
+                if not prepared_path:
+                    logger.error("[wechatcom] image too large after normalization: {}".format(image_storage))
+                    return False
+                image_storage = open(prepared_path, "rb")
                 close_after_upload = True
             try:
                 sz = fsize(image_storage)
                 if sz >= 10 * 1024 * 1024:
                     logger.info("[wechatcom] image too large, ready to compress, sz={}".format(sz))
-                    compressed_storage = compress_imgfile(image_storage, 10 * 1024 * 1024 - 1)
+                    compressed_storage = compress_imgfile(image_storage, WECHATCOM_IMAGE_MAX_BYTES)
                     if close_after_upload:
                         try:
                             image_storage.close()
@@ -222,12 +218,17 @@ class WechatComAppChannel(ChatChannel):
                 self.client.message.send_image(self.agent_id, receiver, response["media_id"])
                 logger.info("[wechatcom] sendImage, receiver={}".format(receiver))
                 return True
+            except Exception as e:
+                logger.error("[wechatcom] send image failed: {}".format(e))
+                return False
             finally:
                 if close_after_upload:
                     try:
                         image_storage.close()
                     except Exception:
                         pass
+                if prepared_path and prepared_path != reply.content:
+                    remove_file_quietly(prepared_path)
                 cleanup_generated_reply_media(reply)
         elif reply.type in (ReplyType.VIDEO, ReplyType.VIDEO_URL):
             try:
@@ -241,6 +242,18 @@ class WechatComAppChannel(ChatChannel):
         except Exception:
             pass
         return False
+
+    @staticmethod
+    def _prepare_image_path(file_path: str) -> str:
+        max_width, max_height = image_send_dimensions_from_config(conf())
+        max_bytes = int(conf().get("wechatcom_image_send_max_bytes", WECHATCOM_IMAGE_MAX_BYTES) or WECHATCOM_IMAGE_MAX_BYTES)
+        return prepare_image_for_send(
+            file_path,
+            max_bytes=max_bytes,
+            max_width=max_width,
+            max_height=max_height,
+            prefix="wechatcom_img",
+        )
 
     def _send_video(self, video_path_or_url, receiver):
         local_path, cleanup_path = self._resolve_video_file(video_path_or_url)

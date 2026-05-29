@@ -26,9 +26,10 @@ import web
 from bridge.context import Context
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
-from channel.chat_channel import ChatChannel, check_prefix
+from channel.chat_channel import ChatChannel
 from channel.feishu.feishu_message import FeishuMessage
 from common import utils
+from common.image_generation_routing import match_image_create_prefix
 from common.expired_dict import ExpiredDict
 from common.log import logger
 from common.singleton import singleton
@@ -1522,7 +1523,7 @@ class FeiShuChanel(ChatChannel):
         if ctype == ContextType.TEXT:
             # 1.文本请求
             # 图片生成处理
-            img_match_prefix = check_prefix(content, conf().get("image_create_prefix"))
+            img_match_prefix = match_image_create_prefix(content, conf().get("image_create_prefix"))
             if img_match_prefix:
                 content = content.replace(img_match_prefix, "", 1)
                 context.type = ContextType.IMAGE_CREATE

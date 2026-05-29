@@ -133,7 +133,7 @@ class Bridge(object):
             if context and context.type == ContextType.VIDEO_CREATE:
                 from models.grok.grok_video import generate_reply, is_grok_video_provider
 
-                if is_grok_video_provider():
+                if task_backend == BACKEND_GROK or is_grok_video_provider():
                     return generate_reply(query, context)
             if context and context.type == ContextType.IMAGE_CREATE:
                 explicit_gpt_image = explicit_gpt_image_requested(query)

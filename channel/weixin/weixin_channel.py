@@ -15,7 +15,7 @@ import requests
 
 from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
-from channel.chat_channel import ChatChannel, check_prefix
+from channel.chat_channel import ChatChannel
 from channel.weixin.weixin_api import (
     WeixinApi, upload_media_to_cdn,
     DEFAULT_BASE_URL, CDN_BASE_URL,
@@ -28,6 +28,8 @@ from channel.weixin.weixin_identity import (
 )
 from channel.weixin.weixin_message import WeixinMessage
 from common.expired_dict import ExpiredDict
+from common.image_generation_routing import match_image_create_prefix
+from common.image_send_limits import image_send_dimensions_from_config, prepare_image_for_send
 from common.log import logger
 from config import conf
 
@@ -38,6 +40,7 @@ SESSION_EXPIRED_ERRCODE = -14
 TEXT_CHUNK_LIMIT = 4000
 QR_LOGIN_TIMEOUT_S = 480
 QR_MAX_REFRESHES = 10
+WEIXIN_IMAGE_MAX_BYTES = 10 * 1024 * 1024 - 1
 
 
 def _load_credentials(cred_path: str) -> dict:
@@ -682,7 +685,7 @@ class WeixinChannel(ChatChannel):
         context["receiver"] = cmsg.other_user_id
 
         if ctype == ContextType.TEXT:
-            img_match_prefix = check_prefix(content, conf().get("image_create_prefix"))
+            img_match_prefix = match_image_create_prefix(content, conf().get("image_create_prefix"))
             if img_match_prefix:
                 content = content.replace(img_match_prefix, "", 1)
                 context.type = ContextType.IMAGE_CREATE
@@ -878,8 +881,13 @@ class WeixinChannel(ChatChannel):
         if not local_path:
             self._send_text("[Image send failed: file not found]", receiver, context_token)
             return False
+        prepared_path = self._prepare_image_for_send(local_path)
+        transient_path = prepared_path if prepared_path and prepared_path != local_path else ""
+        if not prepared_path:
+            self._send_text("[Image too large]", receiver, context_token)
+            return False
         try:
-            result = upload_media_to_cdn(self.api, local_path, receiver, media_type=1)
+            result = upload_media_to_cdn(self.api, prepared_path, receiver, media_type=1)
             self.api.send_image_item(
                 to=receiver,
                 context_token=context_token,
@@ -893,6 +901,24 @@ class WeixinChannel(ChatChannel):
             logger.error(f"[Weixin] Image send failed: {e}")
             self._send_text("[Image send failed]", receiver, context_token)
             return False
+        finally:
+            if transient_path:
+                try:
+                    os.remove(transient_path)
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _prepare_image_for_send(local_path: str) -> str:
+        max_width, max_height = image_send_dimensions_from_config(conf())
+        max_bytes = int(conf().get("weixin_image_send_max_bytes", WEIXIN_IMAGE_MAX_BYTES) or WEIXIN_IMAGE_MAX_BYTES)
+        return prepare_image_for_send(
+            local_path,
+            max_bytes=max_bytes,
+            max_width=max_width,
+            max_height=max_height,
+            prefix="weixin_img",
+        )
 
     def _send_file(self, file_path_or_url: str, receiver: str, context_token: str):
         local_path = self._resolve_media_path(file_path_or_url)

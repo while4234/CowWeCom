@@ -4,6 +4,8 @@ import re
 from typing import Any, Dict
 
 from agent.tools.base_tool import BaseTool, ToolResult
+from bridge.context import ContextType
+from common.image_generation_routing import explicit_image_generation_requested, looks_like_media_generation_status_question
 
 
 class ImageGenerationTaskTool(BaseTool):
@@ -12,9 +14,12 @@ class ImageGenerationTaskTool(BaseTool):
     name = "image_generation_task"
     description = (
         "Start an AI image generation/editing task in the background. Use this for all image "
-        "generation requests in CowAgent runtime. It immediately returns a job id and does not "
-        "wait for the image. The background worker will send the generated image back to the "
-        "current chat when finished. Do not run scripts/generate.py manually in the chat turn."
+        "generation requests in CowAgent runtime, but only when the user explicitly asks to "
+        "generate, draw, create, edit, or fuse images. Do not use this tool for quoted/sent "
+        "image questions such as identifying, explaining, reading, searching, or analyzing an "
+        "image. It immediately returns a job id and does not wait for the image. The background "
+        "worker will send the generated image back to the current chat when finished. Do not run "
+        "scripts/generate.py manually in the chat turn."
     )
     params = {
         "type": "object",
@@ -61,22 +66,36 @@ class ImageGenerationTaskTool(BaseTool):
     }
 
     IMAGE_REF_RE = re.compile(r"\[\s*(?:\u56fe\u7247|image)\s*:\s*([^\]]+?)\s*\]", re.IGNORECASE)
-    IMAGE_EDIT_HINTS = (
+    IMAGE_REF_HINTS = (
         "\u8fd9\u5f20\u56fe",
         "\u8fd9\u5f20\u56fe\u7247",
         "\u539f\u56fe",
         "\u53c2\u8003\u56fe",
-        "\u56fe\u751f\u56fe",
-        "\u4fee\u56fe",
-        "\u6539\u56fe",
-        "\u7f16\u8f91\u56fe",
-        "\u6362\u80cc\u666f",
-        "\u4fdd\u7559",
         "this image",
         "this picture",
         "input image",
         "reference image",
+    )
+    IMAGE_EDIT_ACTIONS = (
+        "\u56fe\u751f\u56fe",
+        "\u4ee5\u56fe\u751f\u56fe",
+        "\u4fee\u56fe",
+        "\u6539\u56fe",
+        "\u7f16\u8f91\u56fe",
+        "\u6362\u80cc\u666f",
+        "\u53bb\u80cc\u666f",
+        "\u62a0\u56fe",
+        "\u878d\u5408",
+        "\u5408\u6210",
+        "\u6539\u6210",
+        "\u53d8\u6210",
+        "\u6362\u6210",
+        "\u66ff\u6362",
+        "\u4fdd\u7559",
         "edit the image",
+        "modify the image",
+        "replace",
+        "preserve",
     )
 
     def __init__(self, config: dict | None = None):
@@ -95,6 +114,11 @@ class ImageGenerationTaskTool(BaseTool):
             return ToolResult.fail("Image generation background task system is not initialized.")
         if self.current_context is None or self.profile is None:
             return ToolResult.fail("Missing chat context; cannot send image generation results back.")
+        if not self._has_explicit_generation_intent(prompt):
+            return ToolResult.fail(
+                "Image generation was not started because the current request does not explicitly ask "
+                "to generate, draw, create, edit, or fuse an image."
+            )
 
         image_refs = self._extract_context_image_refs()
         if not params.get("image_url") and image_refs:
@@ -130,8 +154,20 @@ class ImageGenerationTaskTool(BaseTool):
         if self.current_context is not None:
             haystack_parts.append(str(getattr(self.current_context, "content", "") or ""))
         haystack = "\n".join(haystack_parts).lower()
-        if any(hint.lower() in haystack for hint in self.IMAGE_EDIT_HINTS):
+        if any(action.lower() in haystack for action in self.IMAGE_EDIT_ACTIONS):
+            return True
+        has_ref = any(hint.lower() in haystack for hint in self.IMAGE_REF_HINTS)
+        if has_ref and re.search(r"(改|换|变|替换|去掉|去除|保留|融合|合成|edit|modify|change)", haystack):
             return True
         explicit_image = re.search(r"\b(image|picture|photo)\b", haystack)
         edit_action = re.search(r"\b(edit|modify|change|replace|keep|preserve)\b", haystack)
         return bool(explicit_image and edit_action)
+
+    def _has_explicit_generation_intent(self, prompt: str) -> bool:
+        if looks_like_media_generation_status_question(prompt):
+            return False
+        if getattr(self.current_context, "type", None) == ContextType.IMAGE_CREATE:
+            return True
+        if explicit_image_generation_requested(prompt):
+            return True
+        return self._looks_like_image_edit_request(prompt)

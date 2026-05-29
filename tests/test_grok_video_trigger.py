@@ -63,6 +63,31 @@ def test_default_agent_mode_video_create_shortcuts_to_grok_video(monkeypatch):
     assert called == [("make a cat video", context)]
 
 
+def test_active_grok_profile_video_create_shortcuts_without_global_provider(monkeypatch):
+    context = Context(ContextType.VIDEO_CREATE, "make a cat video")
+    fake_conf = MagicMock()
+    fake_conf.get.side_effect = lambda key, default=None: {
+        "agent": True,
+        "video_generation_provider": "none",
+    }.get(key, default)
+    called = []
+
+    class TestChannel(Channel):
+        channel_type = "wecom_bot"
+
+    def fake_fetch(query, ctx):
+        called.append((query, ctx))
+        return "grok-video-reply"
+
+    monkeypatch.setattr("channel.channel.conf", lambda: fake_conf)
+    monkeypatch.setattr("channel.channel.active_backend_is_grok_for_context", lambda ctx: True)
+    monkeypatch.setattr("models.grok.grok_video.is_grok_video_provider", lambda: False)
+    monkeypatch.setattr("channel.channel.Bridge", lambda: SimpleNamespace(fetch_reply_content=fake_fetch))
+
+    assert TestChannel().build_reply_content("make a cat video", context) == "grok-video-reply"
+    assert called == [("make a cat video", context)]
+
+
 def test_non_grok_video_create_keeps_agent_mode(monkeypatch):
     context = Context(ContextType.VIDEO_CREATE, "make normally")
     fake_conf = MagicMock()

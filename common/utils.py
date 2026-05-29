@@ -27,12 +27,25 @@ def compress_imgfile(file, max_size):
     img = Image.open(file)
     rgb_image = img.convert("RGB")
     quality = 95
-    while True:
+    while quality >= 30:
         out_buf = io.BytesIO()
-        rgb_image.save(out_buf, "JPEG", quality=quality)
+        rgb_image.save(out_buf, "JPEG", quality=quality, optimize=True)
         if fsize(out_buf) <= max_size:
+            out_buf.seek(0)
             return out_buf
         quality -= 5
+    while min(rgb_image.size) > 64:
+        ratio = min(0.9, max(0.5, (max_size / max(fsize(out_buf), 1)) ** 0.5 * 0.95))
+        new_size = (max(1, int(rgb_image.width * ratio)), max(1, int(rgb_image.height * ratio)))
+        if new_size == rgb_image.size:
+            break
+        rgb_image = rgb_image.resize(new_size, Image.LANCZOS)
+        out_buf = io.BytesIO()
+        rgb_image.save(out_buf, "JPEG", quality=70, optimize=True)
+        if fsize(out_buf) <= max_size:
+            out_buf.seek(0)
+            return out_buf
+    raise ValueError(f"Cannot compress image below {max_size} bytes")
 
 
 def split_string_by_utf8_length(string, max_length, max_split=0):

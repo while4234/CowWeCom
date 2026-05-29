@@ -259,7 +259,7 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
             tool.profile = make_profile("weixin:a", "user_a", tmp)
             start = time.time()
             try:
-                result = tool.execute({"prompt": "sleep:0.6"})
+                result = tool.execute({"prompt": "生成图片 sleep:0.6"})
                 self.assertEqual(result.status, "success")
                 self.assertLess(time.time() - start, 0.2)
                 self.assertIn("Task ID", result.result)
@@ -313,6 +313,21 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
 
             self.assertEqual(result.status, "error")
             self.assertIn("no input image", result.result)
+            self.assertEqual(manager.submitted, [])
+
+    def test_tool_rejects_plain_image_question_with_context_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = CaptureManager()
+            tool = ImageGenerationTaskTool()
+            tool.job_manager = manager
+            tool.current_context = make_context("a")
+            tool.current_context.content = "这张图是什么\n[图片: C:\\tmp\\input.png]"
+            tool.profile = make_profile("weixin:a", "user_a", tmp)
+
+            result = tool.execute({"prompt": "这张图是什么"})
+
+            self.assertEqual(result.status, "error")
+            self.assertIn("does not explicitly ask", result.result)
             self.assertEqual(manager.submitted, [])
 
     def test_output_path_is_inside_user_files(self):

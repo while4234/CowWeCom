@@ -237,13 +237,18 @@ available_setting = {
     "azure_openai_dalle_api_key": "", # [可选] azure openai 用于回复图片的资源 key，默认使用 open_ai_api_key
     "azure_openai_dalle_deployment_id":"", # [可选] azure openai 用于回复图片的资源 deployment id，默认使用 text_to_image
     "image_proxy": True,  # 是否需要图片代理，国内访问LinkAI时需要
-    "image_create_prefix": ["画", "看", "找"],  # 开启图片回复的前缀
+    "image_create_prefix": ["画图", "生图", "生成图片", "生成图", "绘图", "出图"],  # 开启图片生成的显式前缀
     "concurrency_in_session": 1,  # 同一会话最多有多少条消息在处理中，大于1可能乱序
     "image_prompt_enhancement_enabled": True,  # Hidden YouMind prompt-library enhancement for GPT/Grok image generation
     "image_prompt_library_dir": "",  # Optional full YouMind prompt library override; defaults to skills/image-generation/references/nano-banana-pro
     "image_create_size": "256x256",  # 图片大小,可选有 256x256, 512x512, 1024x1024 (dall-e-3默认为1024x1024)
     "image_create_format": "png",  # OpenAI GPT Image output format: png, jpeg, or webp
     "image_create_quality": "",  # OpenAI GPT Image quality: auto, low, medium, or high
+    "image_send_max_width": 2048,  # 微信/企业微信发送图片前的最大宽度
+    "image_send_max_height": 2048,  # 微信/企业微信发送图片前的最大高度
+    "weixin_image_send_max_bytes": 10485759,  # 微信发送图片前的最大字节数
+    "wecom_image_send_max_bytes": 2097152,  # 企业微信智能机器人图片上传前的最大字节数
+    "wechatcom_image_send_max_bytes": 10485759,  # 企业微信自建应用图片上传前的最大字节数
     "group_chat_exit_group": False,
     # chatgpt会话参数
     "expires_in_seconds": 3600,  # 无操作会话的过期时间

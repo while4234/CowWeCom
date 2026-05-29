@@ -22,9 +22,16 @@ import websocket
 
 from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
-from channel.chat_channel import ChatChannel, check_prefix
+from channel.chat_channel import ChatChannel
 from channel.wecom_bot.wecom_bot_message import WecomBotMessage
 from common.expired_dict import ExpiredDict
+from common.image_generation_routing import (
+    explicit_image_generation_requested,
+    explicit_video_generation_requested,
+    match_image_create_prefix,
+    match_video_create_prefix,
+)
+from common.image_send_limits import image_send_dimensions_from_config, prepare_image_for_send
 from common.log import logger
 from common.singleton import singleton
 from common.utils import expand_path
@@ -48,6 +55,7 @@ REMOTE_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/web
 REMOTE_VIDEO_CONTENT_TYPES = {"video/mp4", "application/octet-stream"}
 MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024
 MAX_REMOTE_VIDEO_BYTES = 512 * 1024 * 1024
+WECOM_BOT_IMAGE_MAX_BYTES = 2 * 1024 * 1024
 
 
 def _wecom_group_actor_id(channel_type: str, chat_id: str) -> str:
@@ -833,14 +841,18 @@ class WecomBotChannel(ChatChannel):
         context["receiver"] = cmsg.other_user_id
 
         if ctype == ContextType.TEXT:
-            video_match_prefix = check_prefix(content, conf().get("video_create_prefix", []))
+            video_match_prefix = match_video_create_prefix(content, conf().get("video_create_prefix", []))
             if video_match_prefix:
                 content = self._strip_create_prefix(content, video_match_prefix)
                 context.type = ContextType.VIDEO_CREATE
+            elif self._should_promote_grok_media_create(context, content, explicit_video_generation_requested):
+                context.type = ContextType.VIDEO_CREATE
             else:
-                img_match_prefix = check_prefix(content, conf().get("image_create_prefix"))
+                img_match_prefix = match_image_create_prefix(content, conf().get("image_create_prefix"))
                 if img_match_prefix:
                     content = self._strip_create_prefix(content, img_match_prefix)
+                    context.type = ContextType.IMAGE_CREATE
+                elif self._should_promote_grok_media_create(context, content, explicit_image_generation_requested):
                     context.type = ContextType.IMAGE_CREATE
                 else:
                     context.type = ContextType.TEXT
@@ -1419,23 +1431,13 @@ class WecomBotChannel(ChatChannel):
             logger.error(f"[WecomBot] Image file not found: {local_path}")
             return False
 
-        max_image_size = 2 * 1024 * 1024  # 2MB limit for image upload
-        formatted_path = self._ensure_image_format(local_path)
-        if not formatted_path:
-            self._send_text("[Image format conversion failed]", receiver, is_group, req_id)
+        prepared_path = self._prepare_image_for_send(local_path)
+        if not prepared_path:
+            self._send_text("[Image too large]", receiver, is_group, req_id)
             return False
-        if formatted_path != local_path:
-            transient_paths.append(formatted_path)
-        local_path = formatted_path
-
-        if os.path.getsize(local_path) > max_image_size:
-            compressed_path = self._compress_image(local_path, max_image_size)
-            if not compressed_path:
-                self._send_text("[Image too large]", receiver, is_group, req_id)
-                return False
-            if compressed_path != local_path:
-                transient_paths.append(compressed_path)
-            local_path = compressed_path
+        if prepared_path != local_path:
+            transient_paths.append(prepared_path)
+        local_path = prepared_path
 
         file_size = os.path.getsize(local_path)
         logger.info(f"[WecomBot] Uploading image: path={local_path}, size={file_size} bytes")
@@ -1467,73 +1469,16 @@ class WecomBotChannel(ChatChannel):
             })
 
     @staticmethod
-    def _ensure_image_format(file_path: str) -> str:
-        """Ensure image is JPG or PNG (the only formats wecom supports). Convert if needed."""
-        try:
-            from PIL import Image
-            img = Image.open(file_path)
-            fmt = (img.format or "").upper()
-            if fmt in ("JPEG", "PNG"):
-                # Already a supported format, but make sure the filename extension matches
-                ext = os.path.splitext(file_path)[1].lower()
-                if fmt == "JPEG" and ext in (".jpg", ".jpeg"):
-                    return file_path
-                if fmt == "PNG" and ext == ".png":
-                    return file_path
-                # Extension doesn't match — rename/copy with correct extension
-                correct_ext = ".jpg" if fmt == "JPEG" else ".png"
-                out_path = f"/tmp/wecom_fmt_{uuid.uuid4().hex[:8]}{correct_ext}"
-                img.save(out_path, fmt)
-                logger.info(f"[WecomBot] Image renamed: {file_path} -> {out_path} ({fmt})")
-                return out_path
-
-            # Unsupported format (WebP, GIF, BMP, etc.) — convert to PNG
-            if img.mode == "RGBA":
-                out_path = f"/tmp/wecom_fmt_{uuid.uuid4().hex[:8]}.png"
-                img.save(out_path, "PNG")
-            else:
-                out_path = f"/tmp/wecom_fmt_{uuid.uuid4().hex[:8]}.jpg"
-                img.convert("RGB").save(out_path, "JPEG", quality=90)
-            logger.info(f"[WecomBot] Image converted from {fmt} -> {out_path}")
-            return out_path
-        except Exception as e:
-            logger.error(f"[WecomBot] Image format check failed: {e}")
-            return file_path
-
-    @staticmethod
-    def _compress_image(file_path: str, max_bytes: int) -> str:
-        """Compress image to fit within max_bytes. Returns new path or empty string."""
-        try:
-            from PIL import Image
-            img = Image.open(file_path)
-            if img.mode == "RGBA":
-                img = img.convert("RGB")
-
-            out_path = f"/tmp/wecom_compressed_{uuid.uuid4().hex[:8]}.jpg"
-            quality = 85
-            while quality >= 30:
-                img.save(out_path, "JPEG", quality=quality, optimize=True)
-                if os.path.getsize(out_path) <= max_bytes:
-                    logger.info(f"[WecomBot] Image compressed: quality={quality}, "
-                                f"size={os.path.getsize(out_path)} bytes")
-                    return out_path
-                quality -= 10
-
-            # Still too large — resize
-            ratio = (max_bytes / os.path.getsize(out_path)) ** 0.5
-            new_size = (int(img.width * ratio), int(img.height * ratio))
-            img = img.resize(new_size, Image.LANCZOS)
-            img.save(out_path, "JPEG", quality=70, optimize=True)
-            if os.path.getsize(out_path) <= max_bytes:
-                logger.info(f"[WecomBot] Image compressed with resize: {new_size}, "
-                            f"size={os.path.getsize(out_path)} bytes")
-                return out_path
-
-            logger.error(f"[WecomBot] Cannot compress image below {max_bytes} bytes")
-            return ""
-        except Exception as e:
-            logger.error(f"[WecomBot] Image compression failed: {e}")
-            return ""
+    def _prepare_image_for_send(file_path: str) -> str:
+        max_width, max_height = image_send_dimensions_from_config(conf())
+        max_bytes = int(conf().get("wecom_image_send_max_bytes", WECOM_BOT_IMAGE_MAX_BYTES) or WECOM_BOT_IMAGE_MAX_BYTES)
+        return prepare_image_for_send(
+            file_path,
+            max_bytes=max_bytes,
+            max_width=max_width,
+            max_height=max_height,
+            prefix="wecom_img",
+        )
 
     def _send_file(self, file_path: str, receiver: str, is_group: bool,
                    req_id: str = None, media_type: str = "file"):

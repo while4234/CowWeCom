@@ -18,9 +18,10 @@ import websocket
 
 from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
-from channel.chat_channel import ChatChannel, check_prefix
+from channel.chat_channel import ChatChannel
 from channel.qq.qq_message import QQMessage
 from common.expired_dict import ExpiredDict
+from common.image_generation_routing import match_image_create_prefix
 from common.log import logger
 from common.singleton import singleton
 from common.ws_client_compat import websocket_app_run_forever
@@ -441,7 +442,7 @@ class QQChannel(ChatChannel):
         context["receiver"] = cmsg.other_user_id
 
         if ctype == ContextType.TEXT:
-            img_match_prefix = check_prefix(content, conf().get("image_create_prefix"))
+            img_match_prefix = match_image_create_prefix(content, conf().get("image_create_prefix"))
             if img_match_prefix:
                 content = content.replace(img_match_prefix, "", 1)
                 context.type = ContextType.IMAGE_CREATE

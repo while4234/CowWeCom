@@ -63,6 +63,31 @@ def test_default_agent_mode_image_create_shortcuts_to_grok_image(monkeypatch):
     assert called == [("draw a cat", context)]
 
 
+def test_active_grok_profile_image_create_shortcuts_without_global_provider(monkeypatch):
+    context = Context(ContextType.IMAGE_CREATE, "draw a cat")
+    fake_conf = MagicMock()
+    fake_conf.get.side_effect = lambda key, default=None: {
+        "agent": True,
+        "text_to_image": "dall-e-2",
+    }.get(key, default)
+    called = []
+
+    class TestChannel(Channel):
+        channel_type = "wecom_bot"
+
+    def fake_fetch(query, ctx):
+        called.append((query, ctx))
+        return "grok-image-reply"
+
+    monkeypatch.setattr("channel.channel.conf", lambda: fake_conf)
+    monkeypatch.setattr("channel.channel.active_backend_is_grok_for_context", lambda ctx: True)
+    monkeypatch.setattr("models.grok.grok_image.is_grok_image_provider", lambda: False)
+    monkeypatch.setattr("channel.channel.Bridge", lambda: SimpleNamespace(fetch_reply_content=fake_fetch))
+
+    assert TestChannel().build_reply_content("draw a cat", context) == "grok-image-reply"
+    assert called == [("draw a cat", context)]
+
+
 def test_non_grok_image_create_keeps_agent_mode(monkeypatch):
     context = Context(ContextType.IMAGE_CREATE, "draw normally")
     fake_conf = MagicMock()
@@ -149,7 +174,7 @@ def test_wecom_bot_sends_local_image_reply(monkeypatch, tmp_path):
     sent_payloads = []
     upload_calls = []
 
-    monkeypatch.setattr(channel, "_ensure_image_format", lambda path: path)
+    monkeypatch.setattr(channel, "_prepare_image_for_send", lambda path: path)
     monkeypatch.setattr(channel, "_upload_media", lambda path, media_type: upload_calls.append((path, media_type)) or "mid")
     monkeypatch.setattr(channel, "_ws_send", lambda payload: sent_payloads.append(payload) or True)
 
@@ -177,7 +202,7 @@ def test_wecom_bot_generated_image_is_deleted_after_success(monkeypatch, tmp_pat
     reply.cleanup_after_send = True
 
     monkeypatch.setattr(channel, "_reply_mention_target", lambda context: ([], []))
-    monkeypatch.setattr(channel, "_ensure_image_format", lambda path: path)
+    monkeypatch.setattr(channel, "_prepare_image_for_send", lambda path: path)
     monkeypatch.setattr(channel, "_upload_media", lambda path, media_type: "mid")
     monkeypatch.setattr(channel, "_ws_send", lambda payload: True)
     monkeypatch.setattr(channel, "_gen_req_id", lambda: "rid")
@@ -197,7 +222,7 @@ def test_wecom_bot_generated_image_is_deleted_after_upload_failure(monkeypatch, 
     reply.cleanup_after_send = True
 
     monkeypatch.setattr(channel, "_reply_mention_target", lambda context: ([], []))
-    monkeypatch.setattr(channel, "_ensure_image_format", lambda path: path)
+    monkeypatch.setattr(channel, "_prepare_image_for_send", lambda path: path)
     monkeypatch.setattr(channel, "_upload_media", lambda path, media_type: "")
     monkeypatch.setattr(channel, "_send_text", lambda *args, **kwargs: True)
 
