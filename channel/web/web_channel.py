@@ -1890,6 +1890,7 @@ class ChannelsHandler:
                 {"key": "discord_guild_id", "label": "Guild ID", "type": "text"},
                 {"key": "discord_admin_user_id", "label": "Admin User ID", "type": "text"},
                 {"key": "discord_allowed_channel_ids", "label": "Allowed Channel IDs", "type": "text"},
+                {"key": "discord_proxy", "label": "Proxy URL", "type": "text"},
             ],
         }),
         ("qq", {

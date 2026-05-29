@@ -403,6 +403,7 @@ available_setting = {
     "discord_guild_id": "",  # 可选：限定一个 Discord Guild/Server
     "discord_admin_user_id": "",  # 唯一允许使用 Discord 通道的管理员用户 ID
     "discord_allowed_channel_ids": [],  # 可选：限定可用的文本频道 ID 列表，字符串或数组均可
+    "discord_proxy": "",  # 可选：Discord 连接代理，例如 http://127.0.0.1:7897；也可使用 DISCORD_PROXY 环境变量
     "discord_command_sync_on_startup": True,  # 启动时同步原生 Slash Commands
     "discord_message_content_enabled": False,  # 可选：开启普通消息/附件处理，需要 Discord Message Content Intent
     "discord_ephemeral_replies": False,  # Slash Command 回复是否仅调用者可见
@@ -799,6 +800,7 @@ def load_config():
         "qq_app_secret": "QQ_APP_SECRET",
         "weixin_token": "WEIXIN_TOKEN",
         "discord_bot_token": "DISCORD_BOT_TOKEN",
+        "discord_proxy": "DISCORD_PROXY",
     }
     injected = 0
     for conf_key, env_key in _CONFIG_TO_ENV.items():

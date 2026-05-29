@@ -222,6 +222,7 @@ class WebAdminPrivacyTest(unittest.TestCase):
         self.assertIn("discord_bot_token", keys)
         self.assertIn("discord_admin_user_id", keys)
         self.assertIn("discord_allowed_channel_ids", keys)
+        self.assertIn("discord_proxy", keys)
         token_field = next(field for field in discord_def["fields"] if field["key"] == "discord_bot_token")
         self.assertEqual(token_field["type"], "secret")
 

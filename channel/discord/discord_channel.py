@@ -55,6 +55,30 @@ def _is_truthy(value: Any) -> bool:
     return bool(value)
 
 
+def _normalize_proxy_url(value: Any) -> str:
+    proxy_url = str(value or "").strip()
+    if not proxy_url:
+        return ""
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", proxy_url):
+        return proxy_url
+    return f"http://{proxy_url}"
+
+
+def _discord_proxy_url() -> str:
+    for value in (
+        conf().get("discord_proxy"),
+        os.environ.get("DISCORD_PROXY"),
+        conf().get("proxy"),
+        os.environ.get("HTTPS_PROXY"),
+        os.environ.get("HTTP_PROXY"),
+        os.environ.get("ALL_PROXY"),
+    ):
+        proxy_url = _normalize_proxy_url(value)
+        if proxy_url:
+            return proxy_url
+    return ""
+
+
 def _truncate_discord_text(text: str, limit: int = 1900) -> str:
     text = str(text or "")
     if len(text) <= limit:
@@ -166,7 +190,12 @@ class DiscordChannel(ChatChannel):
         if self.message_content_enabled:
             intents.message_content = True
             intents.messages = True
-        bot = commands.Bot(command_prefix="!", intents=intents)
+        proxy_url = _discord_proxy_url()
+        bot_options = {"command_prefix": "!", "intents": intents}
+        if proxy_url:
+            bot_options["proxy"] = proxy_url
+            logger.info("[Discord] using configured proxy for Discord gateway")
+        bot = commands.Bot(**bot_options)
         self.bot = bot
         self.loop = asyncio.new_event_loop()
         self._register_bot_events(bot)

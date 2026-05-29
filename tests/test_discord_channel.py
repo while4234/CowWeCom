@@ -9,6 +9,7 @@ from channel.discord.discord_channel import (
     _build_grok_media_shortcut_query,
     _cow_cli_suggestions,
     _discord_command_name,
+    _normalize_proxy_url,
     _normalise_cow_cli_suggestions,
     _split_slash_text,
 )
@@ -71,6 +72,11 @@ class DiscordChannelTest(unittest.TestCase):
             _build_grok_media_shortcut_query("video", "animate softly", "C:\\tmp\\ref.png"),
             "/grok-direct video -- animate softly\n[image: C:\\tmp\\ref.png]",
         )
+
+    def test_normalize_proxy_url_adds_default_scheme(self):
+        self.assertEqual(_normalize_proxy_url("127.0.0.1:7897"), "http://127.0.0.1:7897")
+        self.assertEqual(_normalize_proxy_url("http://127.0.0.1:7897"), "http://127.0.0.1:7897")
+        self.assertEqual(_normalize_proxy_url(""), "")
 
     def test_allowed_actor_requires_configured_discord_admin(self):
         channel = _discord_channel_instance()

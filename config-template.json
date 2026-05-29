@@ -175,6 +175,7 @@
   "discord_guild_id": "",
   "discord_admin_user_id": "",
   "discord_allowed_channel_ids": [],
+  "discord_proxy": "",
   "discord_command_sync_on_startup": true,
   "discord_message_content_enabled": false,
   "discord_ephemeral_replies": false,

@@ -173,7 +173,7 @@ http://127.0.0.1:9899
 | `web_host` | Web 控制台监听地址。留空时，本地无密码默认只监听 `127.0.0.1` |
 | `web_password` | Web 控制台访问密码。公网或局域网暴露时必须设置 |
 | `agent_admin_users` | 管理员用户 actor id 列表；Web 微信扫码接入遵守微信管理员约束，企业微信智能机器人按 `wecom_bot` 单独判断首个管理员 |
-| `discord_bot_token` / `discord_admin_user_id` / `discord_allowed_channel_ids` | Discord 通道配置；Discord 只允许一个独立管理员，可选限定 Guild 和频道 |
+| `discord_bot_token` / `discord_admin_user_id` / `discord_allowed_channel_ids` / `discord_proxy` | Discord 通道配置；Discord 只允许一个独立管理员，可选限定 Guild 和频道；国内网络环境可为 Discord 单独设置 HTTP 代理 |
 | `agent_user_profiles` | 用户角色、展示名、记忆 ID 等覆盖配置；扫码选择的管理员/普通用户身份会写入这里 |
 | `external_reply_inject_to_agent_context` | 是否把 CowCli 等非 Agent 快答的可见问答同步进后续 Agent 会话上下文，默认开启，便于“把这个转述给她”这类跟进指令引用最新回复 |
 | `short_contextual_reply_keep_turns` | “没有/不用/好的”等含糊短回复请求只保留最近上下文轮数，默认 2，避免旧主题串扰 |
@@ -324,13 +324,14 @@ Discord 通道独立于微信和企业微信，适合把 CowCli 管理命令和 
   "discord_bot_token": "YOUR_DISCORD_BOT_TOKEN",
   "discord_guild_id": "YOUR_GUILD_ID",
   "discord_admin_user_id": "YOUR_DISCORD_USER_ID",
-  "discord_allowed_channel_ids": ["YOUR_CHANNEL_ID"]
+  "discord_allowed_channel_ids": ["YOUR_CHANNEL_ID"],
+  "discord_proxy": "http://127.0.0.1:7897"
 }
 ```
 
 也可以在 Web 控制台的「通道」页选择 Discord，填写 Bot Token、Guild ID、Admin User ID 和允许的频道 ID 后连接。Bot 启动时会同步原生 Slash Commands：除 `start`、`stop`、`restart` 这类终端生命周期命令外，聊天内可执行的 CowCli 命令都会以 Discord 原生命令提供；`/imagine prompt`、`/video prompt` 和 `/image-to-video prompt + 图片附件` 分别是 Grok 生图、文生视频和图生视频的快捷入口。
 
-如果需要让 Discord 普通消息或图片附件进入同会话上下文，可开启 `discord_message_content_enabled=true`，同时在 Discord Developer Portal 为 Bot 开启 Message Content Intent；默认保持关闭，仅使用原生 Slash Commands。
+如果本机 Chrome 通过 Clash、V2Ray 等代理访问 Discord，而 CowAgent 后台显示 `Cannot connect to host discord.com:443`，请设置 `discord_proxy` 或环境变量 `DISCORD_PROXY`，例如 `http://127.0.0.1:7897`。如果需要让 Discord 普通消息或图片附件进入同会话上下文，可开启 `discord_message_content_enabled=true`，同时在 Discord Developer Portal 为 Bot 开启 Message Content Intent；默认保持关闭，仅使用原生 Slash Commands。
 
 ## Web 控制台
 
@@ -537,7 +538,7 @@ CowWeCom/
 - Grok 图片后端补齐单图图生图：`image_url` 不再被 Grok runtime 拒绝，支持本地路径、`file://`、HTTP/HTTPS URL 和 data URI，未显式尺寸/比例时按参考图推断；自然语言图生图默认继续启用短提示词优化，`prompt_enhancement=false` 会端到端跳过润色。
 - Web、企业微信和微信入口补齐 Grok 单图图生图：先上传一张图片后可用 `/grok-direct image -- ...` 直出改图，或用“参考上图生成图片 / 按照这张图改成 ...”自然语言触发；普通文生图和明确“不参考图片/纯文生图”不会误带最近图片，v1 仍只支持一张参考图。
 - Grok 视频后台任务在视频已生成但投递失败后，不再在 CowAgent 重启时重复发送 “Grok video generation finished” 完成通知；投递失败状态现在作为终态保留，启动恢复只处理真正未完成的排队/运行中任务。
-- 新增独立 Discord 通道：Web 控制台「通道」页的接入下拉框会展示 Discord，可填写 Bot Token、Guild ID、唯一 Admin User ID 和允许频道；Discord 原生 Slash Commands 覆盖聊天内 CowCli 命令，并提供 `/imagine`、`/video`、`/image-to-video` 快捷入口，支持 Grok 生图、文生视频和图生视频，后台任务完成后可回发到原频道。
+- 新增独立 Discord 通道：Web 控制台「通道」页的接入下拉框会展示 Discord，可填写 Bot Token、Guild ID、唯一 Admin User ID、允许频道和可选代理；Discord 原生 Slash Commands 覆盖聊天内 CowCli 命令，并提供 `/imagine`、`/video`、`/image-to-video` 快捷入口，支持 Grok 生图、文生视频和图生视频，后台任务完成后可回发到原频道。
 - Agent 上下文聚焦和纯进度快照识别更稳：类似 `Feature list完成90% tc_list完成30%` 的工作进度汇报不会触发公共协议知识库自动检索或协议问答路径；后续“没有/不用/好的”等回复会优先绑定最近 BOT 提问，避免旧协议问答串扰；私聊图片识别新增默认关闭的非账单主动回复开关，只缓存识图信息，账单自动记账仍会回执。
 
 ### 2026-05-28
