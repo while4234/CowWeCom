@@ -31,6 +31,7 @@ def main(argv: list[str]) -> int:
             image_url=_normalize_image_refs(args.get("image_url")),
             aspect_ratio=_optional_text(args.get("aspect_ratio")),
             duration=_optional_text(args.get("duration")),
+            resolution=_optional_text(args.get("resolution")),
             quality=_optional_text(args.get("quality")),
             output_dir=str(output_dir),
         )
@@ -51,6 +52,7 @@ class GrokXAIVideoProvider:
         image_url: str | list[str] | None = None,
         aspect_ratio: str | None = None,
         duration: str | None = None,
+        resolution: str | None = None,
         quality: str | None = None,
         output_dir: str,
     ) -> str:
@@ -63,6 +65,7 @@ class GrokXAIVideoProvider:
             "reference_image_urls": refs if len(refs) > 1 else None,
             "aspect_ratio": aspect_ratio,
             "duration": duration,
+            "resolution": resolution,
             "quality": quality,
             "output_dir": output_dir,
         }

@@ -102,6 +102,19 @@ class TestGrokImageSkill(unittest.TestCase):
 
             self.assertEqual(cleaned["runtime"], "grok")
 
+    def test_job_manager_preserves_prompt_enhancement_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = ImageGenerationJobManager(script_path=str(SCRIPT), workspace_root=tmp, global_workers=1)
+            try:
+                cleaned = manager._clean_args(
+                    {"prompt": "draw raw", "runtime": "grok", "prompt_enhancement": False},
+                    profile=make_profile(tmp),
+                )
+            finally:
+                manager.shutdown(wait=False)
+
+            self.assertIs(cleaned["prompt_enhancement"], False)
+
     def test_job_manager_uses_codex_when_active_grok_prompt_explicitly_requests_gpt_image(self):
         with tempfile.TemporaryDirectory() as tmp:
             manager = ImageGenerationJobManager(script_path=str(SCRIPT), workspace_root=tmp, global_workers=1)
@@ -176,6 +189,35 @@ class TestGrokImageSkill(unittest.TestCase):
             self.assertEqual(calls[0]["resolution"], "2k")
             self.assertEqual(calls[0]["aspect_ratio"], "3:4")
             self.assertEqual(calls[0]["model"], "grok-imagine-image-quality")
+
+    def test_grok_provider_can_skip_hidden_prompt_enhancement(self):
+        module = load_generate_module()
+        calls = []
+
+        class FakeXAIImageGenProvider:
+            def generate(self, prompt, *, aspect_ratio=None, resolution=None, model=None):
+                calls.append(prompt)
+                source = Path(output_tmp) / "source.jpg"
+                source.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
+                return str(source)
+
+        from integrations.hermes_xai import image_gen as xai_image_gen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_tmp = tmp
+            original = xai_image_gen.XAIImageGenProvider
+            original_route_logs = module._route_cowwecom_console_logs_to_stderr
+            xai_image_gen.XAIImageGenProvider = FakeXAIImageGenProvider
+            module._route_cowwecom_console_logs_to_stderr = lambda: None
+            try:
+                provider = module.GrokXAIProvider()
+                provider.generate("raw prompt", output_dir=tmp, prompt_enhancement=False)
+            finally:
+                xai_image_gen.XAIImageGenProvider = original
+                module._route_cowwecom_console_logs_to_stderr = original_route_logs
+
+            self.assertEqual(calls, ["raw prompt"])
+            self.assertFalse((Path(tmp) / "prompt_metadata.json").exists())
 
     def test_grok_runtime_routes_cowwecom_console_logs_to_stderr(self):
         module = load_generate_module()

@@ -20,6 +20,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -40,6 +41,7 @@ KNOWN_COMMANDS = {
     "start", "stop", "restart",
     "skill", "context", "config",
     "knowledge", "memory", "backend", "voice", "updates", "ledger", "tokens",
+    "grok-direct",
     "install-browser",
 }
 
@@ -72,6 +74,7 @@ COMMAND_ACCESS = {
     "updates": ACCESS_ADMIN,
     "ledger": ACCESS_PUBLIC,
     "tokens": ACCESS_PUBLIC,
+    "grok-direct": ACCESS_ADMIN,
     "install-browser": ACCESS_ADMIN,
 }
 
@@ -133,6 +136,35 @@ _TOKEN_USAGE_PERIOD_LABELS = {
     "month": "本月",
     "all": "累计",
 }
+
+_GROK_DIRECT_IMAGE_REF_RE = re.compile(r"\[\s*(?:图片|image)\s*:\s*([^\]]+?)\s*\]", re.IGNORECASE)
+_GROK_DIRECT_MAX_IMAGE_REFS = 7
+_GROK_DIRECT_OPTION_ALIASES = {
+    "--ar": "aspect_ratio",
+    "--aspect-ratio": "aspect_ratio",
+    "--ratio": "aspect_ratio",
+    "--size": "size",
+    "--resolution": "resolution",
+    "--quality": "quality",
+    "--duration": "duration",
+    "--image": "image_url",
+}
+_GROK_DIRECT_ALLOWED_OPTIONS = {
+    "image": {"aspect_ratio", "size", "quality", "image_url"},
+    "video": {"aspect_ratio", "resolution", "quality", "duration", "image_url"},
+}
+_GROK_DIRECT_IMAGE_TO_VIDEO_HINTS = (
+    "这张图",
+    "这张图片",
+    "参考图",
+    "图生视频",
+    "动起来",
+    "让它动",
+    "animate this",
+    "animate the image",
+    "image to video",
+    "reference image",
+)
 
 
 @plugins.register(
@@ -877,6 +909,8 @@ class CowCliPlugin(Plugin):
         role = str(context.get("actor_role", "") or "").strip().lower()
         if role == "admin":
             return True
+        if str(context.get("channel_type", "") or "").strip() == "web" and context.get("web_authenticated"):
+            return True
 
         actor_id = str(context.get("actor_id", "") or "").strip()
         raw_user_id = str(context.get("raw_user_id", "") or context.get("from_user_id", "") or "").strip()
@@ -1289,6 +1323,222 @@ class CowCliPlugin(Plugin):
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
+    # grok-direct
+    # ------------------------------------------------------------------
+
+    def _cmd_grok_direct(self, args: str, e_context, session_id: str = "", **_) -> str:
+        if e_context is None:
+            return "⚠️ /grok-direct 需要当前聊天或 Web 会话上下文，不能在无上下文的后端快答入口执行。"
+        try:
+            context = e_context["context"]
+        except Exception:
+            return "⚠️ /grok-direct 无法读取当前会话上下文。"
+
+        parsed = self._parse_grok_direct_args(args)
+        if parsed.get("error"):
+            return parsed["error"]
+
+        prompt = self._strip_grok_direct_image_refs(parsed["prompt"])
+        if not prompt:
+            return self._grok_direct_usage("缺少 prompt。")
+
+        try:
+            profile = self._resolve_grok_direct_profile(context)
+            if parsed["kind"] == "image":
+                return self._submit_grok_direct_image(prompt, parsed["options"], context, profile)
+            return self._submit_grok_direct_video(prompt, parsed["options"], context, profile)
+        except Exception as e:
+            logger.warning(f"[CowCli] /grok-direct failed: {e}", exc_info=True)
+            return f"Grok 直出任务提交失败：{e}"
+
+    def _submit_grok_direct_image(self, prompt: str, options: dict, context, profile) -> str:
+        refs = self._collect_grok_direct_image_refs(options, context)
+        if refs:
+            return "Grok 图片直出 v1 只支持文生图；引用图片请改用 /grok-direct video 生成图生视频。"
+
+        params = {
+            "prompt": prompt,
+            "runtime": "grok",
+            "quality": options.get("quality") or "speed",
+            "prompt_enhancement": False,
+        }
+        if options.get("aspect_ratio"):
+            params["aspect_ratio"] = options["aspect_ratio"]
+        if options.get("size"):
+            params["size"] = options["size"]
+
+        from agent.tools.image_generation.job_manager import get_image_generation_job_manager
+        from bridge.bridge import Bridge
+
+        manager = get_image_generation_job_manager(Bridge().get_agent_bridge())
+        job = manager.submit(params, context, profile)
+        position = manager.queue_position(job)
+        return self._grok_direct_submitted_text("生图", job.job_id, position, "提示词未经过模型润色")
+
+    def _submit_grok_direct_video(self, prompt: str, options: dict, context, profile) -> str:
+        refs = self._collect_grok_direct_image_refs(options, context)
+        if not refs and self._looks_like_grok_direct_image_to_video(prompt):
+            return "没有找到可用图片，请先发送/上传/引用图片后重试。"
+
+        params = {
+            "prompt": prompt,
+            "aspect_ratio": options.get("aspect_ratio") or "16:9",
+            "duration": options.get("duration") or "6s",
+            "resolution": options.get("resolution") or "480p",
+        }
+        if options.get("quality"):
+            params["quality"] = options["quality"]
+        if refs:
+            params["image_url"] = refs[0] if len(refs) == 1 else refs
+
+        from agent.tools.video_generation.job_manager import get_grok_video_generation_job_manager
+        from bridge.bridge import Bridge
+
+        manager = get_grok_video_generation_job_manager(Bridge().get_agent_bridge())
+        job = manager.submit(params, context, profile)
+        position = manager.queue_position(job)
+        detail = f"{params['resolution']} / {params['aspect_ratio']} / {params['duration']}，提示词未经过模型润色"
+        return self._grok_direct_submitted_text("视频", job.job_id, position, detail)
+
+    @staticmethod
+    def _resolve_grok_direct_profile(context):
+        from agent.user_profiles import apply_profile_to_context, resolve_agent_user_profile
+
+        profile = resolve_agent_user_profile(context)
+        apply_profile_to_context(context, profile)
+        return profile
+
+    @staticmethod
+    def _grok_direct_submitted_text(kind: str, job_id: str, position: int, detail: str) -> str:
+        state = "已启动" if position == 0 else f"已排队（队列位置 {position}）"
+        return (
+            f"Grok 直出{kind}任务{state}，任务 {job_id}。\n"
+            f"{detail}；完成后会回发结果。"
+        )
+
+    @classmethod
+    def _parse_grok_direct_args(cls, args: str) -> dict:
+        raw = str(args or "").strip()
+        if not raw:
+            return {"error": cls._grok_direct_usage()}
+        parts = raw.split(None, 1)
+        kind = parts[0].strip().lower()
+        if kind not in {"image", "video"}:
+            return {"error": cls._grok_direct_usage("子命令必须是 image 或 video。")}
+        rest = parts[1] if len(parts) > 1 else ""
+        options_text, prompt = cls._split_grok_direct_options_and_prompt(rest)
+        if not prompt.strip():
+            return {"error": cls._grok_direct_usage("缺少 prompt。")}
+        options, error = cls._parse_grok_direct_options(options_text, kind)
+        if error:
+            return {"error": error}
+        return {"kind": kind, "prompt": prompt.strip(), "options": options}
+
+    @staticmethod
+    def _split_grok_direct_options_and_prompt(rest: str) -> tuple:
+        text = str(rest or "")
+        delimiter = re.search(r"(?s)(?:^|\s)--(?:\s|$)", text)
+        if not delimiter:
+            return "", text
+        return text[: delimiter.start()].strip(), text[delimiter.end() :]
+
+    @classmethod
+    def _parse_grok_direct_options(cls, options_text: str, kind: str) -> tuple:
+        if not options_text:
+            return {}, ""
+        try:
+            tokens = shlex.split(options_text, posix=False)
+        except ValueError as e:
+            return {}, f"Grok 直出参数解析失败：{e}"
+
+        options = {}
+        images = []
+        index = 0
+        while index < len(tokens):
+            token = cls._strip_grok_direct_quotes(tokens[index])
+            index += 1
+            if not token.startswith("--"):
+                return {}, f"无法识别参数 `{token}`；选项必须写在 prompt 前，并用 -- 分隔。"
+
+            if "=" in token:
+                name, value = token.split("=", 1)
+                value = cls._strip_grok_direct_quotes(value)
+            else:
+                name = token
+                if index >= len(tokens):
+                    return {}, f"参数 `{name}` 缺少取值。"
+                value = cls._strip_grok_direct_quotes(tokens[index])
+                index += 1
+
+            field = _GROK_DIRECT_OPTION_ALIASES.get(name)
+            if kind == "image" and field == "resolution":
+                field = "size"
+            if not field or field not in _GROK_DIRECT_ALLOWED_OPTIONS[kind]:
+                return {}, f"{kind} 不支持参数 `{name}`。"
+            if field == "image_url":
+                if value:
+                    images.append(value)
+            else:
+                options[field] = value
+
+        if images:
+            options["image_url"] = images
+        return options, ""
+
+    @staticmethod
+    def _strip_grok_direct_quotes(value: object) -> str:
+        text = str(value or "").strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+            return text[1:-1]
+        return text
+
+    @classmethod
+    def _collect_grok_direct_image_refs(cls, options: dict, context) -> list:
+        refs = []
+        explicit = options.get("image_url")
+        if isinstance(explicit, str):
+            refs.append(explicit)
+        elif isinstance(explicit, (list, tuple)):
+            refs.extend(str(item or "") for item in explicit)
+
+        content = str(getattr(context, "content", "") or context.get("content", "") or "")
+        refs.extend(match.group(1).strip() for match in _GROK_DIRECT_IMAGE_REF_RE.finditer(content))
+
+        cleaned = []
+        for ref in refs:
+            value = cls._strip_grok_direct_quotes(ref).strip()
+            if value and value not in cleaned:
+                cleaned.append(value)
+            if len(cleaned) >= _GROK_DIRECT_MAX_IMAGE_REFS:
+                break
+        return cleaned
+
+    @staticmethod
+    def _strip_grok_direct_image_refs(prompt: str) -> str:
+        return _GROK_DIRECT_IMAGE_REF_RE.sub("", str(prompt or "")).strip()
+
+    @staticmethod
+    def _looks_like_grok_direct_image_to_video(prompt: str) -> bool:
+        haystack = str(prompt or "").lower()
+        return any(hint.lower() in haystack for hint in _GROK_DIRECT_IMAGE_TO_VIDEO_HINTS)
+
+    @staticmethod
+    def _grok_direct_usage(prefix: str = "") -> str:
+        lines = []
+        if prefix:
+            lines.append(prefix)
+            lines.append("")
+        lines.extend([
+            "用法：",
+            "  /grok-direct image [--ar 1:1] [--size 2K] [--quality speed|high] -- <prompt>",
+            "  /grok-direct video [--ar 16:9] [--duration 6s] [--resolution 480p] -- <prompt>",
+            "",
+            "默认：image 使用 speed；video 使用 480p / 16:9 / 6s。",
+            "引用/上传图片后执行 video，会自动把图片作为参考图。",
+        ])
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
     # help / version
     # ------------------------------------------------------------------
 
@@ -1344,6 +1594,10 @@ class CowCliPlugin(Plugin):
                 ("skill", "uninstall example", "/skill uninstall <名称>：卸载技能"),
                 ("skill", "enable example", "/skill enable <名称>：启用技能"),
                 ("skill", "disable example", "/skill disable <名称>：禁用技能"),
+            ]),
+            ("Grok 直出", [
+                ("grok-direct", "image -- 一只穿宇航服的橘猫，电影海报风格", "/grok-direct image -- <prompt>：Grok 直出生图（默认 speed）"),
+                ("grok-direct", "video -- 城市天际线延时摄影", "/grok-direct video -- <prompt>：Grok 直出视频（默认 480p / 16:9 / 6s）"),
             ]),
             ("记忆与知识库", [
                 ("memory", "status", "/memory status：查看记忆索引状态"),

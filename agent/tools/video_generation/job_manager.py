@@ -165,6 +165,9 @@ class GrokVideoGenerationJobManager:
         return 0 if job.status == "running" else 1
 
     def shutdown(self, wait: bool = False) -> None:
+        if not wait:
+            with self._lock:
+                wait = all(job.status not in {"queued", "running"} for job in self._jobs.values())
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def recover_unfinished_jobs(self, *, notify: bool = True) -> list[GrokVideoGenerationJob]:
@@ -249,10 +252,10 @@ class GrokVideoGenerationJobManager:
             if not self._send_failure(job):
                 final_status = "delivery_failed"
 
-        job.status = final_status
         job.error = final_error
         job.completed_at = time.time()
-        self._persist_job_state(job)
+        self._persist_job_state(job, status=final_status)
+        job.status = final_status
 
     def _invoke_generator(self, job: GrokVideoGenerationJob) -> Dict[str, Any]:
         if not os.path.exists(self.script_path):
@@ -315,13 +318,13 @@ class GrokVideoGenerationJobManager:
     def _state_file_path(self, job: GrokVideoGenerationJob) -> str:
         return os.path.join(job.output_dir, JOB_STATE_FILE)
 
-    def _persist_job_state(self, job: GrokVideoGenerationJob) -> None:
+    def _persist_job_state(self, job: GrokVideoGenerationJob, *, status: Optional[JobStatus] = None) -> None:
         try:
             os.makedirs(job.output_dir, exist_ok=True)
             state_path = self._state_file_path(job)
             tmp_path = f"{state_path}.{uuid.uuid4().hex}.tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(self._job_state_payload(job), f, ensure_ascii=False, indent=2, sort_keys=True)
+                json.dump(self._job_state_payload(job, status=status), f, ensure_ascii=False, indent=2, sort_keys=True)
             os.replace(tmp_path, state_path)
         except Exception as e:
             if "tmp_path" in locals() and os.path.exists(tmp_path):
@@ -332,14 +335,14 @@ class GrokVideoGenerationJobManager:
             logger.warning("[GrokVideoGenerationJobManager] failed to persist job state %s: %s", job.job_id, e)
 
     @staticmethod
-    def _job_state_payload(job: GrokVideoGenerationJob) -> Dict[str, Any]:
+    def _job_state_payload(job: GrokVideoGenerationJob, *, status: Optional[JobStatus] = None) -> Dict[str, Any]:
         return {
             "job_id": job.job_id,
             "actor_id": job.actor_id,
             "memory_user_id": job.memory_user_id,
             "output_dir": job.output_dir,
             "context_snapshot": job.context_snapshot,
-            "status": job.status,
+            "status": status if status is not None else job.status,
             "created_at": job.created_at,
             "started_at": job.started_at,
             "completed_at": job.completed_at,
@@ -413,7 +416,7 @@ class GrokVideoGenerationJobManager:
             return None
 
     def _clean_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        allowed = ("prompt", "image_url", "aspect_ratio", "duration", "quality")
+        allowed = ("prompt", "image_url", "aspect_ratio", "duration", "resolution", "quality")
         cleaned = {k: v for k, v in (args or {}).items() if k in allowed and v not in (None, "", [])}
         cleaned["prompt"] = str(cleaned.get("prompt", "")).strip()
         return cleaned
@@ -424,6 +427,7 @@ class GrokVideoGenerationJobManager:
         snapshot = {
             "channel_type": self._context_get(context, "channel_type", getattr(profile, "channel_type", "unknown")),
             "receiver": self._context_get(context, "receiver"),
+            "request_id": self._context_get(context, "request_id"),
             "isgroup": bool(self._context_get(context, "isgroup", False)),
             "session_id": self._context_get(context, "session_id", getattr(profile, "conversation_id", "")),
             "actor_id": getattr(profile, "actor_id", self._context_get(context, "actor_id", "")),
@@ -446,6 +450,7 @@ class GrokVideoGenerationJobManager:
         snapshot = job.context_snapshot
         context = Context(ContextType.TEXT, content)
         context["receiver"] = snapshot.get("receiver")
+        context["request_id"] = snapshot.get("request_id")
         context["isgroup"] = bool(snapshot.get("isgroup", False))
         context["session_id"] = snapshot.get("session_id") or snapshot.get("receiver")
         context["channel_type"] = snapshot.get("channel_type", "unknown")

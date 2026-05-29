@@ -8,6 +8,16 @@ from agent.memory.service import MemoryService
 from agent.tools.scheduler.task_store import TaskStore
 from agent.user_profiles import resolve_single_admin_profile
 from channel.web import web_channel
+from bridge.context import Context, ContextType
+from bridge.reply import Reply, ReplyType
+
+
+def _singleton_class(factory):
+    for cell in factory.__closure__ or []:
+        value = cell.cell_contents
+        if isinstance(value, type):
+            return value
+    raise AssertionError("singleton class not found")
 
 
 def _conf_get(workspace):
@@ -135,6 +145,28 @@ class WebAdminPrivacyTest(unittest.TestCase):
 
             self.assertEqual(web_channel._resolve_web_file_token(token), str(private_file.resolve()))
             self.assertEqual(web_channel._resolve_web_file_token("missing"), "")
+
+    def test_web_channel_polling_media_reply_registers_download_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "users" / "admin-memory" / "files" / "grok-video-generation" / "job" / "result.mp4"
+            media.parent.mkdir(parents=True)
+            media.write_bytes(b"\x00\x00\x00\x18ftypmp4")
+
+            channel = object.__new__(_singleton_class(web_channel.WebChannel))
+            channel.session_queues = {"session": web_channel.Queue()}
+            channel.request_to_session = {"request": "session"}
+            channel.sse_queues = {}
+            context = Context(ContextType.TEXT, "")
+            context["request_id"] = "request"
+
+            channel.send(Reply(ReplyType.VIDEO, str(media)), context)
+
+            item = channel.session_queues["session"].get(block=False)
+            self.assertEqual(item["type"], "video")
+            self.assertEqual(item["file_name"], "result.mp4")
+            self.assertTrue(item["content"].startswith("/api/file?token="))
+            token = item["content"].split("token=", 1)[1]
+            self.assertEqual(web_channel._resolve_web_file_token(token), str(media.resolve()))
 
 
 if __name__ == "__main__":

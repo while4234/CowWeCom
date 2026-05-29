@@ -42,6 +42,10 @@ class GrokVideoGenerationTaskTool(BaseTool):
                 "type": "string",
                 "description": "Optional duration hint, e.g. 5s, 10s, short.",
             },
+            "resolution": {
+                "type": "string",
+                "description": "Optional resolution hint, e.g. 480p or 720p.",
+            },
             "quality": {
                 "type": "string",
                 "description": "Optional quality hint, e.g. speed, fast, quality, high, auto.",

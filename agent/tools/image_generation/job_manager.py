@@ -216,6 +216,9 @@ class ImageGenerationJobManager:
         return 0 if job.status == "running" else 1
 
     def shutdown(self, wait: bool = False) -> None:
+        if not wait:
+            with self._lock:
+                wait = all(job.status not in {"queued", "running"} for job in self._jobs.values())
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def recover_unfinished_jobs(self, *, notify: bool = True) -> list[ImageGenerationJob]:
@@ -465,7 +468,7 @@ class ImageGenerationJobManager:
             return None
 
     def _clean_args(self, args: Dict[str, Any], profile: Any = None) -> Dict[str, Any]:
-        allowed = ("prompt", "size", "aspect_ratio", "quality", "image_url", "runtime")
+        allowed = ("prompt", "size", "aspect_ratio", "quality", "image_url", "runtime", "prompt_enhancement")
         cleaned = {k: v for k, v in (args or {}).items() if k in allowed and v not in (None, "")}
         cleaned["prompt"] = str(cleaned.get("prompt", "")).strip()
         if not cleaned.get("runtime"):
@@ -535,6 +538,7 @@ class ImageGenerationJobManager:
         snapshot = {
             "channel_type": self._context_get(context, "channel_type", getattr(profile, "channel_type", "unknown")),
             "receiver": self._context_get(context, "receiver"),
+            "request_id": self._context_get(context, "request_id"),
             "isgroup": bool(self._context_get(context, "isgroup", False)),
             "session_id": self._context_get(context, "session_id", getattr(profile, "conversation_id", "")),
             "actor_id": getattr(profile, "actor_id", self._context_get(context, "actor_id", "")),
@@ -557,6 +561,7 @@ class ImageGenerationJobManager:
         snapshot = job.context_snapshot
         context = Context(ContextType.TEXT, content)
         context["receiver"] = snapshot.get("receiver")
+        context["request_id"] = snapshot.get("request_id")
         context["isgroup"] = bool(snapshot.get("isgroup", False))
         context["session_id"] = snapshot.get("session_id") or snapshot.get("receiver")
         context["channel_type"] = snapshot.get("channel_type", "unknown")

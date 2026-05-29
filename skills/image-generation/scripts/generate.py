@@ -160,8 +160,11 @@ def _enhance_prompt_for_provider(
     quality: str | None = None,
     size: str | None = None,
     aspect_ratio: str | None = None,
+    enabled: bool = True,
 ) -> str:
     try:
+        if not enabled:
+            return prompt
         _ensure_cowwecom_root_on_path()
         from common.image_prompt_enhancer import enhance_image_prompt, write_prompt_metadata
 
@@ -174,6 +177,7 @@ def _enhance_prompt_for_provider(
             quality=quality,
             size=size,
             aspect_ratio=aspect_ratio,
+            enabled=enabled,
         )
         write_prompt_metadata(output_dir, metadata)
         return str(metadata.get("enhanced_prompt") or prompt)
@@ -376,6 +380,17 @@ def _truthy(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _falsey(value) -> bool:
+    return str(value or "").strip().lower() in {"0", "false", "no", "off", "disabled"}
+
+
+def _prompt_enhancement_enabled(args: dict) -> bool:
+    for key in ("prompt_enhancement", "enhance_prompt", "image_prompt_enhancement"):
+        if key in args and _falsey(args.get(key)):
+            return False
+    return True
+
+
 _BROKER_ONLY_RUNTIMES = {
     "broker",
     "codex_broker",
@@ -476,6 +491,7 @@ class ImageProvider(ABC):
         size: str | None = None,
         aspect_ratio: str | None = None,
         output_dir: str = ".",
+        prompt_enhancement: bool = True,
     ) -> list[str]:
         """Generate image(s) and return list of local file paths.
 
@@ -574,6 +590,7 @@ class GrokXAIProvider(ImageProvider):
         size: str | None = None,
         aspect_ratio: str | None = None,
         output_dir: str = ".",
+        prompt_enhancement: bool = True,
     ) -> list[str]:
         if image_url:
             raise RuntimeError(
@@ -596,6 +613,7 @@ class GrokXAIProvider(ImageProvider):
             quality=quality,
             size=size,
             aspect_ratio=aspect_ratio,
+            enabled=prompt_enhancement,
         )
         generated_path = Path(
             XAIImageGenProvider().generate(
@@ -732,6 +750,7 @@ class OpenAIProvider(ImageProvider):
         size: str | None = None,
         aspect_ratio: str | None = None,
         output_dir: str = ".",
+        prompt_enhancement: bool = True,
     ) -> list[str]:
         # OpenAI Images API expects pixel size like 1024x1024.
         resolved = resolve_size(size, aspect_ratio) if (size or aspect_ratio) else None
@@ -745,6 +764,7 @@ class OpenAIProvider(ImageProvider):
             quality=quality,
             size=size,
             aspect_ratio=aspect_ratio,
+            enabled=prompt_enhancement,
         )
         if image_url:
             if self._use_responses_api():
@@ -1059,6 +1079,7 @@ class CodexAuthProvider(ImageProvider):
         size: str | None = None,
         aspect_ratio: str | None = None,
         output_dir: str = ".",
+        prompt_enhancement: bool = True,
     ) -> list[str]:
         resolved_size = resolve_size(size, aspect_ratio) if (size or aspect_ratio) else None
         enhanced_prompt = _enhance_prompt_for_provider(
@@ -1071,6 +1092,7 @@ class CodexAuthProvider(ImageProvider):
             quality=quality,
             size=size,
             aspect_ratio=aspect_ratio,
+            enabled=prompt_enhancement,
         )
         payload = self._build_payload(
             enhanced_prompt,
@@ -1246,6 +1268,7 @@ class ExternalBrokerProvider(ImageProvider):
         size: str | None = None,
         aspect_ratio: str | None = None,
         output_dir: str = ".",
+        prompt_enhancement: bool = True,
     ) -> list[str]:
         payload = {
             "prompt": prompt,
@@ -1328,6 +1351,7 @@ class LinkAIProvider(ImageProvider):
         size: str | None = None,
         aspect_ratio: str | None = None,
         output_dir: str = ".",
+        prompt_enhancement: bool = True,
     ) -> list[str]:
         url = f"{self.api_base}/v1/images/generations"
         payload: dict = {
@@ -1421,6 +1445,7 @@ class GeminiProvider(ImageProvider):
         size: str | None = None,
         aspect_ratio: str | None = None,
         output_dir: str = ".",
+        prompt_enhancement: bool = True,
     ) -> list[str]:
         # Build request parts: prompt text + optional inline images
         parts: list[dict] = [{"text": prompt}]
@@ -1628,6 +1653,7 @@ class SeedreamProvider(ImageProvider):
         size: str | None = None,
         aspect_ratio: str | None = None,
         output_dir: str = ".",
+        prompt_enhancement: bool = True,
     ) -> list[str]:
         url = f"{self.api_base}/images/generations"
 
@@ -1763,6 +1789,7 @@ class QwenProvider(ImageProvider):
         size: str | None = None,
         aspect_ratio: str | None = None,
         output_dir: str = ".",
+        prompt_enhancement: bool = True,
     ) -> list[str]:
         url = f"{self.api_base}/api/v1/services/aigc/multimodal-generation/generation"
 
@@ -1879,6 +1906,7 @@ class MinimaxProvider(ImageProvider):
         size: str | None = None,
         aspect_ratio: str | None = None,
         output_dir: str = ".",
+        prompt_enhancement: bool = True,
     ) -> list[str]:
         url = f"{self.api_base}/v1/image_generation"
         payload: dict = {
@@ -2109,6 +2137,7 @@ def main():
     size = args.get("size")
     aspect_ratio = args.get("aspect_ratio")
     image_url = args.get("image_url")
+    prompt_enhancement_enabled = _prompt_enhancement_enabled(args)
     broker_only = _is_broker_only_runtime(runtime)
     allow_fallback = _truthy(args.get("fallback")) or _truthy(
         os.environ.get("SKILL_IMAGE_GENERATION_FALLBACK")
@@ -2172,6 +2201,7 @@ def main():
                 size=size,
                 aspect_ratio=aspect_ratio,
                 output_dir=output_dir,
+                prompt_enhancement=prompt_enhancement_enabled,
             )
             elapsed = time.time() - t0
             # Resolved model id (after alias expansion) actually sent to the API

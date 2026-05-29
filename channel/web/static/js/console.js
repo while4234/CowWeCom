@@ -541,6 +541,38 @@ function _buildVideoHtml(url) {
         `<i class="fas fa-download"></i> ${escapeHtml(fileName)}</a></div>`;
 }
 
+function _appendMediaPayload(mediaEl, item) {
+    if (!mediaEl || !item) return false;
+    if (item.type === 'image') {
+        const imgEl = document.createElement('img');
+        imgEl.src = item.content;
+        imgEl.alt = item.file_name || 'image';
+        imgEl.style.cssText = 'max-width:600px;border-radius:8px;margin:8px 0;cursor:zoom-in;box-shadow:0 1px 4px rgba(0,0,0,0.1);';
+        imgEl.onclick = () => _openImageLightbox(imgEl.src);
+        mediaEl.appendChild(imgEl);
+        return true;
+    }
+    if (item.type === 'video') {
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = _buildVideoHtml(item.content);
+        mediaEl.appendChild(wrapper.firstElementChild || wrapper);
+        return true;
+    }
+    if (item.type === 'file') {
+        const fileName = item.file_name || item.content.split('/').pop();
+        const fileEl = document.createElement('a');
+        fileEl.href = item.content;
+        fileEl.download = fileName;
+        fileEl.target = '_blank';
+        fileEl.className = 'file-attachment';
+        fileEl.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:8px 14px;margin:8px 0;border-radius:8px;background:var(--bg-secondary,#f3f4f6);color:var(--text-primary,#374151);text-decoration:none;font-size:14px;border:1px solid var(--border-color,#e5e7eb);';
+        fileEl.innerHTML = `<i class="fas fa-file-download" style="color:#6b7280;"></i> ${escapeHtml(fileName)}`;
+        mediaEl.appendChild(fileEl);
+        return true;
+    }
+    return false;
+}
+
 function _openImageLightbox(src) {
     let overlay = document.getElementById('cow-lightbox');
     if (!overlay) {
@@ -1513,12 +1545,7 @@ function startSSE(requestId, loadingEl, timestamp, titleInfo) {
 
             } else if (item.type === 'image') {
                 ensureBotEl();
-                const imgEl = document.createElement('img');
-                imgEl.src = item.content;
-                imgEl.alt = 'screenshot';
-                imgEl.style.cssText = 'max-width:600px;border-radius:8px;margin:8px 0;cursor:zoom-in;box-shadow:0 1px 4px rgba(0,0,0,0.1);';
-                imgEl.onclick = () => _openImageLightbox(imgEl.src);
-                mediaEl.appendChild(imgEl);
+                _appendMediaPayload(mediaEl, item);
                 scrollChatToBottom();
 
             } else if (item.type === 'text') {
@@ -1532,22 +1559,12 @@ function startSSE(requestId, loadingEl, timestamp, titleInfo) {
 
             } else if (item.type === 'video') {
                 ensureBotEl();
-                const wrapper = document.createElement('div');
-                wrapper.innerHTML = _buildVideoHtml(item.content);
-                mediaEl.appendChild(wrapper.firstElementChild || wrapper);
+                _appendMediaPayload(mediaEl, item);
                 scrollChatToBottom();
 
             } else if (item.type === 'file') {
                 ensureBotEl();
-                const fileName = item.file_name || item.content.split('/').pop();
-                const fileEl = document.createElement('a');
-                fileEl.href = item.content;
-                fileEl.download = fileName;
-                fileEl.target = '_blank';
-                fileEl.className = 'file-attachment';
-                fileEl.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:8px 14px;margin:8px 0;border-radius:8px;background:var(--bg-secondary,#f3f4f6);color:var(--text-primary,#374151);text-decoration:none;font-size:14px;border:1px solid var(--border-color,#e5e7eb);';
-                fileEl.innerHTML = `<i class="fas fa-file-download" style="color:#6b7280;"></i> ${fileName}`;
-                mediaEl.appendChild(fileEl);
+                _appendMediaPayload(mediaEl, item);
                 scrollChatToBottom();
 
             } else if (item.type === 'phase') {
@@ -1660,7 +1677,11 @@ function startPolling() {
                 }
                 const welcomeScreen = document.getElementById('welcome-screen');
                 if (welcomeScreen) welcomeScreen.remove();
-                addBotMessage(data.content, new Date(data.timestamp * 1000), rid);
+                if (['image', 'video', 'file'].includes(data.type)) {
+                    addBotMediaMessage(data, new Date(data.timestamp * 1000), rid);
+                } else {
+                    addBotMessage(data.content, new Date(data.timestamp * 1000), rid);
+                }
                 scrollChatToBottom();
             }
             const delay = (data.status === 'success' && data.has_content) ? 5000 : 10000;
@@ -1915,6 +1936,19 @@ function addUserMessage(content, timestamp, attachments) {
 
 function addBotMessage(content, timestamp, requestId) {
     const el = createBotMessageEl(content, timestamp, requestId);
+    messagesDiv.appendChild(el);
+    scrollChatToBottom();
+}
+
+function addBotMediaMessage(item, timestamp, requestId) {
+    const el = createBotMessageEl('', timestamp, requestId);
+    let contentEl = el.querySelector('.answer-content');
+    if (contentEl) contentEl.remove();
+    let msgContent = el.querySelector('.msg-content');
+    let mediaEl = document.createElement('div');
+    mediaEl.className = 'media-content';
+    if (msgContent) msgContent.appendChild(mediaEl);
+    _appendMediaPayload(mediaEl, item);
     messagesDiv.appendChild(el);
     scrollChatToBottom();
 }

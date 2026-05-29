@@ -140,6 +140,26 @@ def _resolve_web_file_token(token: str) -> str:
         return file_path
 
 
+def _local_file_path_from_reply_content(content: str) -> str:
+    value = str(content or "").strip()
+    if not value:
+        return ""
+    if value.lower().startswith("file://"):
+        raw_path = value[7:]
+        if re.match(r"^[A-Za-z]:[\\/]", raw_path):
+            return os.path.abspath(raw_path)
+        from urllib.parse import unquote, urlparse
+
+        parsed = urlparse(value)
+        path = unquote(parsed.path or value[7:])
+        if os.name == "nt" and re.match(r"^/[A-Za-z]:/", path):
+            path = path[1:]
+        return os.path.abspath(path)
+    if os.path.isabs(value):
+        return os.path.abspath(value)
+    return ""
+
+
 def _is_within_path(path: str, root: str) -> bool:
     path = os.path.normcase(os.path.realpath(os.path.abspath(path)))
     root = os.path.normcase(os.path.realpath(os.path.abspath(root)))
@@ -335,6 +355,7 @@ class WebChannel(ChatChannel):
             # SSE mode: push events to SSE queue
             if request_id in self.sse_queues:
                 content = reply.content if reply.content is not None else ""
+                media_payload = self._media_response_payload(reply)
 
                 # Intermediate status lines (e.g. /install-browser phases) must NOT use "done",
                 # or the frontend closes EventSource and drops subsequent events.
@@ -350,7 +371,12 @@ class WebChannel(ChatChannel):
 
                 # Files are already pushed via on_event (file_to_send) during agent execution.
                 # Skip duplicate file pushes here; just let the done event through.
-                if reply.type in (ReplyType.IMAGE_URL, ReplyType.FILE) and content.startswith("file://"):
+                if (
+                    media_payload
+                    and reply.type in (ReplyType.IMAGE_URL, ReplyType.FILE)
+                    and content.startswith("file://")
+                    and context.get("on_event") is not None
+                ):
                     text_content = getattr(reply, 'text_content', '')
                     if text_content:
                         self.sse_queues[request_id].put({
@@ -369,6 +395,12 @@ class WebChannel(ChatChannel):
                     logger.debug(f"SSE skipped http media reply for request {request_id}")
                     return
 
+                if media_payload:
+                    media_payload.update({"request_id": request_id, "timestamp": time.time()})
+                    self.sse_queues[request_id].put(media_payload)
+                    logger.debug(f"SSE media sent for request {request_id}")
+                    return
+
                 self.sse_queues[request_id].put({
                     "type": "done",
                     "content": content,
@@ -381,6 +413,7 @@ class WebChannel(ChatChannel):
             # Fallback: polling mode
             if session_id in self.session_queues:
                 content = reply.content if reply.content is not None else ""
+                media_payload = self._media_response_payload(reply)
                 # Skip file:// IMAGE_URL/FILE replies originating from an SSE-enabled
                 # request: they were already pushed via the `file_to_send` event during
                 # agent execution. By the time the chat_channel sends the IMAGE_URL reply,
@@ -395,12 +428,8 @@ class WebChannel(ChatChannel):
                 ):
                     logger.debug(f"Polling skipped duplicate file reply for session {session_id}")
                     return
-                response_data = {
-                    "type": str(reply.type),
-                    "content": content,
-                    "timestamp": time.time(),
-                    "request_id": request_id
-                }
+                response_data = media_payload or {"type": str(reply.type), "content": content}
+                response_data.update({"timestamp": time.time(), "request_id": request_id})
                 self.session_queues[session_id].put(response_data)
                 logger.debug(f"Response sent to poll queue for session {session_id}, request {request_id}")
             else:
@@ -408,6 +437,32 @@ class WebChannel(ChatChannel):
 
         except Exception as e:
             logger.error(f"Error in send method: {e}")
+
+    @staticmethod
+    def _media_response_payload(reply: Reply):
+        content = str(reply.content or "").strip()
+        if not content:
+            return None
+
+        if reply.type in (ReplyType.IMAGE_URL, ReplyType.IMAGE):
+            media_type = "image"
+        elif reply.type in (ReplyType.VIDEO, ReplyType.VIDEO_URL):
+            media_type = "video"
+        elif reply.type == ReplyType.FILE:
+            media_type = "file"
+        else:
+            return None
+
+        if content.startswith(("http://", "https://")):
+            url = content
+            file_name = os.path.basename(content.split("?", 1)[0]) or media_type
+        else:
+            file_path = _local_file_path_from_reply_content(content)
+            if not file_path or not os.path.isfile(file_path):
+                return None
+            url = _register_web_file(file_path)
+            file_name = os.path.basename(file_path)
+        return {"type": media_type, "content": url, "file_name": file_name}
 
     def _make_sse_callback(self, request_id: str):
         """Build an on_event callback that pushes agent stream events into the SSE queue."""
@@ -688,6 +743,7 @@ class WebChannel(ChatChannel):
             context["session_id"] = session_id
             context["receiver"] = session_id
             context["request_id"] = request_id
+            context["web_authenticated"] = True
 
             if use_sse:
                 context["on_event"] = self._make_sse_callback(request_id)
@@ -759,7 +815,9 @@ class WebChannel(ChatChannel):
                 return json.dumps({
                     "status": "success",
                     "has_content": True,
+                    "type": response.get("type", ""),
                     "content": response["content"],
+                    "file_name": response.get("file_name", ""),
                     "request_id": response["request_id"],
                     "timestamp": response["timestamp"]
                 })

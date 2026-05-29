@@ -93,7 +93,7 @@ def test_grok_video_script_outputs_json_only(monkeypatch, tmp_path, capsys):
 
     code = script.main([
         "generate.py",
-        '{"prompt":"make video","image_url":["C:/a.png","C:/b.png"],"output_dir":"' + str(output_dir).replace("\\", "\\\\") + '"}',
+        '{"prompt":"make video","image_url":["C:/a.png","C:/b.png"],"resolution":"480p","output_dir":"' + str(output_dir).replace("\\", "\\\\") + '"}',
     ])
     stdout = capsys.readouterr().out.strip()
 
@@ -102,6 +102,17 @@ def test_grok_video_script_outputs_json_only(monkeypatch, tmp_path, capsys):
     assert (output_dir / "result.mp4").read_bytes() == source.read_bytes()
     assert captured.get("image_url") is None
     assert captured["reference_image_urls"] == ["C:/a.png", "C:/b.png"]
+    assert captured["resolution"] == "480p"
+
+
+def test_grok_video_job_manager_preserves_resolution(tmp_path):
+    manager = GrokVideoGenerationJobManager(workspace_root=str(tmp_path))
+    try:
+        cleaned = manager._clean_args({"prompt": "make video", "resolution": "480p", "unknown": "x"})
+    finally:
+        manager.shutdown(wait=False)
+
+    assert cleaned == {"prompt": "make video", "resolution": "480p"}
 
 
 def _load_script_module():
