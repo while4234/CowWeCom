@@ -212,6 +212,68 @@ def test_grok_video_job_manager_records_hidden_prompt_history(tmp_path):
     assert "content policy rejected" in records[0]["generation_error"]
 
 
+def test_grok_video_job_manager_records_direct_prompt_history_on_success(tmp_path):
+    manager = GrokVideoGenerationJobManager(
+        workspace_root=str(tmp_path),
+        global_workers=1,
+        duplicate_window=0,
+    )
+    manager._send_reply = lambda job, reply, content: True
+    manager._remember_output = lambda job, content: None
+
+    def fake_generator(job):
+        output_dir = Path(job.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        video_path = output_dir / "result.mp4"
+        video_path.write_bytes(b"\x00\x00\x00\x18ftypmp4")
+        write_prompt_metadata(
+            str(output_dir),
+            {
+                "version": "grok-model-rewrite-v2",
+                "enhanced": False,
+                "disabled_reason": "disabled",
+                "target": "grok",
+                "media_type": "video",
+                "use_case": "video_model_rewrite",
+                "original_prompt": "raw direct video prompt",
+                "enhanced_prompt": "raw direct video prompt",
+                "library": {},
+                "templates": [],
+            },
+            record_unenhanced=True,
+        )
+        return {"videos": [{"url": str(video_path)}]}
+
+    manager._invoke_generator = fake_generator
+    context = Context(ContextType.TEXT, "video")
+    context["channel_type"] = "web"
+    context["receiver"] = "session"
+    context["session_id"] = "session"
+    profile = SimpleNamespace(actor_id="actor", memory_user_id="user")
+
+    job = manager.submit(
+        {"prompt": "raw direct video prompt", "prompt_enhancement": False},
+        context,
+        profile,
+    )
+    try:
+        assert _wait_for_job(job) == "succeeded"
+        records = load_prompt_history(
+            workspace_root=str(tmp_path),
+            memory_user_id="user",
+            session_id="session",
+            limit=1,
+        )
+    finally:
+        manager.shutdown(wait=False)
+
+    assert records[0]["job_id"] == job.job_id
+    assert records[0]["media_type"] == "video"
+    assert records[0]["enhanced_prompt"] == "raw direct video prompt"
+    assert records[0]["enhanced"] is False
+    assert records[0]["output_path"] == str(Path(job.output_path))
+
+
 def test_grok_video_script_outputs_json_only(monkeypatch, tmp_path, capsys):
     script = _load_script_module()
     source = tmp_path / "source.mp4"

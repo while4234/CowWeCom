@@ -155,7 +155,7 @@ def _write_prompt_metadata(provider: Any, output_dir: str) -> None:
     try:
         from common.image_prompt_enhancer import write_prompt_metadata
 
-        write_prompt_metadata(output_dir, metadata)
+        write_prompt_metadata(output_dir, metadata, record_unenhanced=True)
     except Exception as exc:
         print(f"[grok-video-generation] prompt metadata skipped: {exc}", file=sys.stderr, flush=True)
 

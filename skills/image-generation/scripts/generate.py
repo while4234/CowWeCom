@@ -137,12 +137,33 @@ def _enhance_prompt_for_provider(
 ) -> str:
     try:
         if not enabled:
-            return _apply_grok_reference_prompt_lock(
+            direct_prompt = _apply_grok_reference_prompt_lock(
                 prompt,
                 target=target,
                 media_type="image",
                 image_url=image_url,
             )
+            if output_dir:
+                _ensure_cowwecom_root_on_path()
+                from common.image_prompt_enhancer import write_prompt_metadata
+
+                metadata = {
+                    "version": "grok-model-rewrite-v2" if "grok" in str(target or "").lower() else "direct-prompt-v1",
+                    "enhanced": False,
+                    "disabled_reason": "disabled",
+                    "target": target,
+                    "runtime": runtime or "",
+                    "model": model or "",
+                    "media_type": "image",
+                    "original_prompt": str(prompt or "").strip(),
+                    "enhanced_prompt": direct_prompt,
+                    "templates": [],
+                    "library": {},
+                    "supplements": [],
+                    "created_at": time.time(),
+                }
+                write_prompt_metadata(output_dir, metadata, record_unenhanced=True)
+            return direct_prompt
         _ensure_cowwecom_root_on_path()
         from common.image_prompt_enhancer import enhance_image_prompt, write_prompt_metadata
 

@@ -219,6 +219,43 @@ class TestImagePromptEnhancer(unittest.TestCase):
         self.assertIn("Enhanced prompt:", result.result)
         self.assertIn(ENHANCED_PROMPT_MARKER, result.result)
 
+    def test_prompt_metadata_can_record_direct_prompts_when_explicitly_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "out"
+            metadata = {
+                "version": "grok-model-rewrite-v2",
+                "enhanced": False,
+                "disabled_reason": "disabled",
+                "target": "grok",
+                "media_type": "image",
+                "original_prompt": "raw direct prompt",
+                "enhanced_prompt": "raw direct prompt",
+                "library": {},
+                "templates": [],
+                "created_at": 1.0,
+            }
+            write_prompt_metadata(str(output_dir), metadata, record_unenhanced=True)
+
+            history = record_prompt_history(
+                workspace_root=tmp,
+                memory_user_id="user_a",
+                session_id="session-a",
+                job_id="job-direct",
+                output_path=str(output_dir / "out.png"),
+                metadata=metadata,
+            )
+
+            self.assertTrue(Path(history).exists())
+            loaded = load_prompt_history(
+                workspace_root=tmp,
+                memory_user_id="user_a",
+                session_id="session-a",
+                limit=1,
+            )
+            self.assertEqual(loaded[0]["job_id"], "job-direct")
+            self.assertEqual(loaded[0]["enhanced_prompt"], "raw direct prompt")
+            self.assertFalse(loaded[0]["enhanced"])
+
     def test_prompt_history_tool_can_return_raw_stored_prompt_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             expected = "Exact polished prompt from the last Grok job."

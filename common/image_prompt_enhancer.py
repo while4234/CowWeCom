@@ -227,8 +227,15 @@ def enhance_image_prompt(
     }
 
 
-def write_prompt_metadata(output_dir: str | None, metadata: Dict[str, Any]) -> None:
-    if not output_dir or not metadata or not metadata.get("enhanced"):
+def write_prompt_metadata(
+    output_dir: str | None,
+    metadata: Dict[str, Any],
+    *,
+    record_unenhanced: bool = False,
+) -> None:
+    if not output_dir or not metadata:
+        return
+    if not metadata.get("enhanced") and not record_unenhanced:
         return
     try:
         path = Path(output_dir).expanduser().resolve()

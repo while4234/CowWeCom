@@ -56,7 +56,8 @@ explicitly asks to change them.
 
 If the user asks to see the prompt after the video is generated, call
 `image_generation_prompt_history` with `exact_only=true`. It reads the stored
-last rewritten prompt and must not regenerate the rewrite.
+last rewritten prompt; direct/raw Grok video commands also write their final
+prompt into the same history. Do not regenerate the rewrite.
 
 Example text-to-video task:
 

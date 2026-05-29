@@ -51,7 +51,8 @@ When using Grok:
 - Do not display the enhanced prompt during generation. If the user explicitly
   asks to see the prompt after the image is generated, use
   `image_generation_prompt_history` with `exact_only=true` so the stored final
-  prompt is returned directly. Do not rewrite it again.
+  prompt is returned directly. Direct/raw Grok image commands also write their
+  final prompt into the same history. Do not rewrite it again.
 - When `image_url` is present, preserve the reference subject's face, identity,
   hair, skin tone/texture, distinctive features, and body proportions. Normal
   rewrite and direct/raw submission both append a reference-image identity lock;

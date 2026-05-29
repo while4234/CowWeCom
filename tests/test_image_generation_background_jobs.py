@@ -17,6 +17,7 @@ from agent.tools.image_generation.job_manager import (
     RESTART_RECOVERY_ERROR,
 )
 from bridge.context import Context, ContextType
+from common.image_prompt_enhancer import load_prompt_history, write_prompt_metadata
 
 
 PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
@@ -412,6 +413,55 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
                 self.assertEqual(records[0]["enhanced_prompt"], "rewritten prompt for debugging")
                 self.assertEqual(records[0]["generation_status"], "failed")
                 self.assertIn("content policy rejected", records[0]["generation_error"])
+            finally:
+                manager.shutdown(wait=False)
+
+    def test_successful_direct_job_records_prompt_history_when_metadata_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = ImageGenerationJobManager(workspace_root=tmp, global_workers=1)
+            manager._send_reply = lambda job, reply, content: True
+            manager._remember_output = lambda job, content: None
+
+            def fake_generator(job):
+                output_dir = Path(job.output_dir)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                image_path = output_dir / "out.png"
+                image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake-png")
+                write_prompt_metadata(
+                    str(output_dir),
+                    {
+                        "version": "grok-model-rewrite-v2",
+                        "enhanced": False,
+                        "disabled_reason": "disabled",
+                        "target": "grok",
+                        "media_type": "image",
+                        "original_prompt": "raw direct prompt",
+                        "enhanced_prompt": "raw direct prompt",
+                        "library": {},
+                        "templates": [],
+                    },
+                    record_unenhanced=True,
+                )
+                return {"images": [{"url": str(image_path)}]}
+
+            manager._invoke_generator = fake_generator
+            job = manager.submit(
+                {"prompt": "raw direct prompt", "runtime": "grok", "prompt_enhancement": False},
+                make_context("a"),
+                make_profile("weixin:a", "user_a", tmp),
+            )
+            try:
+                self.assertEqual(wait_for(job), "succeeded")
+                records = load_prompt_history(
+                    workspace_root=tmp,
+                    memory_user_id="user_a",
+                    session_id="a",
+                    limit=1,
+                )
+                self.assertEqual(records[0]["job_id"], job.job_id)
+                self.assertEqual(records[0]["enhanced_prompt"], "raw direct prompt")
+                self.assertFalse(records[0]["enhanced"])
+                self.assertEqual(records[0]["output_path"], str(Path(job.output_path)))
             finally:
                 manager.shutdown(wait=False)
 

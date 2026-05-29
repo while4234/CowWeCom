@@ -83,10 +83,11 @@ To add another keyword later, create another folder such as
 the same 90% matched-repository / 10% other-repository rule applies. Without a
 keyword, Grok defaults to the `grok` repository.
 
-If the user asks to see the prompt that was just polished, call
-`image_generation_prompt_history` with `exact_only=true`. That reads the stored
-last enhanced prompt even when the downstream image request failed after
-rewriting; do not regenerate or rewrite the prompt again.
+If the user asks to see the prompt that was just polished or directly sent,
+call `image_generation_prompt_history` with `exact_only=true`. That reads the
+stored final prompt even when the downstream image request failed after
+rewriting or when the user used a direct/raw command; do not regenerate or
+rewrite the prompt again.
 
 After changing project skills, sync the same folder to:
 

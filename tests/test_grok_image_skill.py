@@ -223,7 +223,7 @@ class TestGrokImageSkill(unittest.TestCase):
             original_ensure_cow_root = module._ensure_cowwecom_root_on_path
             xai_image_gen.XAIImageGenProvider = FakeXAIImageGenProvider
             module._route_cowwecom_console_logs_to_stderr = lambda: None
-            module._ensure_cowwecom_root_on_path = lambda: (_ for _ in ()).throw(AssertionError("enhancer should not load"))
+            module._ensure_cowwecom_root_on_path = lambda: None
             try:
                 provider = module.GrokXAIProvider()
                 provider.generate("raw prompt", output_dir=tmp, prompt_enhancement=False)
@@ -233,7 +233,10 @@ class TestGrokImageSkill(unittest.TestCase):
                 module._ensure_cowwecom_root_on_path = original_ensure_cow_root
 
             self.assertEqual(calls, [("raw prompt", None, False)])
-            self.assertFalse((Path(tmp) / "prompt_metadata.json").exists())
+            metadata = json.loads((Path(tmp) / "prompt_metadata.json").read_text(encoding="utf-8"))
+            self.assertFalse(metadata["enhanced"])
+            self.assertEqual(metadata["enhanced_prompt"], "raw prompt")
+            self.assertEqual(metadata["original_prompt"], "raw prompt")
 
     def test_grok_provider_keeps_prompt_metadata_when_xai_provider_fails(self):
         module = load_generate_module()

@@ -190,7 +190,7 @@ Grok 语音回复分为两种模式：
 - 如果 prompt 指明国籍或族裔，例如 `Korean`、`Korea`、`韩国`，系统会从 `States/Nationality-Race.txt` 生成稳定约束，要求最终 prompt 保持相应人物外貌，并过滤会引入冲突身份特征的随机片段。
 - `/grok-direct image` 会继续端到端跳过提示词重写，把原始 prompt 直接提交给 Grok。
 - 图生图或带参考图的视频会在润色和 `/grok-direct` 直出两条路径都追加参考图身份锁，要求尽量保留参考人物的面容、脸型、发型、肤色/肤质、显著特征和整体体型；有参考图时润色不会再额外加入国籍、眼睛颜色、发色、年龄、体型、面部特征等外貌描述，除非用户明确要求修改这些内容。
-- 如果用户在生图完成后或下游审核/API 失败后要求查看“刚才润色后的提示词”，Agent 应调用 `image_generation_prompt_history` 并使用 `exact_only=true`，读取上一次已存储的最终 prompt，不重新润色。
+- 如果用户在生图完成后、直出完成后，或下游审核/API 失败后要求查看“刚才润色后的提示词”，Agent 应调用 `image_generation_prompt_history` 并使用 `exact_only=true`，读取上一次已存储的最终 prompt，不重新润色。
 - 图生图 v1 只支持一张参考图，可使用本地路径、`file://`、HTTP/HTTPS URL 或 data URI；有参考图时使用 xAI image edit `/images/edits`，纯文生图保持 `/images/generations`；未显式指定比例/尺寸时会尽量按参考图尺寸推断比例和 1k/2k 分辨率。
 - xAI 返回 b64 或 URL 后，CowWeCom 先保存成本地文件，再发送本地图片。
 - 不直接向用户发送远端 URL。

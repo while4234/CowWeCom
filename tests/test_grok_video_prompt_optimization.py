@@ -185,3 +185,37 @@ def test_grok_video_script_writes_prompt_metadata_when_provider_fails(monkeypatc
     metadata = json.loads((output_dir / "prompt_metadata.json").read_text(encoding="utf-8"))
     assert metadata["media_type"] == "video"
     assert metadata["enhanced_prompt"] == "Rewritten video prompt before failure."
+
+
+def test_grok_video_script_records_direct_prompt_metadata(monkeypatch, tmp_path):
+    module = load_generate_module()
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"\x00\x00\x00\x18ftypmp4")
+    output_dir = tmp_path / "out"
+
+    class FakeProvider:
+        def __init__(self):
+            self.last_prompt_metadata = {
+                "version": "grok-model-rewrite-v2",
+                "enhanced": False,
+                "disabled_reason": "disabled",
+                "target": "grok",
+                "media_type": "video",
+                "use_case": "video_model_rewrite",
+                "original_prompt": "raw video prompt",
+                "enhanced_prompt": "raw video prompt",
+                "library": {},
+                "templates": [],
+            }
+
+        def generate(self, prompt, **kwargs):
+            return str(source)
+
+    monkeypatch.setattr(video_gen, "XAIVideoGenProvider", FakeProvider)
+
+    result = module.GrokXAIVideoProvider().generate("raw video prompt", prompt_enhancement=False, output_dir=str(output_dir))
+
+    metadata = json.loads((output_dir / "prompt_metadata.json").read_text(encoding="utf-8"))
+    assert Path(result).name == "result.mp4"
+    assert metadata["enhanced"] is False
+    assert metadata["enhanced_prompt"] == "raw video prompt"
