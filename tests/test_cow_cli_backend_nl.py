@@ -419,6 +419,38 @@ class TestCowCliBackendNaturalLanguageDispatch(unittest.TestCase):
         self.assertIn("- shared_gpt_backend: capi_monthly", content)
         self.assertNotIn("- current_backend: capi_monthly", content)
 
+    def test_admin_codex_switch_after_grok_replaces_personal_backend(self):
+        from agent.user_profiles import resolve_agent_user_profile
+        from bridge.context import Context, ContextType
+        from common.llm_backend_router import (
+            get_current_backend,
+            get_current_backend_for_profile,
+            save_state,
+        )
+        from plugins import Event, EventAction, EventContext
+
+        plugin = _load_cow_cli_plugin()
+        save_state({"current_backend": "capi_monthly"})
+        context_kwargs = {
+            "actor_role": "admin",
+            "actor_id": "web:admin",
+            "channel_type": "web",
+        }
+        profile = resolve_agent_user_profile(Context(ContextType.TEXT, "", kwargs=dict(context_kwargs)))
+
+        grok_context = Context(ContextType.TEXT, "switch backend to xai", kwargs=dict(context_kwargs))
+        plugin.on_handle_context(EventContext(Event.ON_HANDLE_CONTEXT, {"context": grok_context}))
+        self.assertEqual(get_current_backend_for_profile(profile), "grok")
+
+        codex_context = Context(ContextType.TEXT, "switch backend to codex", kwargs=dict(context_kwargs))
+        codex_event = EventContext(Event.ON_HANDLE_CONTEXT, {"context": codex_context})
+        plugin.on_handle_context(codex_event)
+
+        self.assertEqual(codex_event.action, EventAction.BREAK_PASS)
+        self.assertIn("Personal LLM backend switched to codex", codex_event["reply"].content)
+        self.assertEqual(get_current_backend(), "capi_monthly")
+        self.assertEqual(get_current_backend_for_profile(profile), "codex")
+
     def test_admin_current_quota_after_grok_switch_does_not_query_monthly(self):
         from bridge.context import Context, ContextType
         from common.llm_backend_router import save_state

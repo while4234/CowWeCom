@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -414,6 +415,49 @@ class TestGrokConsoleLogin(unittest.TestCase):
         self.assertNotIn("bot_type", saved)
         self.assertNotIn("model", saved)
         self.assertEqual(saved["llm_backend"]["providers"]["grok"]["model"], "grok-4.3")
+
+    def test_config_get_uses_actor_backend_for_codex_and_grok_selection(self):
+        import channel.web.web_channel as web_channel
+        from common.llm_backend_router import set_user_backend_override
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_conf = {
+                "llm_backend": {
+                    "current_backend": "capi",
+                    "state_path": os.path.join(tmp, "state.json"),
+                    "providers": {
+                        "codex": {"model": "gpt-5.5"},
+                        "grok": {"model": "grok-4.3", "auth": "account"},
+                    },
+                },
+                "model": "gpt-4.1-mini",
+                "bot_type": "",
+            }
+            admin_profile = SimpleNamespace(
+                actor_id="web:admin",
+                raw_user_id="admin",
+                memory_user_id="web_admin",
+                display_name="Web Admin",
+                role="admin",
+                is_admin=True,
+            )
+
+            with patch.object(web_channel, "_require_auth", return_value=None), \
+                    patch.object(web_channel.web, "header", return_value=None), \
+                    patch.object(web_channel, "_get_web_admin_profile", return_value=admin_profile), \
+                    patch.object(web_channel, "conf", return_value=fake_conf), \
+                    patch("config.conf", return_value=fake_conf):
+                set_user_backend_override(admin_profile, "grok", manual=True, reason="test")
+                grok_result = json.loads(web_channel.ConfigHandler().GET())
+                set_user_backend_override(admin_profile, "codex", manual=True, reason="test")
+                codex_result = json.loads(web_channel.ConfigHandler().GET())
+
+        self.assertEqual(grok_result["status"], "success")
+        self.assertEqual(grok_result["bot_type"], "grok")
+        self.assertEqual(grok_result["model"], "grok-4.3")
+        self.assertEqual(codex_result["status"], "success")
+        self.assertEqual(codex_result["bot_type"], "codex")
+        self.assertEqual(codex_result["model"], "gpt-5.5")
 
 
 if __name__ == "__main__":

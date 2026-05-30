@@ -773,6 +773,19 @@ def _user_backend_override_for_profile(profile: Any) -> Dict[str, Any]:
     return {}
 
 
+def get_user_backend_override_backend(profile: Any) -> str:
+    """Return the normalized personal backend override for an actor, if any."""
+    override = _user_backend_override_for_profile(profile)
+    backend = str(override.get("current_backend") or "").strip()
+    if not backend:
+        return ""
+    try:
+        normalized = resolve_selectable_backend(backend, allow_user_default=True)
+    except ValueError:
+        return ""
+    return "" if normalized == USER_BACKEND_DEFAULT else normalized
+
+
 def _profile_backend_key(profile: Any) -> str:
     for attr in ("actor_id", "memory_user_id", "raw_user_id", "display_name"):
         value = str(getattr(profile, attr, "") or "").strip()

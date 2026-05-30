@@ -2086,8 +2086,10 @@ class CowCliPlugin(Plugin):
     def _cmd_backend(self, args: str, e_context, **_) -> str:
         from common.llm_backend_router import (
             USER_BACKEND_DEFAULT,
+            can_use_restricted_backend,
             clear_manual_override,
             describe_status,
+            get_user_backend_override_backend,
             normalize_backend,
             set_current_backend,
             set_user_backend_override,
@@ -2120,6 +2122,13 @@ class CowCliPlugin(Plugin):
 
         if sub in {"codex", "capi", "capi_monthly", "capi-monthly", "monthly", "capi-month"}:
             backend = normalize_backend(sub)
+            if (
+                profile is not None
+                and can_use_restricted_backend(profile)
+                and get_user_backend_override_backend(profile)
+            ):
+                set_user_backend_override(profile, backend, manual=True, reason="cow_cli")
+                return "Personal LLM backend switched to {}".format(backend)
             set_current_backend(backend, manual=True, reason="cow_cli")
             return "LLM backend switched to {}".format(backend)
 

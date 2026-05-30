@@ -1967,14 +1967,16 @@ class ConfigHandler:
             masked_pwd = ("*" * len(raw_pwd)) if raw_pwd else ""
             admin_profile = self._web_admin_profile_or_default()
             backend_status = self._backend_status_payload(admin_profile)
+            active_backend = backend_status.get("actor_backend") or backend_status.get("current_backend")
+            active_model = backend_status.get("actor_effective_model") or backend_status.get("effective_model")
             try:
                 from integrations.hermes_xai.auth import get_xai_oauth_status
 
                 grok_status = get_xai_oauth_status()
             except Exception as grok_err:
                 grok_status = {"logged_in": False, "needs_reauth": True, "message": _safe_grok_error(grok_err), "accounts": []}
-            display_model = backend_status.get("effective_model") if backend_status.get("current_backend") == "codex" else local_config.get("model", "")
-            display_bot_type = "codex" if backend_status.get("current_backend") == "codex" else (
+            display_model = active_model if active_backend in {"codex", "grok"} else local_config.get("model", "")
+            display_bot_type = active_backend if active_backend in {"codex", "grok"} else (
                 "openai" if local_config.get("bot_type") == "chatGPT" else local_config.get("bot_type", "")
             )
 
