@@ -617,7 +617,7 @@
                                                             class="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600
                                                                    bg-slate-50 dark:bg-white/5 text-sm text-slate-800 dark:text-slate-100
                                                                    focus:outline-none focus:border-primary-500 transition-colors">
-                                                        <option value="openai">OpenAI</option>
+                                                        <option value="openai">Chat Completions</option>
                                                         <option value="responses">OpenAI Responses</option>
                                                     </select>
                                                 </div>
@@ -651,12 +651,20 @@
                                                         <span data-i18n="config_backend_include_auto">加入自动切换</span>
                                                     </label>
                                                 </div>
-                                                <div class="flex items-center justify-end gap-3">
+                                                <div class="flex flex-wrap items-center justify-end gap-3">
                                                     <span id="cfg-backend-provider-status" class="text-xs text-primary-500 opacity-0 transition-opacity duration-300"></span>
+                                                    <button id="cfg-backend-provider-test" type="button"
+                                                            class="px-4 py-2 rounded-lg border border-slate-200 dark:border-white/10 text-sm text-slate-600
+                                                                   dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/10 cursor-pointer transition-colors duration-150
+                                                                   disabled:opacity-50 disabled:cursor-not-allowed"
+                                                            onclick="testBackendProviderConfig()">
+                                                        <i class="fas fa-plug mr-1.5"></i><span data-i18n="config_backend_test">测试连接</span>
+                                                    </button>
                                                     <button id="cfg-backend-provider-save" type="button"
                                                             class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 dark:bg-slate-100 dark:hover:bg-white
                                                                    text-white dark:text-slate-900 text-sm font-medium cursor-pointer transition-colors duration-150
                                                                    disabled:opacity-50 disabled:cursor-not-allowed"
+                                                            disabled
                                                             onclick="saveBackendProviderConfig()">
                                                         <i class="fas fa-floppy-disk mr-1.5"></i><span data-i18n="config_backend_save">保存后端</span>
                                                     </button>

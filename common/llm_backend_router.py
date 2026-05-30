@@ -179,13 +179,21 @@ def is_openai_compatible_backend(backend: Optional[str]) -> bool:
     return normalized in {BACKEND_CAPI, BACKEND_CAPI_MONTHLY} or _custom_backend_allowed(normalized)
 
 
-def resolve_provider_value(provider: Mapping[str, Any], value_key: str, env_key: str) -> str:
+def resolve_provider_value(
+    provider: Mapping[str, Any],
+    value_key: str,
+    env_key: str,
+    *,
+    prefer_config: bool = False,
+) -> str:
+    value = provider.get(value_key)
+    if prefer_config and value:
+        return str(value)
     env_name = str(provider.get(env_key) or "").strip()
     if env_name:
         env_value = os.getenv(env_name)
         if env_value:
             return str(env_value)
-    value = provider.get(value_key)
     return str(value) if value else ""
 
 
@@ -214,8 +222,8 @@ def get_effective_openai_api_config(backend: Optional[str] = None) -> Dict[str, 
         normalized_backend = get_current_backend()
     provider = get_capi_provider_config(normalized_backend)
     custom_backend = _custom_backend_allowed(normalized_backend)
-    api_key = resolve_provider_value(provider, "api_key", "api_key_env")
-    api_base = resolve_provider_value(provider, "api_base", "api_base_env")
+    api_key = resolve_provider_value(provider, "api_key", "api_key_env", prefer_config=custom_backend)
+    api_base = resolve_provider_value(provider, "api_base", "api_base_env", prefer_config=custom_backend)
     if not api_base and not custom_backend:
         api_base = str(conf().get("open_ai_api_base") or "")
     wire_api = str(

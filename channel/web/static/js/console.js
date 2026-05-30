@@ -85,6 +85,11 @@ const I18N = {
         config_backend_connectivity_timeout_hint: '15',
         config_backend_set_current: '设为当前',
         config_backend_include_auto: '加入自动切换',
+        config_backend_test: '测试连接',
+        config_backend_testing: '正在测试...',
+        config_backend_tested: '连接可用，可以保存',
+        config_backend_test_required: '请先测试连接',
+        config_backend_test_error: '连接测试失败',
         config_backend_save: '保存后端',
         config_backend_saved: '后端已保存',
         config_backend_required: '请填写后端 ID 和模型',
@@ -263,6 +268,11 @@ const I18N = {
         config_backend_connectivity_timeout_hint: '15',
         config_backend_set_current: 'Set current',
         config_backend_include_auto: 'Include in auto switch',
+        config_backend_test: 'Test connection',
+        config_backend_testing: 'Testing...',
+        config_backend_tested: 'Connection ready. Save is unlocked.',
+        config_backend_test_required: 'Test connection before saving',
+        config_backend_test_error: 'Connection test failed',
         config_backend_save: 'Save backend',
         config_backend_saved: 'Backend saved',
         config_backend_required: 'Backend ID and model required',
@@ -2701,6 +2711,7 @@ let configApiKeys = {};
 let configCurrentModel = '';
 let configLlmBackendStatus = {};
 let configBackendProviderProfiles = [];
+let configBackendProviderTestState = { fingerprint: '', token: '', testing: false };
 let configGrokStatus = {};
 let configGrokAccounts = [];
 let grokLoginPollTimer = null;
@@ -2978,6 +2989,51 @@ function renderBackendProviderSelect(selectedId) {
     }
 }
 
+function backendProviderPayloadFingerprint(payload) {
+    const normalized = {};
+    Object.keys(payload || {})
+        .filter(key => key !== 'test_token' && payload[key] !== undefined)
+        .sort()
+        .forEach(key => {
+            normalized[key] = payload[key];
+        });
+    const canonical = JSON.stringify(normalized);
+    let hash = 2166136261;
+    for (let i = 0; i < canonical.length; i += 1) {
+        hash ^= canonical.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return `${(hash >>> 0).toString(16)}:${canonical.length}`;
+}
+
+function backendProviderCurrentFingerprint() {
+    const result = buildBackendProviderPayload();
+    return result.payload ? backendProviderPayloadFingerprint(result.payload) : '';
+}
+
+function resetBackendProviderTestState() {
+    configBackendProviderTestState = { fingerprint: '', token: '', testing: false };
+    updateBackendProviderActionState();
+}
+
+function isBackendProviderTestCurrent() {
+    const currentFingerprint = backendProviderCurrentFingerprint();
+    return !!(
+        currentFingerprint
+        && configBackendProviderTestState.token
+        && configBackendProviderTestState.fingerprint === currentFingerprint
+    );
+}
+
+function updateBackendProviderActionState() {
+    const saveBtn = document.getElementById('cfg-backend-provider-save');
+    const testBtn = document.getElementById('cfg-backend-provider-test');
+    const result = buildBackendProviderPayload();
+    const canTest = !!result.payload && !configBackendProviderTestState.testing;
+    if (testBtn) testBtn.disabled = !canTest;
+    if (saveBtn) saveBtn.disabled = !result.payload || !isBackendProviderTestCurrent() || configBackendProviderTestState.testing;
+}
+
 function bindBackendProviderProfileForm() {
     const select = document.getElementById('cfg-backend-provider-select');
     if (select && !select._cfgBound) {
@@ -2998,6 +3054,7 @@ function bindBackendProviderProfileForm() {
                 this.value = '';
                 this.dataset.masked = '';
                 this.classList.remove('cfg-key-masked');
+                resetBackendProviderTestState();
             }
         });
         keyInput.addEventListener('input', function() {
@@ -3006,6 +3063,30 @@ function bindBackendProviderProfileForm() {
         });
         keyInput._cfgBound = true;
     }
+
+    [
+        'cfg-backend-provider-id',
+        'cfg-backend-provider-label',
+        'cfg-backend-provider-model',
+        'cfg-backend-provider-api-base',
+        'cfg-backend-provider-api-key',
+        'cfg-backend-provider-api-key-env',
+        'cfg-backend-provider-api-base-env',
+        'cfg-backend-provider-wire-api',
+        'cfg-backend-provider-request-timeout',
+        'cfg-backend-provider-connectivity-timeout',
+        'cfg-backend-provider-set-current',
+        'cfg-backend-provider-include-auto'
+    ].forEach(id => {
+        const input = document.getElementById(id);
+        if (!input || input._cfgBackendTestBound) return;
+        const clearTestState = () => resetBackendProviderTestState();
+        input.addEventListener('input', clearTestState);
+        input.addEventListener('change', clearTestState);
+        input._cfgBackendTestBound = true;
+    });
+
+    updateBackendProviderActionState();
 }
 
 function selectBackendProviderProfile(id) {
@@ -3055,6 +3136,7 @@ function clearBackendProviderForm() {
     const includeAuto = document.getElementById('cfg-backend-provider-include-auto');
     if (setCurrent) setCurrent.checked = false;
     if (includeAuto) includeAuto.checked = false;
+    resetBackendProviderTestState();
 }
 
 function fillBackendProviderForm(id) {
@@ -3087,6 +3169,7 @@ function fillBackendProviderForm(id) {
     const includeAuto = document.getElementById('cfg-backend-provider-include-auto');
     if (setCurrent) setCurrent.checked = profile.id === configLlmBackendStatus.current_backend;
     if (includeAuto) includeAuto.checked = profile.include_in_auto_switch || autoIds.has(profile.id);
+    resetBackendProviderTestState();
 }
 
 function readBackendProviderValue(id) {
@@ -3136,6 +3219,54 @@ function buildBackendProviderPayload() {
     if (requestTimeout !== undefined) payload.request_timeout_seconds = requestTimeout;
     if (connectivityTimeout !== undefined) payload.connectivity_timeout_seconds = connectivityTimeout;
     return { payload };
+}
+
+function testBackendProviderConfig() {
+    const result = buildBackendProviderPayload();
+    if (result.error) {
+        showStatus('cfg-backend-provider-status', result.error, true);
+        return;
+    }
+
+    const payload = result.payload;
+    const testBtn = document.getElementById('cfg-backend-provider-test');
+    const fingerprint = backendProviderPayloadFingerprint(payload);
+    configBackendProviderTestState = { fingerprint: '', token: '', testing: true };
+    updateBackendProviderActionState();
+    showStatus('cfg-backend-provider-status', 'config_backend_testing', false);
+    if (testBtn) testBtn.disabled = true;
+
+    fetch('/config/backend/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: payload })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.status === 'success' && data.test_token) {
+            configBackendProviderTestState = {
+                fingerprint,
+                token: data.test_token,
+                testing: false
+            };
+            showStatus('cfg-backend-provider-status', 'config_backend_tested', false);
+        } else {
+            configBackendProviderTestState = { fingerprint: '', token: '', testing: false };
+            showStatusText(
+                'cfg-backend-provider-status',
+                (data && data.message) || t('config_backend_test_error'),
+                true
+            );
+        }
+    })
+    .catch(() => {
+        configBackendProviderTestState = { fingerprint: '', token: '', testing: false };
+        showStatus('cfg-backend-provider-status', 'config_backend_test_error', true);
+    })
+    .finally(() => {
+        configBackendProviderTestState.testing = false;
+        updateBackendProviderActionState();
+    });
 }
 
 function upsertLocalBackendProviderProfile(payload) {
@@ -3579,13 +3710,20 @@ function toggleApiKeyVisibility() {
     }
 }
 
-function showStatus(elId, msgKey, isError) {
+function showStatusText(elId, message, isError) {
     const el = document.getElementById(elId);
-    el.textContent = t(msgKey);
+    if (!el) return;
+    const text = String(message || '');
+    el.textContent = text.length > 120 ? `${text.slice(0, 117)}...` : text;
+    el.title = text;
     el.classList.toggle('text-red-500', !!isError);
     el.classList.toggle('text-primary-500', !isError);
     el.classList.remove('opacity-0');
     setTimeout(() => el.classList.add('opacity-0'), 2500);
+}
+
+function showStatus(elId, msgKey, isError) {
+    showStatusText(elId, t(msgKey), isError);
 }
 
 function saveModelConfig() {
@@ -3667,8 +3805,16 @@ function saveBackendProviderConfig() {
     }
 
     const payload = result.payload;
+    if (!isBackendProviderTestCurrent()) {
+        updateBackendProviderActionState();
+        showStatus('cfg-backend-provider-status', 'config_backend_test_required', true);
+        return;
+    }
+    payload.test_token = configBackendProviderTestState.token;
     const btn = document.getElementById('cfg-backend-provider-save');
+    const testBtn = document.getElementById('cfg-backend-provider-test');
     btn.disabled = true;
+    if (testBtn) testBtn.disabled = true;
     fetch('/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3689,11 +3835,15 @@ function saveBackendProviderConfig() {
             }
             showStatus('cfg-backend-provider-status', 'config_backend_saved', false);
         } else {
-            showStatus('cfg-backend-provider-status', 'config_backend_save_error', true);
+            showStatusText(
+                'cfg-backend-provider-status',
+                (data && data.message) || t('config_backend_save_error'),
+                true
+            );
         }
     })
     .catch(() => showStatus('cfg-backend-provider-status', 'config_backend_save_error', true))
-    .finally(() => { btn.disabled = false; });
+    .finally(() => { updateBackendProviderActionState(); });
 }
 
 function saveAgentConfig() {

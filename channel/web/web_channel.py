@@ -36,8 +36,11 @@ from channel.weixin.weixin_identity import (
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
 _FILE_SERVE_TOKEN_TTL_SECONDS = 3600
+_BACKEND_PROVIDER_TEST_TTL_SECONDS = 900
 _file_serve_lock = threading.Lock()
 _file_serve_tokens = {}
+_backend_provider_test_lock = threading.Lock()
+_backend_provider_test_cache = {}
 
 def _is_password_enabled():
     return bool(conf().get("web_password", ""))
@@ -971,6 +974,7 @@ class WebChannel(ChatChannel):
             '/chat', 'ChatHandler',
             '/grok', 'GrokPageHandler',
             '/config', 'ConfigHandler',
+            '/config/backend/test', 'ConfigBackendProviderTestHandler',
             '/api/channels', 'ChannelsHandler',
             '/api/grok/status', 'GrokStatusHandler',
             '/api/grok/login/start', 'GrokLoginStartHandler',
@@ -1634,8 +1638,77 @@ class ConfigHandler:
                 result.append(backend)
         return result
 
+    @staticmethod
+    def _backend_provider_test_session_key():
+        try:
+            token = str(web.cookies().get("cow_auth_token", "") or "").strip()
+        except Exception:
+            token = ""
+        return token or "__default_web_config_session__"
+
+    @staticmethod
+    def _backend_provider_test_fingerprint(update):
+        if not isinstance(update, dict):
+            raise ValueError("llm_backend_provider must be an object")
+        ignored = {
+            "test_token",
+            "test_id",
+            "tested",
+            "tested_at",
+            "test_signature",
+        }
+        payload = {
+            key: update[key]
+            for key in sorted(update.keys())
+            if key not in ignored
+        }
+        canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
     @classmethod
-    def _apply_llm_backend_provider_update(cls, local_config, file_cfg, update):
+    def _prune_backend_provider_tests(cls, now=None):
+        now = time.time() if now is None else now
+        expired = [
+            token
+            for token, record in _backend_provider_test_cache.items()
+            if now - float(record.get("created_at", 0)) > _BACKEND_PROVIDER_TEST_TTL_SECONDS
+        ]
+        for token in expired:
+            _backend_provider_test_cache.pop(token, None)
+
+    @classmethod
+    def _record_backend_provider_test(cls, update):
+        token = uuid.uuid4().hex
+        record = {
+            "fingerprint": cls._backend_provider_test_fingerprint(update),
+            "session_key": cls._backend_provider_test_session_key(),
+            "created_at": time.time(),
+        }
+        with _backend_provider_test_lock:
+            cls._prune_backend_provider_tests(record["created_at"])
+            _backend_provider_test_cache[token] = record
+        return token
+
+    @classmethod
+    def _require_backend_provider_test(cls, update):
+        if not isinstance(update, dict):
+            raise ValueError("llm_backend_provider must be an object")
+        token = str(update.get("test_token") or update.get("test_id") or "").strip()
+        if not token:
+            raise ValueError("backend connection test required before saving")
+        fingerprint = cls._backend_provider_test_fingerprint(update)
+        session_key = cls._backend_provider_test_session_key()
+        with _backend_provider_test_lock:
+            cls._prune_backend_provider_tests()
+            record = _backend_provider_test_cache.get(token)
+        if not record:
+            raise ValueError("backend connection test expired; test again")
+        if record.get("session_key") != session_key or record.get("fingerprint") != fingerprint:
+            raise ValueError("backend settings changed after the last successful test; test again")
+        return True
+
+    @classmethod
+    def _backend_provider_candidate(cls, update):
         if not isinstance(update, dict):
             raise ValueError("llm_backend_provider must be an object")
         provider_id = cls._backend_profile_id(update.get("id") or update.get("backend") or update.get("provider"))
@@ -1644,10 +1717,10 @@ class ConfigHandler:
         if provider_id in {"codex", "grok"}:
             raise ValueError("codex/grok use dedicated backend settings")
 
-        from common.llm_backend_router import get_llm_backend_config, set_current_backend
+        from common.llm_backend_router import get_llm_backend_config
 
         llm_cfg = get_llm_backend_config()
-        providers = llm_cfg.setdefault("providers", {})
+        providers = llm_cfg.get("providers") if isinstance(llm_cfg.get("providers"), dict) else {}
         existing = providers.get(provider_id) if isinstance(providers.get(provider_id), dict) else {}
         provider = dict(existing or {})
         provider["label"] = str(update.get("label") or provider.get("label") or provider_id).strip() or provider_id
@@ -1674,6 +1747,102 @@ class ConfigHandler:
         )
         provider["request_timeout_seconds"] = request_timeout or 120
         provider["connectivity_timeout_seconds"] = connectivity_timeout or 12
+        return provider_id, provider
+
+    @staticmethod
+    def _resolve_provider_secret(provider, value_key, env_key):
+        value = str(provider.get(value_key) or "").strip()
+        if value:
+            return value
+        env_name = str(provider.get(env_key) or "").strip()
+        return os.getenv(env_name, "").strip() if env_name else ""
+
+    @classmethod
+    def _redact_backend_provider_error(cls, message, provider, *extra_values):
+        text = str(message or "")
+        values = [provider.get("api_key"), provider.get("api_base"), *extra_values]
+        for value in values:
+            value = str(value or "").strip()
+            if value:
+                text = text.replace(value, cls._mask_key(value))
+        return text
+
+    @classmethod
+    def _test_llm_backend_provider_update(cls, update):
+        provider_id, provider = cls._backend_provider_candidate(update)
+        model = str(provider.get("model") or "").strip()
+        api_key = cls._resolve_provider_secret(provider, "api_key", "api_key_env")
+        api_base = cls._resolve_provider_secret(provider, "api_base", "api_base_env")
+        wire_api = cls._normalize_backend_wire_api(provider.get("wire_api"))
+        timeout = cls._coerce_backend_timeout(provider.get("connectivity_timeout_seconds"), 12)
+        if not model:
+            raise ValueError("model is required")
+        if not api_base:
+            raise ValueError("api base is required")
+        if not api_key:
+            raise ValueError("api key is required")
+
+        from models.openai.openai_http_client import OpenAIHTTPClient, OpenAIHTTPError
+        from models.openai.responses_api_adapter import build_responses_payload, is_responses_wire_api
+
+        client = OpenAIHTTPClient(proxy=conf().get("proxy") or None, timeout=timeout)
+        try:
+            if is_responses_wire_api(wire_api):
+                payload = build_responses_payload(
+                    {
+                        "model": model,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 1,
+                    },
+                    store=False,
+                )
+                stream = client.responses(
+                    api_key=api_key,
+                    api_base=api_base,
+                    timeout=timeout,
+                    stream=True,
+                    **payload,
+                )
+                for event in stream:
+                    if isinstance(event, dict) and event.get("error"):
+                        raise RuntimeError(event.get("message") or event.get("error") or "provider returned an error")
+                    break
+                else:
+                    raise RuntimeError("provider returned an empty stream")
+            else:
+                response = client.chat_completions(
+                    api_key=api_key,
+                    api_base=api_base,
+                    timeout=timeout,
+                    stream=False,
+                    model=model,
+                    messages=[{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                )
+                if not isinstance(response, dict) or not response.get("choices"):
+                    raise RuntimeError("provider returned an unexpected response")
+        except OpenAIHTTPError as e:
+            message = cls._redact_backend_provider_error(e.message, provider, api_key, api_base)
+            raise ValueError(f"HTTP {e.status_code}: {message}") from e
+        except Exception as e:
+            raise ValueError(cls._redact_backend_provider_error(str(e), provider, api_key, api_base)) from e
+
+        return {
+            "id": provider_id,
+            "model": model,
+            "wire_api": wire_api,
+            "api_base": api_base,
+            "connectivity_timeout_seconds": timeout,
+        }
+
+    @classmethod
+    def _apply_llm_backend_provider_update(cls, local_config, file_cfg, update):
+        provider_id, provider = cls._backend_provider_candidate(update)
+
+        from common.llm_backend_router import get_llm_backend_config, set_current_backend
+
+        llm_cfg = get_llm_backend_config()
+        providers = llm_cfg.setdefault("providers", {})
         providers[provider_id] = provider
 
         auto_cfg = llm_cfg.setdefault("auto_switch", {})
@@ -1888,7 +2057,7 @@ class ConfigHandler:
             config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__)))), "config.json")
             if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
+                with open(config_path, "r", encoding="utf-8-sig") as f:
                     file_cfg = json.load(f)
             else:
                 file_cfg = {}
@@ -1932,6 +2101,7 @@ class ConfigHandler:
                 if backend_model:
                     applied["grok_model"] = backend_model
             if provider_update is not None:
+                self._require_backend_provider_test(provider_update)
                 applied["llm_backend_provider"] = self._apply_llm_backend_provider_update(
                     local_config,
                     file_cfg,
@@ -1966,7 +2136,33 @@ class ConfigHandler:
             )
         except Exception as e:
             logger.error(f"Error updating config: {e}")
-            return json.dumps({"status": "error", "message": str(e)})
+            return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
+
+
+class ConfigBackendProviderTestHandler:
+    def POST(self):
+        _require_auth()
+        web.header('Content-Type', 'application/json; charset=utf-8')
+        try:
+            data = json.loads(web.data() or b"{}")
+            if not isinstance(data, dict):
+                return json.dumps({"status": "error", "message": "invalid request body"})
+            update = data.get("llm_backend_provider") or data.get("provider") or data
+            result = ConfigHandler._test_llm_backend_provider_update(update)
+            test_token = ConfigHandler._record_backend_provider_test(update)
+            return json.dumps(
+                {
+                    "status": "success",
+                    "tested": True,
+                    "test_token": test_token,
+                    "expires_in_seconds": _BACKEND_PROVIDER_TEST_TTL_SECONDS,
+                    "provider": result,
+                },
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            logger.warning("[WebChannel] Backend provider connectivity test failed: %s", str(e)[:180])
+            return json.dumps({"status": "error", "tested": False, "message": str(e)}, ensure_ascii=False)
 
 
 class ChannelsHandler:
@@ -2558,7 +2754,7 @@ class ChannelsHandler:
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__)))), "config.json")
         if os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, "r", encoding="utf-8-sig") as f:
                 file_cfg = json.load(f)
         else:
             file_cfg = {}
@@ -2708,7 +2904,7 @@ class ChannelsHandler:
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__)))), "config.json")
         if os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, "r", encoding="utf-8-sig") as f:
                 file_cfg = json.load(f)
         else:
             file_cfg = {}
@@ -2764,7 +2960,7 @@ class ChannelsHandler:
         config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__)))), "config.json")
         if os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, "r", encoding="utf-8-sig") as f:
                 file_cfg = json.load(f)
         else:
             file_cfg = {}

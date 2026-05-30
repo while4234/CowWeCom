@@ -209,6 +209,20 @@ class TestGrokConsoleLogin(unittest.TestCase):
         self.assertIn("/api/grok/account/select", script)
         self.assertIn("cfg-grok-account-name", script)
 
+    def test_console_has_backend_provider_test_controls(self):
+        script = open(
+            os.path.join(os.path.dirname(__file__), "..", "channel", "web", "static", "js", "console.js"),
+            encoding="utf-8",
+        ).read()
+        markup = open(
+            os.path.join(os.path.dirname(__file__), "..", "channel", "web", "chat.html"),
+            encoding="utf-8",
+        ).read()
+
+        self.assertIn("testBackendProviderConfig", script)
+        self.assertIn("/config/backend/test", script)
+        self.assertIn("cfg-backend-provider-test", markup)
+
     def test_config_handler_accepts_backend_profile_payload(self):
         import channel.web.web_channel as web_channel
 
@@ -221,24 +235,127 @@ class TestGrokConsoleLogin(unittest.TestCase):
                 }
             }
             fake_file = os.path.join(tmp, "channel", "web", "web_channel.py")
-            payload = {
+            config_json = os.path.join(tmp, "config.json")
+            with open(config_json, "w", encoding="utf-8-sig") as handle:
+                json.dump({"llm_backend": fake_conf["llm_backend"]}, handle)
+
+            provider = {
+                "backend": "custom_fast",
+                "model": "gpt-custom",
+                "api_base": "https://custom.example/v1",
+                "api_key": "TEST-KEY",
+                "wire_api": "responses",
+            }
+            save_payload = {
                 "llm_backend_provider": {
-                    "backend": "custom_fast",
-                    "model": "gpt-custom",
-                    "api_base": "https://custom.example/v1",
-                    "wire_api": "responses",
+                    **provider,
                 }
             }
 
             with patch.object(web_channel, "_require_auth", return_value=None), \
                     patch.object(web_channel.web, "header", return_value=None), \
-                    patch.object(web_channel.web, "data", return_value=json.dumps(payload).encode()), \
+                    patch.object(web_channel.web, "data", return_value=json.dumps(save_payload).encode()), \
                     patch.object(web_channel, "conf", return_value=fake_conf), \
+                    patch("config.conf", return_value=fake_conf), \
+                    patch.object(web_channel, "__file__", fake_file):
+                untested = json.loads(web_channel.ConfigHandler().POST())
+
+            calls = []
+
+            class FakeClient:
+                def __init__(self, **_kwargs):
+                    pass
+
+                def responses(self, **kwargs):
+                    calls.append(kwargs)
+                    return iter([{"type": "response.created"}])
+
+            with patch.object(web_channel, "_require_auth", return_value=None), \
+                    patch.object(web_channel.web, "header", return_value=None), \
+                    patch.object(web_channel.web, "data", return_value=json.dumps({"provider": provider}).encode()), \
+                    patch.object(web_channel, "conf", return_value=fake_conf), \
+                    patch("config.conf", return_value=fake_conf), \
+                    patch("models.openai.openai_http_client.OpenAIHTTPClient", FakeClient), \
+                    patch.object(web_channel, "__file__", fake_file):
+                tested = json.loads(web_channel.ConfigBackendProviderTestHandler().POST())
+
+            provider_with_token = dict(provider)
+            provider_with_token["test_token"] = tested["test_token"]
+            changed_provider = dict(provider_with_token)
+            changed_provider["model"] = "gpt-other"
+            changed_save_payload = {"llm_backend_provider": changed_provider}
+            with patch.object(web_channel, "_require_auth", return_value=None), \
+                    patch.object(web_channel.web, "header", return_value=None), \
+                    patch.object(web_channel.web, "data", return_value=json.dumps(changed_save_payload).encode()), \
+                    patch.object(web_channel, "conf", return_value=fake_conf), \
+                    patch("config.conf", return_value=fake_conf), \
+                    patch.object(web_channel, "__file__", fake_file):
+                changed = json.loads(web_channel.ConfigHandler().POST())
+
+            tested_save_payload = {"llm_backend_provider": provider_with_token}
+            with patch.object(web_channel, "_require_auth", return_value=None), \
+                    patch.object(web_channel.web, "header", return_value=None), \
+                    patch.object(web_channel.web, "data", return_value=json.dumps(tested_save_payload).encode()), \
+                    patch.object(web_channel, "conf", return_value=fake_conf), \
+                    patch("config.conf", return_value=fake_conf), \
                     patch.object(web_channel, "__file__", fake_file):
                 result = json.loads(web_channel.ConfigHandler().POST())
 
+            with open(config_json, encoding="utf-8") as handle:
+                saved = json.load(handle)
+
+        self.assertEqual(untested["status"], "error")
+        self.assertIn("test required", untested["message"])
+        self.assertEqual(tested["status"], "success")
+        self.assertTrue(tested["tested"])
+        self.assertEqual(calls[0]["api_base"], "https://custom.example/v1")
+        self.assertEqual(calls[0]["api_key"], "TEST-KEY")
+        self.assertNotIn("TEST-KEY", json.dumps(tested, ensure_ascii=False))
+        self.assertEqual(changed["status"], "error")
+        self.assertIn("settings changed", changed["message"])
         self.assertEqual(result["status"], "success")
         self.assertIn("llm_backend_provider", result["applied"])
+        self.assertEqual(saved["llm_backend"]["providers"]["custom_fast"]["wire_api"], "responses")
+
+    def test_backend_provider_test_redacts_connection_error_secrets(self):
+        import channel.web.web_channel as web_channel
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_conf = {
+                "llm_backend": {
+                    "current_backend": "capi",
+                    "state_path": os.path.join(tmp, "state.json"),
+                    "providers": {},
+                }
+            }
+            fake_file = os.path.join(tmp, "channel", "web", "web_channel.py")
+            provider = {
+                "backend": "custom_fast",
+                "model": "gpt-custom",
+                "api_base": "https://secret.example/v1",
+                "api_key": "SECRET-KEY-1234",
+                "wire_api": "responses",
+            }
+
+            class FakeClient:
+                def __init__(self, **_kwargs):
+                    pass
+
+                def responses(self, **kwargs):
+                    raise RuntimeError(f"bad {kwargs['api_key']} {kwargs['api_base']}")
+
+            with patch.object(web_channel, "_require_auth", return_value=None), \
+                    patch.object(web_channel.web, "header", return_value=None), \
+                    patch.object(web_channel.web, "data", return_value=json.dumps({"provider": provider}).encode()), \
+                    patch.object(web_channel, "conf", return_value=fake_conf), \
+                    patch("config.conf", return_value=fake_conf), \
+                    patch("models.openai.openai_http_client.OpenAIHTTPClient", FakeClient), \
+                    patch.object(web_channel, "__file__", fake_file):
+                result = json.loads(web_channel.ConfigBackendProviderTestHandler().POST())
+
+        self.assertEqual(result["status"], "error")
+        self.assertNotIn("SECRET-KEY-1234", result["message"])
+        self.assertNotIn("https://secret.example/v1", result["message"])
 
     def test_model_config_grok_selection_sets_admin_backend_not_global_bot_type(self):
         import channel.web.web_channel as web_channel

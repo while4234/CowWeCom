@@ -778,6 +778,30 @@ class TestCodexBackendRouter(unittest.TestCase):
         self.assertEqual(routed["api_base"], "")
         self.assertEqual(routed["model"], "gpt-custom")
 
+    def test_custom_provider_prefers_direct_values_over_env_aliases(self):
+        conf()["llm_backend"]["providers"] = {
+            "custom_fast": {
+                "model": "gpt-custom",
+                "api_key": "CUSTOM-KEY",
+                "api_key_env": "OPENAI_API_KEY",
+                "api_base": "https://custom.example/v1",
+                "api_base_env": "OPENAI_API_BASE",
+            },
+        }
+
+        with patch.dict(
+            "os.environ",
+            {
+                "OPENAI_API_KEY": "ENV-KEY",
+                "OPENAI_API_BASE": "https://env.example/v1",
+            },
+            clear=False,
+        ):
+            routed = get_effective_openai_api_config("custom_fast")
+
+        self.assertEqual(routed["api_key"], "CUSTOM-KEY")
+        self.assertEqual(routed["api_base"], "https://custom.example/v1")
+
     def test_midnight_connectivity_failure_uses_configured_custom_fallback(self):
         conf()["llm_backend"]["providers"]["custom_fast"] = {
             "label": "Custom Fast",
