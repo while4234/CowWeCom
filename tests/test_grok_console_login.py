@@ -209,6 +209,32 @@ class TestGrokConsoleLogin(unittest.TestCase):
         self.assertIn("/api/grok/account/select", script)
         self.assertIn("cfg-grok-account-name", script)
 
+    def test_console_grok_manual_input_mentions_authorization_code(self):
+        root = os.path.join(os.path.dirname(__file__), "..")
+        script = open(
+            os.path.join(root, "channel", "web", "static", "js", "console.js"),
+            encoding="utf-8",
+        ).read()
+        markup = open(
+            os.path.join(root, "channel", "web", "chat.html"),
+            encoding="utf-8",
+        ).read()
+
+        self.assertIn("Callback URL / 授权码", script)
+        self.assertIn("Callback URL / auth code", script)
+        self.assertIn("Grok Build 授权码", markup)
+
+    def test_console_grok_manual_error_recovers_successful_login_status(self):
+        script = open(
+            os.path.join(os.path.dirname(__file__), "..", "channel", "web", "static", "js", "console.js"),
+            encoding="utf-8",
+        ).read()
+
+        self.assertIn("grokStatusMatchesCompletedLogin", script)
+        self.assertIn("recoverCompletedGrokLoginAfterManualError", script)
+        self.assertIn("showCompletedGrokLogin(input)", script)
+        self.assertIn("if (await recoverCompletedGrokLoginAfterManualError(accountId, accountName, input)) return;", script)
+
     def test_console_has_backend_provider_test_controls(self):
         script = open(
             os.path.join(os.path.dirname(__file__), "..", "channel", "web", "static", "js", "console.js"),

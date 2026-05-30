@@ -106,10 +106,10 @@ const I18N = {
         config_grok_test: '检查',
         config_grok_logout: '退出',
         config_grok_authorize_url: '登录链接',
-        config_grok_callback: 'Callback URL',
+        config_grok_callback: 'Callback URL / 授权码',
         config_grok_manual: '提交回调',
         config_grok_name_required: '请填写账号名称',
-        config_grok_callback_required: '请填写回调 URL',
+        config_grok_callback_required: '请填写回调 URL 或授权码',
         config_grok_login_started: 'Grok 登录已开始',
         config_grok_login_done: 'Grok 登录完成',
         config_grok_selected: '账号已切换',
@@ -289,10 +289,10 @@ const I18N = {
         config_grok_test: 'Check',
         config_grok_logout: 'Log out',
         config_grok_authorize_url: 'Login URL',
-        config_grok_callback: 'Callback URL',
+        config_grok_callback: 'Callback URL / auth code',
         config_grok_manual: 'Submit callback',
         config_grok_name_required: 'Account name required',
-        config_grok_callback_required: 'Callback URL required',
+        config_grok_callback_required: 'Callback URL or authorization code required',
         config_grok_login_started: 'Grok login started',
         config_grok_login_done: 'Grok login complete',
         config_grok_selected: 'Account selected',
@@ -3412,6 +3412,35 @@ function currentGrokAccountName() {
     return input ? input.value.trim() : '';
 }
 
+function isUsableGrokAccount(account) {
+    return account && account.logged_in === true && account.needs_reauth !== true;
+}
+
+function grokAccountMatchesLoginRequest(account, accountId, accountName) {
+    if (!account) return false;
+    if (accountId) return account.account_id === accountId;
+    if (accountName) return account.account_name === accountName;
+    return account.active === true;
+}
+
+function grokStatusMatchesCompletedLogin(status, accountId, accountName) {
+    const normalizedStatus = normalizeGrokAccount(status);
+    const accounts = Array.isArray(status && status.accounts)
+        ? status.accounts.map(normalizeGrokAccount).filter(Boolean)
+        : [];
+    if (normalizedStatus && !accounts.some(account => account.account_id === normalizedStatus.account_id)) {
+        accounts.push(normalizedStatus);
+    }
+    const requestedAccounts = accounts.filter(account => grokAccountMatchesLoginRequest(account, accountId, accountName));
+    if (requestedAccounts.length) return requestedAccounts.some(isUsableGrokAccount);
+    if (accountId || accountName) return false;
+    return accounts.some(isUsableGrokAccount);
+}
+
+function sleep(ms) {
+    return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
 function setGrokLoginLink(data) {
     const box = document.getElementById('cfg-grok-login-box');
     const link = document.getElementById('cfg-grok-authorize-url');
@@ -3450,6 +3479,35 @@ async function refreshGrokAccounts(options = {}) {
         if (!options.silent) showStatus('cfg-grok-status', 'config_grok_error', true);
         throw error;
     }
+}
+
+async function showCompletedGrokLogin(input, options = {}) {
+    if (input) input.value = '';
+    stopGrokLoginPolling();
+    setGrokLoginLink(null);
+    try {
+        await refreshGrokAccounts({ silent: true });
+    } catch (_) {
+        // The manual completion response is authoritative; do not turn a
+        // finished OAuth exchange into a visible failure because refresh raced.
+    }
+    if (!options.silent) showStatus('cfg-grok-status', 'config_grok_login_done', false);
+}
+
+async function recoverCompletedGrokLoginAfterManualError(accountId, accountName, input) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (attempt > 0) await sleep(500);
+        try {
+            const status = await refreshGrokAccounts({ silent: true });
+            if (grokStatusMatchesCompletedLogin(status, accountId, accountName)) {
+                await showCompletedGrokLogin(input);
+                return true;
+            }
+        } catch (_) {
+            return false;
+        }
+    }
+    return false;
 }
 
 function stopGrokLoginPolling() {
@@ -3499,10 +3557,7 @@ async function pollGrokAccountLogin(options = {}) {
     try {
         const data = await grokRequestJson('/api/grok/login/poll');
         if (data.status === 'complete') {
-            stopGrokLoginPolling();
-            setGrokLoginLink(null);
-            await refreshGrokAccounts({ silent: true });
-            if (!options.silent) showStatus('cfg-grok-status', 'config_grok_login_done', false);
+            await showCompletedGrokLogin(null, options);
         } else if (data.status === 'failed') {
             stopGrokLoginPolling();
             if (!options.silent) showStatus('cfg-grok-status', 'config_grok_error', true);
@@ -3521,17 +3576,16 @@ async function manualCompleteGrokLogin() {
         showStatus('cfg-grok-status', 'config_grok_callback_required', true);
         return;
     }
+    const accountId = selectedGrokAccountId();
+    const accountName = currentGrokAccountName();
     try {
         await grokRequestJson('/api/grok/login/manual', {
             method: 'POST',
             body: JSON.stringify({ callback_url: callbackUrl })
         });
-        if (input) input.value = '';
-        stopGrokLoginPolling();
-        setGrokLoginLink(null);
-        await refreshGrokAccounts({ silent: true });
-        showStatus('cfg-grok-status', 'config_grok_login_done', false);
+        await showCompletedGrokLogin(input);
     } catch (error) {
+        if (await recoverCompletedGrokLoginAfterManualError(accountId, accountName, input)) return;
         showStatus('cfg-grok-status', 'config_grok_error', true);
     }
 }
