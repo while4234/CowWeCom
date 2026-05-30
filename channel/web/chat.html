@@ -1044,12 +1044,12 @@
                                             <i class="fas fa-wand-magic-sparkles text-[11px]"></i>
                                             <span data-i18n="knowledge_backend_llm">生成学习文档</span>
                                         </button>
-                                        <button type="button" onclick="startVisualBuildLoop(getSelectedKnowledgeBackendDocumentId(), false, false)"
+                                        <button type="button" title="Incremental visual build" onclick="startVisualBuildLoop(getSelectedKnowledgeBackendDocumentId(), false, false)"
                                                 class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-sky-50 hover:bg-sky-100 dark:bg-sky-900/20 dark:hover:bg-sky-900/30 text-sky-700 dark:text-sky-300 text-xs font-medium cursor-pointer transition-colors duration-150">
                                             <i class="fas fa-chart-simple text-[11px]"></i>
                                             <span data-i18n="knowledge_backend_visual_build">补全图表/视觉知识</span>
                                         </button>
-                                        <button type="button" onclick="startVisualBuildLoop(getSelectedKnowledgeBackendDocumentId(), false, true)"
+                                        <button type="button" title="Continue incremental visual build and retry failed items" onclick="startVisualBuildLoop(getSelectedKnowledgeBackendDocumentId(), false, true)"
                                                 class="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/30 text-amber-700 dark:text-amber-300 text-xs font-medium cursor-pointer transition-colors duration-150">
                                             <i class="fas fa-rotate text-[11px]"></i>
                                             <span data-i18n="knowledge_backend_visual_continue">继续补全图表/视觉知识</span>

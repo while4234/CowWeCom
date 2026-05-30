@@ -240,6 +240,93 @@ class CodexBot(Bot, OpenAICompatibleBot):
             logger.error("[CODEX] call_vision error: %s", exc)
             return {"error": True, "message": str(exc)}
 
+    def call_vision_images(
+        self,
+        image_urls: list[str],
+        question: str,
+        image_labels: Optional[list[str]] = None,
+        model: Optional[str] = None,
+        max_tokens: int = 3000,
+        reasoning_effort: Optional[str] = None,
+        reasoning_effort_locked: bool = False,
+        request_timeout: Optional[int] = None,
+    ) -> dict:
+        """Analyze multiple images through the Codex authenticated Responses endpoint."""
+        try:
+            urls = [str(url or "").strip() for url in image_urls or [] if str(url or "").strip()]
+            if not urls:
+                raise ValueError("at least one image_url is required")
+            labels = list(image_labels or [])
+            content: list[dict[str, Any]] = [{"type": "text", "text": question}]
+            for index, image_url in enumerate(urls, start=1):
+                label = str(labels[index - 1] if index - 1 < len(labels) else "").strip()
+                if not label:
+                    label = f"Part {index}"
+                content.append({"type": "text", "text": label})
+                content.append({"type": "image_url", "image_url": {"url": image_url}})
+
+            request = {
+                "model": normalize_codex_model_name(model or self._configured_model()),
+                "messages": [{"role": "user", "content": content}],
+            }
+            payload = build_responses_payload(
+                request,
+                store=False,
+                reasoning_effort=self._resolve_codex_reasoning_effort({
+                    "reasoning_effort": reasoning_effort,
+                    "reasoning_effort_locked": reasoning_effort_locked,
+                }),
+            )
+            payload["instructions"] = self._codex_vision_instructions()
+            payload.update(
+                self._build_prompt_cache_options(
+                    payload.get("model"),
+                    {"model": payload.get("model"), "channel_type": "vision_group"},
+                )
+            )
+            payload.pop("prompt_cache_retention", None)
+            payload.pop("max_output_tokens", None)
+            payload["stream"] = True
+            payload["store"] = False
+            metadata = {"model": payload.get("model"), "channel_type": "vision_group"}
+            self._record_project_optimizer_payload(payload, metadata)
+
+            client_config = self._client_config()
+            if request_timeout is not None:
+                client_config["request_timeout"] = request_timeout
+            request_id = uuid4().hex[:12]
+            tokens = self._credential_source.resolve_access_tokens()
+            events = self._transport.stream_responses(
+                payload,
+                tokens,
+                config=client_config,
+                request_id=request_id,
+            )
+            data = chat_chunks_to_chat_completion(
+                responses_stream_events_to_chat_chunks(events),
+                model=payload.get("model"),
+            )
+            usage = data.get("usage") or {}
+            content_text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            self._record_prompt_cache_usage(
+                usage,
+                request_payload=payload,
+                metadata=metadata,
+                wire_api="codex",
+            )
+            return {
+                "model": data.get("model") or payload.get("model"),
+                "content": content_text,
+                "usage": {
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                },
+            }
+        except Exception as exc:
+            logger.error("[CODEX] call_vision_images error: %s", exc)
+            return {"error": True, "message": str(exc)}
+
     @staticmethod
     def _codex_tools_enabled() -> bool:
         provider = CodexBot._provider_config()

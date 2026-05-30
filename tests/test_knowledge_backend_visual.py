@@ -535,6 +535,39 @@ def test_visual_build_is_artifact_level_resumable(tmp_path):
     assert service.get_visual_stats(document_id)["pending"] == 1
 
 
+def test_visual_build_limit_one_has_more_and_retry_failed_resumes(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    candidates = [_candidate(document_id, version_id, index) for index in range(1, 3)]
+
+    def fail_once(candidate):
+        raise RuntimeError(f"temporary failure for {candidate.id}")
+
+    analyzer = QueueAnalyzer([
+        fail_once,
+        lambda candidate: _high_result(f"later_success_{candidate.page}"),
+        lambda candidate: _high_result(f"retried_success_{candidate.page}"),
+    ])
+    service._visual_extractor = FakeExtractor(candidates)
+    service._visual_analyzer = analyzer
+
+    first = service.build_visual_knowledge(document_id=document_id, limit=1)
+    second = service.build_visual_knowledge(document_id=document_id, limit=1)
+    retry = service.build_visual_knowledge(document_id=document_id, limit=1, retry_failed=True)
+    final = service.build_visual_knowledge(document_id=document_id, limit=1)
+
+    assert first["processed"] == 1
+    assert first["failed"] == 1
+    assert first["has_more"] is True
+    assert second["processed"] == 1
+    assert second["succeeded"] == 1
+    assert second["has_retryable_failed"] is True
+    assert retry["processed"] == 1
+    assert retry["succeeded"] == 1
+    assert final["has_more"] is False
+    assert analyzer.calls == ["visual_test_1", "visual_test_2", "visual_test_1"]
+
+
 def test_high_confidence_visual_result_is_indexed(tmp_path):
     service = _service(tmp_path)
     document_id, version_id = _ingest(service)
@@ -3182,6 +3215,137 @@ def test_group_model_merge_uses_images_when_supported(tmp_path):
     assert result["analysis_model"]
     assert analyzer.image_url_count == 2
     assert service.search("image_group_merge_fact", limit=5)
+
+
+def _codex_group_json(summary, pages=(1, 2), rows=None):
+    rows = rows or [{"Signal": "CODEX_GROUP"}]
+    markdown_rows = "\n".join(f"| {row.get('Signal', '')} |" for row in rows)
+    return json.dumps(
+        {
+            "artifact_type": "table",
+            "title": "Codex merged group",
+            "caption": "Codex merged group",
+            "is_multipage": True,
+            "source_pages": list(pages),
+            "summary": summary,
+            "key_facts": [{"fact": summary, "confidence": 0.91}],
+            "parts": [
+                {"page": page, "artifact_id": f"visual_test_{page}", "role": "first" if index == 1 else "last", "summary": f"page {page}", "confidence": 0.91}
+                for index, page in enumerate(pages, start=1)
+            ],
+            "merged_table": {
+                "headers": ["Signal"],
+                "rows": rows,
+                "markdown": "| Signal |\n| --- |\n" + markdown_rows,
+                "row_page_map": [{"row_index": index, "page": pages[min(index, len(pages) - 1)]} for index, _row in enumerate(rows)],
+            },
+            "continuation_evidence": ["same caption"],
+            "confidence": {"ocr": 0.91, "structure": 0.91, "semantic": 0.91, "continuation": 0.91, "overall": 0.91},
+            "should_index": True,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _seed_codex_ready_group_with_images(service, tmp_path, group_id):
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    document_id, version_id = _ingest(service)
+    image_paths = {}
+    for page in (1, 2):
+        path = tmp_path / f"{group_id}-{page}.png"
+        Image.new("RGB", (8, 8), color=(255, 255, 255)).save(path)
+        image_paths[page] = path
+    storage = _seed_ready_group(service, document_id, version_id, group_id, image_paths=image_paths)
+    return document_id, storage
+
+
+def test_codex_group_model_merge_uses_multi_image_and_records_strategy(monkeypatch, tmp_path):
+    service = _service(tmp_path, visual_analysis={"group_model_merge_enabled": True})
+    document_id, storage = _seed_codex_ready_group_with_images(service, tmp_path, "visual_group_codex_multi")
+
+    class FakeCodexBot:
+        def call_vision_images(self, **kwargs):
+            assert len(kwargs["image_urls"]) == 2
+            assert "Part 1: page=1" in kwargs["image_labels"][0]
+            return {"content": _codex_group_json("codex_multi_image_fact")}
+
+        def call_with_tools(self, *args, **kwargs):
+            raise AssertionError("text fallback should not be used after multi-image success")
+
+    import models.codex.codex_bot as codex_bot
+
+    monkeypatch.setattr(codex_bot, "CodexBot", FakeCodexBot)
+    analyzer = VisualAnalyzer()
+    analyzer.skip_backend_availability_check = True
+    service._visual_analyzer = analyzer
+
+    result = service.analyze_visual_artifact_group("visual_group_codex_multi", analysis_backend="codex")
+
+    assert result["outcome"] == "succeeded"
+    assert result["group_merge_strategy"] == "codex_multi_image"
+    group = storage.get_visual_artifact_group("visual_group_codex_multi")
+    assert group["result_json"]["group_merge_strategy"] == "codex_multi_image"
+    chunks, _span_ids = _group_chunk_refs(storage, document_id, "visual_group_codex_multi")
+    assert chunks
+    assert chunks[0].metadata["group_merge_strategy"] == "codex_multi_image"
+    assert chunks[0].metadata["group_merge_backend"] == "codex"
+
+
+def test_codex_group_model_merge_falls_back_to_text_merge(monkeypatch, tmp_path):
+    service = _service(tmp_path, visual_analysis={"group_model_merge_enabled": True})
+    _document_id, storage = _seed_codex_ready_group_with_images(service, tmp_path, "visual_group_codex_text")
+
+    class FakeCodexBot:
+        def call_vision_images(self, **kwargs):
+            return {"error": True, "message": "multi image unavailable"}
+
+        def call_with_tools(self, *args, **kwargs):
+            return {"choices": [{"message": {"content": _codex_group_json("codex_text_merge_fact")}}]}
+
+    import models.codex.codex_bot as codex_bot
+
+    monkeypatch.setattr(codex_bot, "CodexBot", FakeCodexBot)
+    analyzer = VisualAnalyzer()
+    analyzer.skip_backend_availability_check = True
+    service._visual_analyzer = analyzer
+
+    result = service.analyze_visual_artifact_group("visual_group_codex_text", analysis_backend="codex")
+
+    assert result["outcome"] == "succeeded"
+    assert result["group_merge_strategy"] == "codex_text_merge"
+    assert "multi image unavailable" in result["group_merge_fallback_reason"]
+    assert storage.get_visual_artifact_group("visual_group_codex_text")["result_json"]["group_merge_strategy"] == "codex_text_merge"
+
+
+def test_codex_group_model_merge_falls_back_to_deterministic_without_failure(monkeypatch, tmp_path):
+    service = _service(tmp_path, visual_analysis={"group_model_merge_enabled": True})
+    _document_id, storage = _seed_codex_ready_group_with_images(service, tmp_path, "visual_group_codex_deterministic")
+
+    class FakeCodexBot:
+        def call_vision_images(self, **kwargs):
+            return {"error": True, "message": "multi image unavailable"}
+
+        def call_with_tools(self, *args, **kwargs):
+            return {"error": True, "message": "text merge unavailable"}
+
+    import models.codex.codex_bot as codex_bot
+
+    monkeypatch.setattr(codex_bot, "CodexBot", FakeCodexBot)
+    analyzer = VisualAnalyzer()
+    analyzer.skip_backend_availability_check = True
+    service._visual_analyzer = analyzer
+
+    result = service.analyze_visual_artifact_group("visual_group_codex_deterministic", analysis_backend="codex")
+
+    assert result["outcome"] == "succeeded"
+    assert result["group_merge_strategy"] == "deterministic_fallback"
+    assert "multi image unavailable" in result["group_merge_fallback_reason"]
+    assert "text merge unavailable" in result["group_merge_fallback_reason"]
+    group = storage.get_visual_artifact_group("visual_group_codex_deterministic")
+    assert group["result_json"]["group_merge_strategy"] == "deterministic_fallback"
+    assert service.search("READY_1", limit=5)
 
 
 def test_group_model_merge_falls_back_to_text_when_images_unavailable(tmp_path):

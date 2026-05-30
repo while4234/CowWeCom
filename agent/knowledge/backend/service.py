@@ -880,6 +880,10 @@ class KnowledgeBackendService:
                 "group_succeeded": 0,
                 "group_low_confidence": 0,
                 "group_failed": 0,
+                "group_merge_strategy": "",
+                "group_merge_fallback_reason": "",
+                "group_merge_backend": effective_backend,
+                "group_merge_model": model,
                 "pending": 0,
                 "has_more": False,
                 "has_retryable_failed": False,
@@ -967,6 +971,7 @@ class KnowledgeBackendService:
             else:
                 failed += 1
         group_processed = group_succeeded = group_low_confidence = group_failed = 0
+        group_merge_info: Dict[str, str] = {}
         group_outcome = self._process_ready_visual_group(
             storage,
             document_id=document_id,
@@ -980,6 +985,7 @@ class KnowledgeBackendService:
             analysis_config=analysis_config,
         )
         if group_outcome:
+            group_merge_info = dict(getattr(self, "_last_visual_group_merge_info", {}) or {})
             group_processed = 1
             if group_outcome == "succeeded":
                 group_succeeded = 1
@@ -1013,6 +1019,10 @@ class KnowledgeBackendService:
             "group_succeeded": group_succeeded,
             "group_low_confidence": group_low_confidence,
             "group_failed": group_failed,
+            "group_merge_strategy": group_merge_info.get("group_merge_strategy", ""),
+            "group_merge_fallback_reason": group_merge_info.get("group_merge_fallback_reason", ""),
+            "group_merge_backend": group_merge_info.get("group_merge_backend", effective_backend),
+            "group_merge_model": group_merge_info.get("group_merge_model", model),
             "pending": stats["pending"],
             "has_more": bool(stats["pending"] > 0 or group_stats["pending"] > 0 or prepare_has_more),
             "has_retryable_failed": bool(stats["failed"] > 0),
@@ -1145,6 +1155,10 @@ class KnowledgeBackendService:
             "group_succeeded": 0,
             "group_low_confidence": 0,
             "group_failed": 0,
+            "group_merge_strategy": "",
+            "group_merge_fallback_reason": "",
+            "group_merge_backend": "",
+            "group_merge_model": "",
             "prepared_pages_delta": 0,
             "prepared_artifacts_delta": 0,
             "errors": [],
@@ -1444,6 +1458,7 @@ class KnowledgeBackendService:
             "analysis_backend": effective_backend,
             "requested_analysis_backend": requested_backend,
             "analysis_model": model,
+            **dict(getattr(self, "_last_visual_group_merge_info", {}) or {}),
             "group": storage.get_visual_artifact_group(group_id),
             "group_stats": storage.visual_group_stats(document_id=group["document_id"], version_id=group["version_id"]),
         }
@@ -1761,6 +1776,7 @@ class KnowledgeBackendService:
         analysis_backend: str,
         analysis_config: KnowledgeBackendConfig,
     ) -> str:
+        self._last_visual_group_merge_info = {}
         group = storage.claim_next_visual_artifact_group(
             group_id=group_id,
             document_id=document_id,
@@ -1845,9 +1861,26 @@ class KnowledgeBackendService:
                     analysis_backend=analysis_backend,
                 )
                 result = validate_visual_group_analysis_json(result, group, members, visual_config)
+                default_strategy = "codex_multi_image" if analysis_backend == "codex" else "model_multi_image"
+                result = _ensure_visual_group_merge_metadata(
+                    result,
+                    strategy=default_strategy,
+                    fallback_reason="",
+                    backend=analysis_backend,
+                    model=model,
+                )
             else:
                 raw_result = merge_visual_group_from_member_results(group, members)
+                raw_result.update(
+                    _visual_group_merge_metadata(
+                        strategy="deterministic_fallback",
+                        fallback_reason="model visual group merge disabled or not applicable",
+                        backend=analysis_backend,
+                        model=model,
+                    )
+                )
                 result = validate_visual_group_analysis_json(raw_result, group, members, visual_config)
+            self._last_visual_group_merge_info = _visual_group_merge_info(result)
             confidence = float((result.get("confidence") or {}).get("overall") or 0)
             if result.get("should_index"):
                 chunks, spans = visual_group_result_to_chunks(
@@ -2936,6 +2969,54 @@ def _accumulate_visual_completion_totals(totals: Dict[str, Any], result: Mapping
         totals[key] = int(totals.get(key) or 0) + int(result.get(key) or 0)
     for error in result.get("errors") or []:
         totals.setdefault("errors", []).append(str(error))
+    if result.get("group_merge_strategy"):
+        totals["group_merge_strategy"] = str(result.get("group_merge_strategy") or "")
+        totals["group_merge_fallback_reason"] = str(result.get("group_merge_fallback_reason") or "")
+        totals["group_merge_backend"] = str(result.get("group_merge_backend") or "")
+        totals["group_merge_model"] = str(result.get("group_merge_model") or "")
+
+
+def _visual_group_merge_metadata(
+    *,
+    strategy: str,
+    fallback_reason: str,
+    backend: str,
+    model: str,
+) -> Dict[str, str]:
+    return {
+        "group_merge_strategy": strategy,
+        "group_merge_fallback_reason": fallback_reason,
+        "group_merge_backend": backend,
+        "group_merge_model": model,
+    }
+
+
+def _ensure_visual_group_merge_metadata(
+    result: Mapping[str, Any],
+    *,
+    strategy: str,
+    fallback_reason: str,
+    backend: str,
+    model: str,
+) -> Dict[str, Any]:
+    data = dict(result)
+    metadata = _visual_group_merge_metadata(
+        strategy=str(data.get("group_merge_strategy") or strategy),
+        fallback_reason=str(data.get("group_merge_fallback_reason") or fallback_reason),
+        backend=str(data.get("group_merge_backend") or backend),
+        model=str(data.get("group_merge_model") or model),
+    )
+    data.update(metadata)
+    return data
+
+
+def _visual_group_merge_info(result: Mapping[str, Any]) -> Dict[str, str]:
+    return {
+        "group_merge_strategy": str(result.get("group_merge_strategy") or ""),
+        "group_merge_fallback_reason": str(result.get("group_merge_fallback_reason") or ""),
+        "group_merge_backend": str(result.get("group_merge_backend") or ""),
+        "group_merge_model": str(result.get("group_merge_model") or ""),
+    }
 
 
 def _empty_visual_stats() -> Dict[str, Any]:

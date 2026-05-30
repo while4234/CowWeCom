@@ -159,18 +159,117 @@ class VisualAnalyzer:
         *,
         analysis_backend: Optional[str],
     ) -> str:
-        try:
-            return self._call_group_vision_model(
+        visual_config = getattr(config, "visual_analysis", {}) or {}
+        effective_backend = resolve_visual_analysis_backend(
+            analysis_backend if analysis_backend is not None else visual_config.get("analysis_backend")
+        )
+        model = str(visual_config.get("model") or "gpt-5.5")
+        if effective_backend == "codex":
+            return self._call_codex_group_model_with_fallbacks(
                 group,
                 members,
                 config,
                 document,
                 analysis_backend=analysis_backend,
             )
+        try:
+            content = self._call_group_vision_model(
+                group,
+                members,
+                config,
+                document,
+                analysis_backend=analysis_backend,
+            )
+            return _group_json_with_merge_metadata(
+                content,
+                strategy="model_multi_image",
+                fallback_reason="",
+                backend=effective_backend,
+                model=model,
+            )
         except Exception as exc:
             logger.debug("[KnowledgeBackend] visual group vision merge unavailable: %s", exc)
             fallback = merge_visual_group_from_member_results(group, members)
+            fallback.update(
+                _group_merge_metadata(
+                    strategy="deterministic_fallback",
+                    fallback_reason=str(exc),
+                    backend=effective_backend,
+                    model=model,
+                )
+            )
             return json.dumps(fallback, ensure_ascii=False)
+
+    def _call_codex_group_model_with_fallbacks(
+        self,
+        group: Dict[str, Any],
+        members: List[Dict[str, Any]],
+        config: Any,
+        document: KnowledgeDocument | None,
+        *,
+        analysis_backend: Optional[str],
+    ) -> str:
+        visual_config = getattr(config, "visual_analysis", {}) or {}
+        model = str(visual_config.get("model") or "gpt-5.5")
+        try:
+            content = self._call_group_vision_model(
+                group,
+                members,
+                config,
+                document,
+                analysis_backend=analysis_backend,
+            )
+            validated = validate_visual_group_analysis_json(content, group, members, visual_config)
+            validated.update(
+                _group_merge_metadata(
+                    strategy="codex_multi_image",
+                    fallback_reason="",
+                    backend="codex",
+                    model=model,
+                )
+            )
+            return json.dumps(validated, ensure_ascii=False)
+        except Exception as multi_image_exc:
+            multi_image_reason = str(multi_image_exc)
+            logger.debug("[KnowledgeBackend] Codex multi-image visual group merge failed: %s", multi_image_reason)
+            try:
+                content = self._call_codex_text_group_merge_model(
+                    group,
+                    members,
+                    config,
+                    document,
+                    fallback_reason=multi_image_reason,
+                )
+                validated = validate_visual_group_analysis_json(content, group, members, visual_config)
+                validated.update(
+                    _group_merge_metadata(
+                        strategy="codex_text_merge",
+                        fallback_reason=multi_image_reason,
+                        backend="codex",
+                        model=model,
+                    )
+                )
+                return json.dumps(validated, ensure_ascii=False)
+            except Exception as text_exc:
+                fallback_reason = "; ".join(
+                    _unique_nonempty_terms(
+                        [
+                            f"codex_multi_image: {multi_image_reason}",
+                            f"codex_text_merge: {text_exc}",
+                        ]
+                    )
+                )
+                logger.debug("[KnowledgeBackend] Codex text visual group merge failed: %s", text_exc)
+                fallback = merge_visual_group_from_member_results(group, members)
+                fallback.update(
+                    _group_merge_metadata(
+                        strategy="deterministic_fallback",
+                        fallback_reason=fallback_reason,
+                        backend="codex",
+                        model=model,
+                    )
+                )
+                return json.dumps(fallback, ensure_ascii=False)
 
     def _call_group_vision_model(
         self,
@@ -194,7 +293,9 @@ class VisualAnalyzer:
             analysis_backend if analysis_backend is not None else visual_config.get("analysis_backend")
         )
         if effective_backend == "codex":
-            raise RuntimeError("codex backend does not expose a multi-image group wrapper yet")
+            from models.codex.codex_bot import CodexBot
+
+            bot = CodexBot()
         else:
             bot = OpenAIBot(backend_override=effective_backend)
         prompt = build_visual_group_prompt(group, members, document, visual_config)
@@ -204,6 +305,32 @@ class VisualAnalyzer:
             or visual_config.get("max_image_long_edge")
             or 1800
         )
+        if effective_backend == "codex":
+            image_urls: List[str] = []
+            image_labels: List[str] = []
+            for index, member in enumerate(ordered_members, start=1):
+                image_path = str(member.get("image_path") or "").strip()
+                if not image_path:
+                    raise FileNotFoundError(f"visual group member image missing: {member.get('artifact_id') or index}")
+                image_labels.append(_group_member_image_label(index, member))
+                image_urls.append(image_file_to_data_url(image_path, max_long_edge))
+            response = bot.call_vision_images(
+                image_urls=image_urls,
+                image_labels=image_labels,
+                question=f"{SYSTEM_PROMPT}\n\n{prompt}",
+                model=model,
+                max_tokens=int(visual_config.get("group_max_output_tokens", visual_config.get("max_output_tokens", 3000)) or 3000),
+                reasoning_effort=reasoning_effort,
+                reasoning_effort_locked=True,
+                request_timeout=int(visual_config.get("group_timeout_seconds", visual_config.get("timeout_seconds", 300)) or 300),
+            )
+            if isinstance(response, dict) and response.get("error"):
+                raise RuntimeError(str(response.get("message") or "visual group model request failed"))
+            content = response.get("content", "") if isinstance(response, dict) else str(response or "")
+            if not str(content).strip():
+                raise RuntimeError("visual group model response was empty")
+            return str(content).strip()
+
         content: List[Dict[str, Any]] = [{"type": "text", "text": f"{SYSTEM_PROMPT}\n\n{prompt}"}]
         for index, member in enumerate(ordered_members, start=1):
             image_path = str(member.get("image_path") or "").strip()
@@ -240,6 +367,41 @@ class VisualAnalyzer:
         content = _chat_completion_content(response)
         if not content.strip():
             raise RuntimeError("visual group model response was empty")
+        return content.strip()
+
+    def _call_codex_text_group_merge_model(
+        self,
+        group: Dict[str, Any],
+        members: List[Dict[str, Any]],
+        config: Any,
+        document: KnowledgeDocument | None,
+        *,
+        fallback_reason: str,
+    ) -> str:
+        from models.codex.codex_bot import CodexBot
+
+        visual_config = getattr(config, "visual_analysis", {}) or {}
+        model = str(visual_config.get("model") or "gpt-5.5")
+        reasoning_effort = str(visual_config.get("reasoning_effort") or "xhigh")
+        prompt = build_visual_group_text_merge_prompt(group, members, document, visual_config, fallback_reason)
+        bot = CodexBot()
+        response = bot.call_with_tools(
+            [{"role": "user", "content": f"{SYSTEM_PROMPT}\n\n{prompt}"}],
+            tools=None,
+            stream=False,
+            model=model,
+            max_tokens=int(visual_config.get("group_max_output_tokens", visual_config.get("max_output_tokens", 3000)) or 3000),
+            temperature=0,
+            reasoning_effort=reasoning_effort,
+            reasoning_effort_locked=True,
+            request_timeout=int(visual_config.get("group_timeout_seconds", visual_config.get("timeout_seconds", 300)) or 300),
+            channel_type="vision_group_text_merge",
+        )
+        if isinstance(response, dict) and response.get("error"):
+            raise RuntimeError(str(response.get("message") or "Codex text visual group merge failed"))
+        content = _chat_completion_content(response)
+        if not content.strip():
+            raise RuntimeError("Codex text visual group merge response was empty")
         return content.strip()
 
 
@@ -330,6 +492,38 @@ def build_visual_group_prompt(
         "不得补造缺失行列。若不同页的表头或结构不一致，降低 confidence。"
         "输出应包含 source_pages、parts、continuation_evidence 和 uncertain_continuations。"
         "If any page-level result is low confidence, cap the group confidence and explain it in uncertain_continuations. "
+        "Return strict JSON only.\n\n"
+    )
+    return instruction + json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def build_visual_group_text_merge_prompt(
+    group: Dict[str, Any],
+    members: List[Dict[str, Any]],
+    document: KnowledgeDocument | None,
+    visual_config: Dict[str, Any],
+    fallback_reason: str,
+) -> str:
+    ordered = sorted(members, key=lambda item: int(item.get("part_index") or 0))
+    payload = {
+        "document_title": document.title if document else "",
+        "document_id": group.get("document_id") or "",
+        "version_id": group.get("version_id") or "",
+        "group_id": group.get("id") or "",
+        "group_type_candidate": group.get("group_type") or "unknown",
+        "title": group.get("title") or "",
+        "caption": group.get("caption") or "",
+        "source_pages": group.get("source_pages") or [],
+        "continuation_confidence_candidate": group.get("confidence") or 0,
+        "multi_image_failure": fallback_reason,
+        "members": [_group_member_text_merge_payload(member, visual_config) for member in ordered],
+        "output_schema": GROUP_OUTPUT_SCHEMA,
+    }
+    instruction = (
+        "Merge the same multipage visual artifact using only the supplied page-level analysis JSON and metadata. "
+        "Do not infer rows, formulas, labels, or facts that are absent from the member results. "
+        "Preserve page attribution in source_pages, parts, merged_table.row_page_map, and continuation_evidence. "
+        "If member results conflict or are incomplete, lower confidence and explain in uncertain_continuations. "
         "Return strict JSON only.\n\n"
     )
     return instruction + json.dumps(payload, ensure_ascii=False, indent=2)
@@ -761,6 +955,10 @@ def visual_group_result_to_chunks(
         "caption": result.get("caption") or group.get("caption") or "",
         "analysis_model": model,
         "analysis_backend": analysis_backend or normalize_visual_analysis_backend(visual_config.get("analysis_backend")),
+        "group_merge_strategy": result.get("group_merge_strategy") or "",
+        "group_merge_fallback_reason": result.get("group_merge_fallback_reason") or "",
+        "group_merge_backend": result.get("group_merge_backend") or (analysis_backend or normalize_visual_analysis_backend(visual_config.get("analysis_backend"))),
+        "group_merge_model": result.get("group_merge_model") or model,
         "prompt_version": prompt_version,
         "pipeline_version": str(visual_config.get("pipeline_version") or DEFAULT_VISUAL_PIPELINE_VERSION),
     }
@@ -987,6 +1185,80 @@ def _group_member_prompt_payload(member: Dict[str, Any], visual_config: Dict[str
         "page_text": str(member.get("page_text") or "")[:context_limit],
         "page_level_result": _truncate_prompt_value(result, result_limit),
     }
+
+
+def _group_member_text_merge_payload(member: Dict[str, Any], visual_config: Dict[str, Any]) -> Dict[str, Any]:
+    result = member.get("result_json") if isinstance(member.get("result_json"), dict) else {}
+    result_limit = int(visual_config.get("group_member_result_chars", 6000) or 6000)
+    table = result.get("table") if isinstance(result.get("table"), dict) else {}
+    return {
+        "artifact_id": member.get("artifact_id") or "",
+        "page": int(member.get("page") or 0),
+        "part_index": int(member.get("part_index") or 0),
+        "role": member.get("role") or "",
+        "caption": member.get("caption") or result.get("caption") or "",
+        "summary": result.get("summary") or "",
+        "structured_markdown": result.get("structured_markdown") or "",
+        "key_facts": result.get("key_facts") if isinstance(result.get("key_facts"), list) else [],
+        "table": {
+            "headers": table.get("headers") or [],
+            "rows": table.get("rows") or [],
+            "markdown": table.get("markdown") or "",
+        },
+        "confidence": result.get("confidence") if isinstance(result.get("confidence"), dict) else {},
+        "continuation": result.get("continuation") if isinstance(result.get("continuation"), dict) else {},
+        "uncertain_fields": result.get("uncertain_fields") if isinstance(result.get("uncertain_fields"), list) else [],
+        "page_level_result": _truncate_prompt_value(result, result_limit),
+    }
+
+
+def _group_member_image_label(index: int, member: Dict[str, Any]) -> str:
+    return (
+        f"Part {index}: page={member.get('page')}, "
+        f"artifact_id={member.get('artifact_id')}, role={member.get('role') or ''}"
+    )
+
+
+def _group_merge_metadata(
+    *,
+    strategy: str,
+    fallback_reason: str,
+    backend: str,
+    model: str,
+) -> Dict[str, str]:
+    return {
+        "group_merge_strategy": strategy,
+        "group_merge_fallback_reason": fallback_reason,
+        "group_merge_backend": backend,
+        "group_merge_model": model,
+    }
+
+
+def _group_json_with_merge_metadata(
+    raw: Any,
+    *,
+    strategy: str,
+    fallback_reason: str,
+    backend: str,
+    model: str,
+) -> str:
+    if isinstance(raw, dict):
+        data = dict(raw)
+    else:
+        text = str(raw or "").strip()
+        fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.DOTALL | re.IGNORECASE)
+        if fence:
+            text = fence.group(1).strip()
+        data = json.loads(text)
+    data.update(
+        _group_merge_metadata(
+            strategy=strategy,
+            fallback_reason=fallback_reason,
+            backend=backend,
+            model=model,
+        )
+    )
+    return json.dumps(data, ensure_ascii=False)
 
 
 def _truncate_prompt_value(value: Any, limit: int) -> Any:

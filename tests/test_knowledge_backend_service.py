@@ -871,7 +871,16 @@ def test_complete_visual_knowledge_all_kbs_and_kb_filter(monkeypatch, tmp_path):
 
     def fake_build(**kwargs):
         calls.append(kwargs)
-        return {"ok": True, "has_more": False, "prepare": {"status": "done"}}
+        return {
+            "ok": True,
+            "has_more": False,
+            "prepare": {"status": "done"},
+            "group_succeeded": 1,
+            "group_merge_strategy": "codex_text_merge",
+            "group_merge_fallback_reason": "multi image unavailable",
+            "group_merge_backend": "codex",
+            "group_merge_model": "gpt-5.5",
+        }
 
     monkeypatch.setattr(service, "build_visual_knowledge", fake_build)
 
@@ -883,6 +892,8 @@ def test_complete_visual_knowledge_all_kbs_and_kb_filter(monkeypatch, tmp_path):
     assert all_result["kb_id"] == ""
     assert all_result["documents_processed"] == 2
     assert {item["document_id"] for item in all_result["results"]} == {"doc-a", "doc-b"}
+    assert all_result["group_merge_strategy"] == "codex_text_merge"
+    assert all_result["group_merge_fallback_reason"] == "multi image unavailable"
     assert kb_result["scope"] == "kb"
     assert kb_result["documents_processed"] == 1
     assert calls[0]["document_id"] == "doc-b"

@@ -5974,74 +5974,32 @@ function _knowledgeBackendSourceDocumentIds() {
 async function startVisualBuildLoop(documentId, force, retryFailed, options) {
     if (_knowledgeBackendVisualRunning) return;
     const messageEl = document.getElementById('knowledge-backend-message');
-    const buildOptions = options || {};
     const selectedId = documentId || getSelectedKnowledgeBackendDocumentId();
     const selectedDoc = selectedId ? _knowledgeBackendDocumentById(selectedId) : null;
-    const sourceDocumentIds = _knowledgeBackendSourceDocumentIds();
     if (selectedDoc && !_isKnowledgeBackendSourceDocument(selectedDoc)) {
         if (messageEl) messageEl.textContent = 'Selected document is generated and cannot be used for visual completion.';
         return;
     }
-    if (!selectedId && !sourceDocumentIds.length) {
-        if (messageEl) messageEl.textContent = 'Please upload or select a source document first.';
-        return;
-    }
-    const sourceDoc = selectedId
-        ? (selectedDoc || { id: selectedId, title: selectedId })
-        : { id: '', title: `${sourceDocumentIds.length} source document(s)` };
-    if (sourceDoc.id) selectKnowledgeBackendDocument(sourceDoc.id);
-    _knowledgeBackendVisualRunning = true;
-    const backend = _normalizeVisualAnalysisBackend(buildOptions.analysisBackend || getSelectedVisualAnalysisBackend() || 'current');
-    const requestForce = buildOptions.force !== undefined ? !!buildOptions.force : !!force;
-    const requestRetryFailed = buildOptions.retryFailed !== undefined ? !!buildOptions.retryFailed : !!retryFailed;
-    setVisualBuildProgressVisible(true);
-    resetVisualBuildProgress();
-    if (messageEl) messageEl.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>${t('knowledge_backend_visual_running')}`;
-    try {
-        const payload = {
-            analysis_backend: backend || 'current',
-            retry_failed: requestRetryFailed,
-            force: requestForce,
-            export: true
-        };
-        if (sourceDoc.id) payload.document_id = sourceDoc.id;
-        if (buildOptions.maxSteps) payload.max_steps = buildOptions.maxSteps;
-        const resp = await fetch('/api/knowledge/admin/visual/complete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        const data = await _knowledgeBackendJson(resp);
-        updateVisualBuildProgress(data, data, sourceDoc, data.analysis_backend || backend);
-        if (data.status === 'disabled' || data.ok === false) {
-            if (messageEl) messageEl.textContent = data.message || 'Visual analysis is disabled';
-        } else if (messageEl) {
-            const changed = _visualCompletionChanged(data);
-            const suffix = changed ? '' : ' (no new changes)';
-            messageEl.textContent = `Visual completion finished${suffix}: documents ${data.documents_processed || 0}, processed ${data.processed || 0}, indexed ${data.succeeded || 0}, low confidence ${data.low_confidence || 0}, failed ${data.failed || 0}, groups merged ${data.group_succeeded || 0}`;
-        }
-        loadKnowledgeBackendPanel();
-        loadKnowledgeView();
-    } catch (err) {
-        if (messageEl) messageEl.textContent = err.message || 'Visual build failed';
-    } finally {
-        _knowledgeBackendVisualRunning = false;
-    }
+    return startVisualBuildLoopIncremental(selectedId, force, retryFailed, options);
 }
 
-async function startVisualBuildLoopLegacy(documentId, force, retryFailed, options) {
+async function startVisualBuildLoopIncremental(documentId, force, retryFailed, options) {
     if (_knowledgeBackendVisualRunning) return;
     const messageEl = document.getElementById('knowledge-backend-message');
     const buildOptions = options || {};
     const selectedId = documentId || getSelectedKnowledgeBackendDocumentId();
     const sourceDoc = selectedId ? (_knowledgeBackendDocumentById(selectedId) || { id: selectedId }) : null;
+    if (sourceDoc && !_isKnowledgeBackendSourceDocument(sourceDoc)) {
+        if (messageEl) messageEl.textContent = 'Selected document is generated and cannot be used for visual completion.';
+        return;
+    }
     if (!sourceDoc || !sourceDoc.id) {
         const sourceDocumentIds = _knowledgeBackendSourceDocumentIds();
         if (sourceDocumentIds.length) {
             await startVisualBuildLoopQueue(sourceDocumentIds, {
                 analysisBackend: buildOptions.analysisBackend || getSelectedVisualAnalysisBackend() || 'current',
-                force: !!force,
-                retryFailed: !!retryFailed
+                force: buildOptions.force !== undefined ? !!buildOptions.force : !!force,
+                retryFailed: buildOptions.retryFailed !== undefined ? !!buildOptions.retryFailed : !!retryFailed
             });
             return;
         }
@@ -6054,7 +6012,20 @@ async function startVisualBuildLoopLegacy(documentId, force, retryFailed, option
     const backend = _normalizeVisualAnalysisBackend(buildOptions.analysisBackend || getSelectedVisualAnalysisBackend() || 'current');
     const requestForce = buildOptions.force !== undefined ? !!buildOptions.force : !!force;
     const requestRetryFailed = buildOptions.retryFailed !== undefined ? !!buildOptions.retryFailed : !!retryFailed;
-    let totals = { processed: 0, succeeded: 0, low_confidence: 0, failed: 0, pending: 0, group_succeeded: 0, group_low_confidence: 0 };
+    let totals = {
+        processed: 0,
+        succeeded: 0,
+        low_confidence: 0,
+        failed: 0,
+        pending: 0,
+        group_succeeded: 0,
+        group_low_confidence: 0,
+        group_failed: 0,
+        group_merge_strategy: '',
+        group_merge_fallback_reason: '',
+        group_merge_backend: '',
+        group_merge_model: ''
+    };
     let changed = false;
     let lastPreparedPages = 0;
     setVisualBuildProgressVisible(true);
@@ -6087,7 +6058,14 @@ async function startVisualBuildLoopLegacy(documentId, force, retryFailed, option
             totals.failed += data.failed || 0;
             totals.group_succeeded += data.group_succeeded || 0;
             totals.group_low_confidence += data.group_low_confidence || 0;
+            totals.group_failed += data.group_failed || 0;
             totals.pending = data.pending || 0;
+            if (data.group_merge_strategy) {
+                totals.group_merge_strategy = data.group_merge_strategy;
+                totals.group_merge_fallback_reason = data.group_merge_fallback_reason || '';
+                totals.group_merge_backend = data.group_merge_backend || '';
+                totals.group_merge_model = data.group_merge_model || '';
+            }
             changed = changed ||
                 ((data.processed || 0) > 0) ||
                 ((data.failed || 0) > 0) ||
@@ -6099,6 +6077,10 @@ async function startVisualBuildLoopLegacy(documentId, force, retryFailed, option
             updateVisualBuildProgress(data, totals, sourceDoc, data.analysis_backend || backend);
             if (messageEl) {
                 messageEl.textContent = `图表补全：已处理 ${totals.processed}，高置信入库 ${totals.succeeded}，低置信跳过 ${totals.low_confidence}，失败 ${totals.failed}，剩余 ${totals.pending}`;
+            }
+            if (messageEl) {
+                const strategy = totals.group_merge_strategy ? `, group strategy ${totals.group_merge_strategy}` : '';
+                messageEl.textContent = `Visual build: processed ${totals.processed}, indexed ${totals.succeeded}, low confidence ${totals.low_confidence}, failed ${totals.failed}, pending ${totals.pending}, groups merged ${totals.group_succeeded}, group failed ${totals.group_failed}${strategy}`;
             }
             const prepare = data.prepare || {};
             if (prepare.status === 'failed') {
@@ -6113,6 +6095,7 @@ async function startVisualBuildLoopLegacy(documentId, force, retryFailed, option
             lastPreparedPages = Math.max(lastPreparedPages, currentPreparedPages);
             if (!data.has_more) break;
             if ((data.processed || 0) === 0 &&
+                (data.group_processed || 0) === 0 &&
                 !advancedPrepare &&
                 (data.prepared_artifacts_delta || 0) === 0) {
                 break;
@@ -6132,6 +6115,10 @@ async function startVisualBuildLoopLegacy(documentId, force, retryFailed, option
     } finally {
         _knowledgeBackendVisualRunning = false;
     }
+}
+
+async function startVisualBuildLoopLegacy(documentId, force, retryFailed, options) {
+    return startVisualBuildLoopIncremental(documentId, force, retryFailed, options);
 }
 
 async function startVisualBuildLoopQueue(documentIds, options) {
@@ -6178,21 +6165,25 @@ function _visualProgressLastResult(data) {
 
 function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
     const lastResult = _visualProgressLastResult(data);
+    const progress = totals || data || {};
     const stats = (data && data.stats) || lastResult.stats || {};
     const groupStats = (data && data.group_stats) || lastResult.group_stats || {};
     const prepare = (data && data.prepare) || lastResult.prepare || {};
     const total = Number(stats.total || 0);
     const pending = Number(stats.pending || 0);
     const running = Number(stats.running || 0);
-    const succeeded = Number(stats.succeeded || (data && data.succeeded) || 0);
-    const lowConfidence = Number(stats.low_confidence || (data && data.low_confidence) || 0);
-    const failed = Number(stats.failed || (data && data.failed) || 0);
-    const processed = Number((data && data.processed) || 0);
+    const succeeded = Number(stats.succeeded || progress.succeeded || (data && data.succeeded) || 0);
+    const lowConfidence = Number(stats.low_confidence || progress.low_confidence || (data && data.low_confidence) || 0);
+    const failed = Number(stats.failed || progress.failed || (data && data.failed) || 0);
+    const processed = Number(progress.processed || (data && data.processed) || 0);
     const done = total > 0 ? succeeded + lowConfidence + failed : processed;
     const remaining = Math.max(0, pending + running);
     const totalGroups = Number(groupStats.total || 0);
-    const succeededGroups = Number(groupStats.succeeded || 0);
-    const lowConfidenceGroups = Number(groupStats.low_confidence || 0);
+    const succeededGroups = Number(groupStats.succeeded || progress.group_succeeded || 0);
+    const lowConfidenceGroups = Number(groupStats.low_confidence || progress.group_low_confidence || 0);
+    const failedGroups = Number(groupStats.failed || progress.group_failed || 0);
+    const groupMergeStrategy = String(progress.group_merge_strategy || (data && data.group_merge_strategy) || lastResult.group_merge_strategy || '');
+    const groupMergeFallbackReason = String(progress.group_merge_fallback_reason || (data && data.group_merge_fallback_reason) || lastResult.group_merge_fallback_reason || '');
     const highResRetries = Number((data && data.high_res_retries) || 0);
     const tileArtifacts = Number((data && data.tile_artifacts) || 0);
     const totalPages = Number(prepare.total_pages || 0);
@@ -6207,6 +6198,7 @@ function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
     const barEl = document.getElementById('knowledge-backend-visual-progress-bar');
     const detailEl = document.getElementById('knowledge-backend-visual-progress-detail');
     if (labelEl) labelEl.textContent = `文档：${sourceDoc.title || sourceDoc.id || ''}`;
+    if (labelEl) labelEl.textContent = `Document: ${(sourceDoc && (sourceDoc.title || sourceDoc.id)) || ''}`;
     if (percentEl) percentEl.textContent = `${percent}%`;
     if (barEl) barEl.style.width = `${Math.max(0, Math.min(100, percent))}%`;
     if (detailEl) {
@@ -6221,9 +6213,17 @@ function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
             `失败：${failed}`,
             `剩余：${remaining}`,
             prepareError ? `错误：${escapeHtml(prepareError)}` : '',
+            `Processed: ${processed}`,
+            `Succeeded: ${succeeded}`,
+            `Low confidence: ${lowConfidence}`,
+            `Failed: ${failed}`,
+            `Pending: ${remaining}`,
             `Multipage groups: ${totalGroups}`,
             `Groups merged: ${succeededGroups}`,
             `Low-confidence groups: ${lowConfidenceGroups}`,
+            `Failed groups: ${failedGroups}`,
+            groupMergeStrategy ? `Group merge strategy: ${escapeHtml(groupMergeStrategy)}` : '',
+            groupMergeFallbackReason ? `Group merge fallback: ${escapeHtml(groupMergeFallbackReason)}` : '',
             `High-res retries: ${highResRetries}`,
             `Tiled artifacts: ${tileArtifacts}`,
         ].filter(Boolean).join('<br>');
