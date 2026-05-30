@@ -514,6 +514,21 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
                 self.assertEqual(payload["direction"], "unknown")
                 self.assertEqual(payload["merchant"], "小王")
                 self.assertEqual(payload["category"], "转账")
+
+                answer_fields = ledger.fields_from_answer_text("消费")
+                self.assertEqual(answer_fields["direction"], "expense")
+                self.assertNotIn("category", answer_fields)
+                confirmed = ledger.confirm_bill_context(
+                    conn,
+                    {
+                        **answer_fields,
+                        "context_id": result["context_id"],
+                    },
+                )
+                self.assertTrue(confirmed["ok"])
+                self.assertEqual(confirmed["status"], "confirmed")
+                self.assertEqual(confirmed["transaction"]["amount_cents"], 5000)
+                self.assertEqual(confirmed["transaction"]["direction"], "expense")
             finally:
                 conn.close()
 

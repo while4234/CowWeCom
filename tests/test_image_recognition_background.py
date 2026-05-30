@@ -406,6 +406,55 @@ class TestImageRecognitionManager(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_short_direction_answer_confirms_pending_transfer_bill(self):
+        with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as db_root:
+            conf()["agent_workspace"] = workspace
+            db_path = Path(db_root) / "ledger.db"
+            manager = ImageRecognitionManager(workspace_root=workspace, max_workers=1)
+            record = ImageRecognitionRecord(
+                record_id="record-transfer-pending",
+                session_id="session-transfer",
+                channel_type="wecom_bot",
+                image_hash="hash-transfer",
+                image_path=str(Path(workspace) / "transfer.png"),
+                is_group=False,
+                status="done",
+                result=(
+                    "这是一张微信转账账单截图：转给 小王，金额 -50.00 元，"
+                    "状态为对方已收钱。转账时间 2026-05-30 17:04:13，"
+                    "收款时间 2026-05-30 17:06:47，支付方式是零钱。"
+                ),
+                completed_at=time.time(),
+            )
+            with manager._lock:
+                manager._records[record.record_id] = record
+
+            context_kwargs = {
+                "session_id": "session-transfer",
+                "conversation_id": "chat-transfer",
+                "memory_user_id": "u1",
+                "channel_type": "wecom_bot",
+            }
+            image_context = Context(ContextType.IMAGE, record.image_path, kwargs=context_kwargs)
+            text_context = Context(ContextType.TEXT, "消费", kwargs=context_kwargs)
+            sent = []
+            channel = SimpleNamespace(_send_plain_text=lambda _context, text: sent.append(text))
+
+            with patch.dict(os.environ, {"CHINA_EXPENSE_LEDGER_DB": str(db_path)}):
+                first_reply = manager.public_reply_for(record, context=image_context)
+                handled = manager.handle_text(channel, text_context, "消费")
+
+            self.assertIn("消费、退款、收入还是个人转账", first_reply)
+            self.assertTrue(handled)
+            self.assertIn("已记账", sent[-1])
+            conn = sqlite3.connect(str(db_path))
+            try:
+                row = conn.execute("SELECT amount_cents, direction FROM transactions").fetchone()
+                self.assertEqual(row[0], 5000)
+                self.assertEqual(row[1], "expense")
+            finally:
+                conn.close()
+
     def test_stale_ledger_followup_does_not_confirm_or_undo(self):
         with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as db_root:
             conf()["agent_workspace"] = workspace

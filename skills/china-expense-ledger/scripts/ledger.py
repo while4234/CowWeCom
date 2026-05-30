@@ -707,6 +707,9 @@ def _should_prefer_raw_text_amount(payload: dict[str, Any], raw_text_amount: int
     answer_text = normalize_text(payload.get("answer_text"))
     if answer_text and answer_text_has_explicit_amount(answer_text):
         return False
+    explicit_amount = amount_cents_value(payload.get("amount_cents"))
+    if raw_text_amount < 0 and explicit_amount == abs(raw_text_amount):
+        return False
     return True
 
 
@@ -1218,6 +1221,22 @@ def fields_from_answer_text(answer_text: str) -> dict[str, Any]:
     amount = extract_amount_cents_from_text(text) if answer_text_has_explicit_amount(text) else None
     if amount is not None:
         fields["amount_cents"] = amount
+    direction_answers = (
+        ("个人转账", "transfer"),
+        ("私人转账", "transfer"),
+        ("转账", "transfer"),
+        ("退款", "refund"),
+        ("退回", "refund"),
+        ("收入", "income"),
+        ("收款", "income"),
+        ("消费", "expense"),
+        ("支出", "expense"),
+        ("花费", "expense"),
+    )
+    for marker, direction in direction_answers:
+        if marker in text:
+            fields["direction"] = direction
+            break
     category = next(
         (name for name in [*DEFAULT_CATEGORIES, *(name for name, _ in CURATED_MAJOR_CATEGORY_RULES)] if name in text),
         None,
@@ -1266,7 +1285,7 @@ def fields_from_answer_text(answer_text: str) -> dict[str, Any]:
             },
             "expense",
         )
-        if inferred_category:
+        if inferred_category and inferred_category != "其他":
             fields["category"] = inferred_category
     return fields
 
