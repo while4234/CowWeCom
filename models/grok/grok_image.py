@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from bridge.reply import Reply, ReplyType
@@ -53,7 +54,7 @@ def generate_reply(prompt: str, context=None, provider: Optional[XAIImageGenProv
         return Reply(ReplyType.ERROR, str(exc))
     except ValueError as exc:
         return Reply(ReplyType.ERROR, str(exc))
-    reply = Reply(ReplyType.IMAGE, image_path)
+    reply = Reply(ReplyType.IMAGE_URL, f"file://{image_path}")
     reply.cleanup_after_send = True
     reply.generated_media_path = image_path
     if context is not None:
@@ -66,7 +67,7 @@ def generate_reply(prompt: str, context=None, provider: Optional[XAIImageGenProv
 def _record_direct_prompt_history(context, image_path: str, provider: XAIImageGenProvider) -> None:
     metadata = getattr(provider, "last_prompt_metadata", None)
     if not metadata:
-        return
+        metadata = _fallback_prompt_metadata(context, image_path)
     try:
         workspace_root = expand_path(conf().get("agent_workspace", "~/cow"))
         memory_user_id = str(context.get("memory_user_id") or context.get("session_id") or "direct-grok")
@@ -80,3 +81,19 @@ def _record_direct_prompt_history(context, image_path: str, provider: XAIImageGe
         )
     except Exception:
         return
+
+
+def _fallback_prompt_metadata(context, image_path: str) -> dict:
+    prompt = str(context.get("content") or "").strip() if context is not None else ""
+    return {
+        "version": "grok-direct-fallback-v1",
+        "enhanced": False,
+        "disabled_reason": "provider_metadata_missing",
+        "target": "grok",
+        "media_type": "image",
+        "runtime": "grok_direct",
+        "original_prompt": prompt,
+        "enhanced_prompt": prompt,
+        "output_path": image_path,
+        "created_at": time.time(),
+    }

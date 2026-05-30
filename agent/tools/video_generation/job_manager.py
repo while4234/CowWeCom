@@ -585,7 +585,7 @@ class GrokVideoGenerationJobManager:
 
             metadata = read_prompt_metadata(job.output_dir)
             if not metadata:
-                return
+                metadata = self._fallback_prompt_metadata(job)
             metadata = dict(metadata)
             if status:
                 metadata["generation_status"] = status
@@ -601,6 +601,21 @@ class GrokVideoGenerationJobManager:
             )
         except Exception as e:
             logger.warning("[GrokVideoGenerationJobManager] failed to record hidden prompt for %s: %s", job.job_id, e)
+
+    @staticmethod
+    def _fallback_prompt_metadata(job: GrokVideoGenerationJob) -> Dict[str, Any]:
+        prompt = str((job.args or {}).get("prompt") or "").strip()
+        return {
+            "version": "grok-video-fallback-v1",
+            "enhanced": False,
+            "disabled_reason": "prompt_metadata_missing",
+            "target": "grok",
+            "media_type": "video",
+            "runtime": "grok_video",
+            "original_prompt": prompt,
+            "enhanced_prompt": prompt,
+            "created_at": time.time(),
+        }
 
 
 _manager: Optional[GrokVideoGenerationJobManager] = None

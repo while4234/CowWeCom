@@ -465,6 +465,40 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
             finally:
                 manager.shutdown(wait=False)
 
+    def test_successful_job_records_prompt_history_without_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = ImageGenerationJobManager(workspace_root=tmp, global_workers=1)
+            manager._send_reply = lambda job, reply, content: True
+            manager._remember_output = lambda job, content: None
+
+            def fake_generator(job):
+                output_dir = Path(job.output_dir)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                image_path = output_dir / "out.png"
+                image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake-png")
+                return {"images": [{"url": str(image_path)}]}
+
+            manager._invoke_generator = fake_generator
+            job = manager.submit(
+                {"prompt": "plain prompt without metadata", "runtime": "grok"},
+                make_context("a"),
+                make_profile("weixin:a", "user_a", tmp),
+            )
+            try:
+                self.assertEqual(wait_for(job), "succeeded")
+                records = load_prompt_history(
+                    workspace_root=tmp,
+                    memory_user_id="user_a",
+                    session_id="a",
+                    limit=1,
+                )
+                self.assertEqual(records[0]["job_id"], job.job_id)
+                self.assertEqual(records[0]["enhanced_prompt"], "plain prompt without metadata")
+                self.assertEqual(records[0]["disabled_reason"], "prompt_metadata_missing")
+                self.assertEqual(records[0]["output_path"], str(Path(job.output_path)))
+            finally:
+                manager.shutdown(wait=False)
+
     def test_recover_unfinished_job_sends_failure_notice(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "users" / "user_a" / "files" / "image-generation" / "orphanjob"

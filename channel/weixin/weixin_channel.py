@@ -30,7 +30,9 @@ from channel.weixin.weixin_message import WeixinMessage
 from common.expired_dict import ExpiredDict
 from common.image_generation_routing import (
     explicit_image_generation_requested,
+    explicit_video_generation_requested,
     match_image_create_prefix,
+    match_video_create_prefix,
 )
 from common.image_send_limits import image_send_dimensions_from_config, prepare_image_for_send
 from common.log import logger
@@ -689,22 +691,43 @@ class WeixinChannel(ChatChannel):
         context["receiver"] = cmsg.other_user_id
 
         if ctype == ContextType.TEXT:
-            img_match_prefix = match_image_create_prefix(content, conf().get("image_create_prefix"))
-            if img_match_prefix:
-                content = content.replace(img_match_prefix, "", 1)
-                context.type = ContextType.IMAGE_CREATE
-            elif self._should_promote_grok_media_create(context, content, explicit_image_generation_requested):
-                context.type = ContextType.IMAGE_CREATE
+            video_match_prefix = match_video_create_prefix(content, conf().get("video_create_prefix", []))
+            if video_match_prefix:
+                content = content.replace(video_match_prefix, "", 1)
+                context.type = ContextType.VIDEO_CREATE
+            elif self._should_promote_grok_media_create(context, content, self._explicit_or_followup_video_requested):
+                context.type = ContextType.VIDEO_CREATE
             else:
-                context.type = ContextType.TEXT
+                img_match_prefix = match_image_create_prefix(content, conf().get("image_create_prefix"))
+                if img_match_prefix:
+                    content = content.replace(img_match_prefix, "", 1)
+                    context.type = ContextType.IMAGE_CREATE
+                elif self._should_promote_grok_media_create(context, content, explicit_image_generation_requested):
+                    context.type = ContextType.IMAGE_CREATE
+                else:
+                    context.type = ContextType.TEXT
             context.content = content.strip()
-            if context.type == ContextType.IMAGE_CREATE:
+            if context.type == ContextType.VIDEO_CREATE:
+                context.content = self._append_recent_image_refs_for_video_create(
+                    context.get("session_id", ""),
+                    context.content,
+                )
+            elif context.type == ContextType.IMAGE_CREATE:
                 context.content = self._append_recent_image_ref_for_image_create(
                     context.get("session_id", ""),
                     context.content,
                 )
 
         return context
+
+    def _explicit_or_followup_video_requested(self, content: str) -> bool:
+        return bool(
+            explicit_video_generation_requested(content)
+            or (
+                self._looks_like_image_to_video_followup(content)
+                and not explicit_image_generation_requested(content)
+            )
+        )
 
     # ── Send reply ─────────────────────────────────────────────────────
 

@@ -662,7 +662,7 @@ class ImageGenerationJobManager:
     ) -> None:
         metadata = read_prompt_metadata(job.output_dir)
         if not metadata:
-            return
+            metadata = self._fallback_prompt_metadata(job)
         metadata = dict(metadata)
         if status:
             metadata["generation_status"] = status
@@ -676,6 +676,22 @@ class ImageGenerationJobManager:
             output_path=str(job.output_path or ""),
             metadata=metadata,
         )
+
+    @staticmethod
+    def _fallback_prompt_metadata(job: ImageGenerationJob) -> Dict[str, Any]:
+        prompt = str((job.args or {}).get("prompt") or "").strip()
+        runtime = str((job.args or {}).get("runtime") or "").strip() or "image_generation"
+        return {
+            "version": "image-generation-fallback-v1",
+            "enhanced": False,
+            "disabled_reason": "prompt_metadata_missing",
+            "target": "grok" if runtime.lower() == "grok" else "gpt",
+            "media_type": "image",
+            "runtime": runtime,
+            "original_prompt": prompt,
+            "enhanced_prompt": prompt,
+            "created_at": time.time(),
+        }
 
 
 _manager: Optional[ImageGenerationJobManager] = None

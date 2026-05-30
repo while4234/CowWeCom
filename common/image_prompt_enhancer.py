@@ -678,6 +678,7 @@ def _history_safe_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
         "runtime",
         "media_type",
         "use_case",
+        "disabled_reason",
         "original_prompt",
         "source_prompt",
         "enhanced_prompt",

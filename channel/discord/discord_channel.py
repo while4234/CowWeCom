@@ -9,6 +9,12 @@ from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
 from channel.chat_channel import ChatChannel
 from channel.discord.discord_message import DiscordMessage, discord_attachment_cache_dir
+from common.image_generation_routing import (
+    explicit_image_generation_requested,
+    explicit_video_generation_requested,
+    match_image_create_prefix,
+    match_video_create_prefix,
+)
 from common.log import logger
 from common.singleton import singleton
 from config import conf
@@ -775,6 +781,7 @@ class DiscordChannel(ChatChannel):
             if image_paths:
                 text = text + "\n" + "\n".join(f"[image: {path}]" for path in image_paths)
             context = self._build_message_context(message, ContextType.TEXT, text)
+            self._promote_grok_media_context_for_message(context)
             self.produce(context)
             return
         for path in image_paths:
@@ -816,6 +823,48 @@ class DiscordChannel(ChatChannel):
         context["msg"] = msg
         self._apply_common_discord_context(context, message.author, message.channel, message.guild)
         return context
+
+    def _promote_grok_media_context_for_message(self, context: Context) -> None:
+        if not context or context.type != ContextType.TEXT:
+            return
+
+        content = str(context.content or "").strip()
+        video_match_prefix = match_video_create_prefix(content, conf().get("video_create_prefix", []))
+        if video_match_prefix:
+            content = content.replace(video_match_prefix, "", 1)
+            context.type = ContextType.VIDEO_CREATE
+        elif self._should_promote_grok_media_create(context, content, self._explicit_or_followup_video_requested):
+            context.type = ContextType.VIDEO_CREATE
+        else:
+            image_match_prefix = match_image_create_prefix(content, conf().get("image_create_prefix", []))
+            if image_match_prefix:
+                content = content.replace(image_match_prefix, "", 1)
+                context.type = ContextType.IMAGE_CREATE
+            elif self._should_promote_grok_media_create(context, content, explicit_image_generation_requested):
+                context.type = ContextType.IMAGE_CREATE
+            else:
+                context.type = ContextType.TEXT
+
+        context.content = content.strip()
+        if context.type == ContextType.VIDEO_CREATE:
+            context.content = self._append_recent_image_refs_for_video_create(
+                context.get("session_id", ""),
+                context.content,
+            )
+        elif context.type == ContextType.IMAGE_CREATE:
+            context.content = self._append_recent_image_ref_for_image_create(
+                context.get("session_id", ""),
+                context.content,
+            )
+
+    def _explicit_or_followup_video_requested(self, content: str) -> bool:
+        return bool(
+            explicit_video_generation_requested(content)
+            or (
+                self._looks_like_image_to_video_followup(content)
+                and not explicit_image_generation_requested(content)
+            )
+        )
 
     def _apply_common_discord_context(self, context: Context, user, channel, guild) -> None:
         user_id = str(getattr(user, "id", "") or "")

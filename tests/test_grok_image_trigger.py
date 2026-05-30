@@ -3,12 +3,13 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from bridge.context import Context, ContextType
 from bridge.bridge import Bridge
+from bridge.context import Context, ContextType
 from bridge.reply import Reply, ReplyType
 from channel.channel import Channel
 from channel.chat_channel import ChatChannel
 from channel.image_recognition import ImageRecognitionManager, reset_image_recognition_manager
+from common.image_prompt_enhancer import load_prompt_history
 from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
 from integrations.hermes_xai.media_download import new_generated_media_path
 from models.grok.grok_bot import GrokBot
@@ -37,10 +38,45 @@ def test_grok_bot_image_create_returns_local_image_reply(monkeypatch, tmp_path):
     context = Context(ContextType.IMAGE_CREATE, "draw a red kite")
     reply = object.__new__(GrokBot).reply(context.content, context)
 
-    assert reply.type == ReplyType.IMAGE
-    assert reply.content == str(image_path)
+    assert reply.type == ReplyType.IMAGE_URL
+    assert reply.content == f"file://{image_path}"
     assert not reply.content.startswith(("http://", "https://"))
     assert reply.cleanup_after_send is True
+    assert reply.generated_media_path == str(image_path)
+    assert context["cleanup_after_send"] is True
+    assert context["generated_media_paths"] == [str(image_path)]
+
+
+def test_grok_image_records_prompt_history_without_provider_metadata(monkeypatch, tmp_path):
+    image_path = tmp_path / "grok.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+
+    class FakeProvider:
+        last_prompt_metadata = None
+
+        def generate(self, prompt, **_kwargs):
+            assert prompt == "draw a quiet lake"
+            return str(image_path)
+
+    monkeypatch.setattr("models.grok.grok_image.XAIImageGenProvider", lambda: FakeProvider())
+    monkeypatch.setattr("models.grok.grok_image.conf", lambda: SimpleNamespace(get=lambda key, default=None: str(tmp_path / "cow") if key == "agent_workspace" else default))
+
+    context = Context(ContextType.IMAGE_CREATE, "draw a quiet lake")
+    context["memory_user_id"] = "user_a"
+    context["session_id"] = "session_a"
+    reply = object.__new__(GrokBot).reply(context.content, context)
+
+    records = load_prompt_history(
+        workspace_root=str(tmp_path / "cow"),
+        memory_user_id="user_a",
+        session_id="session_a",
+        limit=1,
+    )
+    assert reply.type == ReplyType.IMAGE_URL
+    assert records[0]["enhanced_prompt"] == "draw a quiet lake"
+    assert records[0]["original_prompt"] == "draw a quiet lake"
+    assert records[0]["enhanced"] is False
+    assert records[0]["disabled_reason"] == "provider_metadata_missing"
 
 
 def test_default_agent_mode_image_create_shortcuts_to_grok_image(monkeypatch):
