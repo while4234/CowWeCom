@@ -72,9 +72,11 @@ GROK_IMAGE_QUALITY_CHOICES = (
     ("speed (default)", "speed"),
     ("quality", "quality"),
 )
+GROK_VIDEO_DEFAULT_DURATION = "10s"
+GROK_VIDEO_DEFAULT_RESOLUTION = "480p"
 GROK_VIDEO_DURATION_CHOICES = (
-    ("6s (default)", "6s"),
-    ("10s", "10s"),
+    ("10s (default)", "10s"),
+    ("6s", "6s"),
 )
 GROK_VIDEO_RESOLUTION_CHOICES = (
     ("480p (default)", "480p"),
@@ -204,15 +206,15 @@ def _build_grok_direct_video_query(
     prompt: str,
     image_path: str = "",
     *,
-    duration: str = "6s",
-    resolution: str = "480p",
+    duration: str = GROK_VIDEO_DEFAULT_DURATION,
+    resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
 ) -> str:
     return _build_grok_media_shortcut_query(
         "video",
         prompt,
         image_path,
-        duration=duration or "6s",
-        resolution=resolution or "480p",
+        duration=duration or GROK_VIDEO_DEFAULT_DURATION,
+        resolution=resolution or GROK_VIDEO_DEFAULT_RESOLUTION,
     )
 
 
@@ -246,14 +248,14 @@ def _build_grok_video_job_args(
     prompt: str,
     image_path: str = "",
     *,
-    duration: str = "6s",
-    resolution: str = "480p",
+    duration: str = GROK_VIDEO_DEFAULT_DURATION,
+    resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
     prompt_enhancement: bool = True,
 ) -> Dict[str, Any]:
     args: Dict[str, Any] = {
         "prompt": str(prompt or "").strip(),
-        "duration": duration or "6s",
-        "resolution": resolution or "480p",
+        "duration": duration or GROK_VIDEO_DEFAULT_DURATION,
+        "resolution": resolution or GROK_VIDEO_DEFAULT_RESOLUTION,
         "prompt_enhancement": bool(prompt_enhancement),
     }
     if image_path:
@@ -464,7 +466,13 @@ class DiscordChannel(ChatChannel):
             ),
         )
 
-        async def grok_gen_video_callback(interaction, prompt: str, image=None, duration: str = "6s", resolution: str = "480p"):
+        async def grok_gen_video_callback(
+            interaction,
+            prompt: str,
+            image=None,
+            duration: str = GROK_VIDEO_DEFAULT_DURATION,
+            resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
+        ):
             await self._handle_grok_video_interaction(
                 interaction,
                 prompt,
@@ -500,7 +508,13 @@ class DiscordChannel(ChatChannel):
             ),
         )
 
-        async def grok_direct_gen_video_callback(interaction, prompt: str, image=None, duration: str = "6s", resolution: str = "480p"):
+        async def grok_direct_gen_video_callback(
+            interaction,
+            prompt: str,
+            image=None,
+            duration: str = GROK_VIDEO_DEFAULT_DURATION,
+            resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
+        ):
             await self._handle_grok_video_interaction(
                 interaction,
                 prompt,
@@ -628,8 +642,8 @@ class DiscordChannel(ChatChannel):
         prompt: str,
         *,
         image_attachment=None,
-        duration: str = "6s",
-        resolution: str = "480p",
+        duration: str = GROK_VIDEO_DEFAULT_DURATION,
+        resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
         direct: bool = False,
     ):
         if not self._is_allowed_interaction(interaction):
@@ -847,6 +861,7 @@ class DiscordChannel(ChatChannel):
 
         context.content = content.strip()
         if context.type == ContextType.VIDEO_CREATE:
+            context["grok_video_default_duration"] = GROK_VIDEO_DEFAULT_DURATION
             context.content = self._append_recent_image_refs_for_video_create(
                 context.get("session_id", ""),
                 context.content,

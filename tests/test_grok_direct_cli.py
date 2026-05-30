@@ -98,7 +98,7 @@ def test_grok_direct_video_defaults_and_uses_context_image_refs():
     assert args["prompt"] == "参考上面的图片生成视频"
     assert args["resolution"] == "480p"
     assert "aspect_ratio" not in args
-    assert args["duration"] == "6s"
+    assert args["duration"] == "10s"
     assert args["prompt_enhancement"] is False
     assert args["image_url"] == "C:/tmp/ref.png"
 
@@ -397,6 +397,7 @@ def test_grok_direct_usage_mentions_720p_10s_video_examples():
 
     usage = plugin._grok_direct_usage()
 
+    assert "video 使用 480p / 16:9 / 10s" in usage
     assert "/grok-direct video --resolution 720p --duration 10s -- <prompt>" in usage
 
 

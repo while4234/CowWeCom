@@ -47,6 +47,16 @@ def is_grok_video_provider(provider: Optional[str] = None) -> bool:
     return str(value or "").strip().lower() in _GROK_VIDEO_PROVIDERS
 
 
+def _context_video_default_duration(context) -> str:
+    if context is None:
+        return ""
+    try:
+        value = context.get("grok_video_default_duration")
+    except Exception:
+        value = getattr(context, "grok_video_default_duration", "")
+    return str(value or "").strip()
+
+
 def generate_reply(prompt: str, context=None, provider: Optional[object] = None) -> Reply:
     if provider is not None:
         return _generate_reply_sync(prompt, context, provider)
@@ -75,7 +85,10 @@ def generate_reply(prompt: str, context=None, provider: Optional[object] = None)
         prompt_options = extract_video_generation_options(clean_prompt)
         params = {
             "prompt": clean_prompt,
-            "duration": prompt_options.get("duration") or conf().get("grok_video_duration") or 8,
+            "duration": prompt_options.get("duration")
+            or _context_video_default_duration(context)
+            or conf().get("grok_video_duration")
+            or 8,
             "resolution": prompt_options.get("resolution") or conf().get("grok_video_resolution") or "720p",
         }
         if image_refs:

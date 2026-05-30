@@ -77,6 +77,17 @@ def test_grok_bot_video_create_extracts_natural_resolution_and_duration(monkeypa
     assert args["duration"] == "10s"
 
 
+def test_grok_bot_video_create_uses_context_default_duration(monkeypatch):
+    manager = _patch_grok_video_background(monkeypatch)
+    context = Context(ContextType.VIDEO_CREATE, "make a cat video")
+    context["grok_video_default_duration"] = "10s"
+
+    reply = object.__new__(GrokBot).reply(context.content, context)
+
+    assert reply.type == ReplyType.TEXT
+    assert manager.submitted[0][0]["duration"] == "10s"
+
+
 def test_default_agent_mode_video_create_shortcuts_to_grok_video(monkeypatch):
     context = Context(ContextType.VIDEO_CREATE, "make a cat video")
     fake_conf = MagicMock()

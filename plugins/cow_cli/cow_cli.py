@@ -146,6 +146,8 @@ _TOKEN_USAGE_PERIOD_LABELS = {
 }
 
 _GROK_DIRECT_MAX_IMAGE_REFS = 7
+_GROK_DIRECT_DEFAULT_VIDEO_DURATION = "10s"
+_GROK_DIRECT_DEFAULT_VIDEO_RESOLUTION = "480p"
 _GROK_DIRECT_OPTION_ALIASES = {
     "--ar": "aspect_ratio",
     "--aspect-ratio": "aspect_ratio",
@@ -1430,8 +1432,8 @@ class CowCliPlugin(Plugin):
 
         params = {
             "prompt": prompt,
-            "duration": options.get("duration") or "6s",
-            "resolution": options.get("resolution") or "480p",
+            "duration": options.get("duration") or _GROK_DIRECT_DEFAULT_VIDEO_DURATION,
+            "resolution": options.get("resolution") or _GROK_DIRECT_DEFAULT_VIDEO_RESOLUTION,
             "prompt_enhancement": False,
         }
         if options.get("aspect_ratio"):
@@ -1656,10 +1658,10 @@ class CowCliPlugin(Plugin):
         lines.extend([
             "用法：",
             "  /grok-direct image [--ar 1:1] [--size 2K] [--quality speed|high] -- <prompt>",
-            "  /grok-direct video [--ar 16:9] [--duration 6s] [--resolution 480p] -- <prompt>",
+            "  /grok-direct video [--ar 16:9] [--duration 10s] [--resolution 480p] -- <prompt>",
             "  /grok-direct video --resolution 720p --duration 10s -- <prompt>",
             "",
-            "默认：image 使用 speed；video 使用 480p / 16:9 / 6s。",
+            "默认：image 使用 speed；video 使用 480p / 16:9 / 10s。",
             "示例：/grok-direct image -- 换成电影海报风格",
             "示例：/grok-direct image --quality quality -- 换成高质量摄影棚风格",
             "示例：/grok-direct image --ar 16:9 -- 改成横版封面",
@@ -1790,7 +1792,7 @@ class CowCliPlugin(Plugin):
                 ("grok-direct", "image -- 换成电影海报风格", "/grok-direct image -- <prompt>：上传图后直出单图图生图，不做提示词润色"),
                 ("grok-direct", "image --quality quality -- 换成高质量摄影棚风格", "/grok-direct image --quality quality -- <prompt>：上传图后直出高质量图生图"),
                 ("grok-direct", "image --ar 16:9 -- 改成横版封面", "/grok-direct image --ar 16:9 -- <prompt>：上传图后按显式比例图生图"),
-                ("grok-direct", "video -- 城市天际线延时摄影", "/grok-direct video -- <prompt>：Grok 直出视频（默认 480p / 16:9 / 6s）"),
+                ("grok-direct", "video -- 城市天际线延时摄影", "/grok-direct video -- <prompt>：Grok 直出视频（默认 480p / 16:9 / 10s）"),
                 ("grok-direct", "video --resolution 720p --duration 10s -- 城市天际线延时摄影", "/grok-direct video --resolution 720p --duration 10s -- <prompt>：Grok 直出 720p / 10s 视频"),
                 ("grok-direct", "video --resolution 720p --duration 10s -- 让这张图动起来，轻微镜头推进", "/grok-direct video --resolution 720p --duration 10s -- <prompt>：上传图后直出 720p / 10s 图生视频"),
             ]),

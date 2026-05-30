@@ -59,6 +59,7 @@ def test_discord_message_video_prefix_creates_video_context(monkeypatch):
 
     assert context.type == ContextType.VIDEO_CREATE
     assert context.content == "一只猫跑步"
+    assert context["grok_video_default_duration"] == "10s"
 
 
 def test_discord_message_image_prefix_creates_image_context(monkeypatch):
@@ -120,6 +121,7 @@ def test_discord_message_with_image_attachment_keeps_inline_image_ref_for_video(
 
     assert context.type == ContextType.VIDEO_CREATE
     assert context.content == f"让它动起来\n[image: {image_path}]"
+    assert context["grok_video_default_duration"] == "10s"
 
 
 def test_discord_handle_message_promotes_text_and_preserves_attachment_ref(monkeypatch, tmp_path):

@@ -195,7 +195,7 @@ Grok 现在作为独立、受限的模型后端接入 `llm_backend.providers.gro
 
 管理员和白名单用户可以在聊天中直接用自然语言快速切换个人模型后端，例如“切换后端到 Grok / xAI”会在 CowCli 本地命令层写入个人 Grok override，并在 Agent 执行前完成；“切回 GPT 后端”会清除个人 override，回到共享 GPT 后端池。这个本地切换不触发 Agent、不修改普通用户的全局 GPT 后端；查询“当前后端”或“当前后端额度”时会按发起人的有效后端展示，普通用户看到共享 GPT 后端，管理员/白名单用户看到自己的个人后端，普通用户发送同类后端切换话术仍会被拒绝。
 
-Grok/xAI 原生账号登录现在在 Web 控制台的模型配置页完成，`/grok` 旧灰度页会回到控制台；控制台可新增多个命名 Grok 账号、轮询/粘贴 callback 完成 OAuth、切换当前账号、检查凭据并退出指定账号。文字聊天模型由受限后端 profile 控制，不再要求把普通用户的全局 `bot_type` 改成 Grok。Grok 图片生成复用当前选中的 Grok OAuth 凭据：当管理员或白名单用户把个人模型后端切到 Grok 后，普通生图默认走 Grok；如果此时要走 GPT/OpenAI/Codex 生图，需要在请求里明确说明。仅说质量或速度偏好不会切换生图提供方。管理员还可以直接发送 `/grok-direct image -- <prompt>` 或 `/grok-direct video -- <prompt>`，绕过 Agent/LLM 的提示词分析和润色，把原始 prompt 提交到 Grok 后台任务；默认生图为 speed，默认视频为 `480p / 16:9 / 6s`。`/grok-direct image` 会同时跳过 Grok 模型提示词重写；`/grok-direct video` 会使用消息中可解析的上传、回复或引用图片作为视频参考图，并在企业微信智能机器人里支持先发图片、随后说“生成视频 ...”或“参考上图/上面几张生成视频”时自动补齐同会话最近图片。若企业微信引用旧图事件只携带纯文本、不携带图片内容或可追溯 msgid，机器人无法知道引用的是哪张旧图。
+Grok/xAI 原生账号登录现在在 Web 控制台的模型配置页完成，`/grok` 旧灰度页会回到控制台；控制台可新增多个命名 Grok 账号、轮询/粘贴 callback 完成 OAuth、切换当前账号、检查凭据并退出指定账号。文字聊天模型由受限后端 profile 控制，不再要求把普通用户的全局 `bot_type` 改成 Grok。Grok 图片生成复用当前选中的 Grok OAuth 凭据：当管理员或白名单用户把个人模型后端切到 Grok 后，普通生图默认走 Grok；如果此时要走 GPT/OpenAI/Codex 生图，需要在请求里明确说明。仅说质量或速度偏好不会切换生图提供方。管理员还可以直接发送 `/grok-direct image -- <prompt>` 或 `/grok-direct video -- <prompt>`，绕过 Agent/LLM 的提示词分析和润色，把原始 prompt 提交到 Grok 后台任务；默认生图为 speed，默认视频为 `480p / 16:9 / 10s`。`/grok-direct image` 会同时跳过 Grok 模型提示词重写；`/grok-direct video` 会使用消息中可解析的上传、回复或引用图片作为视频参考图，并在企业微信智能机器人里支持先发图片、随后说“生成视频 ...”或“参考上图/上面几张生成视频”时自动补齐同会话最近图片。若企业微信引用旧图事件只携带纯文本、不携带图片内容或可追溯 msgid，机器人无法知道引用的是哪张旧图。
 
 国内网络环境中如果 Web Grok 登录报 `xAI OIDC discovery failed` 或直连 `auth.x.ai` 超时，请在 Web 配置或 ignored 的 `config.json` 中设置 `grok_proxy`，例如 `http://127.0.0.1:7897`。该代理会覆盖 Grok OAuth discovery/token 交换、Grok Chat、TTS、图片/视频生成、生成结果下载和视频后台子进程；为空时会复用全局 `proxy` 或 `discord_proxy`。
 
@@ -335,7 +335,7 @@ Discord 通道独立于微信和企业微信，适合把 CowCli 管理命令和 
 }
 ```
 
-也可以在 Web 控制台的「通道」页选择 Discord，填写 Bot Token、Guild ID、Admin User ID 和允许的频道 ID 后连接。Bot 启动时会同步原生 Slash Commands：保留 `help`、`status`、`backend`、`config`、`skill`、`memory`、`knowledge`、`voice`、`updates`、`tokens`、`ledger` 等 CowCli 常用项目命令，并过滤无关历史命令。Grok 媒体入口统一为 `/grok-gen-image`、`/grok-gen-video`、`/grok-direct-gen-image` 和 `/grok-direct-gen-video`；四个命令的图片附件都是可选项，不上传就是文生图/文生视频，上传就是图生图/图生视频。图片质量可选 `speed` 或 `quality`，视频时长可选 `6s` 或 `10s`，分辨率可选 `480p` 或 `720p`。配置 `discord_guild_id` 时，`discord_prune_global_commands_on_startup=true` 会在启动同步前清理历史全局 Slash Commands，避免旧的 `codex-app`、`imagine`、`image-to-image` 等残留。
+也可以在 Web 控制台的「通道」页选择 Discord，填写 Bot Token、Guild ID、Admin User ID 和允许的频道 ID 后连接。Bot 启动时会同步原生 Slash Commands：保留 `help`、`status`、`backend`、`config`、`skill`、`memory`、`knowledge`、`voice`、`updates`、`tokens`、`ledger` 等 CowCli 常用项目命令，并过滤无关历史命令。Grok 媒体入口统一为 `/grok-gen-image`、`/grok-gen-video`、`/grok-direct-gen-image` 和 `/grok-direct-gen-video`；四个命令的图片附件都是可选项，不上传就是文生图/文生视频，上传就是图生图/图生视频。图片质量可选 `speed` 或 `quality`，视频时长默认 `10s`，可选 `6s` 或 `10s`，分辨率可选 `480p` 或 `720p`。配置 `discord_guild_id` 时，`discord_prune_global_commands_on_startup=true` 会在启动同步前清理历史全局 Slash Commands，避免旧的 `codex-app`、`imagine`、`image-to-image` 等残留。
 
 如果本机 Chrome 通过 Clash、V2Ray 等代理访问 Discord，而 CowAgent 后台显示 `Cannot connect to host discord.com:443`，请设置 `discord_proxy` 或环境变量 `DISCORD_PROXY`，例如 `http://127.0.0.1:7897`。Discord 现在会直接处理普通文本消息和图片附件，不再只靠原生 Slash Commands；仍然需要在 Discord Developer Portal 为 Bot 开启 Message Content Intent。
 
@@ -550,7 +550,7 @@ CowWeCom/
 - 图片后台任务恢复逻辑把 `delivery_failed` 当作终态处理，服务重启后只恢复真正未完成的 `queued/running` 任务，避免已完成或已投递失败的图片在启动恢复时重复发送；图片发送成功后会在 5 分钟后自动清理本地生成图和本次任务使用的工作区内参考图。
 - 查看“刚才润色后的提示词”会读取最近一次已存储的最终 prompt，不重新润色；默认以中文展示，Grok 图片/视频记录优先用 Grok 翻译，需要原文时可显式要求原文；直出和未产生 rewrite metadata 的 Grok 图片/视频 prompt 也会记录到同一套历史里；下游审核/API 失败后也会尽量保留已润色 prompt 供排查。
 - 生图脚本修复 `Invalid JSON` 入参解析：后台任务传入的合法 JSON 会先原样解析，prompt 内包含弯引号时不再被误替换破坏；手工 CLI 使用弯引号包 JSON 字段时仍保留兼容恢复。
-- Discord Grok 图片/视频 Slash Commands 的附件语义固定为：不上传附件就是文生图/文生视频，上传附件才进入图生图/图生视频；direct 图片/视频不再绕 CowCli 的最近图片启发式；Discord 普通消息和微信个人号现在按 Grok 后端识别文生图、图生图、文生视频、图生视频，视频意图优先于图片意图。
+- Discord Grok 图片/视频 Slash Commands 的附件语义固定为：不上传附件就是文生图/文生视频，上传附件才进入图生图/图生视频；视频默认时长改为 `10s`；direct 图片/视频不再绕 CowCli 的最近图片启发式；Discord 普通消息和微信个人号现在按 Grok 后端识别文生图、图生图、文生视频、图生视频，视频意图优先于图片意图。
 - 本地知识库旧协议视觉补全支持 Codex 多图跨页 group merge；Codex 多图失败会依次降级到 Codex 文本合并和 deterministic fallback，并在 Web 进度、结果 JSON 与 group chunk metadata 中显示 `group_merge_strategy` 和 fallback 原因；Web“补全图表/视觉知识”改为逐文档、`limit=1` 的 `/visual/build` 增量续跑，不再一次性调用长耗时 `/visual/complete`，并新增静态回归覆盖按钮入口、请求体、source document 队列、generated document 排除与 group merge 进度输出。
 
 ### 2026-05-29

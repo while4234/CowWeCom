@@ -11,6 +11,8 @@ from channel.discord.discord_channel import (
     GROK_DIRECT_GEN_VIDEO_COMMAND,
     GROK_GEN_IMAGE_COMMAND,
     GROK_GEN_VIDEO_COMMAND,
+    GROK_VIDEO_DEFAULT_DURATION,
+    GROK_VIDEO_DEFAULT_RESOLUTION,
     PROJECT_DISCORD_COMMANDS,
     _build_direct_grok_image_args,
     _build_enhanced_grok_image_args,
@@ -103,6 +105,10 @@ class DiscordChannelTest(unittest.TestCase):
             _build_grok_direct_video_query("city timelapse", duration="10s", resolution="720p"),
             "/grok-direct video --resolution 720p --duration 10s -- city timelapse",
         )
+        self.assertEqual(
+            _build_grok_direct_video_query("city timelapse"),
+            "/grok-direct video --resolution 480p --duration 10s -- city timelapse",
+        )
 
     def test_enhanced_grok_image_args_keep_prompt_enhancement_enabled(self):
         args = _build_enhanced_grok_image_args("make it cinematic", "C:\\tmp\\ref.png", quality="quality")
@@ -144,6 +150,8 @@ class DiscordChannelTest(unittest.TestCase):
         )
         self.assertEqual(video_ref_args["image_url"], "C:\\tmp\\ref.png")
         self.assertNotIn("aspect_ratio", video_ref_args)
+        self.assertEqual(video_ref_args["duration"], GROK_VIDEO_DEFAULT_DURATION)
+        self.assertEqual(video_ref_args["resolution"], GROK_VIDEO_DEFAULT_RESOLUTION)
 
     def test_normalize_proxy_url_adds_default_scheme(self):
         self.assertEqual(_normalize_proxy_url("127.0.0.1:7897"), "http://127.0.0.1:7897")
@@ -242,9 +250,11 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertEqual(image_quality_values, {"speed", "quality"})
 
         video_command = next(command for command in bot.tree.commands if command.name == GROK_DIRECT_GEN_VIDEO_COMMAND)
-        duration_values = {choice.value for choice in video_command.callback._choices["duration"]}
+        duration_choices = {choice.value: choice.name for choice in video_command.callback._choices["duration"]}
+        duration_values = set(duration_choices)
         resolution_values = {choice.value for choice in video_command.callback._choices["resolution"]}
         self.assertEqual(duration_values, {"6s", "10s"})
+        self.assertEqual(duration_choices["10s"], "10s (default)")
         self.assertEqual(resolution_values, {"480p", "720p"})
 
     def test_direct_video_interaction_uses_optional_image_and_selected_options(self):
@@ -496,8 +506,6 @@ class DiscordChannelTest(unittest.TestCase):
                 interaction,
                 "city skyline timelapse",
                 image_attachment=None,
-                duration="6s",
-                resolution="480p",
                 direct=True,
             )
             return captured
@@ -506,7 +514,7 @@ class DiscordChannelTest(unittest.TestCase):
 
         self.assertEqual(captured["submit"]["prompt"], "city skyline timelapse")
         self.assertEqual(captured["submit"]["image_path"], "")
-        self.assertEqual(captured["submit"]["duration"], "6s")
+        self.assertEqual(captured["submit"]["duration"], "10s")
         self.assertEqual(captured["submit"]["resolution"], "480p")
         self.assertFalse(captured["submit"]["prompt_enhancement"])
         self.assertEqual(captured["reply"], "ok")
