@@ -6076,9 +6076,6 @@ async function startVisualBuildLoopIncremental(documentId, force, retryFailed, o
                 ((data.group_failed || 0) > 0);
             updateVisualBuildProgress(data, totals, sourceDoc, data.analysis_backend || backend);
             if (messageEl) {
-                messageEl.textContent = `图表补全：已处理 ${totals.processed}，高置信入库 ${totals.succeeded}，低置信跳过 ${totals.low_confidence}，失败 ${totals.failed}，剩余 ${totals.pending}`;
-            }
-            if (messageEl) {
                 const strategy = totals.group_merge_strategy ? `, group strategy ${totals.group_merge_strategy}` : '';
                 messageEl.textContent = `Visual build: processed ${totals.processed}, indexed ${totals.succeeded}, low confidence ${totals.low_confidence}, failed ${totals.failed}, pending ${totals.pending}, groups merged ${totals.group_succeeded}, group failed ${totals.group_failed}${strategy}`;
             }
@@ -6197,7 +6194,6 @@ function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
     const percentEl = document.getElementById('knowledge-backend-visual-progress-percent');
     const barEl = document.getElementById('knowledge-backend-visual-progress-bar');
     const detailEl = document.getElementById('knowledge-backend-visual-progress-detail');
-    if (labelEl) labelEl.textContent = `文档：${sourceDoc.title || sourceDoc.id || ''}`;
     if (labelEl) labelEl.textContent = `Document: ${(sourceDoc && (sourceDoc.title || sourceDoc.id)) || ''}`;
     if (percentEl) percentEl.textContent = `${percent}%`;
     if (barEl) barEl.style.width = `${Math.max(0, Math.min(100, percent))}%`;
