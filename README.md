@@ -546,6 +546,7 @@ CowWeCom/
 - 图生图和图生视频在润色与 direct 直出路径都会追加参考图身份锁；有参考图时不再额外补入国籍、眼睛颜色、发色、年龄、体型或面部特征描述，除非用户明确要求修改。
 - 图片后台任务恢复逻辑把 `delivery_failed` 当作终态处理，服务重启后只恢复真正未完成的 `queued/running` 任务，避免已完成或已投递失败的图片在启动恢复时重复发送；图片发送成功后会在 5 分钟后自动清理本地生成图和本次任务使用的工作区内参考图。
 - 查看“刚才润色后的提示词”会读取最近一次已存储的最终 prompt，不重新润色；默认以中文展示，Grok 图片/视频记录优先用 Grok 翻译，需要原文时可显式要求原文；直出和未产生 rewrite metadata 的 Grok 图片/视频 prompt 也会记录到同一套历史里；下游审核/API 失败后也会尽量保留已润色 prompt 供排查。
+- 生图脚本修复 `Invalid JSON` 入参解析：后台任务传入的合法 JSON 会先原样解析，prompt 内包含弯引号时不再被误替换破坏；手工 CLI 使用弯引号包 JSON 字段时仍保留兼容恢复。
 - Discord Grok 图片/视频 Slash Commands 的附件语义固定为：不上传附件就是文生图/文生视频，上传附件才进入图生图/图生视频；direct 图片/视频不再绕 CowCli 的最近图片启发式；Discord 普通消息和微信个人号现在按 Grok 后端识别文生图、图生图、文生视频、图生视频，视频意图优先于图片意图。
 - 本地知识库旧协议视觉补全支持 Codex 多图跨页 group merge；Codex 多图失败会依次降级到 Codex 文本合并和 deterministic fallback，并在 Web 进度、结果 JSON 与 group chunk metadata 中显示 `group_merge_strategy` 和 fallback 原因；Web“补全图表/视觉知识”改为逐文档、`limit=1` 的 `/visual/build` 增量续跑，不再一次性调用长耗时 `/visual/complete`，并新增静态回归覆盖按钮入口、请求体、source document 队列、generated document 排除与 group merge 进度输出。
 

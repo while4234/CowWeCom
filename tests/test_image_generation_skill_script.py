@@ -132,6 +132,25 @@ class TestImageGenerationSkillScript(unittest.TestCase):
         self.assertTrue(module._prompt_enhancement_enabled({"prompt_enhancement": True}))
         self.assertTrue(module._prompt_enhancement_enabled({}))
 
+    def test_call_args_preserve_smart_quotes_inside_prompt(self):
+        module = load_generate_module()
+        prompt = "screen says \u201cHot Island Club\u201d"
+        raw = json.dumps({"prompt": prompt, "runtime": "grok"}, ensure_ascii=False)
+
+        args = module._load_call_args(raw)
+
+        self.assertEqual(args["prompt"], prompt)
+        self.assertEqual(args["runtime"], "grok")
+
+    def test_call_args_accept_smart_quote_wrapped_json(self):
+        module = load_generate_module()
+        raw = "{\u201cprompt\u201d: \u201cdraw a cat\u201d, \u201cruntime\u201d: \u201cgrok\u201d}"
+
+        args = module._load_call_args(raw)
+
+        self.assertEqual(args["prompt"], "draw a cat")
+        self.assertEqual(args["runtime"], "grok")
+
     def test_grok_runtime_preserves_raw_prompt_when_enhancement_disabled(self):
         module = load_generate_module()
         calls = []

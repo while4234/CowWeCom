@@ -2126,6 +2126,23 @@ def _build_providers(
 # Main
 # ---------------------------------------------------------------------------
 
+def _normalize_json_smart_quotes(raw: str) -> str:
+    return raw.replace('\u201c', '"').replace('\u201d', '"')
+
+
+def _load_call_args(raw: str) -> dict:
+    try:
+        return _normalize_call_args(json.loads(raw))
+    except json.JSONDecodeError as original_error:
+        repaired = _normalize_json_smart_quotes(raw)
+        if repaired == raw:
+            raise
+        try:
+            return _normalize_call_args(json.loads(repaired))
+        except json.JSONDecodeError:
+            raise original_error
+
+
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"error": "Usage: python generate.py '<json_args>'"}))
@@ -2133,8 +2150,7 @@ def main():
 
     try:
         raw = sys.argv[1]
-        raw = raw.replace('\u201c', '"').replace('\u201d', '"').replace('\u2018', "'").replace('\u2019', "'")
-        args = _normalize_call_args(json.loads(raw))
+        args = _load_call_args(raw)
     except json.JSONDecodeError as e:
         print(json.dumps({"error": f"Invalid JSON: {e}"}))
         sys.exit(1)
