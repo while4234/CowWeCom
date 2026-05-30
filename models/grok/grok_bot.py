@@ -15,6 +15,7 @@ from models.chatgpt.chat_gpt_session import ChatGPTSession
 from models.openai_compatible_bot import OpenAICompatibleBot
 from models.openai.openai_http_client import OpenAIHTTPClient, OpenAIHTTPError
 from models.openai.openai_compat import wrap_http_error
+from models.openai.responses_api_adapter import normalize_reasoning_effort
 from models.session_manager import SessionManager
 
 
@@ -37,6 +38,9 @@ class GrokBot(Bot, OpenAICompatibleBot):
             "request_timeout": conf().get("request_timeout", None),
             "timeout": conf().get("request_timeout", None),
         }
+        reasoning_effort = self._resolve_reasoning_effort({})
+        if reasoning_effort:
+            self.args["reasoning_effort"] = reasoning_effort
 
     def _resolve_model(self):
         try:
@@ -63,6 +67,18 @@ class GrokBot(Bot, OpenAICompatibleBot):
             "provider": creds.get("provider") or const.GROK,
             "auth_mode": creds.get("auth_mode") or "",
         }
+
+    def _resolve_reasoning_effort(self, kwargs=None):
+        kwargs = kwargs or {}
+        effort = OpenAICompatibleBot._resolve_reasoning_effort(self, kwargs)
+        if effort or kwargs.get("reasoning_effort_locked"):
+            return effort
+        try:
+            from common.llm_backend_router import BACKEND_GROK, get_backend_reasoning_effort
+
+            return normalize_reasoning_effort(get_backend_reasoning_effort(BACKEND_GROK))
+        except Exception:
+            return None
 
     def call_with_tools(self, messages, tools=None, stream=False, **kwargs):
         kwargs = dict(kwargs)

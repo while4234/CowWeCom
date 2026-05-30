@@ -272,6 +272,7 @@
       "grok": {
         "label": "Grok account",
         "model": "grok-4.3",
+        "reasoning_effort": "xhigh",
         "api_base": "https://api.x.ai/v1",
         "wire_api": "responses",
         "auth": "account"

@@ -67,6 +67,7 @@ DEFAULT_LLM_BACKEND_CONFIG: Dict[str, Any] = {
         "grok": {
             "label": "Grok account",
             "model": "grok-4.3",
+            "reasoning_effort": "xhigh",
             "api_base": "https://api.x.ai/v1",
             "wire_api": "responses",
             "auth": "account",
@@ -586,6 +587,17 @@ def get_grok_model() -> str:
     return str(conf().get("grok_model") or const.GROK_4_3).strip() or const.GROK_4_3
 
 
+def get_backend_reasoning_effort(backend: Optional[str] = None) -> str:
+    normalized = normalize_backend(backend or get_current_backend())
+    if normalized == BACKEND_CODEX:
+        provider = get_codex_provider_config()
+    elif normalized == BACKEND_GROK:
+        provider = get_grok_provider_config()
+    else:
+        provider = get_capi_provider_config(normalized)
+    return str(provider.get("reasoning_effort") or "").strip()
+
+
 def get_state_path() -> str:
     cfg = get_llm_backend_config()
     configured = str(cfg.get("state_path") or "").strip()
@@ -801,7 +813,15 @@ def is_capi_monthly_active(backend: Optional[str] = None) -> bool:
 
 
 def backend_supports_reasoning_effort(backend: Optional[str] = None) -> bool:
-    return normalize_backend(backend or get_current_backend()) != BACKEND_GROK
+    normalized = normalize_backend(backend or get_current_backend())
+    if normalized != BACKEND_GROK:
+        return True
+    try:
+        from integrations.hermes_xai.model_metadata import grok_supports_reasoning_effort
+
+        return grok_supports_reasoning_effort(get_grok_model())
+    except Exception:
+        return False
 
 
 def get_effective_model(backend: Optional[str] = None) -> str:

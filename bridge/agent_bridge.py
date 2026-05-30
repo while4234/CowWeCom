@@ -33,6 +33,7 @@ from common.llm_backend_router import (
     USER_BACKEND_DEFAULT,
     backend_supports_reasoning_effort,
     can_use_restricted_backend,
+    get_backend_reasoning_effort,
     get_codex_model,
     get_current_backend,
     get_current_backend_for_profile,
@@ -228,22 +229,30 @@ class AgentLLMModel(LLMModel):
         return str(bot_type or "").strip().lower() in {const.GROK, const.XAI}
 
     def _route_supports_reasoning_effort(self, backend: str, bot_type: str) -> bool:
-        return (not self._is_grok_bot_type(bot_type)) and backend_supports_reasoning_effort(backend)
+        if self._is_grok_bot_type(bot_type):
+            return backend_supports_reasoning_effort(BACKEND_GROK)
+        return backend_supports_reasoning_effort(backend)
 
     def _apply_reasoning_kwargs(self, kwargs: dict, request: LLMRequest, route_backend: str, bot_type: str) -> None:
         if not self._route_supports_reasoning_effort(route_backend, bot_type):
             return
 
+        is_grok_route = self._is_grok_bot_type(bot_type) or normalize_backend(route_backend) == BACKEND_GROK
         thinking_enabled = bool(conf().get("enable_thinking", False))
-        kwargs['thinking'] = (
-            {"type": "enabled"} if thinking_enabled
-            else {"type": "disabled"}
-        )
+        if not is_grok_route:
+            kwargs['thinking'] = (
+                {"type": "enabled"} if thinking_enabled
+                else {"type": "disabled"}
+            )
         request_effort = getattr(request, 'reasoning_effort', None)
         effort_locked = bool(getattr(request, 'reasoning_effort_locked', False))
         if effort_locked:
             kwargs['reasoning_effort_locked'] = True
             effort = request_effort
+        elif request_effort:
+            effort = request_effort
+        elif is_grok_route:
+            effort = get_backend_reasoning_effort(BACKEND_GROK)
         elif thinking_enabled or request_effort:
             effort = request_effort or conf().get("model_reasoning_effort") or conf().get("reasoning_effort", "high")
         else:

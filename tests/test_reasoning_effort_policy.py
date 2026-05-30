@@ -78,11 +78,15 @@ class TestReasoningEffortPolicy(unittest.TestCase):
         self.assertEqual(decision.decision_source, "local")
         self.assertEqual(model.calls, [])
 
-    def test_policy_disabled_for_grok_backend(self):
+    def test_policy_selects_effort_for_grok_backend(self):
         model = FakePolicyModel()
         model._active_backend = lambda: BACKEND_GROK
 
-        self.assertIsNone(resolve_reasoning_effort_for_task("write a python script", model))
+        decision = resolve_reasoning_effort_for_task("write a python script", model)
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.selected_effort, "xhigh")
+        self.assertEqual(decision.active_backend, BACKEND_GROK)
 
     def test_local_simple_im_uses_medium(self):
         effort, rule = classify_local_task("你好")
@@ -728,7 +732,19 @@ class TestAgentLLMModelReasoningEffort(unittest.TestCase):
         self.assertEqual(load_state().get("quota_refresh", {}), {})
         schedule.assert_not_called()
 
-    def test_grok_route_does_not_forward_thinking_or_reasoning_effort(self):
+    def test_grok_route_forwards_default_reasoning_effort_without_thinking(self):
+        adapter = AgentLLMModel(None)
+        fake_bot = FakeBot()
+        request = LLMRequest(messages=[{"role": "user", "content": "x"}])
+
+        with patch("bridge.agent_bridge.get_current_backend_for_profile", return_value=BACKEND_GROK), \
+             patch.object(adapter, "_create_bot_for_route", return_value=fake_bot):
+            adapter.call(request)
+
+        self.assertNotIn("thinking", fake_bot.kwargs)
+        self.assertEqual(fake_bot.kwargs["reasoning_effort"], "xhigh")
+
+    def test_grok_route_locked_request_effort_overrides_default_without_thinking(self):
         conf()["enable_thinking"] = True
         conf()["model_reasoning_effort"] = "xhigh"
         adapter = AgentLLMModel(None)
@@ -744,8 +760,8 @@ class TestAgentLLMModelReasoningEffort(unittest.TestCase):
             adapter.call(request)
 
         self.assertNotIn("thinking", fake_bot.kwargs)
-        self.assertNotIn("reasoning_effort", fake_bot.kwargs)
-        self.assertNotIn("reasoning_effort_locked", fake_bot.kwargs)
+        self.assertEqual(fake_bot.kwargs["reasoning_effort"], "medium")
+        self.assertTrue(fake_bot.kwargs["reasoning_effort_locked"])
 
 
 class FakeOpenAICompatibleBot(OpenAICompatibleBot):
