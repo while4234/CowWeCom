@@ -127,7 +127,6 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
                 task_timeout=5,
             )
             manager._get_channel = lambda channel_type: FakeChannel()
-            start = time.time()
             job_a = manager.submit(
                 {"prompt": "sleep:0.35", "image_url": str(events)},
                 make_context("a"),
@@ -141,7 +140,11 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
             try:
                 self.assertEqual(wait_for(job_a), "succeeded")
                 self.assertEqual(wait_for(job_b), "succeeded")
-                self.assertLess(time.time() - start, 0.65)
+                lines = events.read_text(encoding="utf-8").splitlines()
+                start_indexes = [index for index, line in enumerate(lines) if line.startswith("start")]
+                first_end_index = next(index for index, line in enumerate(lines) if line.startswith("end"))
+                self.assertEqual(len(start_indexes), 2)
+                self.assertLess(max(start_indexes), first_end_index)
             finally:
                 manager.shutdown(wait=False)
 
@@ -585,7 +588,7 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
             finally:
                 manager.shutdown(wait=False)
 
-    def test_delivery_failed_job_is_persisted_for_recovery(self):
+    def test_delivery_failed_job_is_terminal_for_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "fake_generate.py"
             write_fake_generator(script)
@@ -607,13 +610,10 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
             try:
                 recovered = recovery_manager.recover_unfinished_jobs()
 
-                self.assertEqual(len(recovered), 1)
-                self.assertEqual(recovered[0].status, "succeeded")
-                kinds = [kind for kind, _, _ in channel.sent]
-                self.assertIn("TEXT", kinds)
-                self.assertIn("IMAGE_URL", kinds)
+                self.assertEqual(recovered, [])
+                self.assertEqual(channel.sent, [])
                 state = json.loads(state_path.read_text(encoding="utf-8"))
-                self.assertEqual(state["status"], "succeeded")
+                self.assertEqual(state["status"], "delivery_failed")
             finally:
                 recovery_manager.shutdown(wait=False)
 

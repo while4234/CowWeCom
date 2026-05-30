@@ -39,7 +39,7 @@ BROKER_RUNTIMES = {
     "local-broker",
 }
 JOB_STATE_FILE = "job_state.json"
-RECOVERABLE_STATUSES = {"queued", "running", "delivery_failed"}
+RECOVERABLE_STATUSES = {"queued", "running"}
 RESTART_RECOVERY_ERROR = (
     "\u751f\u56fe\u4efb\u52a1\u5728\u540e\u53f0\u8fd0\u884c\u65f6 CowAgent "
     "\u91cd\u542f\uff0c\u8fd9\u6b21\u4efb\u52a1\u5df2\u4e2d\u65ad\u3002"
@@ -237,8 +237,7 @@ class ImageGenerationJobManager:
                 job.output_path = output_path
                 delivered = self._send_completion(job) if notify else True
                 job.status = "succeeded" if delivered else "delivery_failed"
-                if not delivered:
-                    job.error = "image generation completed, but delivery failed"
+                job.error = None if delivered else "image generation completed, but delivery failed"
             else:
                 job.status = "failed"
                 job.error = RESTART_RECOVERY_ERROR
