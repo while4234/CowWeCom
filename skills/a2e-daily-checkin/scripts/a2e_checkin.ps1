@@ -181,8 +181,22 @@ function Get-A2EAccessToken($Config) {
   throw "A2E access token was not found in Chrome profile '$($Config.chromeProfileDirectory)' for '$($Config.email)'."
 }
 
+function Normalize-A2EAccessToken([string]$Token) {
+  if (-not $Token) {
+    return $Token
+  }
+
+  $normalized = $Token -replace '\\u0000', '' -replace '\\0', ''
+  $normalized = $normalized -replace '[\x00-\x1F\x7F]', ''
+  $normalized.Trim()
+}
+
 function Invoke-A2EApi($Config, [string]$Path, [string]$Method = "GET", $Body = $null) {
-  $token = Get-A2EAccessToken $Config
+  $token = Normalize-A2EAccessToken (Get-A2EAccessToken $Config)
+  if (-not $token) {
+    throw "A2E access token was empty after sanitizing Chrome profile storage for '$($Config.email)'."
+  }
+
   $headers = @{ Authorization = "Bearer $token" }
   $uri = "https://video.a2e.ai$Path"
 

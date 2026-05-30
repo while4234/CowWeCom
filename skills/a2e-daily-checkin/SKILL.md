@@ -26,7 +26,9 @@ metadata:
 
 ## Native Chrome Helper
 
-Use the bundled PowerShell helper from this skill's base directory. It verifies the Chrome profile email, opens or focuses the correct profile, navigates to A2E, clicks the visible daily reward claim button when requested, verifies success through the A2E API when possible, updates state after verified success, and closes A2E browser windows after a verified claim unless `-KeepOpen` is passed.
+Use only the bundled PowerShell helper from this skill's base directory. The helper script is `scripts\a2e_checkin.ps1`; rerun stale or mistaken invocations with that helper.
+
+The helper verifies the Chrome profile email, opens or focuses the correct profile, navigates to A2E, clicks the visible daily reward claim button when requested, verifies success through the A2E API when possible, updates state after verified success, and closes A2E browser windows after a verified claim unless `-KeepOpen` is passed.
 
 Open the due account page without claiming:
 

@@ -71,6 +71,18 @@ class A2EDailyCheckinSkillTest(unittest.TestCase):
         self.assertIn("$fallbackTokens += $match.Groups[1].Value", script_content)
         self.assertIn("return $fallbackTokens[0]", script_content)
 
+    def test_helper_sanitizes_token_before_api_headers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = SkillManager(custom_dir=str(Path(tmp) / "skills"))
+            entry = manager.get_skill("a2e-daily-checkin")
+            script_content = (
+                Path(entry.skill.file_path).parent / "scripts" / "a2e_checkin.ps1"
+            ).read_text(encoding="utf-8")
+
+        self.assertIn("function Normalize-A2EAccessToken", script_content)
+        self.assertIn("[\\x00-\\x1F\\x7F]", script_content)
+        self.assertIn("Normalize-A2EAccessToken (Get-A2EAccessToken $Config)", script_content)
+
 
 if __name__ == "__main__":
     unittest.main()
