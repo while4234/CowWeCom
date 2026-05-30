@@ -12,7 +12,7 @@ from common.prompt_optimization_repository import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SELECT_FRAGMENTS_SCRIPT = PROJECT_ROOT / "skills" / "image-prompt-optimization" / "scripts" / "select_prompt_fragments.py"
+SELECT_FRAGMENTS_SCRIPT = PROJECT_ROOT / "skills" / "grok-image-prompt-optimization" / "scripts" / "select_prompt_fragments.py"
 
 
 class FixedRandom:
@@ -79,9 +79,9 @@ def write_korean_repository_fixture(root):
 
 
 def write_nsfw_repository_skill(root):
-    skill_dir = root / "image-prompt-optimization"
+    skill_dir = root / "grok-image-prompt-optimization"
     (skill_dir / "repositories").mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("# image-prompt-optimization\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text("# grok-image-prompt-optimization\n", encoding="utf-8")
     write_nsfw_repository_fixture(skill_dir / "repositories")
     return skill_dir
 
@@ -346,13 +346,13 @@ def test_reference_image_uses_identity_lock_instead_of_nationality_appearance(tm
 
 
 def test_grok_text_model_receives_korean_constraint_that_overrides_random_fragments(monkeypatch, tmp_path):
-    skill_dir = tmp_path / "image-prompt-optimization"
+    skill_dir = tmp_path / "grok-image-prompt-optimization"
     (skill_dir / "repositories").mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("# image-prompt-optimization\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text("# grok-image-prompt-optimization\n", encoding="utf-8")
     write_korean_repository_fixture(skill_dir / "repositories")
     captured = {}
 
-    monkeypatch.setenv("IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
+    monkeypatch.setenv("GROK_IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
     monkeypatch.setattr("common.prompt_optimization_repository.random.SystemRandom", lambda: FixedRandom(0.1))
 
     def fake_call(system_prompt, user_prompt):
@@ -378,13 +378,13 @@ def test_grok_text_model_receives_korean_constraint_that_overrides_random_fragme
 
 
 def test_grok_reference_rewrite_locks_reference_identity_and_final_prompt(monkeypatch, tmp_path):
-    skill_dir = tmp_path / "image-prompt-optimization"
+    skill_dir = tmp_path / "grok-image-prompt-optimization"
     (skill_dir / "repositories").mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text("# image-prompt-optimization\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text("# grok-image-prompt-optimization\n", encoding="utf-8")
     write_korean_repository_fixture(skill_dir / "repositories")
     captured = {}
 
-    monkeypatch.setenv("IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
+    monkeypatch.setenv("GROK_IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
     monkeypatch.setattr("common.prompt_optimization_repository.random.SystemRandom", lambda: FixedRandom(0.1))
 
     def fake_call(system_prompt, user_prompt):
@@ -434,7 +434,7 @@ def test_grok_text_model_receives_nsfw_priority_and_supplement_metadata(monkeypa
     skill_dir = write_nsfw_repository_skill(tmp_path)
     captured = {}
 
-    monkeypatch.setenv("IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
+    monkeypatch.setenv("GROK_IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
     monkeypatch.setattr("common.prompt_optimization_repository.random.SystemRandom", lambda: CyclingRandom())
 
     def fake_call(system_prompt, user_prompt):
@@ -459,7 +459,7 @@ def test_grok_text_model_receives_nsfw_priority_and_supplement_metadata(monkeypa
 def test_grok_rewrite_strips_nsfw_control_token_from_final_prompt(monkeypatch, tmp_path):
     skill_dir = write_nsfw_repository_skill(tmp_path)
 
-    monkeypatch.setenv("IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
+    monkeypatch.setenv("GROK_IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
     monkeypatch.setattr("common.prompt_optimization_repository.random.SystemRandom", lambda: CyclingRandom())
     monkeypatch.setattr(
         grok_image_prompt_rewriter,
@@ -472,6 +472,89 @@ def test_grok_rewrite_strips_nsfw_control_token_from_final_prompt(monkeypatch, t
     assert result["enhanced"] is True
     assert result["enhanced_prompt"] == "cinematic portrait"
     assert result["source_prompt"] == "portrait"
+
+
+def test_random_prompt_request_defaults_to_image_to_image_contract(monkeypatch, tmp_path):
+    skill_dir = write_nsfw_repository_skill(tmp_path)
+    captured = {}
+
+    monkeypatch.setenv("GROK_IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
+    monkeypatch.setattr("common.prompt_optimization_repository.random.SystemRandom", lambda: CyclingRandom())
+
+    def fake_call(system_prompt, user_prompt):
+        if "Translate Grok image generation prompts" in system_prompt:
+            return "中文提示词"
+        captured["user_prompt"] = user_prompt
+        return (
+            "Final prompt: NSFW subject, soft cinematic lighting, highly detailed, realistic skin texture, "
+            "sensual atmosphere, 8k, black hair, blue eyes, biting her lower lip"
+        )
+
+    monkeypatch.setattr(grok_image_prompt_rewriter, "_call_grok_text_model", fake_call)
+
+    result = grok_image_prompt_rewriter.build_grok_random_image_prompt("随机给我个NSFW图生图提示词")
+    response = grok_image_prompt_rewriter.format_grok_random_image_prompt_response(result)
+
+    assert result["prompt_mode"] == grok_image_prompt_rewriter.RANDOM_PROMPT_MODE_IMAGE_TO_IMAGE
+    assert result["library"]["keyword"] == "grok"
+    assert result["library"]["category"] == "NSFW"
+    assert result["source_prompt"] == "image-to-image visual concept"
+    assert result["enhanced_prompt"] == "subject"
+    assert result["chinese_prompt"] == "中文提示词"
+    assert "prompt_mode: image-to-image prompt text" in captured["user_prompt"]
+    assert "Hair is appearance" in captured["user_prompt"]
+    assert "Preserve the reference subject's original facial expression" in captured["user_prompt"]
+    assert "nsfw-specific pose controls" in captured["user_prompt"]
+    assert response.startswith("随机图生图提示词：")
+    assert "English Prompt:" in response
+    assert "中文翻译：" in response
+
+
+def test_random_prompt_request_honors_explicit_text_to_image_mode(monkeypatch, tmp_path):
+    skill_dir = write_nsfw_repository_skill(tmp_path)
+
+    monkeypatch.setenv("GROK_IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
+    monkeypatch.setattr("common.prompt_optimization_repository.random.SystemRandom", lambda: CyclingRandom())
+    monkeypatch.setattr(
+        grok_image_prompt_rewriter,
+        "_call_grok_text_model",
+        lambda system_prompt, user_prompt: "中文提示词"
+        if "Translate Grok image generation prompts" in system_prompt
+        else "Final prompt: black hair, cinematic subject prompt.",
+    )
+
+    result = grok_image_prompt_rewriter.build_grok_random_image_prompt("随机给我个NSFW文生图提示词")
+
+    assert result["prompt_mode"] == grok_image_prompt_rewriter.RANDOM_PROMPT_MODE_TEXT_TO_IMAGE
+    assert result["source_prompt"] == "image concept"
+    assert result["enhanced_prompt"] == "black hair, cinematic subject prompt."
+
+
+def test_grok_image_rewrite_sanitizes_quality_boosters_and_reference_expression(monkeypatch, tmp_path):
+    skill_dir = write_nsfw_repository_skill(tmp_path)
+
+    monkeypatch.setenv("GROK_IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
+    monkeypatch.setattr(
+        grok_image_prompt_rewriter,
+        "_call_grok_text_model",
+        lambda system_prompt, user_prompt: (
+            "Final prompt: portrait, soft cinematic lighting, highly detailed, realistic skin texture, "
+            "sensual atmosphere, 8k, smiling"
+        ),
+    )
+
+    result = grok_image_prompt_rewriter.rewrite_grok_image_prompt(
+        "make it noir",
+        model="grok-imagine-image",
+        image_url="C:\\tmp\\ref.png",
+    )
+
+    assert result["enhanced_prompt"] == (
+        "portrait\n\nReference image identity lock: preserve the reference subject's exact face, facial structure, "
+        "original expression, gaze direction, skin texture/tone, hair, distinctive features, and general body "
+        "proportions; only change the requested style, clothing, objects, pose, or environment; do not invent "
+        "a new person or add new ethnicity, eye color, hair color, age, body type, expression, or facial traits."
+    )
 
 
 def test_strip_repository_keywords_ignores_partial_words():

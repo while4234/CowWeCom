@@ -38,7 +38,7 @@ Prompt enhancement is automatic and hidden:
   reference library under `../image-prompt-optimization/references/nano-banana-pro/`
   as a local retrieval source.
 - Grok image generation does not use the YouMind library. It has a separate
-  rewrite branch in `../image-prompt-optimization/`: the runtime sends the
+  rewrite branch in `../grok-image-prompt-optimization/`: the runtime sends the
   user's prompt plus `templates/grok_image_system_prompt.txt` and optional random
   repository fragments to Grok's text model, then sends only the model-returned
   final prompt to Grok image generation.

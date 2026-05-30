@@ -370,10 +370,10 @@ class TestGrokImageSkill(unittest.TestCase):
         self.assertIn("active model backend is Grok", text)
         self.assertIn('"runtime": "codex_auth"', text)
         self.assertIn('"runtime": "grok"', text)
-        self.assertIn("image-prompt-optimization", text)
+        self.assertIn("grok-image-prompt-optimization", text)
         self.assertIn("Grok's own text model", text)
         self.assertTrue(
-            (PROJECT_ROOT / "skills" / "image-prompt-optimization" / "templates" / "grok_image_system_prompt.txt").exists()
+            (PROJECT_ROOT / "skills" / "grok-image-prompt-optimization" / "templates" / "grok_image_system_prompt.txt").exists()
         )
 
 

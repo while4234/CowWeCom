@@ -43,9 +43,9 @@ When using Grok:
 - If quality/speed is not explicit, omit `quality`; Grok defaults to the fast
   model. Do not infer quality mode from the image type alone.
 - Hidden prompt rewriting is automatic after Grok model selection. Grok uses the
-  shared `image-prompt-optimization` skill and Grok's own text model, not the
-  current GPT/Codex backend. The runtime sends the user's visual request plus
-  `templates/grok_image_system_prompt.txt` and optional random repository
+  dedicated `grok-image-prompt-optimization` skill and Grok's own text model,
+  not the current GPT/Codex backend. The runtime sends the user's visual request
+  plus `templates/grok_image_system_prompt.txt` and optional random repository
   fragments to Grok, then sends the returned final prompt directly to Grok image
   generation.
 - Do not display the enhanced prompt during generation. If the user explicitly
@@ -59,21 +59,21 @@ When using Grok:
   rewrite should not add new ethnicity, eye color, hair color, age, body type,
   or facial traits unless the user explicitly asks to change them.
 
-The rewrite system prompt template lives in the shared prompt optimization skill:
+The rewrite system prompt template lives in the Grok image prompt optimization skill:
 
 ```text
-skills/image-prompt-optimization/templates/grok_image_system_prompt.txt
+skills/grok-image-prompt-optimization/templates/grok_image_system_prompt.txt
 ```
 
 Replace that file, or set `GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT` /
 `GROK_IMAGE_PROMPT_REWRITE_SYSTEM_PROMPT_FILE`, to customize the prompt writer.
 For non-direct Grok image generation, random missing-detail fragments are
-selected 90% from `skills/image-prompt-optimization/repositories/grok/` and
-10% from other repositories when available. If the prompt contains `NSFW` or
-`nsfw`, treat that token as an internal control keyword, not final prompt text:
-selection prioritizes `repositories/grok/NSFW/` and can include one small
-non-priority supplement from safe context categories such as background,
-styling, color, or material. If the user specifies a nationality/ethnicity such
+selected from `skills/grok-image-prompt-optimization/repositories/grok/`. If the
+prompt contains `NSFW`, `nsfw`, or `大尺度`, treat that token as an internal
+control keyword, not final prompt text: missing-detail selection prioritizes
+`repositories/grok/NSFW/` about 90% of the time and uses matching non-NSFW Grok
+categories for the rest when available. If the user specifies a
+nationality/ethnicity such
 as `Korean`, `Korea`, or `韩国`, preserve it as a mandatory stable constraint and
 filter random fragments that would introduce conflicting identity traits.
 

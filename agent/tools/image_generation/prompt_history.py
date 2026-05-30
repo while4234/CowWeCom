@@ -103,7 +103,7 @@ class ImageGenerationPromptHistoryTool(BaseTool):
                 template_lines.append(f"- {category} #{template_id}: {title}".strip())
             if str(record.get("version") or "").startswith("grok-model-rewrite"):
                 source_label = "Prompt rewrite source:"
-                template_text = "- Grok text model with image-prompt-optimization rewrite templates"
+                template_text = "- Grok text model with Grok-specific rewrite templates"
             else:
                 source_label = "Matched library templates:"
                 template_text = "\n".join(template_lines) if template_lines else "- none"

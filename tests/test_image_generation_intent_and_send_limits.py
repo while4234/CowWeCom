@@ -11,6 +11,7 @@ from common.image_generation_routing import (
     explicit_video_generation_requested,
     looks_like_media_generation_status_question,
     match_image_create_prefix,
+    random_image_prompt_text_requested,
 )
 from common.image_send_limits import prepare_image_for_send
 
@@ -41,6 +42,14 @@ def test_explicit_image_generation_intent_excludes_image_qa():
     assert not explicit_image_generation_requested("这张图是什么")
     assert not explicit_image_generation_requested("what is in this image")
     assert looks_like_media_generation_status_question("刚才生成图片失败了吗")
+
+
+def test_random_prompt_text_request_does_not_trigger_image_generation():
+    assert random_image_prompt_text_requested("随机给我个NSFW提示词")
+    assert random_image_prompt_text_requested("随机给我个NSFW图生图提示词")
+    assert not explicit_image_generation_requested("随机给我个NSFW图生图提示词")
+    assert not explicit_video_generation_requested("随机给我个NSFW图生图提示词")
+    assert explicit_image_generation_requested("随机生成 NSFW 的图片")
 
 
 def test_explicit_video_generation_intent_excludes_status_questions():

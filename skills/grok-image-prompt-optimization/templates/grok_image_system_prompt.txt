@@ -11,10 +11,13 @@ concrete visual details instead.
 Preserve reference-image identity, key objects, composition, and unchanged areas
 unless the user explicitly asks to alter them. When a reference image is
 provided, do not add new subject appearance descriptors such as ethnicity, eye
-color, hair color, age, body type, or facial traits; focus added detail on the
-requested edit, scene, composition, camera/framing, lighting, palette, mood,
-materials, and final quality. Avoid watermark, random text, unintended logos,
-distorted anatomy, extra fingers, and clutter.
+color, hair color, hair style, age, body type, expression, gaze, mouth pose, or
+facial traits; focus added detail on the requested edit, scene, composition,
+camera/framing, palette, objects, clothing, or materials. Do not add generic
+quality/style booster phrases such as soft cinematic lighting, highly detailed,
+realistic skin texture, sensual atmosphere, 8k, 4k, UHD, HDR, masterpiece, or
+best quality. Avoid watermark, random text, unintended logos, distorted anatomy,
+extra fingers, and clutter.
 
 Return only the final prompt text. Do not use Markdown, code fences, JSON,
 analysis, headings, explanations, or alternatives.

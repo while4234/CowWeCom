@@ -1,6 +1,6 @@
 # encoding:utf-8
 
-"""Select random prompt fragments from the image-prompt-optimization skill."""
+"""Select random Grok image prompt fragments or build a random Grok prompt."""
 
 from __future__ import annotations
 
@@ -28,7 +28,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repositories-root", default="")
     parser.add_argument("--limit", type=int, default=4)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--generate-prompt",
+        action="store_true",
+        help="Use Grok to produce the final English prompt and Chinese translation.",
+    )
     args = parser.parse_args(argv)
+
+    if args.generate_prompt:
+        from common.grok_image_prompt_rewriter import build_grok_random_image_prompt
+
+        result = build_grok_random_image_prompt(args.prompt, limit=args.limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
 
     rng = random.Random(args.seed) if args.seed is not None else None
     result = select_grok_prompt_fragments(

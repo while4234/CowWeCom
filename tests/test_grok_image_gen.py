@@ -25,11 +25,11 @@ class FixedRandom:
 
 
 def write_grok_repository_skill(root):
-    skill_dir = root / "image-prompt-optimization"
+    skill_dir = root / "grok-image-prompt-optimization"
     repositories = skill_dir / "repositories"
     (repositories / "grok").mkdir(parents=True)
     (repositories / "general").mkdir()
-    (skill_dir / "SKILL.md").write_text("# image-prompt-optimization\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text("# grok-image-prompt-optimization\n", encoding="utf-8")
     (repositories / "grok" / "visual.txt").write_text("grok cinematic detail\n", encoding="utf-8")
     (repositories / "general" / "visual.txt").write_text("general cinematic detail\n", encoding="utf-8")
     return skill_dir
@@ -70,7 +70,7 @@ def test_provider_posts_images_generation_with_oauth_token_and_payload(monkeypat
         )
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
+    monkeypatch.setenv("GROK_IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR", str(skill_dir))
     monkeypatch.setattr("common.prompt_optimization_repository.random.SystemRandom", lambda: FixedRandom(0.1))
     monkeypatch.setattr(image_gen, "resolve_xai_http_credentials", fake_resolver)
     monkeypatch.setattr(image_gen.requests, "post", fake_post)

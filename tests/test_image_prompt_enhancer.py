@@ -96,11 +96,11 @@ class FixedRandom:
 
 
 def write_grok_repository_skill(root: Path):
-    skill_dir = root / "image-prompt-optimization"
+    skill_dir = root / "grok-image-prompt-optimization"
     repositories = skill_dir / "repositories"
     (repositories / "grok").mkdir(parents=True)
     (repositories / "general").mkdir()
-    (skill_dir / "SKILL.md").write_text("# image-prompt-optimization\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text("# grok-image-prompt-optimization\n", encoding="utf-8")
     (repositories / "grok" / "visual.txt").write_text("grok cinematic detail\n", encoding="utf-8")
     (repositories / "general" / "visual.txt").write_text("general cinematic detail\n", encoding="utf-8")
     return skill_dir
@@ -118,7 +118,7 @@ class TestImagePromptEnhancer(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             skill_dir = write_grok_repository_skill(Path(tmp))
 
-            with patch.dict(os.environ, {"IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR": str(skill_dir)}), patch(
+            with patch.dict(os.environ, {"GROK_IMAGE_PROMPT_OPTIMIZATION_SKILL_DIR": str(skill_dir)}), patch(
                 "common.prompt_optimization_repository.random.SystemRandom",
                 return_value=FixedRandom(0.1),
             ), patch(
@@ -134,9 +134,9 @@ class TestImagePromptEnhancer(unittest.TestCase):
         self.assertTrue(result["enhanced"])
         self.assertEqual(result["version"], "grok-model-rewrite-v2")
         self.assertEqual(result["use_case"], "image_model_rewrite")
-        self.assertEqual(result["enhanced_prompt"], "A polished Grok prompt with cinematic lighting.")
+        self.assertEqual(result["enhanced_prompt"], "A polished Grok prompt with")
         self.assertEqual(result["templates"], [])
-        self.assertEqual(result["library"]["name"], "image-prompt-optimization")
+        self.assertEqual(result["library"]["name"], "grok-image-prompt-optimization")
         self.assertEqual(result["library"]["keyword"], "grok")
         self.assertEqual(result["supplements"][0]["repository"], "grok")
         self.assertEqual(rewrite_call.call_count, 1)

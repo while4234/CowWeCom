@@ -1,6 +1,6 @@
 ---
 name: image-prompt-optimization
-description: Shared hidden prompt optimization resources for CowWeCom image and Grok video generation. Use when maintaining prompt libraries, Grok prompt rewrite templates, random prompt fragment repositories, or the GPT/Codex and Grok media prompt polishing workflow.
+description: Hidden prompt optimization resources for non-Grok image generation. Use for GPT/Codex image prompt enhancement with the local Nano Banana Pro prompt reference library.
 metadata:
   cowagent:
     always: true
@@ -8,89 +8,30 @@ metadata:
 
 # Image Prompt Optimization
 
-This skill owns CowWeCom hidden prompt optimization resources.
+This skill owns CowWeCom hidden prompt optimization resources for non-Grok image generation.
 
-Use it as the shared repository for:
-
-- GPT/Codex image prompt enhancement with the existing Nano Banana Pro JSON library.
-- Grok image and Grok video prompt rewriting with Grok's text model.
-- Local random text-fragment repositories used to fill missing prompt details.
+Use it as the shared repository for GPT/Codex image prompt enhancement with the existing Nano Banana Pro JSON library.
 
 ## Repository Layout
 
 ```text
 skills/image-prompt-optimization/
-  references/nano-banana-pro/      # existing YouMind/Nano Banana Pro JSON snapshot
-  repositories/grok/               # YetAnotherWildcardCollection snapshot for Grok fragments
-  repositories/general/            # optional fallback fragments
-  templates/grok_image_system_prompt.txt
-  templates/grok_video_system_prompt.txt
-  scripts/select_prompt_fragments.py
+  references/nano-banana-pro/      # YouMind/Nano Banana Pro JSON snapshot
 ```
 
 ## Runtime Rules
 
-- GPT/Codex image generation keeps the existing category/filter scoring behavior
-  over `references/nano-banana-pro/`.
-- Grok image and Grok video generation use Grok's text model for hidden prompt
-  rewriting, not the active GPT/Codex backend.
-- Grok rewrite first strips repository trigger keywords from the user-visible
-  visual request.
-- If the prompt needs Grok rewriting and is not a raw/direct request, random
-  missing-detail fragments are selected with this rule: 90% from
-  `repositories/grok/`, 10% from other repositories when they contain fragments.
-- If the user prompt contains `NSFW` or `nsfw`, treat it as an internal control
-  keyword: strip the literal token from the user-visible rewrite source, then
-  prioritize `repositories/grok/NSFW/` fragments and, when available, include
-  one small non-priority supplement from safe context categories such as
-  `Background`, `Styling`, `Colors`, or `Materials`.
-- If the user specifies a nationality or ethnicity such as `Korean`, `Korea`,
-  or `韩国`, add a stable mandatory constraint from
-  `repositories/grok/States/Nationality-Race.txt`; random fragments must not
-  override that constraint, and conflicting identity traits are filtered out.
-- If a reference image is provided for image-to-image or image-to-video, use a
-  stronger reference-image identity constraint instead of adding nationality or
-  other subject-appearance descriptors. The final prompt must preserve the
-  reference subject's face, facial structure, hair, skin tone/texture,
-  distinctive features, and body proportions unless the user explicitly asks to
-  change them.
-- Direct raw commands can still pass `prompt_enhancement=false` to bypass this
-  hidden optimization path, but Grok reference-image tasks still append the
-  reference-image identity lock before submission.
+- GPT/Codex image generation uses the category/filter scoring behavior over `references/nano-banana-pro/`.
+- This skill does not contain Grok prompt rewrite templates, Grok random fragment repositories, or Grok image/video runtime rules.
+- Grok image prompt polishing belongs to `skills/grok-image-prompt-optimization/`.
+- Grok video generation must not depend on this skill.
 
-## Adding A Prompt Category Repository
+## Adding Non-Grok Prompt References
 
-Create a directory under `repositories/` whose folder name is the trigger
-keyword. Put UTF-8 `.txt` files inside it. Each non-empty, non-comment line is
-one selectable fragment.
-
-Example:
-
-```text
-repositories/grok/
-  Styling/Lighting.txt
-  Styling/Composition.txt
-  NSFW/POV.txt
-```
-
-```text
-soft diffused window light, natural skin texture, clean background
-half-body editorial framing, relaxed pose, clear face, balanced negative space
-```
-
-To add another keyword later, create another folder such as
-  `repositories/myKeyword/`; when that exact keyword appears in the user's prompt,
-the same 90% matched-repository / 10% other-repository rule applies. Without a
-keyword, Grok defaults to the `grok` repository.
-
-If the user asks to see the prompt that was just polished or directly sent,
-call `image_generation_prompt_history` with `exact_only=true`. That reads the
-stored final prompt even when the downstream image request failed after
-rewriting or when the user used a direct/raw command; do not regenerate or
-rewrite the prompt again.
+Add new non-Grok image prompt reference libraries under `references/` and update the runtime resolver before using them. Do not place Grok-specific repositories or templates in this skill.
 
 After changing project skills, sync the same folder to:
 
 ```text
-C:\Users\RondleLiu\cow\skills\image-prompt-optimization\
+C:\Users\Hi\cow\skills\image-prompt-optimization\
 ```

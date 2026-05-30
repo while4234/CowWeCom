@@ -203,6 +203,8 @@ Grok 生图支持 `grok-imagine-image` 速度模型和 `grok-imagine-image-quali
 
 图片生成现在只在用户明确说“画图 / 生图 / 生成图片 / 绘图 / 出图”或明确要求编辑、融合图片时触发；引用或发送图片后问“看这张图是什么”“找一下来源”等普通识图问题不会进入生图工具。微信和企业微信发送图片前会按配置的最大宽高和字节上限自动规整，避免超大生成图或引用图在上传阶段失败。
 
+当前 Grok 提示词资源已经拆分：GPT/Codex 图片仍使用 `skills/image-prompt-optimization/references/nano-banana-pro/`；Grok 图片使用 `skills/grok-image-prompt-optimization/` 下的模板、脚本和 `repositories/grok/` 片段；Grok 视频使用 `skills/grok-video-generation/templates/grok_video_system_prompt.txt`，不再依赖图片片段仓库。“随机…提示词”类请求只返回英文 prompt 和中文翻译，不会提交生图任务；未明确 `文生图` 时默认按图生图提示词约束处理。
+
 企业微信原生语音气泡仍受平台 AMR 窄带格式限制。为改善听感，默认会减少 Grok 流式 TTS 的切段频率（`grok_voice_max_segment_chars=180`、`grok_voice_flush_idle_ms=1500`），并在转换企业微信语音前启用响度归一化与最高 AMR-NB 码率（`wecom_voice_normalize_enabled=true`、`wecom_voice_normalize_target_dbfs=-18.0`、`wecom_voice_normalize_headroom_db=1.0`、`wecom_voice_amr_bitrate=12.2k`）。这些设置会保留原生语音气泡，但不会突破企业微信 AMR 本身的电话音质上限。
 
 ## 微信接入
@@ -539,6 +541,7 @@ CowWeCom/
 - ??????????? `public_protocol_knowledge/`???????????? `knowledge_backend.visual_analysis`?Web ?????? `kb_id` ???
 - Grok 图片/视频隐藏提示词仓库从 `grokSfw` 更名为 `grok`，并内置 YetAnotherWildcardCollection 的完整 wildcard/prompt `.txt` 快照。
 - 普通 Grok 生图/视频润色默认 90% 使用 `grok` 仓库、10% 使用其他仓库；prompt 含 `NSFW`/`nsfw` 时把该词作为内部选择信号移除，优先使用 `grok/NSFW`，并只混入 1 条背景、风格、色彩、材质等安全上下文补充片段。
+- “随机…提示词”现在固定走提示词文本路径，不会误触发生图/图生图；未明确 `文生图` 时默认生成图生图提示词，仓库片段筛选由本地脚本完成，Grok 只做最终润色和删除错误外貌/表情/画质词。
 - prompt 指明 `Korean`、`Korea`、`韩国` 等国籍/族裔时会生成稳定人物约束，过滤会引入冲突身份外貌的随机片段，避免“韩国人”被补成偏欧美特征。
 - 图生图和图生视频在润色与 direct 直出路径都会追加参考图身份锁；有参考图时不再额外补入国籍、眼睛颜色、发色、年龄、体型或面部特征描述，除非用户明确要求修改。
 - 查看“刚才润色后的提示词”会读取最近一次已存储的最终 prompt，不重新润色；默认以中文展示，Grok 图片/视频记录优先用 Grok 翻译，需要原文时可显式要求原文；直出和未产生 rewrite metadata 的 Grok 图片/视频 prompt 也会记录到同一套历史里；下游审核/API 失败后也会尽量保留已润色 prompt 供排查。

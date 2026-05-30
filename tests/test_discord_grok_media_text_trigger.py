@@ -4,8 +4,10 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from bridge.context import ContextType
+from bridge.context import Context, ContextType
+from channel.chat_channel import ChatChannel
 from channel.discord.discord_channel import DiscordChannel
+from common.grok_image_prompt_rewriter import RANDOM_PROMPT_MODE_IMAGE_TO_IMAGE
 
 
 def _singleton_class(factory):
@@ -68,6 +70,40 @@ def test_discord_message_image_prefix_creates_image_context(monkeypatch):
 
     assert context.type == ContextType.IMAGE_CREATE
     assert context.content == "一只猫"
+
+
+def test_discord_random_image_prompt_request_stays_text(monkeypatch):
+    _patch_conf(monkeypatch)
+    channel = _discord_channel()
+    context = channel._build_message_context(
+        _message("随机给我个NSFW图生图提示词"),
+        ContextType.TEXT,
+        "随机给我个NSFW图生图提示词",
+    )
+
+    channel._promote_grok_media_context_for_message(context)
+
+    assert context.type == ContextType.TEXT
+    assert context.content == "随机给我个NSFW图生图提示词"
+
+
+def test_random_image_prompt_text_reply_uses_deterministic_formatter(monkeypatch):
+    monkeypatch.setattr(
+        "common.grok_image_prompt_rewriter.build_grok_random_image_prompt",
+        lambda prompt: {
+            "prompt_mode": RANDOM_PROMPT_MODE_IMAGE_TO_IMAGE,
+            "enhanced_prompt": "reference-preserving prompt",
+            "chinese_prompt": "保留参考图的提示词",
+        },
+    )
+
+    reply = ChatChannel._generate_random_grok_prompt_reply(
+        Context(ContextType.TEXT, "随机给我个NSFW图生图提示词")
+    )
+
+    assert reply.content.startswith("随机图生图提示词：")
+    assert "English Prompt:\nreference-preserving prompt" in reply.content
+    assert "中文翻译：\n保留参考图的提示词" in reply.content
 
 
 def test_discord_message_with_image_attachment_keeps_inline_image_ref_for_video(monkeypatch, tmp_path):

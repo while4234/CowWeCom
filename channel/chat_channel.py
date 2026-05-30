@@ -24,6 +24,7 @@ from common.image_generation_routing import (
     looks_like_media_generation_status_question,
     match_image_create_prefix,
     match_video_create_prefix,
+    random_image_prompt_text_requested,
 )
 from common.image_reference_routing import (
     image_create_auto_ref_window_seconds,
@@ -810,6 +811,8 @@ class ChatChannel(Channel):
         if not e_context.is_pass():
             logger.debug("[chat_channel] type={}, content={}".format(context.type, context.content))
             if context.type in (ContextType.TEXT, ContextType.IMAGE_CREATE, ContextType.VIDEO_CREATE):  # 文字和生成命令
+                if context.type == ContextType.TEXT and random_image_prompt_text_requested(context.content):
+                    return self._generate_random_grok_prompt_reply(context)
                 if context.type == ContextType.VIDEO_CREATE:
                     self._send_plain_text(context, "视频生成中，请稍候（通常需要 1-4 分钟）。", track_visible=False)
                 context["channel"] = e_context["channel"]
@@ -866,6 +869,20 @@ class ChatChannel(Channel):
                 logger.warning("[chat_channel] unknown context type: {}".format(context.type))
                 return
         return reply
+
+    @staticmethod
+    def _generate_random_grok_prompt_reply(context: Context) -> Reply:
+        try:
+            from common.grok_image_prompt_rewriter import (
+                build_grok_random_image_prompt,
+                format_grok_random_image_prompt_response,
+            )
+
+            metadata = build_grok_random_image_prompt(str(context.content or ""))
+            return Reply(ReplyType.TEXT, format_grok_random_image_prompt_response(metadata))
+        except Exception as e:
+            logger.warning("[chat_channel] random Grok prompt generation failed: %s", e, exc_info=True)
+            return Reply(ReplyType.ERROR, f"随机提示词生成失败：{e}")
 
     @staticmethod
     def _should_promote_grok_media_create(context: Context, content: str, detector) -> bool:

@@ -69,6 +69,7 @@ _IMAGE_GENERATION_CN_RE = re.compile(
     r"(?:"
     r"生图|出图|画图|绘图|作图|制图|做(?:一张|一个|个)?图|"
     r"生成(?:一张|一个|个)?(?:图片|图像|图|照片|海报|头像|插画|封面|壁纸)|"
+    r"随机生成.{0,40}(?:图片|图像|照片|图)|"
     r"(?:^|[\s，。！？:：,、])画(?:[\s:：,，]|一张|一个|个|只|张|幅|成|一下|点|些|出)|"
     r"图生图|以图生图|修图|改图|编辑(?:这张|这幅|这个)?图|换背景|去背景|抠图|"
     r"参考(?:这张|上面|刚才|引用).{0,20}(?:生成|生图|出图|画图|绘图|做图|改图)"
@@ -133,12 +134,19 @@ _GPT_IMAGE_RE = re.compile(
     r".{0,12}" + _GPT_PROVIDER + r")",
     re.IGNORECASE,
 )
+_RANDOM_PROMPT_TEXT_RE = re.compile(
+    r"(?:随机|随便|任意|\brandom\b).{0,32}(?:提示词|\bprompt\b)|"
+    r"(?:提示词|\bprompt\b).{0,32}(?:随机|随便|任意|\brandom\b)",
+    re.IGNORECASE,
+)
 
 
 def explicit_image_generation_requested(prompt: Any) -> bool:
     """Return True only when the user explicitly asks to create or edit an image."""
     text = " ".join(str(prompt or "").strip().split())
     if not text:
+        return False
+    if random_image_prompt_text_requested(text):
         return False
     if is_image_to_image_reference_request(text):
         return True
@@ -150,7 +158,17 @@ def explicit_video_generation_requested(prompt: Any) -> bool:
     text = " ".join(str(prompt or "").strip().split())
     if not text:
         return False
+    if random_image_prompt_text_requested(text):
+        return False
     return bool(_VIDEO_GENERATION_CN_RE.search(text) or _VIDEO_GENERATION_EN_RE.search(text))
+
+
+def random_image_prompt_text_requested(prompt: Any) -> bool:
+    """Return True when the user asks to receive prompt text instead of generating media."""
+    text = " ".join(str(prompt or "").strip().split())
+    if not text:
+        return False
+    return bool(_RANDOM_PROMPT_TEXT_RE.search(text))
 
 
 def looks_like_media_generation_status_question(prompt: Any) -> bool:
