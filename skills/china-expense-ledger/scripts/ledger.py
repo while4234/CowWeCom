@@ -237,6 +237,7 @@ STRONG_BILL_KEYWORDS = [
     "付款成功",
     "交易成功",
     "账单详情",
+    "账单截图",
     "当前状态",
     "商户单号",
     "交易单号",
@@ -246,7 +247,9 @@ STRONG_BILL_KEYWORDS = [
 ]
 
 BILL_DETAIL_KEYWORDS = [
+    "账单",
     "订单详情",
+    "订单截图",
     "实付款",
     "实付金额",
     "实际支付",
@@ -254,6 +257,25 @@ BILL_DETAIL_KEYWORDS = [
     "订单金额",
     "已支付",
     "交易时间",
+    "下单时间",
+    "转账时间",
+    "收款时间",
+    "支付方式",
+    "转账单号",
+    "对方已收钱",
+]
+
+TRANSFER_BILL_KEYWORDS = [
+    "微信转账",
+    "支付宝转账",
+    "转账账单",
+    "转账截图",
+    "转账时间",
+    "收款时间",
+    "转账单号",
+    "对方已收钱",
+    "转给",
+    "转账给",
 ]
 
 NON_BILL_PRICE_CONTEXTS = [
@@ -1027,7 +1049,24 @@ def is_bill_like_text(raw_text: str) -> bool:
     looks_like_menu = contains_any(text, NON_BILL_PRICE_CONTEXTS) and not has_strong_marker and not has_detail_marker
     if looks_like_menu:
         return False
+    if looks_like_transfer_bill_text(text):
+        return True
     return has_strong_marker or (has_detail_marker and (has_platform_marker or has_payment_marker))
+
+
+def looks_like_transfer_bill_text(raw_text: str) -> bool:
+    text = normalize_text(raw_text)
+    if not text:
+        return False
+    has_amount = extract_amount_cents_from_text(text) is not None
+    if not has_amount:
+        return False
+    has_transfer_marker = contains_any(text, TRANSFER_BILL_KEYWORDS)
+    if not has_transfer_marker:
+        return False
+    has_payment_marker = infer_payment_app({"raw_text": text}) is not None or contains_any(text, ("零钱", "银行卡"))
+    has_bill_marker = contains_any(text, ("账单", "截图", "单号", "时间", "已收钱", "收款"))
+    return has_payment_marker and has_bill_marker
 
 
 def extract_field_from_text(raw_text: str, labels: Iterable[str]) -> str | None:
@@ -1040,6 +1079,24 @@ def extract_field_from_text(raw_text: str, labels: Iterable[str]) -> str | None:
             value = re.split(r"\s{2,}", value)[0].strip()
             if value:
                 return value[:80]
+    return None
+
+
+def extract_transfer_counterparty_from_text(raw_text: str) -> str | None:
+    text = normalize_text(raw_text)
+    if not text:
+        return None
+    patterns = (
+        r"(?:转账给|转给)\s*([^，,。；;\n\r]+)",
+        r"(?:收款方|交易对方)\s*[:：]?\s*([^，,。；;\n\r]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        value = re.sub(r"\s+", " ", match.group(1)).strip(" -:：")
+        if value:
+            return value[:80]
     return None
 
 
@@ -1092,11 +1149,11 @@ def infer_payload_from_bill_text(payload: dict[str, Any]) -> dict[str, Any]:
     raw_text = normalize_text(inferred.get("raw_text") or inferred.get("text") or inferred.get("ocr_text"))
     inferred["raw_text"] = raw_text
     inferred.setdefault("source_type", "image")
-    inferred.setdefault("direction", "refund" if "退款" in raw_text else "expense")
+    inferred.setdefault("direction", default_direction_for_bill_text(raw_text))
     if not normalize_text(inferred.get("amount_cents")) and not normalize_text(inferred.get("amount")):
         amount = extract_amount_cents_from_text(raw_text)
         if amount is not None:
-            inferred["amount_cents"] = amount
+            inferred["amount_cents"] = abs(amount)
     if not normalize_text(inferred.get("source_app")):
         inferred["source_app"] = infer_payment_app({"raw_text": raw_text}) or infer_order_platform({"raw_text": raw_text})
     if not normalize_text(inferred.get("payment_app")):
@@ -1110,6 +1167,8 @@ def infer_payload_from_bill_text(payload: dict[str, Any]) -> dict[str, Any]:
     if not normalize_text(inferred.get("merchant")):
         merchant = extract_field_from_text(raw_text, ("商户", "商家", "交易对方", "收款方", "店铺", "卖家"))
         if not merchant:
+            merchant = extract_transfer_counterparty_from_text(raw_text)
+        if not merchant:
             merchant = extract_unlabeled_merchant_from_bill_text(raw_text)
         if merchant:
             inferred["merchant"] = merchant
@@ -1117,6 +1176,10 @@ def infer_payload_from_bill_text(payload: dict[str, Any]) -> dict[str, Any]:
         item_name = extract_field_from_text(raw_text, ("商品", "商品名称", "商品说明", "订单商品", "物品", "标题"))
         if item_name:
             inferred["item_name"] = item_name
+    if not normalize_text(inferred.get("category")):
+        category = infer_category(inferred, infer_direction(inferred))
+        if category and category != "其他":
+            inferred["category"] = category
     for date_field in DATE_DETAIL_FIELDS:
         if date_field in payload and payload.get(date_field) not in (None, ""):
             inferred[date_field] = payload.get(date_field)
@@ -1127,6 +1190,15 @@ def infer_payload_from_bill_text(payload: dict[str, Any]) -> dict[str, Any]:
     inferred.setdefault("confidence", 0.82)
     inferred["ui_signature"] = normalize_text(inferred.get("ui_signature")) or ui_signature_for_text(raw_text)
     return inferred
+
+
+def default_direction_for_bill_text(raw_text: str) -> str:
+    text = normalize_text(raw_text)
+    if "退款" in text:
+        return "refund"
+    if contains_any(text, ("红包", "转账", "转给", "收钱")):
+        return "unknown"
+    return "expense"
 
 
 def fields_from_answer_text(answer_text: str) -> dict[str, Any]:

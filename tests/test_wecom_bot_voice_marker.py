@@ -1,6 +1,9 @@
 # encoding:utf-8
 
+import requests
+
 from bridge.context import ContextType
+from channel.wecom_bot import wecom_bot_message
 from channel.wecom_bot.wecom_bot_channel import WecomBotChannel
 from channel.wecom_bot.wecom_bot_message import WecomBotMessage
 
@@ -54,3 +57,28 @@ def test_wecom_bot_context_preserves_voice_origin(monkeypatch):
     assert context["origin_ctype"] == ContextType.VOICE
     assert msg.origin_ctype == ContextType.VOICE
     assert context.type == ContextType.TEXT
+
+
+def test_wecom_media_download_retries_transient_timeout(monkeypatch):
+    class FakeResponse:
+        content = b"encrypted"
+
+        def raise_for_status(self):
+            return None
+
+    calls = []
+
+    def fake_get(url, timeout):
+        calls.append((url, timeout))
+        if len(calls) == 1:
+            raise requests.ReadTimeout("slow media server")
+        return FakeResponse()
+
+    monkeypatch.setattr(wecom_bot_message.requests, "get", fake_get)
+    monkeypatch.setattr(wecom_bot_message.time, "sleep", lambda _seconds: None)
+
+    result = wecom_bot_message._download_media_bytes("https://example.test/image")
+
+    assert result == b"encrypted"
+    assert len(calls) == 2
+    assert calls[0][1] == wecom_bot_message.MEDIA_DOWNLOAD_TIMEOUT

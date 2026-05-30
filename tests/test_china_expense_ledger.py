@@ -479,6 +479,74 @@ class ChinaExpenseLedgerTest(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_analyze_bill_recognizes_wechat_transfer_screenshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                raw_text = (
+                    "这是一张微信转账账单截图：转给 小王，金额 -50.00 元，"
+                    "状态为对方已收钱。转账时间 2026-05-30 17:04:13，"
+                    "收款时间 2026-05-30 17:06:47，支付方式是零钱，"
+                    "转账单号 1000050001202605300035652311060。"
+                )
+
+                result = ledger.analyze_bill_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "record_id": "image-transfer",
+                        "raw_text": raw_text,
+                    },
+                )
+
+                self.assertTrue(ledger.is_bill_like_text(raw_text))
+                self.assertTrue(result["ok"])
+                self.assertTrue(result["is_bill"])
+                self.assertEqual(result["status"], "needs_clarification")
+                self.assertIn("这笔是消费、退款、收入还是个人转账？请确认一下。", result["needs_clarification"])
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0], 0)
+
+                context = ledger.latest_bill_context(conn, "u1", "chat-a", ["needs_clarification"])
+                self.assertIsNotNone(context)
+                payload = json.loads(context["payload_json"])
+                self.assertEqual(payload["amount_cents"], 5000)
+                self.assertEqual(payload["direction"], "unknown")
+                self.assertEqual(payload["merchant"], "小王")
+                self.assertEqual(payload["category"], "转账")
+            finally:
+                conn.close()
+
+    def test_analyze_bill_recognizes_meituan_order_screenshot_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self.open_temp_db(Path(tmp))
+            try:
+                raw_text = (
+                    "美团外卖账单截图，今日订单，下单时间 2026-05-30 12:10，"
+                    "商家：黄焖鸡米饭，金额 28.50 元，支付方式 微信支付。"
+                )
+
+                result = ledger.analyze_bill_payload(
+                    conn,
+                    {
+                        "user_id": "u1",
+                        "chat_id": "chat-a",
+                        "record_id": "image-meituan",
+                        "raw_text": raw_text,
+                    },
+                )
+
+                self.assertTrue(ledger.is_bill_like_text(raw_text))
+                self.assertTrue(result["ok"])
+                self.assertTrue(result["is_bill"])
+                self.assertEqual(result["status"], "auto_recorded")
+                self.assertEqual(result["transaction"]["amount_cents"], 2850)
+                self.assertEqual(result["transaction"]["order_platform"], "美团外卖")
+                self.assertEqual(result["transaction"]["payment_app"], "微信支付")
+                self.assertEqual(result["transaction"]["category"], "外卖")
+            finally:
+                conn.close()
+
     def test_correct_occurred_at_refreshes_old_and_new_summary_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             conn = self.open_temp_db(Path(tmp))

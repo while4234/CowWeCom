@@ -1,6 +1,7 @@
 import os
 import re
 import base64
+import time
 import requests
 
 from bridge.context import ContextType
@@ -32,6 +33,10 @@ OFFICE_ZIP_MARKERS = {
     b"ppt/": ".pptx",
 }
 
+MEDIA_DOWNLOAD_ATTEMPTS = 3
+MEDIA_DOWNLOAD_TIMEOUT = (8, 60)
+MEDIA_DOWNLOAD_RETRY_DELAY_SECONDS = 1.0
+
 
 def _guess_ext_from_bytes(data: bytes) -> str:
     """Guess file extension from file content magic bytes."""
@@ -58,9 +63,7 @@ def _decrypt_media(url: str, aeskey: str) -> bytes:
     Download and decrypt AES-256-CBC encrypted media from wecom bot.
     Returns decrypted bytes.
     """
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    encrypted = resp.content
+    encrypted = _download_media_bytes(url)
 
     key = base64.b64decode(aeskey + "=" * (-len(aeskey) % 4))
     if len(key) != 32:
@@ -74,6 +77,29 @@ def _decrypt_media(url: str, aeskey: str) -> bytes:
     if pad_len > 32:
         raise ValueError(f"Invalid PKCS7 padding length: {pad_len}")
     return decrypted[:-pad_len]
+
+
+def _download_media_bytes(url: str) -> bytes:
+    last_error = None
+    for attempt in range(1, MEDIA_DOWNLOAD_ATTEMPTS + 1):
+        try:
+            resp = requests.get(url, timeout=MEDIA_DOWNLOAD_TIMEOUT)
+            resp.raise_for_status()
+            return resp.content
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt >= MEDIA_DOWNLOAD_ATTEMPTS:
+                break
+            logger.warning(
+                "[WecomBot] Media download attempt %s/%s failed: %s",
+                attempt,
+                MEDIA_DOWNLOAD_ATTEMPTS,
+                exc,
+            )
+            time.sleep(MEDIA_DOWNLOAD_RETRY_DELAY_SECONDS * attempt)
+    if last_error:
+        raise last_error
+    raise RuntimeError("media download failed")
 
 
 def _get_tmp_dir() -> str:
