@@ -53,6 +53,7 @@ class RepairOptions:
     export: bool = False
     backup_path: Optional[Path] = None
     strip_completed_visual_regions: bool = False
+    rebuild_text_chunks: bool = False
 
 
 def main() -> int:
@@ -109,6 +110,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Remove formula/table noise from ordinary chunks only when the same page has high-confidence retrievable visual chunks.",
     )
+    parser.add_argument(
+        "--rebuild-text-chunks",
+        action="store_true",
+        help="Re-extract, sanitize, and rebuild ordinary text chunks while preserving existing visual_analysis chunks.",
+    )
     return parser.parse_args(argv)
 
 
@@ -136,6 +142,7 @@ def repair_options_from_args(args: argparse.Namespace, project_root: Path) -> Re
         export=bool(args.export),
         backup_path=backup_path,
         strip_completed_visual_regions=bool(getattr(args, "strip_completed_visual_regions", False)),
+        rebuild_text_chunks=bool(getattr(args, "rebuild_text_chunks", False)),
     )
 
 
@@ -251,21 +258,24 @@ def repair_one_document(
         visual_chunks = [chunk for chunk in old_chunks if chunk_metadata_source(chunk) == "visual_analysis"]
         old_text_chunks = [chunk for chunk in old_chunks if chunk_metadata_source(chunk) != "visual_analysis"]
         old_total_chars = sum(len(chunk.text or "") for chunk in old_text_chunks)
-        quality_report = collect_quality_issue_report(old_text_chunks)
+        rebuilt = rebuild_text_chunks_for_document(document, source_path, options) if options.rebuild_text_chunks else None
+        candidate_text_chunks = rebuilt["chunks"] if rebuilt else old_text_chunks
+        quality_report = collect_quality_issue_report(candidate_text_chunks)
         completed_visual_pages = completed_retrievable_visual_pages(storage, document.id)
 
         coverage = collect_visual_replacement_coverage(storage, document.id)
         completed_visual_pages = set(coverage["visual_replacement_pages"])
         strip_report = strip_pollution_only_when_visual_replaced(
-            old_text_chunks,
+            candidate_text_chunks,
             completed_visual_pages,
             strip_completed_visual_regions=options.strip_completed_visual_regions,
         )
-        new_text_chunks = len(old_text_chunks)
-        new_total_chars = old_total_chars
+        new_text_chunks = len(candidate_text_chunks)
+        new_total_chars = sum(len(chunk.text or "") for chunk in candidate_text_chunks)
         if options.strip_completed_visual_regions:
-            new_text_chunks = len(old_text_chunks) - int(strip_report.get("candidate_chunks_to_delete") or 0)
-            new_total_chars = old_total_chars - int(strip_report.get("candidate_chars_to_strip") or 0)
+            new_text_chunks = len(candidate_text_chunks) - int(strip_report.get("candidate_chunks_to_delete") or 0)
+            new_total_chars = new_total_chars - int(strip_report.get("candidate_chars_to_strip") or 0)
+        remaining_quality_report = collect_quality_issue_report(candidate_text_chunks)
 
         report.update(
             {
@@ -274,7 +284,14 @@ def repair_one_document(
                 "new_text_chunks": new_text_chunks,
                 "old_total_chars": old_total_chars,
                 "new_total_chars": new_total_chars,
+                "rebuilt_text_chunks": bool(options.rebuild_text_chunks),
                 **quality_report,
+                "remaining_quality_issues": {
+                    "formula_garble_chunks": remaining_quality_report["formula_garble_chunks"],
+                    "large_table_like_chunks": remaining_quality_report["large_table_like_chunks"],
+                    "visual_pollution_chunks": int(strip_report.get("skipped_chunks_without_visual_replacement") or 0)
+                    + int(strip_report.get("candidate_chunks_to_strip") or 0),
+                },
                 **coverage,
                 **strip_report,
                 "completed_visual_pages": sorted(completed_visual_pages),
@@ -303,10 +320,27 @@ def repair_one_document(
             "candidate_lines_to_strip": strip_report["candidate_lines_to_strip"],
             "strip_completed_visual_regions": options.strip_completed_visual_regions,
         }
+        if rebuilt:
+            repair_metadata["repair_text_chunks"]["sanitizer_report"] = rebuilt["sanitizer_report"]
         repaired_document = replace(document, size=source_path.stat().st_size, metadata=repair_metadata)
 
         if not apply:
             return report
+
+        if rebuilt:
+            storage.save_document(
+                repaired_document,
+                rebuilt["chunks"],
+                source_spans=rebuilt["source_spans"],
+                entities=rebuilt["entities"],
+                relations=rebuilt["relations"],
+            )
+            if storage.fts5_available:
+                storage._rebuild_fts()
+            report["applied"] = True
+            if not options.strip_completed_visual_regions or not strip_report.get("updates"):
+                return report
+            old_chunks = storage.list_chunks(document.id)
 
         if not options.strip_completed_visual_regions or not strip_report.get("updates"):
             report["applied"] = True
@@ -615,6 +649,50 @@ def strip_pollution_only_when_visual_replaced(
 
 def repair_legacy_chunks_after_visual_completion(options: RepairOptions) -> Dict[str, Any]:
     return run_repair(options)
+
+
+def rebuild_text_chunks_for_document(
+    document: KnowledgeDocument,
+    source_path: Path,
+    options: RepairOptions,
+) -> Dict[str, Any]:
+    extracted = extract_document(source_path)
+    sanitized_pages, sanitizer_report = sanitize_pages_for_knowledge_chunks(
+        source_path,
+        extracted.pages,
+        enabled=True,
+        strip_visual_regions=True,
+        strip_visual_noise_lines=True,
+    )
+    backend = LocalKnowledgeBackend(
+        workspace_root=str(options.workspace_root),
+        db_path=str(options.db_path),
+        enabled=True,
+        default_kb_id=document.kb_id or "kb_default",
+    )
+    try:
+        chunks = backend._build_chunks(
+            document.id,
+            sanitized_pages,
+            kb_id=document.kb_id or "kb_default",
+            version_id=document.version_id,
+        )
+    finally:
+        backend.close()
+    rebuilt_document = replace(
+        document,
+        title=document.title or extracted.title,
+        mime_type=extracted.mime_type or document.mime_type,
+        size=source_path.stat().st_size,
+    )
+    build = HeuristicKnowledgeBuilder().build(rebuilt_document, chunks)
+    return {
+        "chunks": build.chunks,
+        "source_spans": build.source_spans,
+        "entities": build.entities,
+        "relations": build.relations,
+        "sanitizer_report": sanitizer_report,
+    }
 
 
 def strip_chunks_with_completed_visual_replacements(
@@ -1077,6 +1155,8 @@ def base_document_report(document: KnowledgeDocument, options: RepairOptions) ->
         "sanitizer_report": {},
         "normalized_visual_ordinals": 0,
         "deleted_unreferenced_source_spans": 0,
+        "rebuilt_text_chunks": False,
+        "remaining_quality_issues": {},
         "skipped": False,
         "skipped_reason": "",
         "error": "",
@@ -1229,6 +1309,7 @@ def normalize_options(options: RepairOptions, project_root: Path) -> RepairOptio
         export=options.export,
         backup_path=absolute_path(options.backup_path, project_root) if options.backup_path else None,
         strip_completed_visual_regions=options.strip_completed_visual_regions,
+        rebuild_text_chunks=options.rebuild_text_chunks,
     )
 
 

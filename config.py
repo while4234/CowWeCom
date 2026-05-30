@@ -91,7 +91,7 @@ _KNOWLEDGE_BACKEND_ENV_MAP = {
     "KNOWLEDGE_BACKEND_SQLITE_PATH": ("sqlite_path", "str"),
     "KNOWLEDGE_BACKEND_WORKSPACE_ROOT": ("workspace_root", "str"),
     "KNOWLEDGE_BACKEND_DEFAULT_KB_ID": ("default_kb_id", "str"),
-    "KNOWLEDGE_BACKEND_AUTO_BUILD": ("ingest.auto_build_after_upload", "bool"),
+    "KNOWLEDGE_BACKEND_AUTO_BUILD": ("visual_analysis.auto_build_after_upload", "bool"),
     "KNOWLEDGE_BACKEND_ALLOWED_EXTENSIONS": ("ingest.allowed_extensions", "csv"),
     "KNOWLEDGE_BACKEND_ALLOWED_IMPORT_ROOTS": ("ingest.allowed_import_roots", "csv"),
     "KNOWLEDGE_BACKEND_MAX_FILE_SIZE_MB": ("ingest.max_file_size_mb", "int"),
@@ -112,6 +112,7 @@ _KNOWLEDGE_BACKEND_ENV_MAP = {
     "KNOWLEDGE_BACKEND_VECTOR_REQUIRED": ("vector_store.required", "bool"),
     "KNOWLEDGE_BACKEND_PROVIDER_TOKEN_ENV": ("security.provider_api_token_env", "str"),
     "KNOWLEDGE_BACKEND_DISABLE_ADMIN_WHEN_NO_PASSWORD": ("security.disable_admin_api_when_web_password_empty", "bool"),
+    "KNOWLEDGE_BACKEND_VISUAL_AUTO_BUILD_AFTER_UPLOAD": ("visual_analysis.auto_build_after_upload", "bool"),
 }
 
 # 将所有可用的配置项写在字典里, 请使用小写字母

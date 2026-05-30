@@ -36,6 +36,8 @@ def main() -> int:
     parser.add_argument("--min-chunks", type=int, default=50)
     parser.add_argument("--min-entities", type=int, default=20)
     parser.add_argument("--min-relations", type=int, default=5)
+    parser.add_argument("--require-visual-ready", action="store_true", help="Fail when public protocol visual rows are missing or incomplete.")
+    parser.add_argument("--kb-id", action="append", default=[], help="KB id to validate for visual readiness. Can be repeated.")
     args = parser.parse_args()
 
     previous_level = logger.level
@@ -137,6 +139,14 @@ def main() -> int:
             ],
         }
         check("source_verification_supported", verification.get("status") == "supported", verification_detail)
+        if args.require_visual_ready:
+            from scripts.complete_protocol_visual_and_repair import DEFAULT_PROTOCOL_KBS, validate_kb_readiness
+
+            target_kbs = args.kb_id or list(DEFAULT_PROTOCOL_KBS)
+            readiness = [validate_kb_readiness(storage, kb_id) for kb_id in target_kbs]
+            report["summary"]["visual_readiness"] = readiness
+            for item in readiness:
+                check(f"visual_ready:{item['kb_id']}", item["status"] == "pass", item)
 
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

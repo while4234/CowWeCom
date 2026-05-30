@@ -55,7 +55,7 @@ from .visual_extractors import DEFAULT_VISUAL_PIPELINE_VERSION, PyMuPDFVisualArt
 from .visual_grouping import VisualArtifactGrouper
 
 
-DEFAULT_DB_NAME = "public_document_knowledge/indexes/kb.sqlite"
+DEFAULT_DB_NAME = "public_protocol_knowledge/indexes/kb.sqlite"
 FALSE_VALUES = {"", "0", "false", "off", "disabled", "no", "n"}
 TRUE_VALUES = {"1", "true", "on", "enabled", "yes", "y"}
 
@@ -137,7 +137,7 @@ class KnowledgeBackendConfig:
     provider_api_enabled: bool = False
     sqlite_path: Path = Path(DEFAULT_DB_NAME)
     workspace_root: Path = Path(".")
-    data_dir: Path = Path("public_document_knowledge")
+    data_dir: Path = Path("public_protocol_knowledge")
     default_kb_id: str = "kb_default"
     fail_open: bool = True
     vector_store: VectorStoreConfig = field(default_factory=VectorStoreConfig)
@@ -170,7 +170,7 @@ class KnowledgeBackendConfig:
                 os.environ.get("KNOWLEDGE_BACKEND_PROVIDER_API_ENABLED")
             ),
             "fail_open": parse_knowledge_backend_enabled(os.environ.get("KNOWLEDGE_BACKEND_FAIL_OPEN", "true")),
-            "data_dir": os.environ.get("KNOWLEDGE_BACKEND_DATA_DIR") or "public_document_knowledge",
+            "data_dir": os.environ.get("KNOWLEDGE_BACKEND_DATA_DIR") or "public_protocol_knowledge",
             "sqlite_path": os.environ.get("KNOWLEDGE_BACKEND_SQLITE_PATH") or DEFAULT_DB_NAME,
             "ingest": {
                 "allowed_extensions": _csv(os.environ.get("KNOWLEDGE_BACKEND_ALLOWED_EXTENSIONS"))
@@ -216,7 +216,9 @@ class KnowledgeBackendConfig:
             "visual_analysis": {
                 "enabled": parse_knowledge_backend_enabled(os.environ.get("KNOWLEDGE_BACKEND_VISUAL_ENABLED", "true")),
                 "auto_build_after_upload": parse_knowledge_backend_enabled(
-                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_AUTO_BUILD_AFTER_UPLOAD", "true")
+                    os.environ.get("KNOWLEDGE_BACKEND_VISUAL_AUTO_BUILD_AFTER_UPLOAD")
+                    if os.environ.get("KNOWLEDGE_BACKEND_VISUAL_AUTO_BUILD_AFTER_UPLOAD") is not None
+                    else os.environ.get("KNOWLEDGE_BACKEND_AUTO_BUILD", "true")
                 ),
                 "use_current_model": parse_knowledge_backend_enabled(
                     os.environ.get("KNOWLEDGE_BACKEND_VISUAL_USE_CURRENT_MODEL", "true")
@@ -338,7 +340,7 @@ class KnowledgeBackendConfig:
         ).lower()
         sqlite_path = Path(str(mapping.get("sqlite_path") or mapping.get("path") or DEFAULT_DB_NAME)).expanduser()
         workspace_root = Path(str(mapping.get("workspace_root") or ".")).expanduser()
-        data_dir = Path(str(mapping.get("data_dir") or workspace_root / "public_document_knowledge")).expanduser()
+        data_dir = Path(str(mapping.get("data_dir") or workspace_root / "public_protocol_knowledge")).expanduser()
         allowed = ingest_raw.get("allowed_extensions") or [".pdf", ".docx", ".txt", ".md"]
         allowed_import_roots = ingest_raw.get("allowed_import_roots") or []
         document_library_root = ingest_raw.get("document_library_root") or ingest_raw.get("docs_root") or ""
@@ -1232,6 +1234,7 @@ class KnowledgeBackendService:
         dry_run: bool = True,
         apply: bool = False,
         strip_completed_visual_regions: bool = False,
+        rebuild_text_chunks: bool = False,
         max_steps: Optional[int] = None,
         export: bool = False,
     ) -> Dict[str, Any]:
@@ -1279,6 +1282,7 @@ class KnowledgeBackendService:
             export=False,
             backup_path=None,
             strip_completed_visual_regions=bool(strip_completed_visual_regions),
+            rebuild_text_chunks=bool(rebuild_text_chunks),
         )
         repair_report = repair_script.repair_legacy_chunks_after_visual_completion(options)
         summary = dict(repair_report.get("summary") or {})
@@ -1301,6 +1305,7 @@ class KnowledgeBackendService:
             "apply_requested": effective_apply,
             "applied": bool(repair_apply and repair_report.get("mode") == "apply"),
             "strip_completed_visual_regions": bool(strip_completed_visual_regions),
+            "rebuild_text_chunks": bool(rebuild_text_chunks),
             "visual_completion_complete": visual_completed,
             "destructive_repair_blocked": destructive_blocked,
             "block_reason": "visual_completion_not_complete" if destructive_blocked else "",
@@ -2265,9 +2270,19 @@ class KnowledgeBackendService:
         except Exception:
             pass
 
-    def ingest_upload_bytes(self, filename: str, content: bytes, title: Optional[str] = None) -> Dict[str, Any]:
+    def ingest_upload_bytes(
+        self,
+        filename: str,
+        content: bytes,
+        title: Optional[str] = None,
+        kb_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         if not self.config.enabled:
             return {"status": "disabled", "message": "local knowledge backend is disabled"}
+        try:
+            target_kb_id = normalize_kb_id(kb_id) if kb_id else None
+        except ValueError as exc:
+            return {"status": "failed", "message": str(exc)}
         safe_name = _safe_filename(filename)
         if not self._is_extension_allowed(Path(safe_name)):
             return {"status": "failed", "message": f"unsupported document type: {Path(safe_name).suffix}"}
@@ -2281,7 +2296,7 @@ class KnowledgeBackendService:
         digest = hashlib.sha256(content).hexdigest()[:16]
         target = upload_dir / f"{digest}_{safe_name}"
         target.write_bytes(content)
-        return self._backend.ingest_upload(str(target), title=title)
+        return self._backend.ingest_upload(str(target), title=title, kb_id=target_kb_id)
 
     def _iter_ingestable_files(self, path: Path) -> List[Path]:
         if path.is_file():
@@ -3555,6 +3570,7 @@ def dispatch_admin_request(method: str, path: str, payload: Dict[str, Any]) -> D
                 dry_run=dry_run,
                 apply=apply_requested,
                 strip_completed_visual_regions=parse_knowledge_backend_enabled(payload.get("strip_completed_visual_regions")),
+                rebuild_text_chunks=parse_knowledge_backend_enabled(payload.get("rebuild_text_chunks")),
                 max_steps=int(payload.get("max_steps") or 0) or None,
                 export=not _payload_bool_is_false(payload.get("export"), default=False),
             )
@@ -3740,6 +3756,7 @@ def dispatch_provider_request(method: str, path: str, payload: Dict[str, Any]) -
 def _handle_upload_payload(service: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
     files = payload.get("files") or []
     fields = payload.get("fields") or {}
+    kb_id = _first_non_empty(payload.get("kb_id"), fields.get("kb_id"))
     if files:
         results = []
         for file_info in files:
@@ -3747,6 +3764,7 @@ def _handle_upload_payload(service: Any, payload: Dict[str, Any]) -> Dict[str, A
                 filename=file_info.get("filename") or "upload.bin",
                 content=file_info.get("content") or b"",
                 title=fields.get("title") or fields.get("name"),
+                kb_id=kb_id,
             )
             document_id = ""
             if isinstance(ingest_result, dict):
@@ -3859,6 +3877,29 @@ def _to_jsonable(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _to_jsonable(item) for key, item in value.items()}
     return value
+
+
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, list):
+            value = next((item for item in value if str(item or "").strip()), "")
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def normalize_kb_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("kb_id cannot be empty")
+    if text in {".", ".."} or "/" in text or "\\" in text:
+        raise ValueError("kb_id must not contain path separators")
+    if any(ord(ch) < 32 or ch.isspace() for ch in text):
+        raise ValueError("kb_id must not contain whitespace or control characters")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", text):
+        raise ValueError("kb_id must be a slug using letters, numbers, underscore, dot, or hyphen")
+    return text
 
 
 def _safe_filename(filename: str) -> str:
@@ -4277,11 +4318,15 @@ class LocalKnowledgeBackend:
             "supported_types": [".pdf", ".docx", ".txt", ".md", ".markdown"],
         }
 
-    def ingest_upload(self, file_path: str, title: Optional[str] = None) -> Dict[str, Any]:
+    def ingest_upload(self, file_path: str, title: Optional[str] = None, kb_id: Optional[str] = None) -> Dict[str, Any]:
         """Ingest an uploaded document synchronously and return job status."""
 
         if not self.enabled:
             return self._disabled_response("ingest")
+        try:
+            target_kb_id = normalize_kb_id(kb_id) if kb_id else normalize_kb_id(self.default_kb_id)
+        except ValueError as exc:
+            return {"status": "failed", "message": str(exc), "job": None}
 
         source = Path(file_path).expanduser().resolve()
         storage = self._get_storage(writable=True)
@@ -4303,7 +4348,7 @@ class LocalKnowledgeBackend:
             content_hash = compute_file_hash(source)
             document_id = stable_document_id(str(source), content_hash)
             version_id = stable_version_id(document_id, content_hash)
-            chunks = self._build_chunks(document_id, sanitized_pages, kb_id=self.default_kb_id, version_id=version_id)
+            chunks = self._build_chunks(document_id, sanitized_pages, kb_id=target_kb_id, version_id=version_id)
             metadata = dict(extracted.metadata or {})
             metadata["page_count"] = max(int(metadata.get("page_count") or 0), len(extracted.pages), len(sanitized_pages))
             metadata["text_sanitizer"] = sanitizer_report
@@ -4315,7 +4360,7 @@ class LocalKnowledgeBackend:
                 size=source.stat().st_size,
                 content_hash=content_hash,
                 status="ready",
-                kb_id=self.default_kb_id,
+                kb_id=target_kb_id,
                 version_id=version_id,
                 metadata=metadata,
             )
@@ -4381,10 +4426,8 @@ class LocalKnowledgeBackend:
             return self._disabled_response("search")
         expanded_query = self._expand_query_aliases(query)
         storage = self._get_read_storage()
-        hits = storage.search(expanded_query, limit=max(1, int(limit or 5))) if storage is not None else []
-        if kb_ids:
-            kb_set = {str(kb_id) for kb_id in kb_ids}
-            hits = [hit for hit in hits if hit.kb_id in kb_set]
+        kb_set = {str(kb_id) for kb_id in kb_ids if kb_id} if kb_ids else set()
+        hits = storage.search(expanded_query, limit=max(1, int(limit or 5)), kb_ids=kb_set) if storage is not None else []
         return {
             "status": "ok",
             "hits": [hit.to_dict() for hit in hits],
@@ -4406,10 +4449,8 @@ class LocalKnowledgeBackend:
             return self._disabled_response("query")
         expanded_query = self._expand_query_aliases(question)
         storage = self._get_read_storage()
-        hits = storage.search(expanded_query, limit=max(1, int(limit or 5))) if storage is not None else []
-        if kb_ids:
-            kb_set = {str(kb_id) for kb_id in kb_ids}
-            hits = [hit for hit in hits if hit.kb_id in kb_set]
+        kb_set = {str(kb_id) for kb_id in kb_ids if kb_id} if kb_ids else set()
+        hits = storage.search(expanded_query, limit=max(1, int(limit or 5)), kb_ids=kb_set) if storage is not None else []
         if not hits:
             return QueryResult(
                 answer="No relevant local knowledge found.",
@@ -4458,10 +4499,8 @@ class LocalKnowledgeBackend:
             return self._disabled_response("deep_query")
         expanded_query = self._expand_query_aliases(question)
         storage = self._get_read_storage()
-        hits = storage.search(expanded_query, limit=max(1, int(limit or 5))) if storage is not None else []
         kb_set = {str(kb_id) for kb_id in kb_ids} if kb_ids else set()
-        if kb_set:
-            hits = [hit for hit in hits if hit.kb_id in kb_set]
+        hits = storage.search(expanded_query, limit=max(1, int(limit or 5)), kb_ids=kb_set) if storage is not None else []
         if hits and storage is not None:
             hits = self._supplement_deep_hits(
                 storage,
@@ -4551,6 +4590,7 @@ class LocalKnowledgeBackend:
             supplemental_hits = storage.search(
                 self._expand_query_aliases(term),
                 limit=max(1, min(3, limit)),
+                kb_ids=kb_set,
             )
             for hit in supplemental_hits:
                 if kb_set and hit.kb_id not in kb_set:
@@ -4725,7 +4765,12 @@ class LocalKnowledgeBackend:
                 file_path = payload.get("path") or payload.get("file_path")
                 if not file_path:
                     return {"action": action, "code": 400, "message": "path is required", "payload": None}
-                return {"action": action, "code": 200, "message": "success", "payload": self.ingest_upload(file_path, payload.get("title"))}
+                return {
+                    "action": action,
+                    "code": 200,
+                    "message": "success",
+                    "payload": self.ingest_upload(file_path, payload.get("title"), payload.get("kb_id")),
+                }
             if action in ("job", "job_status"):
                 job_id = payload.get("job_id") or payload.get("id")
                 if not job_id:

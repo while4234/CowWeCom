@@ -49,6 +49,11 @@ def main() -> int:
         action="store_true",
         help="Allow stripping ordinary chunk pollution only on pages covered by high-confidence retrievable visual chunks.",
     )
+    parser.add_argument(
+        "--rebuild-text-chunks",
+        action="store_true",
+        help="Re-extract and rebuild ordinary chunks during legacy repair while preserving visual chunks.",
+    )
     args = parser.parse_args()
     if not args.paths and not args.repair_legacy_visual_pollution:
         parser.error("paths are required unless --repair-legacy-visual-pollution is used")
@@ -84,6 +89,7 @@ def main() -> int:
                 dry_run=not args.repair_apply,
                 apply=bool(args.repair_apply),
                 strip_completed_visual_regions=bool(args.strip_completed_visual_regions),
+                rebuild_text_chunks=bool(args.rebuild_text_chunks),
                 max_steps=args.visual_max_steps,
                 export=not args.no_export,
             )
@@ -97,7 +103,7 @@ def main() -> int:
                 results.append({"status": "failed", "path": str(source), "message": "file not found"})
                 continue
             title = args.title if args.title and len(args.paths) == 1 else None
-            result = service.ingest_upload_bytes(source.name, source.read_bytes(), title=title)
+            result = service.ingest_upload_bytes(source.name, source.read_bytes(), title=title, kb_id=args.kb_id or None)
             result["input_path"] = str(source)
             document = result.get("document") if isinstance(result, dict) else None
             document_id = document.get("id") if isinstance(document, dict) else ""

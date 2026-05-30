@@ -5905,11 +5905,14 @@ function renderKnowledgeBackendSummary(statusData, documents, visualData) {
 function uploadKnowledgeBackendFile(fileList) {
     const files = Array.from(fileList || []);
     const input = document.getElementById('knowledge-backend-file');
+    const kbInput = document.getElementById('knowledge-backend-upload-kb-id');
     if (!files.length) return;
     const messageEl = document.getElementById('knowledge-backend-message');
     if (messageEl) messageEl.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>${t('knowledge_backend_uploading')}`;
     const formData = new FormData();
     files.forEach(file => formData.append('file', file, file.name));
+    const kbId = String((kbInput && kbInput.value) || '').trim();
+    if (kbId) formData.append('kb_id', kbId);
     fetch('/api/knowledge/admin/upload', { method: 'POST', body: formData })
         .then(_knowledgeBackendJson)
         .then(data => {

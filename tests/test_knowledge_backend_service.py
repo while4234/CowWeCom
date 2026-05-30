@@ -7,7 +7,7 @@ from agent.knowledge.backend.models import KnowledgeChunk, KnowledgeDocument
 from agent.knowledge.backend.models import SourceSpan, VisualAnalysisResult, VisualArtifactCandidate
 import agent.knowledge.backend.service as backend_service
 from agent.knowledge.backend.service import _render_protocol_document_markdown
-from agent.knowledge.backend.storage import stable_chunk_id, stable_span_id
+from agent.knowledge.backend.storage import KnowledgeStorage, stable_chunk_id, stable_span_id
 
 
 def _field(value, name, default=None):
@@ -227,6 +227,108 @@ def test_backend_exports_indexed_document_to_visible_markdown_library(tmp_path):
     assert "TVALID and TREADY" in exported_text
     assert "Source span IDs" in exported_text
     assert (tmp_path / "knowledge" / "documents" / "axi4_stream" / "index.md").is_file()
+
+
+def test_upload_bytes_can_target_explicit_kb_id(tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "backend-data"),
+                "default_kb_id": "kb_default",
+                "ingest": {"allowed_extensions": [".md"]},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+
+    result = service.ingest_upload_bytes(
+        "new-protocol.md",
+        b"# New Protocol\n\nTVALID and TREADY define the transfer handshake.",
+        kb_id="new_protocol",
+    )
+    document_id = result["document"]["id"]
+    storage = KnowledgeStorage(tmp_path / "knowledge.sqlite3")
+    try:
+        assert result["document"]["kb_id"] == "new_protocol"
+        assert storage.get_document(document_id).kb_id == "new_protocol"
+        assert {chunk.kb_id for chunk in storage.list_chunks(document_id)} == {"new_protocol"}
+        assert {row["document_id"] for row in storage.conn.execute("SELECT document_id FROM source_spans").fetchall()} == {document_id}
+        assert {
+            row["source_kb_id"]
+            for row in storage.conn.execute("SELECT source_kb_id FROM knowledge_relations").fetchall()
+            if row["source_kb_id"]
+        } <= {"new_protocol"}
+    finally:
+        storage.close()
+
+
+def test_upload_bytes_without_kb_id_keeps_default_kb_id(tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "backend-data"),
+                "default_kb_id": "default_protocol",
+                "ingest": {"allowed_extensions": [".md"]},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+
+    result = service.ingest_upload_bytes("default.md", b"# Default\n\nAXI4-Stream is a protocol.")
+
+    assert result["status"] == "succeeded"
+    assert result["document"]["kb_id"] == "default_protocol"
+
+
+def test_upload_rejects_invalid_kb_id(tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "backend-data"),
+                "ingest": {"allowed_extensions": [".md"]},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+
+    result = service.ingest_upload_bytes("bad.md", b"# Bad", kb_id="../bad")
+
+    assert result["status"] == "failed"
+    assert "kb_id" in result["message"]
+
+
+def test_search_kb_id_filter_is_pushed_before_limit(tmp_path):
+    service = KnowledgeBackendService(
+        KnowledgeBackendConfig.from_mapping(
+            {
+                "enabled": True,
+                "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+                "workspace_root": str(tmp_path),
+                "data_dir": str(tmp_path / "backend-data"),
+                "default_kb_id": "alpha",
+                "ingest": {"allowed_extensions": [".md"]},
+                "vector_store": {"provider": "sqlite", "required": False},
+            }
+        )
+    )
+    service.ingest_upload_bytes("alpha.md", b"# Alpha\n\nSharedNeedle appears in alpha.", kb_id="alpha")
+    service.ingest_upload_bytes("beta.md", b"# Beta\n\nSharedNeedle appears in beta.", kb_id="beta")
+
+    hits = service.search("SharedNeedle", limit=1, kb_ids=["beta"])
+    query = service.query("SharedNeedle", limit=1, kb_ids=["beta"])
+
+    assert len(hits) == 1
+    assert hits[0]["kb_id"] == "beta"
+    assert query["citations"][0]["kb_id"] == "beta"
 
 
 def test_single_document_export_keeps_all_protocol_indexes(tmp_path):

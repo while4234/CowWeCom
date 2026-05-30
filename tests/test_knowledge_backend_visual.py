@@ -16,6 +16,7 @@ from agent.knowledge.backend.visual_analyzer import (
 )
 from agent.knowledge.backend.visual_extractors import PyMuPDFVisualArtifactExtractor, is_strict_caption_block
 from agent.knowledge.backend.visual_grouping import VisualArtifactGrouper
+from scripts.complete_protocol_visual_and_repair import validate_kb_readiness
 
 
 def _config(tmp_path, **overrides):
@@ -49,6 +50,43 @@ def _config(tmp_path, **overrides):
         else:
             mapping[key] = value
     return KnowledgeBackendConfig.from_mapping(mapping)
+
+
+def test_protocol_readiness_fails_when_visual_rows_are_empty(tmp_path):
+    storage = KnowledgeStorage(tmp_path / "knowledge.sqlite3")
+    document = KnowledgeDocument(
+        id="doc-empty-visual",
+        title="AXI Protocol",
+        source_path=str(tmp_path / "axi.pdf"),
+        mime_type="application/pdf",
+        size=1,
+        content_hash="hash-empty-visual",
+        status="ready",
+        kb_id="axi4_stream",
+        version_id="version-empty-visual",
+    )
+    storage.save_document(
+        document,
+        [
+            KnowledgeChunk(
+                id="chunk-empty-visual",
+                document_id=document.id,
+                ordinal=1,
+                page_start=1,
+                page_end=1,
+                text="AXI4-Stream is a protocol.",
+                kb_id=document.kb_id,
+                version_id=document.version_id,
+            )
+        ],
+    )
+
+    readiness = validate_kb_readiness(storage, "axi4_stream")
+
+    assert readiness["status"] == "fail"
+    assert "visual_artifacts is 0" in readiness["message"]
+    assert "visual_analysis chunks is 0" in readiness["message"]
+    storage.close()
 
 
 def _service(tmp_path, **overrides):

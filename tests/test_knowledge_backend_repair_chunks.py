@@ -429,6 +429,49 @@ def test_apply_rebuilds_fts_without_pollution(monkeypatch, tmp_path):
         storage.close()
 
 
+def test_rebuild_text_chunks_preserves_visual_chunks_and_rebuilds_graph(monkeypatch, tmp_path):
+    db_path = tmp_path / "kb.sqlite"
+    document = _document("doc-rebuild", _pdf(tmp_path, "rebuild.pdf"), kb_id="axi4_stream")
+    _seed_document(db_path, document)
+
+    clean_text = "AXI4-Stream is a protocol. TVALID and TREADY define the handshake."
+    monkeypatch.setattr(
+        repair_script,
+        "extract_document",
+        lambda path: ExtractedDocument(Path(path).stem, str(path), "application/pdf", [DocumentPage(page=1, text=POLLUTION)]),
+    )
+    monkeypatch.setattr(
+        repair_script,
+        "sanitize_pages_for_knowledge_chunks",
+        lambda source_path, pages, **kwargs: ([DocumentPage(page=1, text=clean_text)], {"removed_total_lines": 1}),
+    )
+
+    report = repair_script.run_repair(
+        _options(tmp_path, db_path, document_id=document.id, apply=True, rebuild_text_chunks=True)
+    )
+
+    storage = KnowledgeStorage(db_path)
+    try:
+        chunks = storage.list_chunks(document.id)
+        ordinary_chunks = [chunk for chunk in chunks if chunk.metadata.get("source") != "visual_analysis"]
+        visual_chunks = [chunk for chunk in chunks if chunk.metadata.get("source") == "visual_analysis"]
+        assert report["documents"][0]["rebuilt_text_chunks"] is True
+        assert report["documents"][0]["old_text_chunks"] == 1
+        assert report["documents"][0]["new_text_chunks"] == 1
+        assert report["documents"][0]["preserved_visual_chunks"] == 1
+        assert all(POLLUTION not in chunk.text for chunk in ordinary_chunks)
+        assert any("AXI4-Stream is a protocol" in chunk.text for chunk in ordinary_chunks)
+        assert visual_chunks[0].text == "High-confidence visual summary."
+        assert storage.search("rxdatasbtxdatasb", limit=5) == []
+        assert storage.search("TVALID TREADY handshake", limit=5, kb_ids=["axi4_stream"])
+        assert storage.conn.execute("SELECT COUNT(*) FROM source_spans WHERE document_id = ?", (document.id,)).fetchone()[0] >= 2
+        assert storage.conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0] >= 3
+        assert storage.conn.execute("SELECT COUNT(*) FROM knowledge_relations WHERE source_doc_id = ?", (document.id,)).fetchone()[0] >= 1
+        assert storage.conn.execute("SELECT COUNT(*) FROM visual_artifact_chunks WHERE chunk_id = ?", (visual_chunks[0].id,)).fetchone()[0] == 1
+    finally:
+        storage.close()
+
+
 def test_export_markdown_omits_pollution_and_keeps_visual_sections(monkeypatch, tmp_path):
     db_path = tmp_path / "kb.sqlite"
     document = _document("doc-export", _pdf(tmp_path, "export.pdf"))

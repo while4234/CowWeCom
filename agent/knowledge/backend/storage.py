@@ -2847,15 +2847,16 @@ class KnowledgeStorage:
             metadata=_loads(row["metadata"]),
         )
 
-    def search(self, query: str, limit: int = 5) -> List[SearchHit]:
+    def search(self, query: str, limit: int = 5, kb_ids: Optional[Iterable[str]] = None) -> List[SearchHit]:
         query = (query or "").strip()
         if not query:
             return []
+        kb_filter = _normalize_kb_filter(kb_ids)
         if self.fts5_available:
-            hits = self._search_fts(query, limit)
+            hits = self._search_fts(query, limit, kb_filter)
             if hits:
                 return hits
-        return self._search_like(query, limit)
+        return self._search_like(query, limit, kb_filter)
 
     def _check_fts5_support(self) -> bool:
         try:
@@ -3334,33 +3335,37 @@ class KnowledgeStorage:
         except sqlite3.DatabaseError:
             self.fts5_available = False
 
-    def _search_fts(self, query: str, limit: int) -> List[SearchHit]:
+    def _search_fts(self, query: str, limit: int, kb_ids: List[str]) -> List[SearchHit]:
         fts_query = _build_fts_query(query)
         if not fts_query:
             return []
+        kb_clause, kb_params = _kb_where_clause("c.kb_id", kb_ids)
         try:
             rows = self.conn.execute(
-                """
+                f"""
                 SELECT c.*, d.title, d.source_path, bm25(chunks_fts) AS rank
                 FROM chunks_fts
                 JOIN chunks c ON c.id = chunks_fts.chunk_id
                 JOIN documents d ON d.id = c.document_id
                 WHERE chunks_fts MATCH ?
+                {kb_clause}
                 ORDER BY rank
                 LIMIT ?
                 """,
-                (fts_query, limit),
+                [fts_query, *kb_params, limit],
             ).fetchall()
         except sqlite3.DatabaseError:
             return []
         return [_row_to_hit(row, _rank_to_score(row["rank"])) for row in rows]
 
-    def _search_like(self, query: str, limit: int) -> List[SearchHit]:
+    def _search_like(self, query: str, limit: int, kb_ids: List[str]) -> List[SearchHit]:
         terms = _search_terms(query)
         if not terms:
             return []
-        where = " OR ".join("LOWER(c.text) LIKE ?" for _ in terms)
+        where = "(" + " OR ".join("LOWER(c.text) LIKE ?" for _ in terms) + ")"
         params = [f"%{term.lower()}%" for term in terms]
+        kb_clause, kb_params = _kb_where_clause("c.kb_id", kb_ids)
+        params.extend(kb_params)
         params.append(limit)
         rows = self.conn.execute(
             f"""
@@ -3368,6 +3373,7 @@ class KnowledgeStorage:
             FROM chunks c
             JOIN documents d ON d.id = c.document_id
             WHERE {where}
+            {kb_clause}
             LIMIT ?
             """,
             params,
@@ -3791,6 +3797,19 @@ def _search_terms(raw_query: str) -> List[str]:
     cjk = re.findall(r"[\u4e00-\u9fff]{2,}", raw_query)
     ascii_terms = [term for term in re.findall(r"[A-Za-z0-9_]+", raw_query) if len(term) >= 2]
     return cjk + ascii_terms
+
+
+def _normalize_kb_filter(kb_ids: Optional[Iterable[str]]) -> List[str]:
+    if not kb_ids:
+        return []
+    return [str(kb_id) for kb_id in dict.fromkeys(kb_ids) if str(kb_id or "").strip()]
+
+
+def _kb_where_clause(column: str, kb_ids: List[str]) -> Tuple[str, List[str]]:
+    if not kb_ids:
+        return "", []
+    placeholders = ",".join("?" for _ in kb_ids)
+    return f"AND {column} IN ({placeholders})", kb_ids
 
 
 def _rank_to_score(rank: Optional[float]) -> float:

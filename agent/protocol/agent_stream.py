@@ -840,11 +840,7 @@ class AgentStreamExecutor:
         thinking_enabled = self._is_thinking_enabled()
         self._request_runtime_context = self._build_request_context_text(user_message)
         self._reasoning_effort_decision = resolve_reasoning_effort_for_task(user_message, self.model)
-        if (
-            self._reasoning_effort_decision is None
-            and self._current_task_kind == "knowledge"
-            and backend_supports_reasoning_effort(self._active_backend())
-        ):
+        if self._current_task_kind == "knowledge" and backend_supports_reasoning_effort(self._active_backend()):
             self._reasoning_effort_decision = self._knowledge_reasoning_effort_decision()
         self._voice_mode_decision = resolve_grok_voice_mode_decision(
             self.model,

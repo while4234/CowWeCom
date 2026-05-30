@@ -414,7 +414,7 @@ Web 控制台默认随服务启动，提供以下管理能力：
 默认本地文档知识库数据目录：
 
 ```text
-public_document_knowledge/
+public_protocol_knowledge/
 ```
 
 视觉图表补全会记录 `pipeline_version`，视觉提取、裁剪或提示词版本变化时会自动清理旧视觉缓存，管理员也可通过 `visual/reset` 按文档或知识库手动重建。当前默认视觉管线为 `visual-pipeline-v2`；如果本机 ignored 的 `config.json` 仍显式设置 `visual_analysis.pipeline_version="visual-pipeline-v1"`，请改成 v2，或先调用 `visual/reset` 后再补全。视觉管线同时保留 page-level artifact 与 group-level artifact：跨页表格、大图、时序图会优先生成多页视觉 chunk，低置信结果只留分析记录不参与检索；高密度单页图表会按需高分辨率重试或 tile 分块合并，Web 进度会显示 artifact、group 和 tile 状态。旧公共协议 SQLite 如果已经有 PDF 图内乱码普通文本 chunk，可用 `scripts/repair_knowledge_text_chunks.py` 先 dry-run 检查，再用 `--apply` 备份并替换普通文本 chunk；脚本会保留高置信 `visual_analysis` chunk、视觉 artifact 表与映射，并重建 FTS。
@@ -520,8 +520,7 @@ CowWeCom/
 ├─ docs/                       项目文档与图片资源
 ├─ models/                     模型后端适配
 ├─ plugins/                    传统插件系统
-├─ public_document_knowledge/  默认本地文档知识库数据目录
-├─ public_protocol_knowledge/  可提交的公共协议知识库
+├─ public_protocol_knowledge/  默认本地协议知识库数据目录，可提交的公共协议知识库
 ├─ skills/                     项目内置 Skills
 ├─ tests/                      单元测试和回归测试
 ├─ config-template.json        安全配置模板
@@ -534,6 +533,9 @@ CowWeCom/
 
 ### 2026-05-30
 
+- ????????????????Web/API ????? `kb_id`????????????????? `kb_id` ??? SQLite??????????? limit ????
+- ???????????? `--rebuild-text-chunks`???? PDF ?? ordinary chunks?source spans?entities?relations???????? `visual_analysis` chunks?????????????????? readiness validation?visual rows ? 0 ???????
+- ??????????? `public_protocol_knowledge/`???????????? `knowledge_backend.visual_analysis`?Web ?????? `kb_id` ???
 - Grok 图片/视频隐藏提示词仓库从 `grokSfw` 更名为 `grok`，并内置 YetAnotherWildcardCollection 的完整 wildcard/prompt `.txt` 快照。
 - 普通 Grok 生图/视频润色默认 90% 使用 `grok` 仓库、10% 使用其他仓库；prompt 含 `NSFW`/`nsfw` 时把该词作为内部选择信号移除，优先使用 `grok/NSFW`，并只混入 1 条背景、风格、色彩、材质等安全上下文补充片段。
 - prompt 指明 `Korean`、`Korea`、`韩国` 等国籍/族裔时会生成稳定人物约束，过滤会引入冲突身份外貌的随机片段，避免“韩国人”被补成偏欧美特征。
