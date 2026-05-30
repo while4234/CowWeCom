@@ -10,11 +10,14 @@ param(
   [switch]$ApiStatus,
   [switch]$VerifyClaim,
   [switch]$AutoUpdateState,
+  [Alias("AutoUpdateAutomationSchedule")]
+  [switch]$AutoUpdateSchedulerTask,
   [switch]$CloseAfter,
   [switch]$KeepOpen,
 
   [string]$NextCheckInAfter,
   [int]$LastKnownCoins,
+  [int]$ScheduleBufferMinutes = 5,
   [string]$Result,
   [string]$Url
 )
@@ -37,7 +40,7 @@ function Read-JsonFile([string]$Path) {
 
   for ($attempt = 1; $attempt -le 5; $attempt++) {
     try {
-      return Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
+      return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json
     } catch {
       $lastError = $_
       Start-Sleep -Milliseconds (150 * $attempt)
@@ -52,7 +55,7 @@ function Read-TextFile([string]$Path) {
 
   for ($attempt = 1; $attempt -le 5; $attempt++) {
     try {
-      return Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+      return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop
     } catch {
       $lastError = $_
       Start-Sleep -Milliseconds (150 * $attempt)
@@ -252,6 +255,99 @@ function Get-NextCheckInAfterFromStatus($Status) {
   return $null
 }
 
+function Get-CowSchedulerPathCandidates {
+  $candidates = @()
+  if ($env:USERPROFILE) {
+    $candidates += (Join-Path $env:USERPROFILE "cow\scheduler\tasks.json")
+  }
+
+  $skillRootParts = $SkillRoot -split '[\\/]'
+  $cowIndex = [Array]::IndexOf($skillRootParts, "cow")
+  if ($cowIndex -ge 0) {
+    $cowRoot = ($skillRootParts[0..$cowIndex] -join [IO.Path]::DirectorySeparatorChar)
+    $candidates += (Join-Path $cowRoot "scheduler\tasks.json")
+  }
+
+  foreach ($candidate in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
+    if (Test-Path -LiteralPath $candidate) {
+      $candidate
+    }
+  }
+}
+
+function Find-A2ESchedulerTask($Tasks, [string]$Name) {
+  $accountPattern = "(?i)(-Account\s+$Name|Account\s+$Name|$Name)"
+  $matches = @()
+
+  foreach ($property in $Tasks.PSObject.Properties) {
+    $task = $property.Value
+    if (-not $task.enabled -or -not $task.schedule -or $task.schedule.type -ne "cron") {
+      continue
+    }
+
+    $nameText = [string]$task.name
+    $description = [string]$task.action.task_description
+    $searchText = "$nameText`n$description"
+    if ($searchText -match "(?i)(a2e-daily-checkin|a2e_checkin\.ps1|A2E)" -and $searchText -match $accountPattern) {
+      $matches += $task
+    }
+  }
+
+  if ($matches.Count -eq 0) {
+    return $null
+  }
+
+  $matches | Sort-Object updated_at -Descending | Select-Object -First 1
+}
+
+function Update-CowSchedulerTaskFromNextCheckIn([string]$Name, [datetimeoffset]$NextCheckInAfter) {
+  $schedulerPath = Get-CowSchedulerPathCandidates | Select-Object -First 1
+  if (-not $schedulerPath) {
+    return [pscustomobject]@{
+      Updated = $false
+      Reason = "cow_scheduler_tasks_json_not_found"
+      Account = $Name
+    }
+  }
+
+  $scheduler = Read-JsonFile $schedulerPath
+  $task = Find-A2ESchedulerTask $scheduler.tasks $Name
+  if (-not $task) {
+    return [pscustomobject]@{
+      Updated = $false
+      Reason = "a2e_scheduler_task_not_found"
+      Account = $Name
+      Path = $schedulerPath
+    }
+  }
+
+  $bufferMinutes = [Math]::Max(0, $ScheduleBufferMinutes)
+  $runAt = $NextCheckInAfter.AddMinutes($bufferMinutes)
+  $cronExpression = "$($runAt.Minute) $($runAt.Hour) * * *"
+
+  Set-JsonProperty $task "enabled" $true
+  Set-JsonProperty $task.schedule "expression" $cronExpression
+  Set-JsonProperty $task "next_run_at" $runAt.DateTime.ToString("yyyy-MM-ddTHH:mm:ss")
+  Set-JsonProperty $task "updated_at" (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.ffffff")
+
+  $description = [string]$task.action.task_description
+  if ($description -and $description -match "-AutoUpdateState" -and $description -notmatch "-AutoUpdateSchedulerTask|-AutoUpdateAutomationSchedule") {
+    Set-JsonProperty $task.action "task_description" ($description -replace "-AutoUpdateState", "-AutoUpdateState -AutoUpdateSchedulerTask")
+  }
+
+  Set-JsonProperty $scheduler "updated_at" (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.ffffff")
+  $scheduler | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $schedulerPath -Encoding UTF8
+
+  [pscustomobject]@{
+    Updated = $true
+    Account = $Name
+    TaskId = $task.id
+    Path = $schedulerPath
+    CronExpression = $cronExpression
+    ScheduledFor = $runAt.ToString("yyyy-MM-dd HH:mm zzz")
+  }
+}
+
 function Test-CheckedInToday($Status) {
   $checkIn = Convert-A2ETimeToLocal $Status.CheckInTime
   if (-not $checkIn) {
@@ -265,19 +361,26 @@ function Update-AccountStateFromVerifiedClaim([string]$Name, $Status, [string]$R
   $state = Read-CheckinState
   $config = Get-AccountConfig $state $Name
   $next = Get-NextCheckInAfterFromStatus $Status
+  $schedulerTaskUpdate = $null
 
   if ($next) {
     Set-JsonProperty $config "nextCheckInAfter" $next.ToString("yyyy-MM-ddTHH:mm:sszzz")
     Set-JsonProperty $config "lastSuccessfulCheckIn" (Get-Date).ToString("yyyy-MM-ddTHH:mm:sszzz")
+    if ($AutoUpdateSchedulerTask) {
+      $schedulerTaskUpdate = Update-CowSchedulerTaskFromNextCheckIn $Name $next
+    }
   }
 
   Set-JsonProperty $config "lastKnownCoins" ([int]$Status.Coins)
   Set-JsonProperty $config "lastResult" $ResultText
   Save-CheckinState $state
+
+  $schedulerTaskUpdate
 }
 
 function Confirm-ClaimResult([string]$Name, $BeforeStatus) {
   $lastStatus = $null
+  $schedulerTaskUpdate = $null
 
   for ($attempt = 1; $attempt -le 8; $attempt++) {
     Start-Sleep -Seconds 3
@@ -297,7 +400,7 @@ function Confirm-ClaimResult([string]$Name, $BeforeStatus) {
       }
 
       if ($AutoUpdateState) {
-        Update-AccountStateFromVerifiedClaim $Name $lastStatus $resultText
+        $schedulerTaskUpdate = Update-AccountStateFromVerifiedClaim $Name $lastStatus $resultText
       }
 
       return [pscustomobject]@{
@@ -308,6 +411,7 @@ function Confirm-ClaimResult([string]$Name, $BeforeStatus) {
         Status = $lastStatus
         NextCheckInAfter = if ($next) { $next.ToString("yyyy-MM-ddTHH:mm:sszzz") } else { $null }
         StateUpdated = [bool]$AutoUpdateState
+        SchedulerTaskUpdate = $schedulerTaskUpdate
         Message = $resultText
       }
     }

@@ -28,7 +28,7 @@ metadata:
 
 Use only the bundled PowerShell helper from this skill's base directory. The helper script is `scripts\a2e_checkin.ps1`; rerun stale or mistaken invocations with that helper.
 
-The helper verifies the Chrome profile email, opens or focuses the correct profile, navigates to A2E, clicks the visible daily reward claim button when requested, verifies success through the A2E API when possible, updates state after verified success, and closes A2E browser windows after a verified claim unless `-KeepOpen` is passed.
+The helper verifies the Chrome profile email, opens or focuses the correct profile, navigates to A2E, clicks the visible daily reward claim button when requested, verifies success through the A2E API when possible, updates state after verified success, can update the matching CowAgent scheduler task from the verified next eligible time, and closes A2E browser windows after a verified claim unless `-KeepOpen` is passed.
 
 Open the due account page without claiming:
 
@@ -39,8 +39,10 @@ powershell -ExecutionPolicy Bypass -File "<base_dir>\scripts\a2e_checkin.ps1" -A
 Run a verified unattended claim for due accounts:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "<base_dir>\scripts\a2e_checkin.ps1" -Account all -DueOnly -ClickClaim -VerifyClaim -AutoUpdateState -Screenshot
+powershell -ExecutionPolicy Bypass -File "<base_dir>\scripts\a2e_checkin.ps1" -Account all -DueOnly -ClickClaim -VerifyClaim -AutoUpdateState -AutoUpdateSchedulerTask -Screenshot
 ```
+
+Use `-AutoUpdateSchedulerTask` for CowAgent scheduled jobs. After a verified claim, the helper reads the verified next eligible time, adds `-ScheduleBufferMinutes` minutes (default `5`), and updates that account's CowAgent scheduler cron expression and `next_run_at` so tomorrow's run follows A2E's rolling cooldown. The helper does not change scheduler tasks when the claim is unverified, API status is unavailable, or manual action is required.
 
 Use `-KeepOpen` only when you intentionally want to inspect the browser after a verified claim. Use `-CloseAfter` for non-claim flows such as `-OpenOnly` when you want the page opened, captured, and then closed. Failed or unverified claim attempts keep the browser open for manual inspection.
 
@@ -70,7 +72,7 @@ powershell -ExecutionPolicy Bypass -File "<base_dir>\scripts\a2e_checkin.ps1" -A
 2. If `DueOnly` is appropriate, skip accounts that are not eligible yet.
 3. Open the matching Chrome profile and A2E page with `-OpenOnly` when the user only asks to open the page.
 4. Click only the visible site reward claim button when the user asks to sign in or claim, using `-ClickClaim`.
-5. Prefer `-VerifyClaim -AutoUpdateState` so state changes only after the API confirms the check-in or the account is already checked in today. After verified success, let the helper close A2E browser windows automatically unless the user asked to keep them open.
+5. Prefer `-VerifyClaim -AutoUpdateState -AutoUpdateSchedulerTask` so state and the next account-specific CowAgent scheduler time change only after the API confirms the check-in or the account is already checked in today. After verified success, let the helper close A2E browser windows automatically unless the user asked to keep them open.
 6. Treat these as successful check-in evidence:
    - The API reports today's successful check-in.
    - The coin count increases by 60.
@@ -84,4 +86,4 @@ For recurring runs, create account-specific automations:
 - Lorna: daily shortly after `nextCheckInAfter` for the Lorna account.
 - Rondle: daily shortly after `nextCheckInAfter` for the Rondle account.
 
-Use the verified unattended command for scheduled jobs. Delete temporary retry automations after a verified success and replace them with the next daily account-specific schedule.
+Use the verified unattended command with `-AutoUpdateSchedulerTask` for CowAgent scheduled jobs. Delete temporary retry tasks after a verified success and let the account-specific daily scheduler task move to `nextCheckInAfter` plus the configured buffer.

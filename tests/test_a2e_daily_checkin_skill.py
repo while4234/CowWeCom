@@ -83,6 +83,24 @@ class A2EDailyCheckinSkillTest(unittest.TestCase):
         self.assertIn("[\\x00-\\x1F\\x7F]", script_content)
         self.assertIn("Normalize-A2EAccessToken (Get-A2EAccessToken $Config)", script_content)
 
+    def test_helper_can_update_cowagent_scheduler_task_after_verified_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = SkillManager(custom_dir=str(Path(tmp) / "skills"))
+            entry = manager.get_skill("a2e-daily-checkin")
+            skill_content = Path(entry.skill.file_path).read_text(encoding="utf-8")
+            script_content = (
+                Path(entry.skill.file_path).parent / "scripts" / "a2e_checkin.ps1"
+            ).read_text(encoding="utf-8")
+
+        self.assertIn("-AutoUpdateSchedulerTask", skill_content)
+        self.assertIn("[switch]$AutoUpdateSchedulerTask", script_content)
+        self.assertIn('Alias("AutoUpdateAutomationSchedule")', script_content)
+        self.assertIn("[int]$ScheduleBufferMinutes = 5", script_content)
+        self.assertIn("Update-CowSchedulerTaskFromNextCheckIn", script_content)
+        self.assertIn("SchedulerTaskUpdate", script_content)
+        self.assertIn("cow\\scheduler\\tasks.json", script_content)
+        self.assertIn("nextCheckInAfter", skill_content)
+
 
 if __name__ == "__main__":
     unittest.main()
