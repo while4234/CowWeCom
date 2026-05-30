@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -40,6 +41,8 @@ BROKER_RUNTIMES = {
 }
 JOB_STATE_FILE = "job_state.json"
 RECOVERABLE_STATUSES = {"queued", "running"}
+SUCCESS_CLEANUP_DELAY_SECONDS = 300
+MEDIA_CLEANUP_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 RESTART_RECOVERY_ERROR = (
     "\u751f\u56fe\u4efb\u52a1\u5728\u540e\u53f0\u8fd0\u884c\u65f6 CowAgent "
     "\u91cd\u542f\uff0c\u8fd9\u6b21\u4efb\u52a1\u5df2\u4e2d\u65ad\u3002"
@@ -79,6 +82,7 @@ class ImageGenerationJobManager:
         global_workers: Optional[int] = None,
         task_timeout: Optional[int] = None,
         duplicate_window: Optional[int] = None,
+        success_cleanup_delay: Optional[float] = None,
     ):
         self.agent_bridge = agent_bridge
         self.workspace_root = os.path.abspath(
@@ -112,6 +116,8 @@ class ImageGenerationJobManager:
             ),
             0,
         )
+        cleanup_delay = SUCCESS_CLEANUP_DELAY_SECONDS if success_cleanup_delay is None else success_cleanup_delay
+        self.success_cleanup_delay = max(float(cleanup_delay), 0.0)
         self._executor = ThreadPoolExecutor(
             max_workers=self.global_workers,
             thread_name_prefix="imagegen",
@@ -601,8 +607,137 @@ class ImageGenerationJobManager:
         image_delivered = self._send_reply(job, Reply(ReplyType.IMAGE_URL, f"file://{job.output_path}"), "")
         delivered = text_delivered and image_delivered
         if delivered:
+            self._schedule_success_cleanup(job)
             self._remember_output(job, "生图完成，图片已发送。")
         return delivered
+
+    def _schedule_success_cleanup(self, job: ImageGenerationJob) -> None:
+        paths = self._cleanup_paths_for_success(job)
+        if not paths:
+            return
+        if self.success_cleanup_delay <= 0:
+            self._cleanup_success_files(job.job_id, paths)
+            return
+        timer = threading.Timer(
+            self.success_cleanup_delay,
+            self._cleanup_success_files,
+            args=(job.job_id, paths),
+        )
+        timer.daemon = True
+        timer.start()
+
+    def _cleanup_paths_for_success(self, job: ImageGenerationJob) -> list[str]:
+        candidates: list[str] = []
+        candidates.extend(self._generated_media_paths(job))
+        candidates.extend(self._local_reference_media_paths(job.args.get("image_url")))
+
+        paths: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            path = self._safe_cleanup_path(candidate)
+            if not path:
+                continue
+            key = os.path.normcase(os.path.realpath(path))
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(path)
+        return paths
+
+    def _generated_media_paths(self, job: ImageGenerationJob) -> list[str]:
+        candidates: list[str] = []
+        if job.output_path:
+            candidates.append(str(job.output_path))
+        try:
+            output_dir = Path(job.output_dir)
+            for extension in MEDIA_CLEANUP_EXTENSIONS:
+                candidates.extend(str(path) for path in output_dir.glob(f"*{extension}"))
+        except Exception:
+            pass
+        return candidates
+
+    def _local_reference_media_paths(self, value: Any) -> list[str]:
+        if isinstance(value, (list, tuple)):
+            paths: list[str] = []
+            for item in value:
+                paths.extend(self._local_reference_media_paths(item))
+            return paths
+        if not isinstance(value, str):
+            return []
+
+        raw = value.strip()
+        if not raw or raw.lower().startswith(("http://", "https://", "data:")):
+            return []
+        if raw.lower().startswith("file://"):
+            raw = self._path_from_file_url(raw)
+        return [os.path.abspath(expand_path(raw))]
+
+    @staticmethod
+    def _path_from_file_url(value: str) -> str:
+        raw_path = value[7:]
+        if re.match(r"^[A-Za-z]:[\\/]", raw_path):
+            return raw_path
+        from urllib.parse import unquote, urlparse
+
+        parsed = urlparse(value)
+        path = unquote(parsed.path or raw_path)
+        if os.name == "nt" and re.match(r"^/[A-Za-z]:/", path):
+            path = path[1:]
+        return path
+
+    def _safe_cleanup_path(self, value: str) -> str:
+        path = os.path.abspath(expand_path(str(value or "").strip()))
+        if not path or Path(path).suffix.lower() not in MEDIA_CLEANUP_EXTENSIONS:
+            return ""
+        if not os.path.isfile(path):
+            return ""
+
+        real_path = os.path.normcase(os.path.realpath(path))
+        workspace_root = os.path.normcase(os.path.realpath(self.workspace_root))
+        try:
+            if os.path.commonpath([real_path, workspace_root]) != workspace_root:
+                return ""
+        except ValueError:
+            return ""
+        return path
+
+    def _cleanup_success_files(self, job_id: str, paths: list[str]) -> None:
+        deleted = 0
+        skipped_active = 0
+        for path in paths:
+            if self._reference_path_used_by_active_job(path, ignore_job_id=job_id):
+                skipped_active += 1
+                continue
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+                    deleted += 1
+            except Exception as e:
+                logger.warning(
+                    "[ImageGenerationJobManager] failed to cleanup image job file job=%s path=%s: %s",
+                    job_id,
+                    path,
+                    e,
+                )
+        if deleted or skipped_active:
+            logger.info(
+                "[ImageGenerationJobManager] cleanup after successful image job=%s deleted=%s skipped_active=%s",
+                job_id,
+                deleted,
+                skipped_active,
+            )
+
+    def _reference_path_used_by_active_job(self, path: str, *, ignore_job_id: str) -> bool:
+        target = os.path.normcase(os.path.realpath(os.path.abspath(path)))
+        with self._lock:
+            jobs = list(self._jobs.values())
+        for job in jobs:
+            if job.job_id == ignore_job_id or job.status not in {"queued", "running"}:
+                continue
+            for candidate in self._local_reference_media_paths(job.args.get("image_url")):
+                if os.path.normcase(os.path.realpath(candidate)) == target:
+                    return True
+        return False
 
     def _send_failure(self, job: ImageGenerationJob) -> bool:
         error = job.error or "未知错误"

@@ -502,6 +502,79 @@ class TestImageGenerationBackgroundJobs(unittest.TestCase):
             finally:
                 manager.shutdown(wait=False)
 
+    def test_successful_job_cleans_generated_and_reference_images_after_delay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reference_dir = Path(tmp) / "tmp"
+            reference_dir.mkdir()
+            reference_path = reference_dir / "reference.png"
+            reference_path.write_bytes(b"\x89PNG\r\n\x1a\nreference")
+            manager = ImageGenerationJobManager(
+                workspace_root=tmp,
+                global_workers=1,
+                success_cleanup_delay=0,
+            )
+            manager._send_reply = lambda job, reply, content: True
+            manager._remember_output = lambda job, content: None
+            generated = {}
+
+            def fake_generator(job):
+                output_dir = Path(job.output_dir)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                image_path = output_dir / "out.png"
+                image_path.write_bytes(b"\x89PNG\r\n\x1a\ngenerated")
+                generated["path"] = image_path
+                return {"images": [{"url": str(image_path)}]}
+
+            manager._invoke_generator = fake_generator
+            job = manager.submit(
+                {"prompt": "edit with reference", "image_url": str(reference_path)},
+                make_context("a"),
+                make_profile("weixin:a", "user_a", tmp),
+            )
+            try:
+                self.assertEqual(wait_for(job), "succeeded")
+                self.assertFalse(Path(generated["path"]).exists())
+                self.assertFalse(reference_path.exists())
+                self.assertTrue((Path(job.output_dir) / JOB_STATE_FILE).exists())
+            finally:
+                manager.shutdown(wait=False)
+
+    def test_successful_job_keeps_reference_images_outside_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir()
+            external_reference = Path(tmp) / "external-reference.png"
+            external_reference.write_bytes(b"\x89PNG\r\n\x1a\nreference")
+            manager = ImageGenerationJobManager(
+                workspace_root=str(workspace),
+                global_workers=1,
+                success_cleanup_delay=0,
+            )
+            manager._send_reply = lambda job, reply, content: True
+            manager._remember_output = lambda job, content: None
+            generated = {}
+
+            def fake_generator(job):
+                output_dir = Path(job.output_dir)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                image_path = output_dir / "out.png"
+                image_path.write_bytes(b"\x89PNG\r\n\x1a\ngenerated")
+                generated["path"] = image_path
+                return {"images": [{"url": str(image_path)}]}
+
+            manager._invoke_generator = fake_generator
+            job = manager.submit(
+                {"prompt": "edit with external reference", "image_url": str(external_reference)},
+                make_context("a"),
+                make_profile("weixin:a", "user_a", str(workspace)),
+            )
+            try:
+                self.assertEqual(wait_for(job), "succeeded")
+                self.assertFalse(Path(generated["path"]).exists())
+                self.assertTrue(external_reference.exists())
+            finally:
+                manager.shutdown(wait=False)
+
     def test_recover_unfinished_job_sends_failure_notice(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "users" / "user_a" / "files" / "image-generation" / "orphanjob"
