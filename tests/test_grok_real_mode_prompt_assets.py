@@ -8,6 +8,7 @@ from pathlib import Path
 from config import conf
 from common.grok_real_mode_prompt_assets import (
     ASSET_FIELDS,
+    COLOR_TONE_RANDOM_KEY,
     EXPRESSION_RANDOM_KEY,
     GrokRealModePromptError,
     RANDOM_ASSET_FIELDS,
@@ -168,6 +169,18 @@ class GrokRealModePromptAssetsTest(unittest.TestCase):
         self.assertNotIn("expression prompt", prompt)
         self.assertNotIn(", ,", prompt)
 
+    def test_color_tone_is_omitted_by_default(self):
+        prompt = compose_real_mode_prompt(
+            media_type="image",
+            image_count=0,
+            selections={field: "one" for field in ASSET_FIELDS if field != "color_tone"},
+            catalog=_single_item_catalog(),
+        )
+
+        self.assertNotIn("color_tone prompt", prompt)
+        self.assertIn("low exposure shadows, shaky amateur", prompt)
+        self.assertIn("soft focus, raw unfiltered", prompt)
+
     def test_tattoo_random_option_uses_catalog_material(self):
         prompt = compose_real_mode_prompt(
             media_type="image",
@@ -223,6 +236,24 @@ class GrokRealModePromptAssetsTest(unittest.TestCase):
         self.assertIn("expression prompt", prompt)
         self.assertNotIn("tattoo prompt", prompt)
         self.assertIn("lower_state prompt, expression prompt", prompt)
+
+    def test_color_tone_random_option_uses_random_catalog_material(self):
+        prompt = compose_real_mode_prompt(
+            media_type="image",
+            image_count=0,
+            selections={
+                **{field: "one" for field in ASSET_FIELDS if field not in {"color_tone", "expression", "tattoo"}},
+                "color_tone": COLOR_TONE_RANDOM_KEY,
+            },
+            catalog=_single_item_catalog(),
+            random_catalog=_single_item_random_catalog(),
+            rng=random.Random(0),
+        )
+
+        self.assertEqual(prompt.count("color_tone prompt cast"), 2)
+        self.assertIn("low exposure shadows, color_tone prompt cast", prompt)
+        self.assertNotIn("tattoo prompt", prompt)
+        self.assertNotIn("expression prompt", prompt)
 
     def test_empty_selection_uses_large_random_catalog_instead_of_visible_catalog(self):
         random_catalog = {
@@ -331,6 +362,7 @@ class GrokRealModePromptAssetsTest(unittest.TestCase):
 
         self.assertIn("camera_angle prompt", prompt)
         self.assertIn("scene prompt", prompt)
+        self.assertNotIn("color_tone prompt", prompt)
         self.assertNotIn("tattoo prompt", prompt)
         self.assertNotIn("expression prompt", prompt)
 
@@ -378,6 +410,27 @@ class GrokRealModePromptAssetsTest(unittest.TestCase):
         self.assertEqual(choices[:2], [EXPRESSION_RANDOM_KEY, "one"])
         self.assertEqual(random_alias_choices, [EXPRESSION_RANDOM_KEY])
         self.assertNotIn(EXPRESSION_RANDOM_KEY, unrelated_choices)
+
+    def test_color_tone_choices_include_random_option(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "assets.json"
+            payload = {
+                "categories": {
+                    field: [{"key": "one", "prompt": f"{field} prompt"}]
+                    for field in ASSET_FIELDS
+                }
+            }
+            cache.write_text(json.dumps(payload), encoding="utf-8")
+
+            with patch_config({"grok_real_mode_assets_cache": str(cache)}):
+                choices = material_choices("color_tone", "")
+                random_alias_choices = material_choices("color_tone", "random")
+                unrelated_choices = material_choices("color_tone", "zzz")
+
+        self.assertEqual(choices[:2], [COLOR_TONE_RANDOM_KEY, "one"])
+        self.assertEqual(random_alias_choices, [COLOR_TONE_RANDOM_KEY])
+        self.assertNotIn(COLOR_TONE_RANDOM_KEY, unrelated_choices)
 
 
 if __name__ == "__main__":

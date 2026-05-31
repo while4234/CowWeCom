@@ -36,9 +36,11 @@ ASSET_FIELDS = (
 )
 
 TATTOO_FIELD = "tattoo"
+COLOR_TONE_FIELD = "color_tone"
 EXPRESSION_FIELD = "expression"
 TATTOO_RANDOM_MANY_KEY = "\u968f\u673a\u591a\u7eb9\u8eab"
 TATTOO_RANDOM_FEW_KEY = "\u968f\u673a\u5c11\u7eb9\u8eab"
+COLOR_TONE_RANDOM_KEY = "\u968f\u673a"
 EXPRESSION_RANDOM_KEY = "\u968f\u673a"
 TATTOO_RANDOM_ALIASES = {
     TATTOO_RANDOM_MANY_KEY: "tattoo_many",
@@ -47,10 +49,15 @@ TATTOO_RANDOM_ALIASES = {
     "random_few": "tattoo_few",
     "random": "tattoo_few",
 }
+COLOR_TONE_RANDOM_ALIASES = {
+    COLOR_TONE_RANDOM_KEY: COLOR_TONE_FIELD,
+    "random": COLOR_TONE_FIELD,
+}
 EXPRESSION_RANDOM_ALIASES = {
     EXPRESSION_RANDOM_KEY: EXPRESSION_FIELD,
     "random": EXPRESSION_FIELD,
 }
+OPTIONAL_EMPTY_FIELDS = {TATTOO_FIELD, COLOR_TONE_FIELD, EXPRESSION_FIELD}
 RANDOM_TATTOO_MANY_FIELD = "tattoo_many"
 RANDOM_TATTOO_FEW_FIELD = "tattoo_few"
 RANDOM_ASSET_FIELDS = tuple(field for field in ASSET_FIELDS if field != TATTOO_FIELD) + (
@@ -71,20 +78,20 @@ _RANDOM_STATE_LOCK = threading.Lock()
 TEXT_TO_IMAGE_TEMPLATE = (
     "Raw hidden iPhone 6s photo from {camera_angle} looking up in {scene} at {time}, "
     "faint {light_source} glow, super grainy high-ISO noise, slight motion blur, "
-    "low exposure shadows, {color_tone} cast, shaky amateur hidden camera feel, "
+    "low exposure shadows{color_tone_clause}, shaky amateur hidden camera feel, "
     "One imaginary 20-year-old {nationality} woman (natural attractive features realistic skin pores) "
     "{pose}, {action} wearing {clothing}, {lower_state}{tattoo_clause}{expression_clause}, {extra_references}"
     "background with {scene}, photorealistic but iPhone 6s low light: heavy digital grain, "
-    "soft focus, {color_tone} cast, raw unfiltered iPhone photo style"
+    "soft focus{color_tone_clause}, raw unfiltered iPhone photo style"
 )
 IMAGE_TO_IMAGE_TEMPLATE = (
     "Raw hidden iPhone 6s photo from {camera_angle} looking up in {scene} at {time}, "
     "faint {light_source} glow, super grainy high-ISO noise, slight motion blur, "
-    "low exposure shadows, {color_tone} cast, shaky amateur hidden camera feel, "
+    "low exposure shadows{color_tone_clause}, shaky amateur hidden camera feel, "
     "woman (natural attractive features realistic skin pores) {pose}, {action} wearing {clothing}, "
     "{lower_state}{tattoo_clause}{expression_clause}, {extra_references}background with {scene}, "
-    "photorealistic but iPhone 6s low light: heavy digital grain, soft focus, "
-    "{color_tone} cast, raw unfiltered iPhone photo style"
+    "photorealistic but iPhone 6s low light: heavy digital grain, "
+    "soft focus{color_tone_clause}, raw unfiltered iPhone photo style"
 )
 
 DEFAULT_ASSETS: Dict[str, List[Dict[str, str]]] = {
@@ -316,6 +323,11 @@ def material_choices(field: str, current: str = "", *, limit: int = 25) -> List[
                 choices.append(special_key)
                 if len(choices) >= limit:
                     return choices
+    if field == COLOR_TONE_FIELD:
+        if not needle or COLOR_TONE_RANDOM_KEY.lower().startswith(needle) or "random".startswith(needle):
+            choices.append(COLOR_TONE_RANDOM_KEY)
+            if len(choices) >= limit:
+                return choices
     if field == EXPRESSION_FIELD:
         if not needle or EXPRESSION_RANDOM_KEY.lower().startswith(needle) or "random".startswith(needle):
             choices.append(EXPRESSION_RANDOM_KEY)
@@ -328,6 +340,8 @@ def material_choices(field: str, current: str = "", *, limit: int = 25) -> List[
         if needle and needle not in key.lower():
             continue
         if field == TATTOO_FIELD and key in TATTOO_RANDOM_ALIASES:
+            continue
+        if field == COLOR_TONE_FIELD and key in COLOR_TONE_RANDOM_ALIASES:
             continue
         if field == EXPRESSION_FIELD and key in EXPRESSION_RANDOM_ALIASES:
             continue
@@ -367,6 +381,7 @@ def compose_real_mode_prompt(
         for field in ASSET_FIELDS
     }
     values["tattoo_clause"] = f", {values[TATTOO_FIELD]}" if values.get(TATTOO_FIELD) else ""
+    values["color_tone_clause"] = f", {values[COLOR_TONE_FIELD]} cast" if values.get(COLOR_TONE_FIELD) else ""
     values["expression_clause"] = f", {values[EXPRESSION_FIELD]}" if values.get(EXPRESSION_FIELD) else ""
     values["extra_references"] = _extra_reference_clause(
         media_type=media_type,
@@ -580,7 +595,7 @@ def _resolve_material(
 
     items = list(catalog.get(field) or DEFAULT_ASSETS[field])
     if not raw:
-        if field in {TATTOO_FIELD, EXPRESSION_FIELD}:
+        if field in OPTIONAL_EMPTY_FIELDS:
             return ""
         return _choose_random_material(
             field,
@@ -593,6 +608,15 @@ def _resolve_material(
     if field == TATTOO_FIELD and tattoo_pool:
         return _choose_random_material(
             tattoo_pool,
+            random_catalog=random_catalog,
+            fallback_items=items,
+            state_path=random_state_path,
+            rng=rng,
+        )
+    color_tone_pool = COLOR_TONE_RANDOM_ALIASES.get(raw)
+    if field == COLOR_TONE_FIELD and color_tone_pool:
+        return _choose_random_material(
+            color_tone_pool,
             random_catalog=random_catalog,
             fallback_items=items,
             state_path=random_state_path,
