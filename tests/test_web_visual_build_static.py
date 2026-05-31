@@ -164,6 +164,23 @@ def test_console_visual_status_text_has_single_final_assignment_path():
     assert label_block.count("labelEl.textContent =") == 1
 
 
+def test_console_visual_progress_uses_page_scan_percent_until_prepare_is_done():
+    script = _read(CONSOLE_JS)
+    progress = _progress_renderer(script)
+    helper = _section_between(
+        script,
+        "function _visualBuildOverallProgress",
+        "function resetVisualBuildProgress",
+    )
+
+    assert "const progressInfo = _visualBuildOverallProgress(prepare, preparePercent, analysisPercent, total);" in progress
+    assert "const percent = progressInfo.percent;" in progress
+    assert "阶段：${escapeHtml(progressInfo.stage)}" in progress
+    assert "status !== 'done' || preparedPages < totalPages" in helper
+    assert "Math.min(99, preparePercent || 0)" in helper
+    assert "analysisPercent || 0" in helper
+
+
 def test_console_renders_external_visual_status_without_build_endpoint():
     script = _read(CONSOLE_JS)
     panel = _section_between(
@@ -183,6 +200,8 @@ def test_console_renders_external_visual_status_without_build_endpoint():
     assert "latestRun.analysis_backend || visualData.analysis_backend || 'background'" in external
     assert "startKnowledgeBackendVisualStatusPoll()" in external
     assert "fetch('/api/knowledge/admin/visual/status')" in external
+    assert "fetch(`/api/knowledge/admin/visual/status?document_id=${encodeURIComponent(sourceDoc.id)}`)" in external
+    assert "String(visualData.document_id || '') !== String(sourceDoc.id)" in external
     assert "/api/knowledge/admin/visual/build" not in external
 
 

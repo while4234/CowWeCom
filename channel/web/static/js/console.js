@@ -6118,6 +6118,17 @@ function renderKnowledgeBackendExternalVisualProgress(visualData) {
         return;
     }
     const sourceDoc = _knowledgeBackendVisualStatusSourceDocument(visualData);
+    if (_knowledgeBackendVisualStatusNeedsScopedFetch(visualData, sourceDoc)) {
+        fetch(`/api/knowledge/admin/visual/status?document_id=${encodeURIComponent(sourceDoc.id)}`)
+            .then(_knowledgeBackendJson)
+            .then(scopedData => renderKnowledgeBackendExternalVisualProgress(scopedData))
+            .catch(() => renderKnowledgeBackendExternalVisualProgressData(visualData, sourceDoc));
+        return;
+    }
+    renderKnowledgeBackendExternalVisualProgressData(visualData, sourceDoc);
+}
+
+function renderKnowledgeBackendExternalVisualProgressData(visualData, sourceDoc) {
     const latestRun = (visualData && visualData.latest_run) || {};
     const backend = latestRun.analysis_backend || visualData.analysis_backend || 'background';
     setVisualBuildProgressVisible(true);
@@ -6127,6 +6138,11 @@ function renderKnowledgeBackendExternalVisualProgress(visualData) {
     } else {
         stopKnowledgeBackendVisualStatusPoll();
     }
+}
+
+function _knowledgeBackendVisualStatusNeedsScopedFetch(visualData, sourceDoc) {
+    if (!sourceDoc || !sourceDoc.id || !visualData || visualData.ok !== true) return false;
+    return String(visualData.document_id || '') !== String(sourceDoc.id);
 }
 
 function _knowledgeBackendVisualStatusShouldDisplay(visualData) {
@@ -6486,7 +6502,8 @@ function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
     const preparedArtifacts = Number(prepare.prepared_artifacts || 0);
     const preparePercent = totalPages > 0 ? Math.round(preparedPages * 100 / totalPages) : 0;
     const analysisPercent = total > 0 ? Math.round(done * 100 / total) : 0;
-    const percent = total > 0 ? analysisPercent : preparePercent;
+    const progressInfo = _visualBuildOverallProgress(prepare, preparePercent, analysisPercent, total);
+    const percent = progressInfo.percent;
     const prepareError = prepare.status === 'failed' && prepare.error ? prepare.error : '';
     const labelEl = document.getElementById('knowledge-backend-visual-progress-label');
     const percentEl = document.getElementById('knowledge-backend-visual-progress-percent');
@@ -6498,6 +6515,7 @@ function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
     if (detailEl) {
         detailEl.innerHTML = [
             `后端：${escapeHtml(backend || getSelectedVisualAnalysisBackend())}`,
+            `阶段：${escapeHtml(progressInfo.stage)}`,
             `准备页面：${preparedPages} / ${totalPages}`,
             `已发现图表候选：${preparedArtifacts}`,
             `总数：${total}`,
@@ -6522,6 +6540,25 @@ function updateVisualBuildProgress(data, totals, sourceDoc, backend) {
             `Tiled artifacts: ${tileArtifacts}`,
         ].filter(Boolean).join('<br>');
     }
+}
+
+function _visualBuildOverallProgress(prepare, preparePercent, analysisPercent, totalArtifacts) {
+    const status = String((prepare && prepare.status) || '');
+    const totalPages = Number((prepare && prepare.total_pages) || 0);
+    const preparedPages = Number((prepare && prepare.prepared_pages) || 0);
+    if (status === 'failed') {
+        return { percent: Math.max(0, Math.min(100, preparePercent || 0)), stage: '准备失败' };
+    }
+    if (totalPages > 0 && (status !== 'done' || preparedPages < totalPages)) {
+        return { percent: Math.max(0, Math.min(99, preparePercent || 0)), stage: '扫描文档页面' };
+    }
+    if (Number(totalArtifacts || 0) > 0) {
+        return { percent: Math.max(0, Math.min(100, analysisPercent || 0)), stage: '分析已发现图表' };
+    }
+    if (totalPages > 0 && status === 'done') {
+        return { percent: 100, stage: '未发现待分析图表' };
+    }
+    return { percent: 0, stage: '等待扫描' };
 }
 
 function resetVisualBuildProgress() {
