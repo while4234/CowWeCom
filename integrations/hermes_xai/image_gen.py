@@ -14,7 +14,7 @@ import mimetypes
 import os
 import re
 import uuid
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import unquote, urlparse
 
 import requests
@@ -64,6 +64,7 @@ _XAI_RESOLUTIONS = {"1k", "2k"}
 _DEFAULT_TIMEOUT_SECONDS = 120.0
 _DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 60.0
 _MAX_IMAGE_BYTES = 25 * 1024 * 1024
+_MAX_REFERENCE_IMAGES = 3
 
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*[:=]\s*)(bearer|basic)\s+[a-z0-9._~+/=-]+")
 _COOKIE_HEADER_RE = re.compile(r"(?i)((?:cookie|set-cookie)\s*[:=]\s*)[^\r\n]+")
@@ -139,20 +140,20 @@ class XAIImageGenProvider:
             raise XaiImageGenError("Grok image prompt is empty.")
 
         request_id = uuid.uuid4().hex[:12]
-        source_image_url = _single_image_reference(image_url)
-        normalized_image_url = None
-        is_image_to_image = bool(source_image_url)
-        if source_image_url:
+        source_image_urls = _image_references(image_url)
+        normalized_image_urls: List[str] = []
+        is_image_to_image = bool(source_image_urls)
+        if source_image_urls:
             inferred = _infer_options_from_reference(
                 clean_prompt,
-                source_image_url,
+                source_image_urls[0],
                 aspect_ratio=aspect_ratio,
                 resolution=resolution,
                 model=model,
             )
             aspect_ratio = aspect_ratio or inferred.get("aspect_ratio")
             resolution = resolution or inferred.get("resolution")
-            normalized_image_url = _normalize_media_reference(source_image_url)
+            normalized_image_urls = [_normalize_media_reference(item) for item in source_image_urls]
 
         options = {
             "model": self._resolve_model(model),
@@ -175,7 +176,7 @@ class XAIImageGenProvider:
                 target="grok",
                 model=options["model"],
                 runtime="grok_direct",
-                image_url=source_image_url,
+                image_url=source_image_urls,
                 size=options["resolution"],
                 aspect_ratio=options["aspect_ratio"],
                 enabled=True,
@@ -190,32 +191,33 @@ class XAIImageGenProvider:
                 "runtime": "grok_direct",
             }
         clean_prompt = str(metadata.get("enhanced_prompt") or clean_prompt).strip()
-        if source_image_url:
+        if source_image_urls:
             from common.grok_image_prompt_rewriter import apply_grok_reference_prompt_lock
 
             clean_prompt = apply_grok_reference_prompt_lock(
                 clean_prompt,
                 media_type="image",
-                image_url=source_image_url,
+                image_url=source_image_urls,
             )
             metadata = dict(metadata)
             metadata["enhanced_prompt"] = clean_prompt
         self.last_prompt_metadata = metadata
-        if normalized_image_url:
-            payload = _build_image_to_image_payload(clean_prompt, options, normalized_image_url)
+        if normalized_image_urls:
+            payload = _build_image_to_image_payload(clean_prompt, options, normalized_image_urls)
         else:
             payload = _build_image_generation_payload(clean_prompt, options)
-        endpoint_path = _IMAGE_EDIT_ENDPOINT if normalized_image_url else _IMAGE_GENERATION_ENDPOINT
+        endpoint_path = _IMAGE_EDIT_ENDPOINT if normalized_image_urls else _IMAGE_GENERATION_ENDPOINT
         options["endpoint_path"] = endpoint_path
         logger.info(
             "[GrokImage] submitting request_id=%s provider=xai runtime=grok_direct image_to_image=%s "
-            "endpoint=%s model=%s aspect_ratio=%s resolution=%s",
+            "endpoint=%s model=%s aspect_ratio=%s resolution=%s reference_count=%s",
             request_id,
             is_image_to_image,
             endpoint_path,
             options["model"],
             options["aspect_ratio"],
             options["resolution"],
+            len(normalized_image_urls),
         )
 
         try:
@@ -356,29 +358,33 @@ def _build_image_generation_payload(prompt: str, options: Dict[str, Any]) -> Dic
     }
 
 
-def _build_image_to_image_payload(prompt: str, options: Dict[str, Any], image_url: str) -> Dict[str, Any]:
-    """Build the single-reference Grok image-to-image payload in one place.
+def _build_image_to_image_payload(prompt: str, options: Dict[str, Any], image_urls: List[str]) -> Dict[str, Any]:
+    """Build the Grok image-edit payload in one place.
 
     xAI image edits are JSON requests, not multipart OpenAI-compatible SDK
-    calls. Keep the exact input-image envelope localized here.
+    calls. A single reference keeps the legacy ``image`` envelope; multiple
+    references use the official ``images`` array in request order.
     """
     payload = _build_image_generation_payload(prompt, options)
-    payload["image"] = {"url": image_url, "type": "image_url"}
+    if len(image_urls) == 1:
+        payload["image"] = {"url": image_urls[0], "type": "image_url"}
+    else:
+        payload["images"] = [{"url": image_url, "type": "image_url"} for image_url in image_urls]
     return payload
 
 
-def _single_image_reference(image_url: Optional[Any]) -> Optional[str]:
+def _image_references(image_url: Optional[Any]) -> List[str]:
     if image_url is None:
-        return None
+        return []
     if isinstance(image_url, (list, tuple)):
         values = [str(item or "").strip() for item in image_url if str(item or "").strip()]
         if not values:
-            return None
-        if len(values) > 1:
-            raise XaiImageGenError("Grok image-to-image supports exactly one reference image.")
-        return values[0]
+            return []
+        if len(values) > _MAX_REFERENCE_IMAGES:
+            raise XaiImageGenError(f"Grok image-to-image supports up to {_MAX_REFERENCE_IMAGES} reference images.")
+        return values
     value = str(image_url or "").strip()
-    return value or None
+    return [value] if value else []
 
 
 def _normalize_media_reference(value: Any) -> str:

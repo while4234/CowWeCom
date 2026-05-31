@@ -55,7 +55,7 @@ CowWeCom 的目标不是做一个“所有平台都写在 README 里的通用机
 | 长期记忆 | 按用户和会话隔离的记忆文件、每日深度整理、记忆检索和管理 |
 | 知识库 | 本地知识库、协议/规范公共知识后端、上传构建索引、LLM 学习文档生成、可追溯检索 |
 | Skills | 项目内置 Skills 启动同步到运行工作区，可按需启用、禁用、校验和扩展 |
-| 图像/视频生成 | 使用本项目 `image-generation` Skill，支持按当前模型后端选择 GPT/Codex 或 Grok 生图、Grok 单图图生图、后台任务和结果回传；切到 Grok 后默认生图走 Grok，显式说 GPT/OpenAI/Codex 生图才回到 GPT/Codex；`image-prompt-optimization` Skill 集中保存 YouMind/Nano Banana Pro 仓库、Grok 重写模板和随机片段仓库；GPT/Codex 图片继续按默认筛选规则润色，Grok 图片/视频默认用 Grok 文本模型按模板和仓库片段重写；管理员可用 `/grok-direct image|video` 直出命令绕过 Agent 提示词润色和隐藏增强/重写，Discord Grok 媒体 Slash Commands 还可在真实/正常模式间选择，图片和视频都可复用可解析图片或最近图片作为参考图 |
+| 图像/视频生成 | 使用本项目 `image-generation` Skill，支持按当前模型后端选择 GPT/Codex 或 Grok 生图、Grok 最多三图图生图、后台任务和结果回传；切到 Grok 后默认生图走 Grok，显式说 GPT/OpenAI/Codex 生图才回到 GPT/Codex；`image-prompt-optimization` Skill 集中保存 YouMind/Nano Banana Pro 仓库、Grok 重写模板和随机片段仓库；GPT/Codex 图片继续按默认筛选规则润色，Grok 图片/视频默认用 Grok 文本模型按模板和仓库片段重写；管理员可用 `/grok-direct image|video` 直出命令绕过 Agent 提示词润色和隐藏增强/重写，Discord Grok 媒体 Slash Commands 还可在真实/正常模式间选择，图片命令提供 `image1` 到 `image3`，视频命令提供 `image1` 到 `image7`，按 Grok 当前参考图上限顺序传入 |
 | 后端路由 | Codex、OpenAI-compatible/CAPI 等 GPT 后端路由，支持额度查询、自动切换、推理强度策略，以及管理员/白名单独立 Grok 后端 |
 | 安全隔离 | 管理员/普通用户角色、普通用户文件访问边界、敏感路径保护、Web 管理接口认证 |
 
@@ -541,6 +541,7 @@ CowWeCom/
 - Web 视觉进度条改为按当前阶段显示：扫描未完成时按页面扫描进度计算，扫描完成后才按图表候选分析进度计算；后台进度会优先切到当前活跃文档的状态。
 - 视觉状态 API 会把最近运行记录的状态和计数按实时 SQLite 聚合结果校准，避免旧的 `running` 快照在已完成协议库里继续误报待处理项。
 - Discord 的四个 Grok 图片/视频 Slash Commands 新增 `mode` 选项，默认 `real` 自动补入真实低光手持照片风格提示词，选择 `normal` 时保持旧提示词行为；图生图/图生视频仍会在最终提交前追加参考图身份锁。
+- Discord Grok 图生图命令按官方多图编辑能力扩展为 `image1` 到 `image3`，图生视频命令扩展为 `image1` 到 `image7`；Grok 图生图 provider 同步支持 2-3 张参考图并按第一张图推断默认比例/分辨率。
 
 ### 2026-05-30
 

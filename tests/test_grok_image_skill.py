@@ -313,6 +313,57 @@ class TestGrokImageSkill(unittest.TestCase):
             self.assertEqual(calls[0]["model"], "grok-imagine-image")
             self.assertFalse(calls[0]["prompt_enhancement"])
 
+    def test_grok_provider_supports_multiple_image_urls(self):
+        module = load_generate_module()
+        calls = []
+
+        class FakeXAIImageGenProvider:
+            def generate(self, prompt, *, image_url=None, aspect_ratio=None, resolution=None, model=None, prompt_enhancement=True):
+                calls.append({
+                    "image_url": image_url,
+                    "aspect_ratio": aspect_ratio,
+                    "resolution": resolution,
+                    "model": model,
+                    "prompt_enhancement": prompt_enhancement,
+                })
+                source = Path(output_tmp) / "source.jpg"
+                source.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
+                return str(source)
+
+        from integrations.hermes_xai import image_gen as xai_image_gen
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_tmp = tmp
+            first_reference = Path(tmp) / "portrait-a.png"
+            second_reference = Path(tmp) / "portrait-b.png"
+            first_reference.write_bytes(png_with_dimensions(900, 1600))
+            second_reference.write_bytes(png_with_dimensions(1200, 900))
+            original = xai_image_gen.XAIImageGenProvider
+            original_route_logs = module._route_cowwecom_console_logs_to_stderr
+            xai_image_gen.XAIImageGenProvider = FakeXAIImageGenProvider
+            module._route_cowwecom_console_logs_to_stderr = lambda: None
+            try:
+                provider = module.GrokXAIProvider()
+                with patch(
+                    "common.grok_image_prompt_rewriter._call_grok_text_model",
+                    return_value="Rewritten multi-reference edit prompt for Grok.",
+                ):
+                    paths = provider.generate(
+                        "combine these references",
+                        image_url=[str(first_reference), str(second_reference)],
+                        output_dir=tmp,
+                    )
+            finally:
+                xai_image_gen.XAIImageGenProvider = original
+                module._route_cowwecom_console_logs_to_stderr = original_route_logs
+
+            self.assertEqual(len(paths), 1)
+            self.assertEqual(calls[0]["image_url"], [str(first_reference), str(second_reference)])
+            self.assertEqual(calls[0]["aspect_ratio"], "9:16")
+            self.assertEqual(calls[0]["resolution"], "2k")
+            self.assertEqual(calls[0]["model"], "grok-imagine-image")
+            self.assertFalse(calls[0]["prompt_enhancement"])
+
     def test_grok_provider_explicit_aspect_ratio_overrides_reference_size(self):
         module = load_generate_module()
         calls = []

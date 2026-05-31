@@ -19,6 +19,7 @@ GROK_SPEED_MODEL = "grok-imagine-image"
 GROK_QUALITY_MODEL = "grok-imagine-image-quality"
 GROK_IMAGE_MODELS = {GROK_SPEED_MODEL, GROK_QUALITY_MODEL}
 GROK_IMAGE_RESOLUTIONS = {"1k", "2k"}
+GROK_IMAGE_MAX_REFERENCE_IMAGES = 3
 GROK_IMAGE_ASPECT_RATIOS = {
     "landscape": "16:9",
     "square": "1:1",
@@ -83,7 +84,7 @@ class GrokImageOptions:
     model: str
     aspect_ratio: Optional[str] = None
     resolution: Optional[str] = None
-    image_url: Optional[str] = None
+    image_url: Any = None
     reference_dimensions: Optional[tuple[int, int]] = None
     inferred_from_reference: bool = False
     explicit_aspect_ratio: bool = False
@@ -140,7 +141,8 @@ def resolve_grok_image_options(
     model: Optional[str] = None,
 ) -> GrokImageOptions:
     """Resolve model, reference image, ratio, and resolution in one place."""
-    single_image_url = normalize_single_image_reference(image_url)
+    image_urls = normalize_image_references(image_url)
+    first_image_url = image_urls[0] if image_urls else None
     prompt_text = str(prompt or "")
     prompt_pixels = _extract_pixel_dimensions(prompt_text)
     size_pixels = _extract_pixel_dimensions(str(size or ""))
@@ -163,8 +165,8 @@ def resolve_grok_image_options(
 
     reference_dimensions = None
     inferred_from_reference = False
-    if single_image_url and not aspect_is_explicit and not resolution_is_explicit:
-        reference_dimensions = read_reference_image_dimensions(single_image_url)
+    if first_image_url and not aspect_is_explicit and not resolution_is_explicit:
+        reference_dimensions = read_reference_image_dimensions(first_image_url)
         if reference_dimensions:
             resolved_aspect = _nearest_aspect_ratio(reference_dimensions)
             resolved_resolution = _resolution_for_dimensions(reference_dimensions)
@@ -181,19 +183,37 @@ def resolve_grok_image_options(
             logger.info(
                 "[GrokImageOptions] reference image dimensions unavailable; "
                 "falling back to configured Grok image defaults: source=%s",
-                safe_reference_label(single_image_url),
+                safe_reference_label(first_image_url),
             )
 
     return GrokImageOptions(
         model=resolve_grok_image_model(prompt_text, quality=quality, model=model),
         aspect_ratio=resolved_aspect,
         resolution=resolved_resolution,
-        image_url=single_image_url,
+        image_url=_reference_image_value(image_urls),
         reference_dimensions=reference_dimensions,
         inferred_from_reference=inferred_from_reference,
         explicit_aspect_ratio=aspect_is_explicit,
         explicit_resolution=resolution_is_explicit,
     )
+
+
+def _reference_image_value(image_urls: list[str]) -> Any:
+    if not image_urls:
+        return None
+    return image_urls[0] if len(image_urls) == 1 else image_urls
+
+
+def normalize_image_references(image_url: Any) -> list[str]:
+    if image_url is None:
+        return []
+    if isinstance(image_url, (list, tuple)):
+        values = [str(item or "").strip() for item in image_url if str(item or "").strip()]
+        if len(values) > GROK_IMAGE_MAX_REFERENCE_IMAGES:
+            raise ValueError(f"Grok image-to-image supports up to {GROK_IMAGE_MAX_REFERENCE_IMAGES} reference images.")
+        return values
+    value = str(image_url or "").strip()
+    return [value] if value else []
 
 
 def normalize_single_image_reference(image_url: Any) -> Optional[str]:
@@ -288,6 +308,11 @@ def local_path_from_reference(source: str) -> str:
 
 
 def safe_reference_label(source: Any) -> str:
+    if isinstance(source, (list, tuple)):
+        labels = [safe_reference_label(item) for item in source if str(item or "").strip()]
+        if not labels:
+            return "<empty>"
+        return ", ".join(labels[:GROK_IMAGE_MAX_REFERENCE_IMAGES])
     value = str(source or "").strip()
     if not value:
         return "<empty>"

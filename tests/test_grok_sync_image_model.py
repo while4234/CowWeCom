@@ -22,11 +22,33 @@ def test_sync_model_extracts_first_image_reference_for_image_to_image(tmp_path):
     context = Context(ContextType.IMAGE_CREATE, "参考这张图画海报\n[图片: C:/tmp/ref.png]")
     reply = grok_image.generate_reply(context.content, context, provider=FakeProvider())
 
-    assert reply.type == ReplyType.IMAGE
-    assert reply.content == str(image_path)
+    assert reply.type == ReplyType.IMAGE_URL
+    assert reply.content == f"file://{image_path}"
     assert calls[0][0] == "参考这张图画海报"
     assert calls[0][1]["image_url"] == "C:/tmp/ref.png"
     assert calls[0][1]["model"] == "grok-imagine-image"
+    assert calls[0][1]["prompt_enhancement"] is True
+
+
+def test_sync_model_extracts_multiple_image_references_for_image_to_image(tmp_path):
+    image_path = tmp_path / "out.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage")
+    calls = []
+
+    class FakeProvider:
+        last_prompt_metadata = None
+
+        def generate(self, prompt, **kwargs):
+            calls.append((prompt, kwargs))
+            return str(image_path)
+
+    prompt = "combine references\n[image: C:/tmp/ref1.png]\n[image: C:/tmp/ref2.png]\n[image: C:/tmp/ref3.png]"
+    reply = grok_image.generate_reply(prompt, provider=FakeProvider())
+
+    assert reply.type == ReplyType.IMAGE_URL
+    assert reply.content == f"file://{image_path}"
+    assert calls[0][0] == "combine references"
+    assert calls[0][1]["image_url"] == ["C:/tmp/ref1.png", "C:/tmp/ref2.png", "C:/tmp/ref3.png"]
     assert calls[0][1]["prompt_enhancement"] is True
 
 
@@ -51,7 +73,8 @@ def test_sync_model_text_to_image_regression(tmp_path):
 
     reply = grok_image.generate_reply("draw a red kite", provider=FakeProvider())
 
-    assert reply.type == ReplyType.IMAGE
+    assert reply.type == ReplyType.IMAGE_URL
+    assert reply.content == f"file://{image_path}"
     assert calls[0][0] == "draw a red kite"
     assert calls[0][1]["image_url"] is None
     assert calls[0][1]["aspect_ratio"] is None
@@ -80,7 +103,8 @@ def test_sync_model_uses_prompt_reference_dimensions_when_available(tmp_path):
 
     reply = grok_image.generate_reply(f"图生图，改成电影海报\n[图片: {reference}]", provider=FakeProvider())
 
-    assert reply.type == ReplyType.IMAGE
+    assert reply.type == ReplyType.IMAGE_URL
+    assert reply.content == f"file://{output}"
     assert calls[0]["image_url"] == str(reference)
     assert calls[0]["aspect_ratio"] == "9:16"
     assert calls[0]["resolution"] == "2k"

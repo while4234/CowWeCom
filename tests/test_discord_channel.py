@@ -11,10 +11,12 @@ from channel.discord.discord_channel import (
     GROK_DIRECT_GEN_VIDEO_COMMAND,
     GROK_GEN_IMAGE_COMMAND,
     GROK_GEN_VIDEO_COMMAND,
+    GROK_IMAGE_OPTION_NAMES,
     GROK_MEDIA_MODE_NORMAL,
     GROK_MEDIA_MODE_REAL,
     GROK_MEDIA_REAL_PROMPT,
     GROK_VIDEO_DEFAULT_DURATION,
+    GROK_VIDEO_OPTION_NAMES,
     GROK_VIDEO_DEFAULT_RESOLUTION,
     PROJECT_DISCORD_COMMANDS,
     _apply_grok_media_mode_prompt,
@@ -151,6 +153,16 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertEqual(image_ref_args["image_url"], "C:\\tmp\\ref.png")
         self.assertFalse(image_ref_args["prompt_enhancement"])
 
+        image_multi_ref_args = _build_direct_grok_image_args(
+            "combine references",
+            ["C:\\tmp\\ref1.png", "C:\\tmp\\ref2.png", "C:\\tmp\\ref3.png"],
+            quality="quality",
+        )
+        self.assertEqual(
+            image_multi_ref_args["image_url"],
+            ["C:\\tmp\\ref1.png", "C:\\tmp\\ref2.png", "C:\\tmp\\ref3.png"],
+        )
+
         video_args = _build_grok_video_job_args(
             "city timelapse",
             duration="10s",
@@ -170,6 +182,14 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertNotIn("aspect_ratio", video_ref_args)
         self.assertEqual(video_ref_args["duration"], GROK_VIDEO_DEFAULT_DURATION)
         self.assertEqual(video_ref_args["resolution"], GROK_VIDEO_DEFAULT_RESOLUTION)
+
+        video_multi_ref_args = _build_grok_video_job_args(
+            "animate references",
+            ["C:\\tmp\\ref1.png", "C:\\tmp\\ref2.png"],
+            prompt_enhancement=False,
+        )
+        self.assertEqual(video_multi_ref_args["image_url"], ["C:\\tmp\\ref1.png", "C:\\tmp\\ref2.png"])
+        self.assertNotIn("aspect_ratio", video_multi_ref_args)
 
     def test_normalize_proxy_url_adds_default_scheme(self):
         self.assertEqual(_normalize_proxy_url("127.0.0.1:7897"), "http://127.0.0.1:7897")
@@ -264,6 +284,9 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertIn(GROK_GEN_IMAGE_COMMAND, channel._registered_commands)
 
         image_command = next(command for command in bot.tree.commands if command.name == GROK_GEN_IMAGE_COMMAND)
+        image_annotation_names = set(image_command.callback.__annotations__)
+        self.assertTrue(set(GROK_IMAGE_OPTION_NAMES).issubset(image_annotation_names))
+        self.assertNotIn("image", image_annotation_names)
         image_quality_values = {choice.value for choice in image_command.callback._choices["quality"]}
         image_mode_choices = {choice.value: choice.name for choice in image_command.callback._choices["mode"]}
         self.assertEqual(image_quality_values, {"speed", "quality"})
@@ -271,6 +294,9 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertEqual(image_mode_choices["real"], "real (default)")
 
         video_command = next(command for command in bot.tree.commands if command.name == GROK_DIRECT_GEN_VIDEO_COMMAND)
+        video_annotation_names = set(video_command.callback.__annotations__)
+        self.assertTrue(set(GROK_VIDEO_OPTION_NAMES).issubset(video_annotation_names))
+        self.assertNotIn("image", video_annotation_names)
         duration_choices = {choice.value: choice.name for choice in video_command.callback._choices["duration"]}
         duration_values = set(duration_choices)
         resolution_values = {choice.value for choice in video_command.callback._choices["resolution"]}
@@ -334,6 +360,75 @@ class DiscordChannelTest(unittest.TestCase):
 
         self.assertEqual(captured["submit"]["prompt"], f"animate softly\n{GROK_MEDIA_REAL_PROMPT}")
         self.assertEqual(captured["submit"]["image_path"], "C:\\tmp\\ref.png")
+        self.assertEqual(captured["submit"]["duration"], "10s")
+        self.assertEqual(captured["submit"]["resolution"], "720p")
+        self.assertFalse(captured["submit"]["prompt_enhancement"])
+        self.assertEqual(captured["reply"], "ok")
+
+    def test_direct_video_interaction_saves_ordered_reference_images(self):
+        async def run():
+            channel = _discord_channel_instance()
+            channel.admin_user_id = "100"
+            channel.guild_id = "200"
+            channel.allowed_channel_ids = {"300"}
+            channel.ephemeral_replies = False
+            channel.loop = asyncio.get_running_loop()
+            channel.discord = types.SimpleNamespace()
+            captured = {"buckets": []}
+
+            interaction = types.SimpleNamespace(
+                id="abc",
+                user=types.SimpleNamespace(id=100, display_name="Admin", name="admin"),
+                channel=types.SimpleNamespace(id=300, name="bot"),
+                guild=types.SimpleNamespace(id=200),
+                response=types.SimpleNamespace(defer=lambda **_kwargs: _async_noop()),
+            )
+
+            async def save_image(_attachment, bucket_id):
+                captured["buckets"].append(bucket_id)
+                return f"C:\\tmp\\{bucket_id}.png"
+
+            def submit_video(prompt, image_path, duration, resolution, _context, prompt_enhancement=True):
+                captured["submit"] = {
+                    "prompt": prompt,
+                    "image_path": image_path,
+                    "duration": duration,
+                    "resolution": resolution,
+                    "prompt_enhancement": prompt_enhancement,
+                }
+                return Reply(ReplyType.TEXT, "ok")
+
+            async def send_reply(reply, _context):
+                captured["reply"] = reply.content
+                return True
+
+            channel._save_interaction_image_attachment = save_image
+            channel._submit_grok_video_job = submit_video
+            channel._send_reply_async = send_reply
+
+            await channel._handle_grok_video_interaction(
+                interaction,
+                "animate references",
+                image_attachments=(object(), object(), object(), object()),
+                duration="10s",
+                resolution="720p",
+                direct=True,
+            )
+            return captured
+
+        captured = asyncio.run(run())
+
+        self.assertEqual(captured["buckets"], ["abc-image1", "abc-image2", "abc-image3", "abc-image4"])
+        self.assertEqual(
+            captured["submit"]["image_path"],
+            [
+                "C:\\tmp\\abc-image1.png",
+                "C:\\tmp\\abc-image2.png",
+                "C:\\tmp\\abc-image3.png",
+                "C:\\tmp\\abc-image4.png",
+            ],
+        )
+        self.assertEqual(captured["submit"]["prompt"], f"animate references\n{GROK_MEDIA_REAL_PROMPT}")
         self.assertEqual(captured["submit"]["duration"], "10s")
         self.assertEqual(captured["submit"]["resolution"], "720p")
         self.assertFalse(captured["submit"]["prompt_enhancement"])
@@ -488,6 +583,64 @@ class DiscordChannelTest(unittest.TestCase):
 
         self.assertEqual(captured["submit"]["prompt"], f"make it cinematic\n{GROK_MEDIA_REAL_PROMPT}")
         self.assertEqual(captured["submit"]["image_path"], "C:\\tmp\\ref.png")
+        self.assertEqual(captured["submit"]["quality"], "quality")
+        self.assertEqual(captured["reply"], "ok")
+
+    def test_direct_grok_image_interaction_saves_ordered_reference_images(self):
+        async def run():
+            channel = _discord_channel_instance()
+            channel.admin_user_id = "100"
+            channel.guild_id = "200"
+            channel.allowed_channel_ids = {"300"}
+            channel.ephemeral_replies = False
+            channel.loop = asyncio.get_running_loop()
+            captured = {"buckets": []}
+
+            interaction = types.SimpleNamespace(
+                id="abc",
+                user=types.SimpleNamespace(id=100, display_name="Admin", name="admin"),
+                channel=types.SimpleNamespace(id=300, name="bot"),
+                guild=types.SimpleNamespace(id=200),
+                response=types.SimpleNamespace(defer=lambda **_kwargs: _async_noop()),
+            )
+
+            async def save_image(_attachment, bucket_id):
+                captured["buckets"].append(bucket_id)
+                return f"C:\\tmp\\{bucket_id}.png"
+
+            def submit_image(prompt, image_path, quality, _context):
+                captured["submit"] = {
+                    "prompt": prompt,
+                    "image_path": image_path,
+                    "quality": quality,
+                }
+                return Reply(ReplyType.TEXT, "ok")
+
+            async def send_reply(reply, _context):
+                captured["reply"] = reply.content
+                return True
+
+            channel._save_interaction_image_attachment = save_image
+            channel._submit_direct_grok_image_job = submit_image
+            channel._send_reply_async = send_reply
+
+            await channel._handle_grok_image_interaction(
+                interaction,
+                "combine these references",
+                image_attachments=(object(), object(), object()),
+                quality="quality",
+                direct=True,
+            )
+            return captured
+
+        captured = asyncio.run(run())
+
+        self.assertEqual(captured["buckets"], ["abc-image1", "abc-image2", "abc-image3"])
+        self.assertEqual(
+            captured["submit"]["image_path"],
+            ["C:\\tmp\\abc-image1.png", "C:\\tmp\\abc-image2.png", "C:\\tmp\\abc-image3.png"],
+        )
+        self.assertEqual(captured["submit"]["prompt"], f"combine these references\n{GROK_MEDIA_REAL_PROMPT}")
         self.assertEqual(captured["submit"]["quality"], "quality")
         self.assertEqual(captured["reply"], "ok")
 

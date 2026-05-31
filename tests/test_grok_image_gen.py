@@ -226,6 +226,67 @@ def test_provider_sends_single_reference_image_payload_as_data_uri(monkeypatch, 
     assert payload["resolution"] == "2k"
 
 
+def test_provider_sends_multi_reference_image_payload_as_data_uris(monkeypatch, tmp_path):
+    references = []
+    reference_bytes = []
+    for index, dimensions in enumerate(((900, 1600), (1200, 900), (800, 800)), start=1):
+        reference = tmp_path / f"portrait{index}.png"
+        raw = png_with_dimensions(*dimensions)
+        reference.write_bytes(raw)
+        references.append(str(reference))
+        reference_bytes.append(raw)
+    post_calls = []
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        image_gen,
+        "resolve_xai_http_credentials",
+        lambda force_refresh=False: {
+            "provider": "xai-oauth",
+            "auth_mode": "oauth_pkce",
+            "api_key": "token",
+            "base_url": "https://api.x.ai/v1",
+        },
+    )
+
+    def fake_post(url, headers, json, timeout):
+        post_calls.append((url, json))
+        return FakePostResponse(
+            payload={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]}
+        )
+
+    monkeypatch.setattr(image_gen.requests, "post", fake_post)
+
+    image_gen.XAIImageGenProvider().generate(
+        "combine these people into one scene",
+        image_url=references,
+        prompt_enhancement=False,
+    )
+
+    assert post_calls[0][0] == "https://api.x.ai/v1/images/edits"
+    payload = post_calls[0][1]
+    assert "image" not in payload
+    assert len(payload["images"]) == 3
+    assert [item["type"] for item in payload["images"]] == ["image_url", "image_url", "image_url"]
+    assert [
+        base64.b64decode(item["url"].split(",", 1)[1]) for item in payload["images"]
+    ] == reference_bytes
+    assert "Reference image identity lock:" in payload["prompt"]
+    assert payload["aspect_ratio"] == "9:16"
+    assert payload["resolution"] == "2k"
+
+
+def test_provider_rejects_more_than_three_reference_images():
+    with pytest.raises(image_gen.XaiImageGenError) as exc_info:
+        image_gen.XAIImageGenProvider().generate(
+            "combine references",
+            image_url=["https://example.test/1.png", "https://example.test/2.png", "https://example.test/3.png", "https://example.test/4.png"],
+            prompt_enhancement=False,
+        )
+
+    assert "up to 3 reference images" in str(exc_info.value)
+
+
 def test_provider_accepts_http_reference_without_logging_sensitive_query(monkeypatch, tmp_path, caplog):
     payloads = []
     reference_url = "https://cdn.example.test/input.png?token=secret-token"

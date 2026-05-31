@@ -32,9 +32,9 @@ def generate_reply(prompt: str, context=None, provider: Optional[XAIImageGenProv
     image_provider = provider or XAIImageGenProvider()
     prompt_text = str(prompt or "").strip()
     image_refs = extract_image_references(prompt_text)
-    image_url = image_refs[0] if image_refs else None
-    generation_prompt = strip_image_references(prompt_text) if image_url else prompt_text
-    if not image_url and looks_like_grok_image_to_image_request(prompt_text):
+    image_url = image_refs[0] if len(image_refs) == 1 else image_refs or None
+    generation_prompt = strip_image_references(prompt_text) if image_refs else prompt_text
+    if not image_refs and looks_like_grok_image_to_image_request(prompt_text):
         return Reply(ReplyType.ERROR, "这是图生图/修图请求，请先上传一张图片，或引用一张图片后再发送修改说明。")
 
     try:

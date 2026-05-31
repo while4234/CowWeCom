@@ -72,6 +72,10 @@ GROK_IMAGE_QUALITY_CHOICES = (
     ("speed (default)", "speed"),
     ("quality", "quality"),
 )
+GROK_IMAGE_MAX_REFERENCE_IMAGES = 3
+GROK_VIDEO_MAX_REFERENCE_IMAGES = 7
+GROK_IMAGE_OPTION_NAMES = tuple(f"image{index}" for index in range(1, GROK_IMAGE_MAX_REFERENCE_IMAGES + 1))
+GROK_VIDEO_OPTION_NAMES = tuple(f"image{index}" for index in range(1, GROK_VIDEO_MAX_REFERENCE_IMAGES + 1))
 GROK_VIDEO_DEFAULT_DURATION = "10s"
 GROK_VIDEO_DEFAULT_RESOLUTION = "480p"
 GROK_VIDEO_DURATION_CHOICES = (
@@ -209,7 +213,7 @@ def _apply_grok_media_mode_prompt(prompt: str, mode: str = GROK_MEDIA_DEFAULT_MO
 def _build_grok_media_shortcut_query(
     kind: str,
     prompt: str,
-    image_path: str = "",
+    image_path: Any = "",
     *,
     quality: str = "",
     duration: str = "",
@@ -253,7 +257,7 @@ def _build_direct_grok_image_args(prompt: str, image_path: str = "", *, quality:
 
 def _build_grok_image_job_args(
     prompt: str,
-    image_path: str = "",
+    image_path: Any = "",
     *,
     quality: str = "speed",
     prompt_enhancement: bool = True,
@@ -271,7 +275,7 @@ def _build_grok_image_job_args(
 
 def _build_grok_video_job_args(
     prompt: str,
-    image_path: str = "",
+    image_path: Any = "",
     *,
     duration: str = GROK_VIDEO_DEFAULT_DURATION,
     resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
@@ -288,6 +292,24 @@ def _build_grok_video_job_args(
     else:
         args["aspect_ratio"] = "16:9"
     return args
+
+
+def _reference_image_value(image_paths: List[str]) -> Any:
+    if not image_paths:
+        return ""
+    return image_paths[0] if len(image_paths) == 1 else image_paths
+
+
+def _attachment_tuple(*attachments) -> Tuple[Any, ...]:
+    compact: List[Any] = []
+    for attachment in attachments:
+        if attachment is None:
+            continue
+        if isinstance(attachment, (list, tuple)):
+            compact.extend(item for item in attachment if item is not None)
+        else:
+            compact.append(attachment)
+    return tuple(compact)
 
 
 def _grok_media_option_text(kind: str, *, quality: str = "", duration: str = "", resolution: str = "") -> str:
@@ -430,14 +452,16 @@ class DiscordChannel(ChatChannel):
         async def grok_gen_image_callback(
             interaction,
             prompt: str,
-            image=None,
+            image1=None,
+            image2=None,
+            image3=None,
             quality: str = "speed",
             mode: str = GROK_MEDIA_DEFAULT_MODE,
         ):
             await self._handle_grok_image_interaction(
                 interaction,
                 prompt,
-                image_attachment=image,
+                image_attachments=_attachment_tuple(image1, image2, image3),
                 quality=quality,
                 mode=mode,
                 direct=False,
@@ -447,7 +471,9 @@ class DiscordChannel(ChatChannel):
         grok_gen_image_callback.__annotations__ = {
             "interaction": self.discord.Interaction,
             "prompt": str,
-            "image": Optional[self.discord.Attachment],
+            "image1": Optional[self.discord.Attachment],
+            "image2": Optional[self.discord.Attachment],
+            "image3": Optional[self.discord.Attachment],
             "quality": str,
             "mode": str,
         }
@@ -459,7 +485,9 @@ class DiscordChannel(ChatChannel):
                 callback=self._with_grok_choices(
                     self.app_commands.describe(
                         prompt="Image prompt",
-                        image="Optional reference image",
+                        image1="Reference image 1",
+                        image2="Reference image 2",
+                        image3="Reference image 3",
                         quality="Image quality",
                         mode="Prompt mode",
                     )(grok_gen_image_callback),
@@ -472,14 +500,16 @@ class DiscordChannel(ChatChannel):
         async def grok_direct_gen_image_callback(
             interaction,
             prompt: str,
-            image=None,
+            image1=None,
+            image2=None,
+            image3=None,
             quality: str = "speed",
             mode: str = GROK_MEDIA_DEFAULT_MODE,
         ):
             await self._handle_grok_image_interaction(
                 interaction,
                 prompt,
-                image_attachment=image,
+                image_attachments=_attachment_tuple(image1, image2, image3),
                 quality=quality,
                 mode=mode,
                 direct=True,
@@ -489,7 +519,9 @@ class DiscordChannel(ChatChannel):
         grok_direct_gen_image_callback.__annotations__ = {
             "interaction": self.discord.Interaction,
             "prompt": str,
-            "image": Optional[self.discord.Attachment],
+            "image1": Optional[self.discord.Attachment],
+            "image2": Optional[self.discord.Attachment],
+            "image3": Optional[self.discord.Attachment],
             "quality": str,
             "mode": str,
         }
@@ -501,7 +533,9 @@ class DiscordChannel(ChatChannel):
                 callback=self._with_grok_choices(
                     self.app_commands.describe(
                         prompt="Image prompt",
-                        image="Optional reference image",
+                        image1="Reference image 1",
+                        image2="Reference image 2",
+                        image3="Reference image 3",
                         quality="Image quality",
                         mode="Prompt mode",
                     )(grok_direct_gen_image_callback),
@@ -514,7 +548,13 @@ class DiscordChannel(ChatChannel):
         async def grok_gen_video_callback(
             interaction,
             prompt: str,
-            image=None,
+            image1=None,
+            image2=None,
+            image3=None,
+            image4=None,
+            image5=None,
+            image6=None,
+            image7=None,
             duration: str = GROK_VIDEO_DEFAULT_DURATION,
             resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
             mode: str = GROK_MEDIA_DEFAULT_MODE,
@@ -522,7 +562,7 @@ class DiscordChannel(ChatChannel):
             await self._handle_grok_video_interaction(
                 interaction,
                 prompt,
-                image_attachment=image,
+                image_attachments=_attachment_tuple(image1, image2, image3, image4, image5, image6, image7),
                 duration=duration,
                 resolution=resolution,
                 mode=mode,
@@ -533,7 +573,13 @@ class DiscordChannel(ChatChannel):
         grok_gen_video_callback.__annotations__ = {
             "interaction": self.discord.Interaction,
             "prompt": str,
-            "image": Optional[self.discord.Attachment],
+            "image1": Optional[self.discord.Attachment],
+            "image2": Optional[self.discord.Attachment],
+            "image3": Optional[self.discord.Attachment],
+            "image4": Optional[self.discord.Attachment],
+            "image5": Optional[self.discord.Attachment],
+            "image6": Optional[self.discord.Attachment],
+            "image7": Optional[self.discord.Attachment],
             "duration": str,
             "resolution": str,
             "mode": str,
@@ -546,7 +592,13 @@ class DiscordChannel(ChatChannel):
                 callback=self._with_grok_choices(
                     self.app_commands.describe(
                         prompt="Video prompt",
-                        image="Optional reference image",
+                        image1="Reference image 1",
+                        image2="Reference image 2",
+                        image3="Reference image 3",
+                        image4="Reference image 4",
+                        image5="Reference image 5",
+                        image6="Reference image 6",
+                        image7="Reference image 7",
                         duration="Video duration",
                         resolution="Video resolution",
                         mode="Prompt mode",
@@ -561,7 +613,13 @@ class DiscordChannel(ChatChannel):
         async def grok_direct_gen_video_callback(
             interaction,
             prompt: str,
-            image=None,
+            image1=None,
+            image2=None,
+            image3=None,
+            image4=None,
+            image5=None,
+            image6=None,
+            image7=None,
             duration: str = GROK_VIDEO_DEFAULT_DURATION,
             resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
             mode: str = GROK_MEDIA_DEFAULT_MODE,
@@ -569,7 +627,7 @@ class DiscordChannel(ChatChannel):
             await self._handle_grok_video_interaction(
                 interaction,
                 prompt,
-                image_attachment=image,
+                image_attachments=_attachment_tuple(image1, image2, image3, image4, image5, image6, image7),
                 duration=duration,
                 resolution=resolution,
                 mode=mode,
@@ -580,7 +638,13 @@ class DiscordChannel(ChatChannel):
         grok_direct_gen_video_callback.__annotations__ = {
             "interaction": self.discord.Interaction,
             "prompt": str,
-            "image": Optional[self.discord.Attachment],
+            "image1": Optional[self.discord.Attachment],
+            "image2": Optional[self.discord.Attachment],
+            "image3": Optional[self.discord.Attachment],
+            "image4": Optional[self.discord.Attachment],
+            "image5": Optional[self.discord.Attachment],
+            "image6": Optional[self.discord.Attachment],
+            "image7": Optional[self.discord.Attachment],
             "duration": str,
             "resolution": str,
             "mode": str,
@@ -593,7 +657,13 @@ class DiscordChannel(ChatChannel):
                 callback=self._with_grok_choices(
                     self.app_commands.describe(
                         prompt="Video prompt",
-                        image="Optional reference image",
+                        image1="Reference image 1",
+                        image2="Reference image 2",
+                        image3="Reference image 3",
+                        image4="Reference image 4",
+                        image5="Reference image 5",
+                        image6="Reference image 6",
+                        image7="Reference image 7",
                         duration="Video duration",
                         resolution="Video resolution",
                         mode="Prompt mode",
@@ -657,6 +727,7 @@ class DiscordChannel(ChatChannel):
         prompt: str,
         *,
         image_attachment=None,
+        image_attachments=None,
         quality: str = "speed",
         mode: str = GROK_MEDIA_DEFAULT_MODE,
         direct: bool = False,
@@ -668,16 +739,22 @@ class DiscordChannel(ChatChannel):
 
         await interaction.response.defer(ephemeral=self.ephemeral_replies, thinking=True)
         context = self._build_interaction_context(interaction)
-        image_path = await self._save_optional_interaction_image(interaction, image_attachment, context)
-        if image_path is None:
+        image_paths = await self._save_optional_interaction_images(
+            interaction,
+            image_attachments if image_attachments is not None else _attachment_tuple(image_attachment),
+            context,
+            max_images=GROK_IMAGE_MAX_REFERENCE_IMAGES,
+        )
+        if image_paths is None:
             return
+        image_value = _reference_image_value(image_paths)
 
         if direct:
             reply = await self.loop.run_in_executor(
                 _executor,
                 self._submit_direct_grok_image_job,
                 prompt,
-                image_path or "",
+                image_value,
                 quality,
                 context,
             )
@@ -686,7 +763,7 @@ class DiscordChannel(ChatChannel):
                 _executor,
                 self._submit_enhanced_grok_image_job,
                 prompt,
-                image_path or "",
+                image_value,
                 quality,
                 context,
             )
@@ -698,6 +775,7 @@ class DiscordChannel(ChatChannel):
         prompt: str,
         *,
         image_attachment=None,
+        image_attachments=None,
         duration: str = GROK_VIDEO_DEFAULT_DURATION,
         resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
         mode: str = GROK_MEDIA_DEFAULT_MODE,
@@ -710,16 +788,22 @@ class DiscordChannel(ChatChannel):
 
         await interaction.response.defer(ephemeral=self.ephemeral_replies, thinking=True)
         context = self._build_interaction_context(interaction)
-        image_path = await self._save_optional_interaction_image(interaction, image_attachment, context)
-        if image_path is None:
+        image_paths = await self._save_optional_interaction_images(
+            interaction,
+            image_attachments if image_attachments is not None else _attachment_tuple(image_attachment),
+            context,
+            max_images=GROK_VIDEO_MAX_REFERENCE_IMAGES,
+        )
+        if image_paths is None:
             return
+        image_value = _reference_image_value(image_paths)
 
         if direct:
             reply = await self.loop.run_in_executor(
                 _executor,
                 self._submit_grok_video_job,
                 prompt,
-                image_path or "",
+                image_value,
                 duration,
                 resolution,
                 context,
@@ -730,7 +814,7 @@ class DiscordChannel(ChatChannel):
                 _executor,
                 self._submit_grok_video_job,
                 prompt,
-                image_path or "",
+                image_value,
                 duration,
                 resolution,
                 context,
@@ -739,27 +823,52 @@ class DiscordChannel(ChatChannel):
         await self._send_reply_async(reply, context)
 
     async def _save_optional_interaction_image(self, interaction, image_attachment, context: Context) -> Optional[str]:
-        if image_attachment is None:
-            return ""
-        image_path = await self._save_interaction_image_attachment(
-            image_attachment,
-            str(getattr(interaction, "id", "") or "interaction"),
+        image_paths = await self._save_optional_interaction_images(
+            interaction,
+            _attachment_tuple(image_attachment),
+            context,
+            max_images=1,
         )
-        if not image_path:
-            await self._send_discord_message("The uploaded file is not a supported image.", context)
+        if image_paths is None:
             return None
-        return image_path
+        if not image_paths:
+            return ""
+        return image_paths[0]
 
-    def _submit_enhanced_grok_image_job(self, prompt: str, image_path: str, quality: str, context: Context) -> Reply:
+    async def _save_optional_interaction_images(
+        self,
+        interaction,
+        image_attachments,
+        context: Context,
+        *,
+        max_images: int,
+    ) -> Optional[List[str]]:
+        attachments = _attachment_tuple(image_attachments)
+        if not attachments:
+            return []
+        if len(attachments) > max_images:
+            await self._send_discord_message(f"Up to {max_images} reference images are supported.", context)
+            return None
+        bucket_base = str(getattr(interaction, "id", "") or "interaction")
+        image_paths: List[str] = []
+        for index, attachment in enumerate(attachments, start=1):
+            image_path = await self._save_interaction_image_attachment(attachment, f"{bucket_base}-image{index}")
+            if not image_path:
+                await self._send_discord_message(f"The uploaded file for image{index} is not a supported image.", context)
+                return None
+            image_paths.append(image_path)
+        return image_paths
+
+    def _submit_enhanced_grok_image_job(self, prompt: str, image_path: Any, quality: str, context: Context) -> Reply:
         return self._submit_grok_image_job(prompt, image_path, quality, context, prompt_enhancement=True)
 
-    def _submit_direct_grok_image_job(self, prompt: str, image_path: str, quality: str, context: Context) -> Reply:
+    def _submit_direct_grok_image_job(self, prompt: str, image_path: Any, quality: str, context: Context) -> Reply:
         return self._submit_grok_image_job(prompt, image_path, quality, context, prompt_enhancement=False)
 
     def _submit_grok_image_job(
         self,
         prompt: str,
-        image_path: str,
+        image_path: Any,
         quality: str,
         context: Context,
         *,
@@ -800,7 +909,7 @@ class DiscordChannel(ChatChannel):
     def _submit_grok_video_job(
         self,
         prompt: str,
-        image_path: str,
+        image_path: Any,
         duration: str,
         resolution: str,
         context: Context,
