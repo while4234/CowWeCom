@@ -1578,6 +1578,7 @@ class KnowledgeBackendService:
                 if storage is not None
                 else {}
             )
+            latest_run = _reconcile_visual_run_with_stats(latest_run, stats, group_stats, prepare)
             return {
                 "ok": True,
                 "status": "success",
@@ -3070,6 +3071,37 @@ def _empty_visual_stats() -> Dict[str, Any]:
         "skipped": 0,
         "retrievable": 0,
     }
+
+
+def _reconcile_visual_run_with_stats(
+    latest_run: Dict[str, Any],
+    stats: Mapping[str, Any],
+    group_stats: Optional[Mapping[str, Any]] = None,
+    prepare: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    if not latest_run:
+        return latest_run
+    reconciled = dict(latest_run)
+    for key in ("total", "pending", "running", "succeeded", "low_confidence", "failed", "skipped"):
+        reconciled[key] = int(stats.get(key) or 0)
+    work_remaining = bool(
+        int(stats.get("pending") or 0) > 0
+        or int(stats.get("running") or 0) > 0
+        or int((group_stats or {}).get("pending") or 0) > 0
+        or int((group_stats or {}).get("running") or 0) > 0
+        or _visual_prepare_incomplete(prepare or {})
+    )
+    reconciled["status"] = "running" if work_remaining else "done"
+    return reconciled
+
+
+def _visual_prepare_incomplete(prepare: Mapping[str, Any]) -> bool:
+    status = str(prepare.get("status") or "")
+    total_pages = int(prepare.get("total_pages") or 0)
+    prepared_pages = int(prepare.get("prepared_pages") or 0)
+    if not total_pages or status in {"done", "failed"}:
+        return False
+    return prepared_pages < total_pages or status in {"running", "pending"}
 
 
 def _empty_visual_group_stats() -> Dict[str, Any]:

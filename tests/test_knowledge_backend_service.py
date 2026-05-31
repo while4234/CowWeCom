@@ -528,6 +528,89 @@ def test_visual_status_reads_wal_progress_for_background_runs(tmp_path):
     assert status["latest_run"]["analysis_backend"] == "codex"
 
 
+def test_visual_status_reconciles_stale_latest_run_snapshot(tmp_path):
+    sqlite_path = tmp_path / "knowledge.sqlite3"
+    config = KnowledgeBackendConfig.from_mapping(
+        {
+            "enabled": True,
+            "sqlite_path": str(sqlite_path),
+            "workspace_root": str(tmp_path),
+            "data_dir": str(tmp_path / "backend-data"),
+            "default_kb_id": "ucie_1_1",
+            "ingest": {"allowed_extensions": [".md"], "document_library_root": str(tmp_path)},
+            "vector_store": {"provider": "sqlite", "required": False},
+            "visual_analysis": {"enabled": True},
+        }
+    )
+    service = KnowledgeBackendService(config)
+    result = service.ingest_upload_bytes(
+        "ucie.md",
+        b"# UCIe\n\nFLIT transfer uses protocol-layer flow control.",
+        title="UCIe Test",
+    )
+    document = result["document"]
+    service.close()
+
+    writer = KnowledgeStorage(sqlite_path)
+    try:
+        writer.upsert_visual_prepare_state(
+            document_id=document["id"],
+            version_id=document["version_id"],
+            kb_id="ucie_1_1",
+            source_path=str(tmp_path / "ucie.md"),
+            total_pages=1,
+            next_page=2,
+            prepared_pages=1,
+            prepared_artifacts=1,
+            status="done",
+            pipeline_version="visual-pipeline-v2",
+        )
+        writer.upsert_visual_artifact(
+            VisualArtifactCandidate(
+                id="visual-stale-run",
+                document_id=document["id"],
+                version_id=document["version_id"],
+                kb_id="ucie_1_1",
+                artifact_type="figure",
+                page=1,
+                label="Figure 1",
+                caption="Stale run figure",
+                bbox={"x0": 1, "y0": 2, "x1": 10, "y1": 20},
+                image_hash="hash-stale",
+                context_hash="context-stale",
+                parser="test",
+                parser_confidence=0.95,
+            )
+        )
+        writer.create_visual_run(document_id=document["id"], kb_id="ucie_1_1", analysis_backend="codex")
+        writer.complete_visual_artifact_success(
+            "visual-stale-run",
+            {"summary": "done"},
+            confidence=0.91,
+            retrievable=True,
+            model="gpt-5.5",
+            prompt_version="visual-v1",
+            analysis_backend="codex",
+        )
+    finally:
+        writer.close()
+
+    service = KnowledgeBackendService(config)
+    try:
+        status = service.get_visual_stats(document_id=document["id"])
+    finally:
+        service.close()
+
+    assert status["stats"]["pending"] == 0
+    assert status["stats"]["running"] == 0
+    assert status["stats"]["succeeded"] == 1
+    assert status["latest_run"]["analysis_backend"] == "codex"
+    assert status["latest_run"]["status"] == "done"
+    assert status["latest_run"]["pending"] == 0
+    assert status["latest_run"]["running"] == 0
+    assert status["latest_run"]["succeeded"] == 1
+
+
 def test_export_uses_documents_category_not_protocols(tmp_path):
     service = KnowledgeBackendService(
         KnowledgeBackendConfig.from_mapping(
