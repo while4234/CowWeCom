@@ -55,7 +55,7 @@ CowWeCom 的目标不是做一个“所有平台都写在 README 里的通用机
 | 长期记忆 | 按用户和会话隔离的记忆文件、每日深度整理、记忆检索和管理 |
 | 知识库 | 本地知识库、协议/规范公共知识后端、上传构建索引、LLM 学习文档生成、可追溯检索 |
 | Skills | 项目内置 Skills 启动同步到运行工作区，可按需启用、禁用、校验和扩展 |
-| 图像/视频生成 | 使用本项目 `image-generation` Skill，支持按当前模型后端选择 GPT/Codex 或 Grok 生图、Grok 单图图生图、后台任务和结果回传；切到 Grok 后默认生图走 Grok，显式说 GPT/OpenAI/Codex 生图才回到 GPT/Codex；`image-prompt-optimization` Skill 集中保存 YouMind/Nano Banana Pro 仓库、Grok 重写模板和随机片段仓库；GPT/Codex 图片继续按默认筛选规则润色，Grok 图片/视频默认用 Grok 文本模型按模板和仓库片段重写；管理员可用 `/grok-direct image|video` 直出命令绕过 Agent 提示词润色和隐藏增强/重写，图片和视频都可复用可解析图片或最近图片作为参考图 |
+| 图像/视频生成 | 使用本项目 `image-generation` Skill，支持按当前模型后端选择 GPT/Codex 或 Grok 生图、Grok 单图图生图、后台任务和结果回传；切到 Grok 后默认生图走 Grok，显式说 GPT/OpenAI/Codex 生图才回到 GPT/Codex；`image-prompt-optimization` Skill 集中保存 YouMind/Nano Banana Pro 仓库、Grok 重写模板和随机片段仓库；GPT/Codex 图片继续按默认筛选规则润色，Grok 图片/视频默认用 Grok 文本模型按模板和仓库片段重写；管理员可用 `/grok-direct image|video` 直出命令绕过 Agent 提示词润色和隐藏增强/重写，Discord Grok 媒体 Slash Commands 还可在真实/正常模式间选择，图片和视频都可复用可解析图片或最近图片作为参考图 |
 | 后端路由 | Codex、OpenAI-compatible/CAPI 等 GPT 后端路由，支持额度查询、自动切换、推理强度策略，以及管理员/白名单独立 Grok 后端 |
 | 安全隔离 | 管理员/普通用户角色、普通用户文件访问边界、敏感路径保护、Web 管理接口认证 |
 
@@ -335,7 +335,7 @@ Discord 通道独立于微信和企业微信，适合把 CowCli 管理命令和 
 }
 ```
 
-也可以在 Web 控制台的「通道」页选择 Discord，填写 Bot Token、Guild ID、Admin User ID 和允许的频道 ID 后连接。Bot 启动时会同步原生 Slash Commands：保留 `help`、`status`、`backend`、`config`、`skill`、`memory`、`knowledge`、`voice`、`updates`、`tokens`、`ledger` 等 CowCli 常用项目命令，并过滤无关历史命令。Grok 媒体入口统一为 `/grok-gen-image`、`/grok-gen-video`、`/grok-direct-gen-image` 和 `/grok-direct-gen-video`；四个命令的图片附件都是可选项，不上传就是文生图/文生视频，上传就是图生图/图生视频。图片质量可选 `speed` 或 `quality`，视频时长默认 `10s`，可选 `6s` 或 `10s`，分辨率可选 `480p` 或 `720p`。配置 `discord_guild_id` 时，`discord_prune_global_commands_on_startup=true` 会在启动同步前清理历史全局 Slash Commands，避免旧的 `codex-app`、`imagine`、`image-to-image` 等残留。
+也可以在 Web 控制台的「通道」页选择 Discord，填写 Bot Token、Guild ID、Admin User ID 和允许的频道 ID 后连接。Bot 启动时会同步原生 Slash Commands：保留 `help`、`status`、`backend`、`config`、`skill`、`memory`、`knowledge`、`voice`、`updates`、`tokens`、`ledger` 等 CowCli 常用项目命令，并过滤无关历史命令。Grok 媒体入口统一为 `/grok-gen-image`、`/grok-gen-video`、`/grok-direct-gen-image` 和 `/grok-direct-gen-video`；四个命令的图片附件都是可选项，不上传就是文生图/文生视频，上传就是图生图/图生视频。图片质量可选 `speed` 或 `quality`，视频时长默认 `10s`，可选 `6s` 或 `10s`，分辨率可选 `480p` 或 `720p`。四个 Grok 媒体命令都支持 `mode`：默认 `real` 会自动补入低光、颗粒、手持 iPhone 6s 风格的真实感提示词，`normal` 保持旧的原始提示词行为。配置 `discord_guild_id` 时，`discord_prune_global_commands_on_startup=true` 会在启动同步前清理历史全局 Slash Commands，避免旧的 `codex-app`、`imagine`、`image-to-image` 等残留。
 
 如果本机 Chrome 通过 Clash、V2Ray 等代理访问 Discord，而 CowAgent 后台显示 `Cannot connect to host discord.com:443`，请设置 `discord_proxy` 或环境变量 `DISCORD_PROXY`，例如 `http://127.0.0.1:7897`。Discord 现在会直接处理普通文本消息和图片附件，不再只靠原生 Slash Commands；仍然需要在 Discord Developer Portal 为 Bot 开启 Message Content Intent。
 
@@ -535,12 +535,12 @@ CowWeCom/
 
 ### 2026-05-31
 
-- Web 知识库后台会轮询 `/api/knowledge/admin/visual/status`，即使视觉补全是 Codex 在本机后台脚本里跑，也会在知识库页显示准备页数、已发现图表、剩余分析项、合并组和实际视觉后端。
+- Web 知识库视觉状态继续收口：后台轮询 `/api/knowledge/admin/visual/status` 时会显示准备页数、图表候选、剩余分析项、合并组、实际视觉后端和最近运行状态。
 - 本地文档导出修复单文档导出重写全局索引时产生缺失链接的问题；索引只引用已经写出的 Markdown 页面，旧协议库不会再出现“表里有但页面链接打不开”的状态。
-- 视觉运行记录按源文档真实 `kb_id` 归档，并在状态接口返回最近一次运行后端，便于区分 UCIe、AXI4-Stream 等公共协议知识库的 Codex 补图进展。
-- 视觉状态接口改为实时只读 SQLite 连接，可看到后台补图脚本写入 WAL 的最新页数和候选图表，Web 进度不再停留在旧快照。
-- Web 视觉进度条改为按当前阶段显示：扫描未完成时按页面扫描进度计算，扫描完成后才按图表候选分析进度计算；后台进度会优先切到当前活跃文档的状态，避免 UCIe 标题下显示全局页数和过高百分比。
+- 视觉运行记录按源文档真实 `kb_id` 归档，并使用实时只读 SQLite 连接读取 WAL 最新进度，便于区分 UCIe、AXI4-Stream 等公共协议知识库的 Codex 补图进展。
+- Web 视觉进度条改为按当前阶段显示：扫描未完成时按页面扫描进度计算，扫描完成后才按图表候选分析进度计算；后台进度会优先切到当前活跃文档的状态。
 - 视觉状态 API 会把最近运行记录的状态和计数按实时 SQLite 聚合结果校准，避免旧的 `running` 快照在已完成协议库里继续误报待处理项。
+- Discord 的四个 Grok 图片/视频 Slash Commands 新增 `mode` 选项，默认 `real` 自动补入真实低光手持照片风格提示词，选择 `normal` 时保持旧提示词行为；图生图/图生视频仍会在最终提交前追加参考图身份锁。
 
 ### 2026-05-30
 

@@ -11,9 +11,13 @@ from channel.discord.discord_channel import (
     GROK_DIRECT_GEN_VIDEO_COMMAND,
     GROK_GEN_IMAGE_COMMAND,
     GROK_GEN_VIDEO_COMMAND,
+    GROK_MEDIA_MODE_NORMAL,
+    GROK_MEDIA_MODE_REAL,
+    GROK_MEDIA_REAL_PROMPT,
     GROK_VIDEO_DEFAULT_DURATION,
     GROK_VIDEO_DEFAULT_RESOLUTION,
     PROJECT_DISCORD_COMMANDS,
+    _apply_grok_media_mode_prompt,
     _build_direct_grok_image_args,
     _build_enhanced_grok_image_args,
     _build_grok_video_job_args,
@@ -108,6 +112,20 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertEqual(
             _build_grok_direct_video_query("city timelapse"),
             "/grok-direct video --resolution 480p --duration 10s -- city timelapse",
+        )
+
+    def test_grok_media_prompt_mode_defaults_to_real_and_allows_normal(self):
+        self.assertEqual(
+            _apply_grok_media_mode_prompt("city timelapse"),
+            f"city timelapse\n{GROK_MEDIA_REAL_PROMPT}",
+        )
+        self.assertEqual(
+            _apply_grok_media_mode_prompt("city timelapse", GROK_MEDIA_MODE_NORMAL),
+            "city timelapse",
+        )
+        self.assertEqual(
+            _apply_grok_media_mode_prompt(f"city timelapse\n{GROK_MEDIA_REAL_PROMPT}", GROK_MEDIA_MODE_REAL),
+            f"city timelapse\n{GROK_MEDIA_REAL_PROMPT}",
         )
 
     def test_enhanced_grok_image_args_keep_prompt_enhancement_enabled(self):
@@ -247,15 +265,20 @@ class DiscordChannelTest(unittest.TestCase):
 
         image_command = next(command for command in bot.tree.commands if command.name == GROK_GEN_IMAGE_COMMAND)
         image_quality_values = {choice.value for choice in image_command.callback._choices["quality"]}
+        image_mode_choices = {choice.value: choice.name for choice in image_command.callback._choices["mode"]}
         self.assertEqual(image_quality_values, {"speed", "quality"})
+        self.assertEqual(set(image_mode_choices), {"normal", "real"})
+        self.assertEqual(image_mode_choices["real"], "real (default)")
 
         video_command = next(command for command in bot.tree.commands if command.name == GROK_DIRECT_GEN_VIDEO_COMMAND)
         duration_choices = {choice.value: choice.name for choice in video_command.callback._choices["duration"]}
         duration_values = set(duration_choices)
         resolution_values = {choice.value for choice in video_command.callback._choices["resolution"]}
+        video_mode_values = {choice.value for choice in video_command.callback._choices["mode"]}
         self.assertEqual(duration_values, {"6s", "10s"})
         self.assertEqual(duration_choices["10s"], "10s (default)")
         self.assertEqual(resolution_values, {"480p", "720p"})
+        self.assertEqual(video_mode_values, {"normal", "real"})
 
     def test_direct_video_interaction_uses_optional_image_and_selected_options(self):
         async def run():
@@ -309,7 +332,7 @@ class DiscordChannelTest(unittest.TestCase):
 
         captured = asyncio.run(run())
 
-        self.assertEqual(captured["submit"]["prompt"], "animate softly")
+        self.assertEqual(captured["submit"]["prompt"], f"animate softly\n{GROK_MEDIA_REAL_PROMPT}")
         self.assertEqual(captured["submit"]["image_path"], "C:\\tmp\\ref.png")
         self.assertEqual(captured["submit"]["duration"], "10s")
         self.assertEqual(captured["submit"]["resolution"], "720p")
@@ -354,6 +377,7 @@ class DiscordChannelTest(unittest.TestCase):
                 "make it a cinematic poster",
                 image_attachment=None,
                 quality="speed",
+                mode=GROK_MEDIA_MODE_NORMAL,
                 direct=True,
             )
             return captured
@@ -409,7 +433,7 @@ class DiscordChannelTest(unittest.TestCase):
 
         captured = asyncio.run(run())
 
-        self.assertEqual(captured["submit"]["prompt"], "make a cinematic poster")
+        self.assertEqual(captured["submit"]["prompt"], f"make a cinematic poster\n{GROK_MEDIA_REAL_PROMPT}")
         self.assertEqual(captured["submit"]["image_path"], "")
         self.assertEqual(captured["submit"]["quality"], "quality")
         self.assertEqual(captured["reply"], "ok")
@@ -462,7 +486,7 @@ class DiscordChannelTest(unittest.TestCase):
 
         captured = asyncio.run(run())
 
-        self.assertEqual(captured["submit"]["prompt"], "make it cinematic")
+        self.assertEqual(captured["submit"]["prompt"], f"make it cinematic\n{GROK_MEDIA_REAL_PROMPT}")
         self.assertEqual(captured["submit"]["image_path"], "C:\\tmp\\ref.png")
         self.assertEqual(captured["submit"]["quality"], "quality")
         self.assertEqual(captured["reply"], "ok")
@@ -512,7 +536,7 @@ class DiscordChannelTest(unittest.TestCase):
 
         captured = asyncio.run(run())
 
-        self.assertEqual(captured["submit"]["prompt"], "city skyline timelapse")
+        self.assertEqual(captured["submit"]["prompt"], f"city skyline timelapse\n{GROK_MEDIA_REAL_PROMPT}")
         self.assertEqual(captured["submit"]["image_path"], "")
         self.assertEqual(captured["submit"]["duration"], "10s")
         self.assertEqual(captured["submit"]["resolution"], "480p")

@@ -82,6 +82,18 @@ GROK_VIDEO_RESOLUTION_CHOICES = (
     ("480p (default)", "480p"),
     ("720p", "720p"),
 )
+GROK_MEDIA_MODE_NORMAL = "normal"
+GROK_MEDIA_MODE_REAL = "real"
+GROK_MEDIA_DEFAULT_MODE = GROK_MEDIA_MODE_REAL
+GROK_MEDIA_REAL_PROMPT = (
+    "Raw hidden iPhone 6s photo in dimly lit, bedroom at late night, "
+    "faint screen glow + warm ambient light, extremely grainy blurry image, "
+    "heavy motion blur, low exposure shadows, shaky amateur feel"
+)
+GROK_MEDIA_MODE_CHOICES = (
+    ("real (default)", GROK_MEDIA_MODE_REAL),
+    ("normal", GROK_MEDIA_MODE_NORMAL),
+)
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="discord-cowcli")
 
 
@@ -179,6 +191,19 @@ def _split_slash_text(command_text: str) -> Tuple[str, str]:
     if not parts:
         return "", ""
     return parts[0].lower(), parts[1] if len(parts) > 1 else ""
+
+
+def _normalize_grok_media_mode(mode: str) -> str:
+    return GROK_MEDIA_MODE_NORMAL if str(mode or "").strip().lower() == GROK_MEDIA_MODE_NORMAL else GROK_MEDIA_MODE_REAL
+
+
+def _apply_grok_media_mode_prompt(prompt: str, mode: str = GROK_MEDIA_DEFAULT_MODE) -> str:
+    prompt = str(prompt or "").strip()
+    if _normalize_grok_media_mode(mode) != GROK_MEDIA_MODE_REAL:
+        return prompt
+    if GROK_MEDIA_REAL_PROMPT.lower() in prompt.lower():
+        return prompt
+    return "\n".join(part for part in (prompt, GROK_MEDIA_REAL_PROMPT) if part)
 
 
 def _build_grok_media_shortcut_query(
@@ -402,12 +427,19 @@ class DiscordChannel(ChatChannel):
         self._register_grok_generation_commands(bot)
 
     def _register_grok_generation_commands(self, bot):
-        async def grok_gen_image_callback(interaction, prompt: str, image=None, quality: str = "speed"):
+        async def grok_gen_image_callback(
+            interaction,
+            prompt: str,
+            image=None,
+            quality: str = "speed",
+            mode: str = GROK_MEDIA_DEFAULT_MODE,
+        ):
             await self._handle_grok_image_interaction(
                 interaction,
                 prompt,
                 image_attachment=image,
                 quality=quality,
+                mode=mode,
                 direct=False,
             )
 
@@ -417,6 +449,7 @@ class DiscordChannel(ChatChannel):
             "prompt": str,
             "image": Optional[self.discord.Attachment],
             "quality": str,
+            "mode": str,
         }
         self._add_slash_command(
             bot,
@@ -428,18 +461,27 @@ class DiscordChannel(ChatChannel):
                         prompt="Image prompt",
                         image="Optional reference image",
                         quality="Image quality",
+                        mode="Prompt mode",
                     )(grok_gen_image_callback),
                     quality=GROK_IMAGE_QUALITY_CHOICES,
+                    mode=GROK_MEDIA_MODE_CHOICES,
                 ),
             ),
         )
 
-        async def grok_direct_gen_image_callback(interaction, prompt: str, image=None, quality: str = "speed"):
+        async def grok_direct_gen_image_callback(
+            interaction,
+            prompt: str,
+            image=None,
+            quality: str = "speed",
+            mode: str = GROK_MEDIA_DEFAULT_MODE,
+        ):
             await self._handle_grok_image_interaction(
                 interaction,
                 prompt,
                 image_attachment=image,
                 quality=quality,
+                mode=mode,
                 direct=True,
             )
 
@@ -449,6 +491,7 @@ class DiscordChannel(ChatChannel):
             "prompt": str,
             "image": Optional[self.discord.Attachment],
             "quality": str,
+            "mode": str,
         }
         self._add_slash_command(
             bot,
@@ -460,8 +503,10 @@ class DiscordChannel(ChatChannel):
                         prompt="Image prompt",
                         image="Optional reference image",
                         quality="Image quality",
+                        mode="Prompt mode",
                     )(grok_direct_gen_image_callback),
                     quality=GROK_IMAGE_QUALITY_CHOICES,
+                    mode=GROK_MEDIA_MODE_CHOICES,
                 ),
             ),
         )
@@ -472,6 +517,7 @@ class DiscordChannel(ChatChannel):
             image=None,
             duration: str = GROK_VIDEO_DEFAULT_DURATION,
             resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
+            mode: str = GROK_MEDIA_DEFAULT_MODE,
         ):
             await self._handle_grok_video_interaction(
                 interaction,
@@ -479,6 +525,7 @@ class DiscordChannel(ChatChannel):
                 image_attachment=image,
                 duration=duration,
                 resolution=resolution,
+                mode=mode,
                 direct=False,
             )
 
@@ -489,6 +536,7 @@ class DiscordChannel(ChatChannel):
             "image": Optional[self.discord.Attachment],
             "duration": str,
             "resolution": str,
+            "mode": str,
         }
         self._add_slash_command(
             bot,
@@ -501,9 +549,11 @@ class DiscordChannel(ChatChannel):
                         image="Optional reference image",
                         duration="Video duration",
                         resolution="Video resolution",
+                        mode="Prompt mode",
                     )(grok_gen_video_callback),
                     duration=GROK_VIDEO_DURATION_CHOICES,
                     resolution=GROK_VIDEO_RESOLUTION_CHOICES,
+                    mode=GROK_MEDIA_MODE_CHOICES,
                 ),
             ),
         )
@@ -514,6 +564,7 @@ class DiscordChannel(ChatChannel):
             image=None,
             duration: str = GROK_VIDEO_DEFAULT_DURATION,
             resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
+            mode: str = GROK_MEDIA_DEFAULT_MODE,
         ):
             await self._handle_grok_video_interaction(
                 interaction,
@@ -521,6 +572,7 @@ class DiscordChannel(ChatChannel):
                 image_attachment=image,
                 duration=duration,
                 resolution=resolution,
+                mode=mode,
                 direct=True,
             )
 
@@ -531,6 +583,7 @@ class DiscordChannel(ChatChannel):
             "image": Optional[self.discord.Attachment],
             "duration": str,
             "resolution": str,
+            "mode": str,
         }
         self._add_slash_command(
             bot,
@@ -543,9 +596,11 @@ class DiscordChannel(ChatChannel):
                         image="Optional reference image",
                         duration="Video duration",
                         resolution="Video resolution",
+                        mode="Prompt mode",
                     )(grok_direct_gen_video_callback),
                     duration=GROK_VIDEO_DURATION_CHOICES,
                     resolution=GROK_VIDEO_RESOLUTION_CHOICES,
+                    mode=GROK_MEDIA_MODE_CHOICES,
                 ),
             ),
         )
@@ -603,12 +658,13 @@ class DiscordChannel(ChatChannel):
         *,
         image_attachment=None,
         quality: str = "speed",
+        mode: str = GROK_MEDIA_DEFAULT_MODE,
         direct: bool = False,
     ):
         if not self._is_allowed_interaction(interaction):
             await interaction.response.send_message("Discord channel is restricted to the configured administrator/channel.", ephemeral=True)
             return
-        prompt = str(prompt or "").strip()
+        prompt = _apply_grok_media_mode_prompt(prompt, mode)
 
         await interaction.response.defer(ephemeral=self.ephemeral_replies, thinking=True)
         context = self._build_interaction_context(interaction)
@@ -644,12 +700,13 @@ class DiscordChannel(ChatChannel):
         image_attachment=None,
         duration: str = GROK_VIDEO_DEFAULT_DURATION,
         resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
+        mode: str = GROK_MEDIA_DEFAULT_MODE,
         direct: bool = False,
     ):
         if not self._is_allowed_interaction(interaction):
             await interaction.response.send_message("Discord channel is restricted to the configured administrator/channel.", ephemeral=True)
             return
-        prompt = str(prompt or "").strip()
+        prompt = _apply_grok_media_mode_prompt(prompt, mode)
 
         await interaction.response.defer(ephemeral=self.ephemeral_replies, thinking=True)
         context = self._build_interaction_context(interaction)
