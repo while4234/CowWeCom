@@ -362,8 +362,12 @@ def _warmup_grok_real_mode_prompt_assets():
     if not conf().get("grok_real_mode_assets_sync_on_startup", True):
         return
     try:
-        from common.grok_real_mode_prompt_assets import sync_workbook_to_cache
+        from common.grok_real_mode_prompt_assets import sync_random_workbook_to_cache, sync_workbook_to_cache
+    except Exception as e:
+        logger.warning(f"[App] Grok real-mode prompt assets import failed: {e}")
+        return
 
+    try:
         result = sync_workbook_to_cache()
         logger.info(
             "[App] Grok real-mode prompt assets %s: workbook=%s cache=%s",
@@ -373,6 +377,17 @@ def _warmup_grok_real_mode_prompt_assets():
         )
     except Exception as e:
         logger.warning(f"[App] Grok real-mode prompt assets warmup failed: {e}")
+
+    try:
+        random_result = sync_random_workbook_to_cache()
+        logger.info(
+            "[App] Grok real-mode random prompt assets %s: workbook=%s cache=%s",
+            random_result.status,
+            random_result.workbook,
+            random_result.cache,
+        )
+    except Exception as e:
+        logger.warning(f"[App] Grok real-mode random prompt assets warmup failed: {e}")
 
 
 def _start_scheduler_service():

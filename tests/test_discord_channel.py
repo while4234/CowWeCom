@@ -314,6 +314,7 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertNotIn("mode", direct_image_normal.callback.__annotations__)
         self.assertNotIn("prompt", direct_image_real.callback.__annotations__)
         self.assertIn("camera_angle", direct_image_real.callback.__annotations__)
+        self.assertIn("pose", direct_image_real.callback.__annotations__)
         self.assertIn("tattoo", direct_image_real.callback.__annotations__)
         self.assertIn("prompt_2", direct_image_real.callback.__annotations__)
         self.assertEqual({choice.value for choice in direct_image_real.callback._choices["quality"]}, {"speed", "quality"})
@@ -324,10 +325,11 @@ class DiscordChannelTest(unittest.TestCase):
         direct_video_real = next(command for command in direct_video_group.commands if command.name == "real")
         video_annotation_names = set(direct_video_real.callback.__annotations__)
         self.assertTrue({f"image{index}" for index in range(1, 7)}.issubset(video_annotation_names))
-        self.assertEqual(len(video_annotation_names - {"interaction"}), 24)
+        self.assertEqual(len(video_annotation_names - {"interaction"}), 25)
         self.assertNotIn("image", video_annotation_names)
         self.assertNotIn("image7", video_annotation_names)
         self.assertNotIn("prompt", video_annotation_names)
+        self.assertIn("pose", video_annotation_names)
         self.assertIn("tattoo", video_annotation_names)
         self.assertIn("prompt_6", video_annotation_names)
         self.assertNotIn("prompt_7", video_annotation_names)
@@ -725,6 +727,7 @@ class DiscordChannelTest(unittest.TestCase):
                         "light_source": "custom:monitor",
                         "color_tone": "custom:cyan",
                         "nationality": "custom:Testland",
+                        "pose": "custom:in a low crouching pose",
                         "action": "custom:looking toward the lens",
                         "clothing": "custom:a black jacket",
                         "lower_state": "custom:with tailored pants",
@@ -741,6 +744,7 @@ class DiscordChannelTest(unittest.TestCase):
         prompt = captured["submit"]["prompt"]
         self.assertIn("One imaginary 20-year-old Testland woman", prompt)
         self.assertIn("from under a desk looking up in test room at midnight", prompt)
+        self.assertLess(prompt.index("in a low crouching pose"), prompt.index("looking toward the lens"))
         self.assertLess(prompt.index("a tiny wrist tattoo"), prompt.index("calm expression"))
         self.assertIn("background with test room", prompt)
         self.assertEqual(captured["submit"]["image_path"], "")
@@ -906,6 +910,7 @@ class DiscordChannelTest(unittest.TestCase):
                         "light_source": "custom:soft lamp",
                         "color_tone": "custom:warm",
                         "nationality": "custom:Unused",
+                        "pose": "custom:in a relaxed pose",
                         "action": "custom:standing still",
                         "clothing": "custom:a linen shirt",
                         "lower_state": "custom:with wide-leg pants",
@@ -925,6 +930,7 @@ class DiscordChannelTest(unittest.TestCase):
         prompt = captured["submit"]["prompt"]
         self.assertIn("<IMAGE_2> is the background mood board", prompt)
         self.assertIn("<IMAGE_3> is the lighting reference", prompt)
+        self.assertLess(prompt.index("in a relaxed pose"), prompt.index("standing still"))
         self.assertLess(prompt.index("a shoulder tattoo"), prompt.index("focused expression"))
         self.assertLess(prompt.index("<IMAGE_2>"), prompt.index("background with studio room"))
         self.assertEqual(

@@ -175,6 +175,9 @@ available_setting = {
     "grok_real_mode_assets_dir": "data/grok-real-mode-assets",  # Local Discord Grok real-mode material workbook/cache directory
     "grok_real_mode_assets_xlsx": "",  # Optional explicit Grok real-mode material Excel path
     "grok_real_mode_assets_cache": "",  # Optional explicit Grok real-mode material JSON cache path
+    "grok_real_mode_random_assets_xlsx": "",  # Optional explicit Grok real-mode large random material Excel path
+    "grok_real_mode_random_assets_cache": "",  # Optional explicit Grok real-mode large random material JSON cache path
+    "grok_real_mode_random_state": "",  # Optional explicit Grok real-mode random rotation state JSON path
     "grok_real_mode_assets_sync_on_startup": True,  # Sync Excel material workbook to JSON cache at startup
     "codex_auth_file": "",  # Optional Codex auth.json path; defaults to CODEX_AUTH_FILE or ~/.codex/auth.json
     "codex_base_url": "https://chatgpt.com/backend-api/codex",

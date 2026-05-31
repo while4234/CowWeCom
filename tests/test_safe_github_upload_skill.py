@@ -184,8 +184,14 @@ class SafeGithubUploadSkillTest(unittest.TestCase):
         assets_dir.mkdir(parents=True, exist_ok=True)
         (assets_dir / "grok_real_mode_assets.xlsx").write_bytes(b"local workbook")
         (assets_dir / "grok_real_mode_assets.cache.json").write_text("{}\n", encoding="utf-8")
+        (assets_dir / "grok_real_mode_random_assets.xlsx").write_bytes(b"local random workbook")
+        (assets_dir / "grok_real_mode_random_assets.cache.json").write_text("{}\n", encoding="utf-8")
+        (assets_dir / "grok_real_mode_random_assets.state.json").write_text("{}\n", encoding="utf-8")
         run_git(self.root, "add", "-f", "data/grok-real-mode-assets/grok_real_mode_assets.xlsx")
         run_git(self.root, "add", "-f", "data/grok-real-mode-assets/grok_real_mode_assets.cache.json")
+        run_git(self.root, "add", "-f", "data/grok-real-mode-assets/grok_real_mode_random_assets.xlsx")
+        run_git(self.root, "add", "-f", "data/grok-real-mode-assets/grok_real_mode_random_assets.cache.json")
+        run_git(self.root, "add", "-f", "data/grok-real-mode-assets/grok_real_mode_random_assets.state.json")
 
         result = self.run_preflight()
 
@@ -193,6 +199,9 @@ class SafeGithubUploadSkillTest(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertIn("data/grok-real-mode-assets/grok_real_mode_assets.xlsx", payload["protected_staged"])
         self.assertIn("data/grok-real-mode-assets/grok_real_mode_assets.cache.json", payload["protected_staged"])
+        self.assertIn("data/grok-real-mode-assets/grok_real_mode_random_assets.xlsx", payload["protected_staged"])
+        self.assertIn("data/grok-real-mode-assets/grok_real_mode_random_assets.cache.json", payload["protected_staged"])
+        self.assertIn("data/grok-real-mode-assets/grok_real_mode_random_assets.state.json", payload["protected_staged"])
 
 
 if __name__ == "__main__":

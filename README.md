@@ -335,7 +335,7 @@ Discord 通道独立于微信和企业微信，适合把 CowCli 管理命令和 
 }
 ```
 
-也可以在 Web 控制台的「通道」页选择 Discord，填写 Bot Token、Guild ID、Admin User ID 和允许的频道 ID 后连接。Bot 启动时会同步原生 Slash Commands：保留 `help`、`status`、`backend`、`config`、`skill`、`memory`、`knowledge`、`voice`、`updates`、`tokens`、`ledger` 等 CowCli 常用项目命令，并过滤无关历史命令。Grok 媒体入口统一为 `/grok-gen-image`、`/grok-gen-video`、`/grok-direct-gen-image` 和 `/grok-direct-gen-video`；四个命令的图片附件都是可选项，不上传就是文生图/文生视频，上传就是图生图/图生视频。图片质量可选 `speed` 或 `quality`，视频时长默认 `10s`，可选 `6s` 或 `10s`，分辨率可选 `480p` 或 `720p`。`/grok-gen-image` 和 `/grok-gen-video` 继续支持 `mode=real|normal`；两个直出命令改为 `normal` / `real` 子命令，`normal` 保持原始 prompt，`real` 不再接收自由 prompt，而是按本机素材表确定性合成完整提示词后直出。直出 real 视频为保留 Discord 25 参数上限，最多接收 `image1` 到 `image6` 与 `prompt_2` 到 `prompt_6`。管理员可在 ignored 的 `data/grok-real-mode-assets/grok_real_mode_assets.xlsx` 维护素材，每个 sheet 对应一个分类，A 列是 Discord 里输入或自动补全的缩写，B 列是最终写入 prompt 的完整片段；`tattoo` 分类默认留空表示无纹身，选择 `random` 才会随机抽取已有纹身素材。启动时会同步为同目录 JSON 缓存，运行时不反复读取 Excel。配置 `discord_guild_id` 时，`discord_prune_global_commands_on_startup=true` 会在启动同步前清理历史全局 Slash Commands，避免旧的 `codex-app`、`imagine`、`image-to-image` 等残留。
+也可以在 Web 控制台的「通道」页选择 Discord，填写 Bot Token、Guild ID、Admin User ID 和允许的频道 ID 后连接。Bot 启动时会同步原生 Slash Commands：保留 `help`、`status`、`backend`、`config`、`skill`、`memory`、`knowledge`、`voice`、`updates`、`tokens`、`ledger` 等 CowCli 常用项目命令，并过滤无关历史命令。Grok 媒体入口统一为 `/grok-gen-image`、`/grok-gen-video`、`/grok-direct-gen-image` 和 `/grok-direct-gen-video`；四个命令的图片附件都是可选项，不上传就是文生图/文生视频，上传就是图生图/图生视频。图片质量可选 `speed` 或 `quality`，视频时长默认 `10s`，可选 `6s` 或 `10s`，分辨率可选 `480p` 或 `720p`。`/grok-gen-image` 和 `/grok-gen-video` 继续支持 `mode=real|normal`；两个直出命令改为 `normal` / `real` 子命令，`normal` 保持原始 prompt，`real` 不再接收自由 prompt，而是按本机素材表确定性合成完整提示词后直出。直出 real 视频为保留 Discord 25 参数上限，最多接收 `image1` 到 `image6` 与 `prompt_2` 到 `prompt_6`。管理员可在 ignored 的 `data/grok-real-mode-assets/grok_real_mode_assets.xlsx` 维护 Discord 可见素材，每个 sheet 对应一个分类，A 列是 Discord 里输入或自动补全的缩写，B 列是最终写入 prompt 的完整片段；另有 `grok_real_mode_random_assets.xlsx` 作为大随机素材池，不参与 Discord 25 项限制，空值默认从这里按分类轮换抽取并记录到同目录 state JSON。`pose` 姿势分类会插入到动作前，形成“姿势，动作”；`tattoo` 分类默认留空表示无纹身，选择 `随机多纹身` 或 `随机少纹身` 会分别从随机素材池的 `tattoo_many` / `tattoo_few` sheet 抽取。启动时会同步为同目录 JSON 缓存，运行时不反复读取 Excel；已有工作簿缺少新 sheet 时只补默认 sheet，不会清空已有素材。配置 `discord_guild_id` 时，`discord_prune_global_commands_on_startup=true` 会在启动同步前清理历史全局 Slash Commands，避免旧的 `codex-app`、`imagine`、`image-to-image` 等残留。
 
 如果本机 Chrome 通过 Clash、V2Ray 等代理访问 Discord，而 CowAgent 后台显示 `Cannot connect to host discord.com:443`，请设置 `discord_proxy` 或环境变量 `DISCORD_PROXY`，例如 `http://127.0.0.1:7897`。Discord 现在会直接处理普通文本消息和图片附件，不再只靠原生 Slash Commands；仍然需要在 Discord Developer Portal 为 Bot 开启 Message Content Intent。
 
@@ -542,7 +542,9 @@ CowWeCom/
 - 视觉状态 API 会把最近运行记录的状态和计数按实时 SQLite 聚合结果校准，避免旧的 `running` 快照在已完成协议库里继续误报待处理项。
 - Discord Grok 图生图命令按官方多图编辑能力扩展为 `image1` 到 `image3`，图生视频普通入口扩展为 `image1` 到 `image7`，直出 real 视频保留到 `image6` 以容纳素材参数；Grok 图生图 provider 同步支持 2-3 张参考图并按第一张图推断默认比例/分辨率。
 - Discord 两个 Grok 直出 Slash Commands 改为 `normal` / `real` 子命令：`normal` 保留原始 prompt 直出，`real` 按本机素材表模板合成完整提示词，图片 `quality` 默认仍为 `speed`。
-- 新增 ignored 的 Grok real-mode 素材工作簿与 JSON 缓存目录，管理员可按 sheet/A-B 列维护相机视角、场景、时间、光源、色调、国籍、动作、服装、下装状态、纹身和表情；启动时自动同步，运行时支持空值随机、缩写选择、`custom:` 自定义片段，纹身空值默认不插入、`random` 才随机抽取。
+- 新增 ignored 的 Grok real-mode 素材工作簿与 JSON 缓存目录，管理员可按 sheet/A-B 列维护相机视角、场景、时间、光源、色调、国籍、姿势、动作、服装、下装状态、纹身和表情；启动时自动同步，运行时支持空值随机、缩写选择、`custom:` 自定义片段，纹身空值默认不插入、`随机多纹身` / `随机少纹身` 才随机抽取。
+- 新增 Grok real-mode 大随机素材表 `grok_real_mode_random_assets.xlsx`：空值默认从该表的完整素材池轮换抽取，不受 Discord 可见选项 25 项限制；随机状态写入 ignored 的 state JSON，减少连续抽中同一素材。
+- Grok real-mode 素材同步会给已有本地 Excel 追加缺失 sheet，例如新加的 `pose`，保留管理员已经填写的素材行。
 
 ### 2026-05-30
 
