@@ -354,6 +354,54 @@ class TestCodexDirectBot(unittest.TestCase):
         self.assertIn({"type": "input_image", "image_url": "data:image/png;base64,AAAA"}, content)
         self.assertEqual(records[0][0]["total_tokens"], 15)
 
+    def test_call_vision_retries_transient_provider_http_520(self):
+        from models.codex.codex_bot import CodexBot
+
+        class FakeCredential:
+            def resolve_access_tokens(self):
+                return {"access_token": "test-token", "account_id": "acc_test"}
+
+        class FlakyTransport:
+            calls = 0
+
+            def stream_responses(self, payload, tokens, *, config=None, request_id=""):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("provider_http_error: status=520 detail=<html> temporary")
+                yield {"type": "response.output_text.delta", "delta": "Recovered."}
+                yield {
+                    "type": "response.completed",
+                    "response": {
+                        "model": payload["model"],
+                        "output": [],
+                        "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+                    },
+                }
+
+        transport = FlakyTransport()
+        provider = {
+            "model": "gpt-5.5",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "endpoint_path": "/responses",
+            "reasoning_effort": "xhigh",
+            "retry_count": 1,
+            "retry_delay_seconds": 0,
+            "tools_enabled": True,
+        }
+        with patch.object(CodexBot, "_provider_config", staticmethod(lambda: provider)):
+            with patch.object(CodexBot, "_record_prompt_cache_usage", lambda *_, **__: None):
+                bot = CodexBot(credential_source=FakeCredential(), transport=transport)
+                result = bot.call_vision(
+                    image_url="data:image/png;base64,AAAA",
+                    question="Identify this image.",
+                    model="gpt-5.5",
+                    reasoning_effort="xhigh",
+                    reasoning_effort_locked=True,
+                )
+
+        self.assertEqual(result["content"], "Recovered.")
+        self.assertEqual(transport.calls, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

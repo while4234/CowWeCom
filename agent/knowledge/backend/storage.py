@@ -2646,6 +2646,52 @@ class KnowledgeStorage:
         self.conn.commit()
         return {"id": run_id, "status": status, **stats}
 
+    def latest_visual_run(
+        self,
+        document_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        clauses: List[str] = []
+        params: List[Any] = []
+        if document_id:
+            clauses.append("document_id = ?")
+            params.append(document_id)
+        if kb_id:
+            clauses.append("kb_id = ?")
+            params.append(kb_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        try:
+            row = self.conn.execute(
+                f"""
+                SELECT *
+                FROM visual_analysis_runs
+                {where}
+                ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, updated_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        except sqlite3.DatabaseError:
+            row = None
+        if not row:
+            return {}
+        return {
+            "id": row["id"],
+            "document_id": row["document_id"] or "",
+            "kb_id": row["kb_id"] or "kb_default",
+            "analysis_backend": row["analysis_backend"] or "",
+            "status": row["status"] or "",
+            "total": int(row["total"] or 0),
+            "pending": int(row["pending"] or 0),
+            "running": int(row["running"] or 0),
+            "succeeded": int(row["succeeded"] or 0),
+            "low_confidence": int(row["low_confidence"] or 0),
+            "failed": int(row["failed"] or 0),
+            "skipped": int(row["skipped"] or 0),
+            "created_at": int(row["created_at"] or 0),
+            "updated_at": int(row["updated_at"] or 0),
+        }
+
     def list_entities(self, terms: Optional[Iterable[str]] = None) -> List[KnowledgeEntity]:
         if terms is None:
             rows = self.conn.execute("SELECT * FROM entities ORDER BY canonical_name ASC").fetchall()

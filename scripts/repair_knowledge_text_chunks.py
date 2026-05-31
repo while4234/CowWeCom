@@ -346,14 +346,23 @@ def repair_one_document(
             report["applied"] = True
             return report
 
-        storage.conn.execute("BEGIN IMMEDIATE")
+        savepoint_name = f"repair_pollution_strip_{int(time.time() * 1000)}"
+        storage.conn.execute(f"SAVEPOINT {savepoint_name}")
         try:
             apply_result = apply_pollution_strip_updates(storage, repaired_document, strip_report["updates"])
             if storage.fts5_available:
                 storage._rebuild_fts()
+            storage.conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
             storage.conn.commit()
         except Exception:
-            storage.conn.rollback()
+            try:
+                storage.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+            except Exception:
+                pass
+            try:
+                storage.conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            except Exception:
+                pass
             raise
 
         report["stripped_completed_visual_chunks"] = apply_result["stripped_completed_visual_chunks"]

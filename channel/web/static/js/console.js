@@ -5874,6 +5874,7 @@ const _origNavigateTo = navigateTo;
 navigateTo = function(viewId) {
     // Stop log stream when leaving logs view
     if (currentView === 'logs' && viewId !== 'logs') stopLogStream();
+    if (currentView === 'knowledge' && viewId !== 'knowledge') stopKnowledgeBackendVisualStatusPoll();
 
     _origNavigateTo(viewId);
 
@@ -5903,6 +5904,8 @@ let _knowledgeBackendDocuments = [];
 let _knowledgeBackendVisualRunning = false;
 let _knowledgeBackendVisualQueue = Promise.resolve();
 let _knowledgeBackendVisualBackends = null;
+let _knowledgeBackendVisualStatusPollTimer = null;
+const KNOWLEDGE_BACKEND_VISUAL_STATUS_POLL_MS = 15000;
 
 function loadKnowledgeBackendPanel() {
     const docsEl = document.getElementById('knowledge-backend-docs');
@@ -5937,6 +5940,7 @@ function loadKnowledgeBackendPanel() {
         renderVisualAnalysisBackendSelector(backendsData);
         renderKnowledgeBackendDocuments(_knowledgeBackendDocuments);
         renderKnowledgeBackendSummary(statusData, _knowledgeBackendDocuments, visualData);
+        renderKnowledgeBackendExternalVisualProgress(visualData);
     }).catch(err => {
         statusEl.textContent = t('knowledge_backend_disabled');
         docsEl.innerHTML = `<div class="text-xs text-red-500">${escapeHtml(err.message || 'Failed to load backend documents')}</div>`;
@@ -6104,6 +6108,96 @@ function renderKnowledgeBackendSummary(statusData, documents, visualData) {
         <div class="knowledge-backend-stat"><span>Multipage groups</span><strong>${visualGroups.total || 0}</strong></div>
         <div class="knowledge-backend-stat"><span>Groups merged</span><strong>${visualGroups.succeeded || 0}</strong></div>
     `;
+}
+
+function renderKnowledgeBackendExternalVisualProgress(visualData) {
+    if (_knowledgeBackendVisualRunning) return;
+    if (!_knowledgeBackendVisualStatusShouldDisplay(visualData)) {
+        stopKnowledgeBackendVisualStatusPoll();
+        setVisualBuildProgressVisible(false);
+        return;
+    }
+    const sourceDoc = _knowledgeBackendVisualStatusSourceDocument(visualData);
+    const latestRun = (visualData && visualData.latest_run) || {};
+    const backend = latestRun.analysis_backend || visualData.analysis_backend || 'background';
+    setVisualBuildProgressVisible(true);
+    updateVisualBuildProgress(visualData, null, sourceDoc, backend);
+    if (_knowledgeBackendVisualStatusShouldPoll(visualData)) {
+        startKnowledgeBackendVisualStatusPoll();
+    } else {
+        stopKnowledgeBackendVisualStatusPoll();
+    }
+}
+
+function _knowledgeBackendVisualStatusShouldDisplay(visualData) {
+    if (!visualData || visualData.ok !== true) return false;
+    const prepare = visualData.prepare || {};
+    const stats = visualData.stats || {};
+    const groupStats = visualData.group_stats || {};
+    return _knowledgeBackendVisualPrepareIncomplete(prepare) ||
+        String(prepare.status || '') === 'failed' ||
+        Number(stats.pending || 0) > 0 ||
+        Number(stats.running || 0) > 0 ||
+        Number(groupStats.pending || 0) > 0 ||
+        Number(groupStats.running || 0) > 0;
+}
+
+function _knowledgeBackendVisualStatusShouldPoll(visualData) {
+    if (!visualData || visualData.ok !== true) return false;
+    const prepare = visualData.prepare || {};
+    if (String(prepare.status || '') === 'failed') return false;
+    const stats = visualData.stats || {};
+    const groupStats = visualData.group_stats || {};
+    return _knowledgeBackendVisualPrepareIncomplete(prepare) ||
+        Number(stats.pending || 0) > 0 ||
+        Number(stats.running || 0) > 0 ||
+        Number(groupStats.pending || 0) > 0 ||
+        Number(groupStats.running || 0) > 0;
+}
+
+function _knowledgeBackendVisualPrepareIncomplete(prepare) {
+    const status = String((prepare && prepare.status) || '');
+    const totalPages = Number((prepare && prepare.total_pages) || 0);
+    const preparedPages = Number((prepare && prepare.prepared_pages) || 0);
+    if (!totalPages || status === 'done' || status === 'failed') return false;
+    return preparedPages < totalPages || status === 'running' || status === 'pending';
+}
+
+function _knowledgeBackendVisualStatusSourceDocument(visualData) {
+    const prepare = (visualData && visualData.prepare) || {};
+    const states = Array.isArray(prepare.states) ? prepare.states : [];
+    const selectedState = states.find(state => _knowledgeBackendVisualPrepareIncomplete(state)) ||
+        states.find(state => String((state && state.status) || '') === 'failed') ||
+        null;
+    if (selectedState) {
+        const documentId = selectedState.document_id || '';
+        return _knowledgeBackendDocumentById(documentId) || {
+            id: documentId,
+            title: selectedState.source_path || selectedState.kb_id || 'Background visual build',
+            kb_id: selectedState.kb_id || ''
+        };
+    }
+    return _knowledgeBackendSourceDocument() || { title: 'Background visual build' };
+}
+
+function startKnowledgeBackendVisualStatusPoll() {
+    if (_knowledgeBackendVisualStatusPollTimer || currentView !== 'knowledge' || _knowledgeBackendVisualRunning) return;
+    _knowledgeBackendVisualStatusPollTimer = window.setTimeout(refreshKnowledgeBackendVisualStatus, KNOWLEDGE_BACKEND_VISUAL_STATUS_POLL_MS);
+}
+
+function stopKnowledgeBackendVisualStatusPoll() {
+    if (!_knowledgeBackendVisualStatusPollTimer) return;
+    window.clearTimeout(_knowledgeBackendVisualStatusPollTimer);
+    _knowledgeBackendVisualStatusPollTimer = null;
+}
+
+function refreshKnowledgeBackendVisualStatus() {
+    _knowledgeBackendVisualStatusPollTimer = null;
+    if (currentView !== 'knowledge' || _knowledgeBackendVisualRunning) return;
+    fetch('/api/knowledge/admin/visual/status')
+        .then(_knowledgeBackendJson)
+        .then(renderKnowledgeBackendExternalVisualProgress)
+        .catch(stopKnowledgeBackendVisualStatusPoll);
 }
 
 function uploadKnowledgeBackendFile(fileList) {

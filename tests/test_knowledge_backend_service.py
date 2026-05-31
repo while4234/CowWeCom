@@ -376,6 +376,84 @@ def test_single_document_export_keeps_all_protocol_indexes(tmp_path):
     assert "UCIe Test" in ucie_index
 
 
+def test_single_document_export_omits_unexported_documents_from_indexes(tmp_path):
+    config = KnowledgeBackendConfig.from_mapping(
+        {
+            "enabled": True,
+            "sqlite_path": str(tmp_path / "knowledge.sqlite3"),
+            "workspace_root": str(tmp_path),
+            "data_dir": str(tmp_path / "backend-data"),
+            "default_kb_id": "axi4_stream",
+            "ingest": {"allowed_extensions": [".md"], "document_library_root": str(tmp_path)},
+            "vector_store": {"provider": "sqlite", "required": False},
+        }
+    )
+    service = KnowledgeBackendService(config)
+
+    service.ingest_upload_bytes(
+        "axi-stream.md",
+        b"# AXI4-Stream\n\nTVALID and TREADY define the transfer handshake.",
+        title="Unexported AXI4-Stream Test",
+    )
+    ucie_result = service.ingest_upload_bytes(
+        "ucie.md",
+        b"# UCIe\n\nFLIT transfer uses protocol-layer flow control.",
+        title="Exported UCIe Test",
+        kb_id="ucie_1_1",
+    )
+
+    export = service.export_document_library(document_id=ucie_result["document"]["id"])
+    service.close()
+
+    assert export["documents_exported"] == 1
+    root_index = (tmp_path / "knowledge" / "documents" / "index.md").read_text(encoding="utf-8")
+    ucie_index = (tmp_path / "knowledge" / "documents" / "ucie_1_1" / "index.md").read_text(encoding="utf-8")
+    assert "[ucie_1_1](ucie_1_1/index.md) - 1 document(s)" in root_index
+    assert "Exported UCIe Test" in ucie_index
+    assert "Unexported AXI4-Stream Test" not in root_index
+    assert not (tmp_path / "knowledge" / "documents" / "axi4_stream" / "index.md").exists()
+
+
+def test_visual_status_reports_latest_run_backend(tmp_path):
+    sqlite_path = tmp_path / "knowledge.sqlite3"
+    config = KnowledgeBackendConfig.from_mapping(
+        {
+            "enabled": True,
+            "sqlite_path": str(sqlite_path),
+            "workspace_root": str(tmp_path),
+            "data_dir": str(tmp_path / "backend-data"),
+            "default_kb_id": "ucie_1_1",
+            "ingest": {"allowed_extensions": [".md"], "document_library_root": str(tmp_path)},
+            "vector_store": {"provider": "sqlite", "required": False},
+            "visual_analysis": {"enabled": True},
+        }
+    )
+    service = KnowledgeBackendService(config)
+    result = service.ingest_upload_bytes(
+        "ucie.md",
+        b"# UCIe\n\nFLIT transfer uses protocol-layer flow control.",
+        title="UCIe Test",
+    )
+    document_id = result["document"]["id"]
+    service.close()
+
+    storage = KnowledgeStorage(sqlite_path)
+    try:
+        storage.create_visual_run(document_id=document_id, kb_id="ucie_1_1", analysis_backend="codex")
+    finally:
+        storage.close()
+
+    service = KnowledgeBackendService(config)
+    try:
+        status = service.get_visual_stats(document_id=document_id)
+    finally:
+        service.close()
+
+    assert status["latest_run"]["document_id"] == document_id
+    assert status["latest_run"]["analysis_backend"] == "codex"
+    assert status["analysis_backend"] == "codex"
+
+
 def test_export_uses_documents_category_not_protocols(tmp_path):
     service = KnowledgeBackendService(
         KnowledgeBackendConfig.from_mapping(

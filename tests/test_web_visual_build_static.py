@@ -162,3 +162,44 @@ def test_console_visual_status_text_has_single_final_assignment_path():
 
     assert visual_message_block.count("messageEl.textContent =") == 1
     assert label_block.count("labelEl.textContent =") == 1
+
+
+def test_console_renders_external_visual_status_without_build_endpoint():
+    script = _read(CONSOLE_JS)
+    panel = _section_between(
+        script,
+        "function loadKnowledgeBackendPanel",
+        "function loadVisualAnalysisBackends",
+    )
+    external = _section_between(
+        script,
+        "function renderKnowledgeBackendExternalVisualProgress",
+        "function uploadKnowledgeBackendFile",
+    )
+
+    assert "fetch('/api/knowledge/admin/visual/status')" in panel
+    assert "renderKnowledgeBackendExternalVisualProgress(visualData)" in panel
+    assert "updateVisualBuildProgress(visualData, null, sourceDoc, backend)" in external
+    assert "latestRun.analysis_backend || visualData.analysis_backend || 'background'" in external
+    assert "startKnowledgeBackendVisualStatusPoll()" in external
+    assert "fetch('/api/knowledge/admin/visual/status')" in external
+    assert "/api/knowledge/admin/visual/build" not in external
+
+
+def test_console_stops_external_visual_status_poll_when_leaving_knowledge_view():
+    script = _read(CONSOLE_JS)
+    navigation_hook = _section_between(
+        script,
+        "const _origNavigateTo = navigateTo;",
+        "// =====================================================================\n// Knowledge View",
+    )
+    poller = _section_between(
+        script,
+        "function startKnowledgeBackendVisualStatusPoll",
+        "function uploadKnowledgeBackendFile",
+    )
+
+    assert "currentView === 'knowledge' && viewId !== 'knowledge'" in navigation_hook
+    assert "stopKnowledgeBackendVisualStatusPoll()" in navigation_hook
+    assert "currentView !== 'knowledge'" in poller
+    assert "window.clearTimeout(_knowledgeBackendVisualStatusPollTimer)" in poller

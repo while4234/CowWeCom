@@ -389,6 +389,10 @@ def _continuation_score(previous: _ArtifactView, current: _ArtifactView) -> tupl
     evidence: list[str] = []
     previous_caption = parse_caption_identity(previous.caption or previous.label)
     current_caption = parse_caption_identity(current.caption or current.label)
+    if previous_caption and current_caption and (
+        previous_caption["kind"] != current_caption["kind"] or previous_caption["number"] != current_caption["number"]
+    ):
+        return 0.0, []
     if previous_caption and current_caption and previous_caption["number"] == current_caption["number"]:
         score += 0.86
         evidence.append("same caption number")

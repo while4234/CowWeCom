@@ -907,7 +907,12 @@ class KnowledgeBackendService:
         batch_limit = max(1, int(limit or visual_config.get("max_items_per_request") or 1))
         run_id = run_id or storage.create_visual_run(
             document_id=document_id,
-            kb_id=kb_id or self.config.default_kb_id,
+            kb_id=_visual_run_kb_id(
+                storage,
+                document_id=document_id,
+                kb_id=kb_id,
+                default_kb_id=self.config.default_kb_id,
+            ),
             analysis_backend=effective_backend,
         )
         processed = succeeded = low_confidence = failed = 0
@@ -1024,7 +1029,12 @@ class KnowledgeBackendService:
             "group_merge_backend": group_merge_info.get("group_merge_backend", effective_backend),
             "group_merge_model": group_merge_info.get("group_merge_model", model),
             "pending": stats["pending"],
-            "has_more": bool(stats["pending"] > 0 or group_stats["pending"] > 0 or prepare_has_more),
+            "has_more": bool(
+                stats["pending"] > 0
+                or group_stats["pending"] > 0
+                or prepare_has_more
+                or (retry_failed and stats["failed"] > 0)
+            ),
             "has_retryable_failed": bool(stats["failed"] > 0),
             "run_id": run_id,
             "run": run,
@@ -1251,6 +1261,7 @@ class KnowledgeBackendService:
         rebuild_text_chunks: bool = False,
         max_steps: Optional[int] = None,
         export: bool = False,
+        retry_failed: bool = True,
     ) -> Dict[str, Any]:
         """Complete high-confidence visual chunks, then safely report or strip legacy pollution."""
 
@@ -1272,6 +1283,7 @@ class KnowledgeBackendService:
             kb_id=target_kb_id,
             analysis_backend=analysis_backend or "current",
             force_prepare=force_prepare,
+            retry_failed=retry_failed,
             max_steps=max_steps,
             export=export,
         )
@@ -1553,6 +1565,14 @@ class KnowledgeBackendService:
             if storage is not None
             else {}
         )
+        latest_run = (
+            storage.latest_visual_run(
+                document_id=document_id,
+                kb_id=None if document_id else kb_id,
+            )
+            if storage is not None
+            else {}
+        )
         return {
             "ok": True,
             "status": "success",
@@ -1561,6 +1581,8 @@ class KnowledgeBackendService:
             "prepare": prepare,
             "stats": stats,
             "group_stats": group_stats,
+            "latest_run": latest_run,
+            "analysis_backend": latest_run.get("analysis_backend", "") if latest_run else "",
             **tile_stats,
             **stats,
         }
@@ -2616,6 +2638,8 @@ def _protocol_index_documents_by_kb(
     documents_by_kb: Dict[str, List[Dict[str, Any]]] = {}
     for document in documents:
         rel_path = _protocol_index_document_path(config, workspace_root, document)
+        if not rel_path:
+            continue
         item = {
             "document_id": document.id,
             "title": document.title,
@@ -2634,7 +2658,10 @@ def _protocol_index_document_path(
     metadata_path = _document_library_path(document, config)
     if metadata_path and _workspace_path(workspace_root, Path(metadata_path)).is_file():
         return metadata_path
-    return _protocol_document_rel_path(config, document).as_posix()
+    rel_path = _protocol_document_rel_path(config, document)
+    if _workspace_path(workspace_root, rel_path).is_file():
+        return rel_path.as_posix()
+    return ""
 
 
 def _write_protocol_root_index(
@@ -3406,14 +3433,24 @@ def _merge_tile_analysis_results(
     summaries: List[str] = []
     facts: List[Dict[str, Any]] = []
     confidences: List[float] = []
+    indexable_confidences: List[float] = []
     low_confidence_tiles: List[str] = []
+    blocking_low_confidence_tiles: List[str] = []
+    min_confidence = float(visual_config.get("min_confidence") or 0.78)
     for item in tile_results:
         confidence = float((item.get("confidence") or {}).get("overall") or 0)
         confidences.append(confidence)
         status = str(item.get("status") or "succeeded")
-        if status != "succeeded" or not bool(item.get("should_index", True)):
+        should_use_tile = status == "succeeded" and bool(item.get("should_index", True))
+        if should_use_tile:
+            indexable_confidences.append(confidence)
+        else:
             reason = str(item.get("low_confidence_reason") or status or "not indexable")
-            low_confidence_tiles.append(f"tile {item.get('tile_index')}: {reason}")
+            low_confidence_reason = f"tile {item.get('tile_index')}: {reason}"
+            low_confidence_tiles.append(low_confidence_reason)
+            if confidence >= min_confidence and _tile_has_structured_payload(item):
+                blocking_low_confidence_tiles.append(low_confidence_reason)
+            continue
         if item.get("summary"):
             summaries.append(f"Tile {item.get('tile_index')}: {item.get('summary')}")
         for fact in item.get("key_facts") or []:
@@ -3423,8 +3460,8 @@ def _merge_tile_analysis_results(
         if table.get("headers") and not headers:
             headers = list(table.get("headers") or [])
         rows.extend(table.get("rows") or [])
-    overall = min(confidences) if confidences else 0
-    should_index = not low_confidence_tiles and overall >= float(visual_config.get("min_confidence") or 0.78)
+    overall = min(indexable_confidences) if indexable_confidences else (min(confidences) if confidences else 0)
+    should_index = bool(indexable_confidences) and not blocking_low_confidence_tiles and overall >= min_confidence
     table_markdown = _simple_markdown_table(headers, rows)
     return VisualAnalysisResult(
         artifact_type=candidate.artifact_type,
@@ -3437,9 +3474,22 @@ def _merge_tile_analysis_results(
         table={"headers": headers, "rows": rows, "markdown": table_markdown, "html": ""},
         readability="good" if should_index else "poor",
         confidence={"ocr": overall, "structure": overall, "semantic": overall, "overall": overall},
-        processing={"tile_count": len(tile_results), "tiled": True},
+        processing={
+            "tile_count": len(tile_results),
+            "indexable_tile_count": len(indexable_confidences),
+            "low_confidence_tile_count": len(low_confidence_tiles),
+            "tiled": True,
+        },
         should_index=should_index,
-        low_confidence_reason="" if should_index else "; ".join(low_confidence_tiles or ["one or more tile results were low confidence"]),
+        low_confidence_reason="" if should_index else "; ".join(blocking_low_confidence_tiles or low_confidence_tiles or ["one or more tile results were low confidence"]),
+    )
+
+
+def _tile_has_structured_payload(item: Dict[str, Any]) -> bool:
+    table = item.get("table") if isinstance(item.get("table"), dict) else {}
+    return bool(
+        table.get("rows")
+        or table.get("markdown")
     )
 
 
@@ -3468,6 +3518,20 @@ def _current_document_version_id(storage: KnowledgeStorage, document_id: Optiona
         return None
     document = storage.get_document(document_id)
     return document.version_id if document is not None else None
+
+
+def _visual_run_kb_id(
+    storage: KnowledgeStorage,
+    *,
+    document_id: Optional[str],
+    kb_id: Optional[str],
+    default_kb_id: str,
+) -> str:
+    if document_id:
+        document = storage.get_document(document_id)
+        if document is not None and document.kb_id:
+            return document.kb_id
+    return kb_id or default_kb_id
 
 
 def _openai_backend_effective_available(backend: str, router: Any, conf_func: Any) -> bool:

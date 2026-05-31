@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--all", action="store_true", help="Process the known public protocol KBs.")
     parser.add_argument("--analysis-backend", default="current")
     parser.add_argument("--force-prepare", action="store_true")
+    parser.add_argument("--no-retry-failed", action="store_true", help="Do not retry failed visual rows during completion.")
     parser.add_argument("--max-steps", type=int, default=5000)
     parser.add_argument("--dry-run", action="store_true", help="Do not write destructive repair changes.")
     parser.add_argument("--apply", action="store_true", help="Apply repair only after visual completion succeeds.")
@@ -80,6 +81,7 @@ def run(args: argparse.Namespace, config: KnowledgeBackendConfig) -> Dict[str, A
                 kb_id=kb_id,
                 analysis_backend=args.analysis_backend,
                 force_prepare=bool(args.force_prepare),
+                retry_failed=not bool(args.no_retry_failed),
                 dry_run=not bool(args.apply),
                 apply=bool(args.apply),
                 strip_completed_visual_regions=bool(args.strip_completed_visual_regions),

@@ -168,7 +168,8 @@ class CodexBot(Bot, OpenAICompatibleBot):
                     model: Optional[str] = None,
                     max_tokens: int = 1000,
                     reasoning_effort: Optional[str] = None,
-                    reasoning_effort_locked: bool = False) -> dict:
+                    reasoning_effort_locked: bool = False,
+                    _retry_attempt: int = 0) -> dict:
         """Analyze an image through the Codex authenticated Responses endpoint."""
         try:
             request = {
@@ -238,6 +239,17 @@ class CodexBot(Bot, OpenAICompatibleBot):
             }
         except Exception as exc:
             logger.error("[CODEX] call_vision error: %s", exc)
+            if _retry_attempt < self._codex_retry_count() and self._is_retryable_error(exc):
+                time.sleep(self._codex_retry_delay_seconds())
+                return self.call_vision(
+                    image_url=image_url,
+                    question=question,
+                    model=model,
+                    max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                    reasoning_effort_locked=reasoning_effort_locked,
+                    _retry_attempt=_retry_attempt + 1,
+                )
             return {"error": True, "message": str(exc)}
 
     def call_vision_images(
@@ -250,6 +262,7 @@ class CodexBot(Bot, OpenAICompatibleBot):
         reasoning_effort: Optional[str] = None,
         reasoning_effort_locked: bool = False,
         request_timeout: Optional[int] = None,
+        _retry_attempt: int = 0,
     ) -> dict:
         """Analyze multiple images through the Codex authenticated Responses endpoint."""
         try:
@@ -325,6 +338,19 @@ class CodexBot(Bot, OpenAICompatibleBot):
             }
         except Exception as exc:
             logger.error("[CODEX] call_vision_images error: %s", exc)
+            if _retry_attempt < self._codex_retry_count() and self._is_retryable_error(exc):
+                time.sleep(self._codex_retry_delay_seconds())
+                return self.call_vision_images(
+                    image_urls=image_urls,
+                    question=question,
+                    image_labels=image_labels,
+                    model=model,
+                    max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                    reasoning_effort_locked=reasoning_effort_locked,
+                    request_timeout=request_timeout,
+                    _retry_attempt=_retry_attempt + 1,
+                )
             return {"error": True, "message": str(exc)}
 
     @staticmethod
@@ -551,6 +577,11 @@ class CodexBot(Bot, OpenAICompatibleBot):
             for marker in (
                 "provider_timeout",
                 "provider_network_error",
+                "provider_http_error: status=500",
+                "provider_http_error: status=502",
+                "provider_http_error: status=503",
+                "provider_http_error: status=504",
+                "provider_http_error: status=520",
                 "timed out",
                 "connection reset",
                 "http 429",
@@ -558,8 +589,41 @@ class CodexBot(Bot, OpenAICompatibleBot):
                 "http 502",
                 "http 503",
                 "http 504",
+                "http 520",
+                "status=429",
+                "status=500",
+                "status=502",
+                "status=503",
+                "status=504",
+                "status=520",
             )
         )
+
+    @staticmethod
+    def _codex_retry_count() -> int:
+        provider = CodexBot._provider_config()
+        raw = (
+            provider.get("retry_count")
+            if provider.get("retry_count") is not None
+            else conf().get("codex_retry_count", conf().get("codex_direct_retry_count", 1))
+        )
+        try:
+            return max(0, min(int(raw), 3))
+        except (TypeError, ValueError):
+            return 1
+
+    @staticmethod
+    def _codex_retry_delay_seconds() -> float:
+        provider = CodexBot._provider_config()
+        raw = (
+            provider.get("retry_delay_seconds")
+            if provider.get("retry_delay_seconds") is not None
+            else conf().get("codex_retry_delay_seconds", conf().get("codex_direct_retry_delay_seconds", 1.0))
+        )
+        try:
+            return max(0.0, min(float(raw), 10.0))
+        except (TypeError, ValueError):
+            return 1.0
 
     @staticmethod
     def _configured_model() -> str:

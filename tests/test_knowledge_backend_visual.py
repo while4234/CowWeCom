@@ -6,7 +6,7 @@ import pytest
 
 from agent.knowledge.backend import KnowledgeBackendConfig, KnowledgeBackendService
 from agent.knowledge.backend.models import ExtractedDocument, DocumentPage, KnowledgeChunk, KnowledgeDocument, VisualAnalysisResult, VisualArtifactCandidate
-from agent.knowledge.backend.service import dispatch_admin_request
+from agent.knowledge.backend.service import _merge_tile_analysis_results, dispatch_admin_request
 from agent.knowledge.backend.storage import KnowledgeStorage
 from agent.knowledge.backend.visual_analyzer import (
     VisualAnalyzer,
@@ -93,22 +93,23 @@ def _service(tmp_path, **overrides):
     return KnowledgeBackendService(_config(tmp_path, **overrides))
 
 
-def _ingest(service):
+def _ingest(service, kb_id=None):
     result = service.ingest_upload_bytes(
         "visual-source.md",
         b"# Visual Source\n\nFigure 1 shows a protocol timing table with visual facts.",
         title="Visual Source",
+        kb_id=kb_id,
     )
     assert result["status"] == "succeeded", result
     return result["document"]["id"], result["document"]["version_id"]
 
 
-def _candidate(document_id, version_id, index, artifact_type="table"):
+def _candidate(document_id, version_id, index, artifact_type="table", kb_id="kb_default"):
     return VisualArtifactCandidate(
         id=f"visual_test_{index}",
         document_id=document_id,
         version_id=version_id,
-        kb_id="kb_default",
+        kb_id=kb_id,
         artifact_type=artifact_type,
         page=index,
         label=f"Figure {index}",
@@ -315,6 +316,33 @@ def _low_result(text="lowfact"):
         should_index=False,
         low_confidence_reason="readability is poor",
     )
+
+
+def test_tiled_visual_merge_ignores_non_indexable_noise_tiles(tmp_path):
+    candidate = _candidate("doc", "version", 1, artifact_type="figure")
+    tile_results = [
+        {
+            **_high_result("visible_timing_diagram", artifact_type="timing_diagram").to_dict(),
+            "tile_index": 1,
+            "status": "succeeded",
+            "should_index": True,
+        },
+        {
+            **_low_result("footer_only").to_dict(),
+            "tile_index": 2,
+            "status": "low_confidence",
+            "should_index": False,
+            "low_confidence_reason": "footer only",
+        },
+    ]
+
+    result = _merge_tile_analysis_results(candidate, tile_results, {"min_confidence": 0.78})
+
+    assert result.should_index is True
+    assert result.confidence["overall"] == 0.9
+    assert "visible_timing_diagram" in result.summary
+    assert result.processing["indexable_tile_count"] == 1
+    assert result.processing["low_confidence_tile_count"] == 1
 
 
 def _raw_low_table_result(text="LOW_RAW_INDEXED", page=1, confidence=0.4, *, should_index=True):
@@ -566,6 +594,33 @@ def test_visual_build_limit_one_has_more_and_retry_failed_resumes(tmp_path):
     assert retry["succeeded"] == 1
     assert final["has_more"] is False
     assert analyzer.calls == ["visual_test_1", "visual_test_2", "visual_test_1"]
+
+
+def test_visual_build_has_more_when_retry_failed_rows_remain(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    candidates = [_candidate(document_id, version_id, index) for index in range(1, 3)]
+
+    def fail(candidate):
+        raise RuntimeError(f"temporary failure for {candidate.id}")
+
+    analyzer = QueueAnalyzer([
+        fail,
+        fail,
+        lambda candidate: _low_result(f"retry_low_{candidate.page}"),
+    ])
+    service._visual_extractor = FakeExtractor(candidates)
+    service._visual_analyzer = analyzer
+
+    first = service.build_visual_knowledge(document_id=document_id, limit=1)
+    second = service.build_visual_knowledge(document_id=document_id, limit=1)
+    retry = service.build_visual_knowledge(document_id=document_id, limit=1, retry_failed=True)
+
+    assert first["failed"] == 1
+    assert second["failed"] == 1
+    assert retry["low_confidence"] == 1
+    assert retry["has_retryable_failed"] is True
+    assert retry["has_more"] is True
 
 
 def test_high_confidence_visual_result_is_indexed(tmp_path):
@@ -996,6 +1051,26 @@ def test_visual_build_records_selected_analysis_backend(tmp_path):
     assert visual_chunks
     assert visual_chunks[0].metadata["analysis_backend"] == "codex"
     assert visual_chunks[0].metadata["analysis_model"] == "gpt-5.5"
+
+
+def test_document_visual_run_uses_document_kb_id(tmp_path):
+    service = _service(tmp_path, default_kb_id="axi4_stream")
+    document_id, version_id = _ingest(service, kb_id="ucie_1_1")
+    analyzer = QueueAnalyzer([_high_result("ucie_visualfact")])
+    service._visual_extractor = FakeExtractor([_candidate(document_id, version_id, 1, kb_id="ucie_1_1")])
+    service._visual_analyzer = analyzer
+
+    result = service.build_visual_knowledge(document_id=document_id, limit=1, analysis_backend="codex")
+
+    assert result["analysis_backend"] == "codex"
+    storage = service._backend._get_read_storage()
+    rows = storage.conn.execute(
+        "SELECT document_id, kb_id, analysis_backend FROM visual_analysis_runs WHERE document_id = ?",
+        (document_id,),
+    ).fetchall()
+    assert rows
+    assert {row["kb_id"] for row in rows} == {"ucie_1_1"}
+    assert {row["analysis_backend"] for row in rows} == {"codex"}
 
 
 def test_visual_use_current_model_resolves_current_backend_model(monkeypatch, tmp_path):
@@ -1553,6 +1628,39 @@ def test_no_group_for_toc_or_list_pages(tmp_path):
             }
         )
         storage.upsert_visual_artifact(candidate)
+
+    result = VisualArtifactGrouper(storage).update_groups_for_document(document_id, version_id)
+
+    assert result["groups"] == 0
+    assert storage.list_visual_artifact_groups(document_id=document_id, version_id=version_id) == []
+
+
+def test_no_inferred_group_for_different_strict_caption_identities(tmp_path):
+    service = _service(tmp_path)
+    document_id, version_id = _ingest(service)
+    storage = service._backend._get_storage(writable=True)
+    previous = VisualArtifactCandidate(
+        **{
+            **_candidate(document_id, version_id, 18, artifact_type="table").to_dict(),
+            "page": 18,
+            "caption": "Table 2-1 Interface signals list",
+            "label": "Table 2-1",
+            "bbox": {"x0": 20, "y0": 650, "x1": 560, "y1": 790, "page_width": 600, "page_height": 800},
+            "page_text": "Signal | Direction | Description\nTVALID | Output | transfer valid",
+        }
+    )
+    current = VisualArtifactCandidate(
+        **{
+            **_candidate(document_id, version_id, 19, artifact_type="figure").to_dict(),
+            "page": 19,
+            "caption": "Figure 2-1 TVALID before TREADY handshake",
+            "label": "Figure 2-1",
+            "bbox": {"x0": 20, "y0": 10, "x1": 560, "y1": 180, "page_width": 600, "page_height": 800},
+            "page_text": "TVALID before TREADY handshake\nSignal Direction Description",
+        }
+    )
+    storage.upsert_visual_artifact(previous)
+    storage.upsert_visual_artifact(current)
 
     result = VisualArtifactGrouper(storage).update_groups_for_document(document_id, version_id)
 
@@ -3410,6 +3518,30 @@ def test_group_not_merged_before_prepare_done_or_lookahead_passed(tmp_path):
     assert outcome == ""
     assert storage.get_visual_artifact_group("visual_group_unstable")["status"] == "pending"
     assert service.search("READY_5", limit=5) == []
+
+
+def test_complete_and_repair_retries_failed_visual_rows_by_default(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    _ingest(service)
+    captured = {}
+
+    def fake_complete_visual_knowledge(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "stopped_reason": "completed", "errors": [], "changed": False}
+
+    from scripts import repair_knowledge_text_chunks as repair_script
+
+    monkeypatch.setattr(service, "complete_visual_knowledge", fake_complete_visual_knowledge)
+    monkeypatch.setattr(
+        repair_script,
+        "repair_legacy_chunks_after_visual_completion",
+        lambda options: {"ok": True, "mode": "dry-run", "summary": {}},
+    )
+
+    result = service.complete_and_repair_legacy_visual_knowledge(kb_id="kb_default")
+
+    assert result["ok"] is True
+    assert captured["retry_failed"] is True
 
 
 def test_group_merges_after_prepare_done(tmp_path):
