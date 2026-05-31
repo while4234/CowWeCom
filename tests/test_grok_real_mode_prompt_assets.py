@@ -8,6 +8,7 @@ from pathlib import Path
 from config import conf
 from common.grok_real_mode_prompt_assets import (
     ASSET_FIELDS,
+    EXPRESSION_RANDOM_KEY,
     GrokRealModePromptError,
     RANDOM_ASSET_FIELDS,
     TATTOO_RANDOM_FEW_KEY,
@@ -155,6 +156,18 @@ class GrokRealModePromptAssetsTest(unittest.TestCase):
         self.assertNotIn("tattoo prompt", prompt)
         self.assertIn("expression prompt", prompt)
 
+    def test_expression_is_omitted_by_default(self):
+        prompt = compose_real_mode_prompt(
+            media_type="image",
+            image_count=0,
+            selections={field: "one" for field in ASSET_FIELDS if field != "expression"},
+            catalog=_single_item_catalog(),
+        )
+
+        self.assertIn("lower_state prompt", prompt)
+        self.assertNotIn("expression prompt", prompt)
+        self.assertNotIn(", ,", prompt)
+
     def test_tattoo_random_option_uses_catalog_material(self):
         prompt = compose_real_mode_prompt(
             media_type="image",
@@ -193,6 +206,23 @@ class GrokRealModePromptAssetsTest(unittest.TestCase):
         self.assertNotIn("tattoo_few prompt", many_prompt)
         self.assertIn("tattoo_few prompt", few_prompt)
         self.assertNotIn("tattoo_many prompt", few_prompt)
+
+    def test_expression_random_option_uses_random_catalog_material(self):
+        prompt = compose_real_mode_prompt(
+            media_type="image",
+            image_count=0,
+            selections={
+                **{field: "one" for field in ASSET_FIELDS if field not in {"expression", "tattoo"}},
+                "expression": EXPRESSION_RANDOM_KEY,
+            },
+            catalog=_single_item_catalog(),
+            random_catalog=_single_item_random_catalog(),
+            rng=random.Random(0),
+        )
+
+        self.assertIn("expression prompt", prompt)
+        self.assertNotIn("tattoo prompt", prompt)
+        self.assertIn("lower_state prompt, expression prompt", prompt)
 
     def test_empty_selection_uses_large_random_catalog_instead_of_visible_catalog(self):
         random_catalog = {
@@ -302,6 +332,7 @@ class GrokRealModePromptAssetsTest(unittest.TestCase):
         self.assertIn("camera_angle prompt", prompt)
         self.assertIn("scene prompt", prompt)
         self.assertNotIn("tattoo prompt", prompt)
+        self.assertNotIn("expression prompt", prompt)
 
     def test_tattoo_choices_include_random_option(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -326,6 +357,27 @@ class GrokRealModePromptAssetsTest(unittest.TestCase):
         self.assertEqual(english_alias_choices, [TATTOO_RANDOM_FEW_KEY])
         self.assertNotIn(TATTOO_RANDOM_MANY_KEY, unrelated_choices)
         self.assertNotIn(TATTOO_RANDOM_FEW_KEY, unrelated_choices)
+
+    def test_expression_choices_include_random_option(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "assets.json"
+            payload = {
+                "categories": {
+                    field: [{"key": "one", "prompt": f"{field} prompt"}]
+                    for field in ASSET_FIELDS
+                }
+            }
+            cache.write_text(json.dumps(payload), encoding="utf-8")
+
+            with patch_config({"grok_real_mode_assets_cache": str(cache)}):
+                choices = material_choices("expression", "")
+                random_alias_choices = material_choices("expression", "random")
+                unrelated_choices = material_choices("expression", "zzz")
+
+        self.assertEqual(choices[:2], [EXPRESSION_RANDOM_KEY, "one"])
+        self.assertEqual(random_alias_choices, [EXPRESSION_RANDOM_KEY])
+        self.assertNotIn(EXPRESSION_RANDOM_KEY, unrelated_choices)
 
 
 if __name__ == "__main__":

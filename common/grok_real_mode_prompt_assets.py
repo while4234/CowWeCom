@@ -36,14 +36,20 @@ ASSET_FIELDS = (
 )
 
 TATTOO_FIELD = "tattoo"
+EXPRESSION_FIELD = "expression"
 TATTOO_RANDOM_MANY_KEY = "\u968f\u673a\u591a\u7eb9\u8eab"
 TATTOO_RANDOM_FEW_KEY = "\u968f\u673a\u5c11\u7eb9\u8eab"
+EXPRESSION_RANDOM_KEY = "\u968f\u673a"
 TATTOO_RANDOM_ALIASES = {
     TATTOO_RANDOM_MANY_KEY: "tattoo_many",
     "random_many": "tattoo_many",
     TATTOO_RANDOM_FEW_KEY: "tattoo_few",
     "random_few": "tattoo_few",
     "random": "tattoo_few",
+}
+EXPRESSION_RANDOM_ALIASES = {
+    EXPRESSION_RANDOM_KEY: EXPRESSION_FIELD,
+    "random": EXPRESSION_FIELD,
 }
 RANDOM_TATTOO_MANY_FIELD = "tattoo_many"
 RANDOM_TATTOO_FEW_FIELD = "tattoo_few"
@@ -67,7 +73,7 @@ TEXT_TO_IMAGE_TEMPLATE = (
     "faint {light_source} glow, super grainy high-ISO noise, slight motion blur, "
     "low exposure shadows, {color_tone} cast, shaky amateur hidden camera feel, "
     "One imaginary 20-year-old {nationality} woman (natural attractive features realistic skin pores) "
-    "{pose}, {action} wearing {clothing}, {lower_state}, {tattoo_clause}{expression}, {extra_references}"
+    "{pose}, {action} wearing {clothing}, {lower_state}{tattoo_clause}{expression_clause}, {extra_references}"
     "background with {scene}, photorealistic but iPhone 6s low light: heavy digital grain, "
     "soft focus, {color_tone} cast, raw unfiltered iPhone photo style"
 )
@@ -76,7 +82,7 @@ IMAGE_TO_IMAGE_TEMPLATE = (
     "faint {light_source} glow, super grainy high-ISO noise, slight motion blur, "
     "low exposure shadows, {color_tone} cast, shaky amateur hidden camera feel, "
     "woman (natural attractive features realistic skin pores) {pose}, {action} wearing {clothing}, "
-    "{lower_state}, {tattoo_clause}{expression}, {extra_references}background with {scene}, "
+    "{lower_state}{tattoo_clause}{expression_clause}, {extra_references}background with {scene}, "
     "photorealistic but iPhone 6s low light: heavy digital grain, soft focus, "
     "{color_tone} cast, raw unfiltered iPhone photo style"
 )
@@ -310,6 +316,11 @@ def material_choices(field: str, current: str = "", *, limit: int = 25) -> List[
                 choices.append(special_key)
                 if len(choices) >= limit:
                     return choices
+    if field == EXPRESSION_FIELD:
+        if not needle or EXPRESSION_RANDOM_KEY.lower().startswith(needle) or "random".startswith(needle):
+            choices.append(EXPRESSION_RANDOM_KEY)
+            if len(choices) >= limit:
+                return choices
     for item in catalog.get(field, []):
         key = str(item.get("key") or "").strip()
         if not key or len(key) > 100:
@@ -317,6 +328,8 @@ def material_choices(field: str, current: str = "", *, limit: int = 25) -> List[
         if needle and needle not in key.lower():
             continue
         if field == TATTOO_FIELD and key in TATTOO_RANDOM_ALIASES:
+            continue
+        if field == EXPRESSION_FIELD and key in EXPRESSION_RANDOM_ALIASES:
             continue
         choices.append(key)
         if len(choices) >= limit:
@@ -353,7 +366,8 @@ def compose_real_mode_prompt(
         )
         for field in ASSET_FIELDS
     }
-    values["tattoo_clause"] = f"{values[TATTOO_FIELD]}, " if values.get(TATTOO_FIELD) else ""
+    values["tattoo_clause"] = f", {values[TATTOO_FIELD]}" if values.get(TATTOO_FIELD) else ""
+    values["expression_clause"] = f", {values[EXPRESSION_FIELD]}" if values.get(EXPRESSION_FIELD) else ""
     values["extra_references"] = _extra_reference_clause(
         media_type=media_type,
         image_count=max(0, int(image_count or 0)),
@@ -566,7 +580,7 @@ def _resolve_material(
 
     items = list(catalog.get(field) or DEFAULT_ASSETS[field])
     if not raw:
-        if field == TATTOO_FIELD:
+        if field in {TATTOO_FIELD, EXPRESSION_FIELD}:
             return ""
         return _choose_random_material(
             field,
@@ -579,6 +593,15 @@ def _resolve_material(
     if field == TATTOO_FIELD and tattoo_pool:
         return _choose_random_material(
             tattoo_pool,
+            random_catalog=random_catalog,
+            fallback_items=items,
+            state_path=random_state_path,
+            rng=rng,
+        )
+    expression_pool = EXPRESSION_RANDOM_ALIASES.get(raw)
+    if field == EXPRESSION_FIELD and expression_pool:
+        return _choose_random_material(
+            expression_pool,
             random_catalog=random_catalog,
             fallback_items=items,
             state_path=random_state_path,
