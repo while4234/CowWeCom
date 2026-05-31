@@ -16,7 +16,6 @@ from channel.discord.discord_channel import (
     GROK_MEDIA_MODE_REAL,
     GROK_MEDIA_REAL_PROMPT,
     GROK_VIDEO_DEFAULT_DURATION,
-    GROK_VIDEO_OPTION_NAMES,
     GROK_VIDEO_DEFAULT_RESOLUTION,
     PROJECT_DISCORD_COMMANDS,
     _apply_grok_media_mode_prompt,
@@ -234,6 +233,15 @@ class DiscordChannelTest(unittest.TestCase):
                 self.description = description
                 self.callback = callback
 
+        class FakeGroup:
+            def __init__(self, name, description):
+                self.name = name
+                self.description = description
+                self.commands = []
+
+            def add_command(self, command):
+                self.commands.append(command)
+
         class FakeChoice:
             def __init__(self, name, value):
                 self.name = name
@@ -241,6 +249,7 @@ class DiscordChannelTest(unittest.TestCase):
 
         class FakeAppCommands:
             Command = FakeCommand
+            Group = FakeGroup
             Choice = FakeChoice
 
             @staticmethod
@@ -293,18 +302,44 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertEqual(set(image_mode_choices), {"normal", "real"})
         self.assertEqual(image_mode_choices["real"], "real (default)")
 
-        video_command = next(command for command in bot.tree.commands if command.name == GROK_DIRECT_GEN_VIDEO_COMMAND)
-        video_annotation_names = set(video_command.callback.__annotations__)
-        self.assertTrue(set(GROK_VIDEO_OPTION_NAMES).issubset(video_annotation_names))
-        self.assertNotIn("image", video_annotation_names)
-        duration_choices = {choice.value: choice.name for choice in video_command.callback._choices["duration"]}
-        duration_values = set(duration_choices)
-        resolution_values = {choice.value for choice in video_command.callback._choices["resolution"]}
+        video_command = next(command for command in bot.tree.commands if command.name == GROK_GEN_VIDEO_COMMAND)
         video_mode_values = {choice.value for choice in video_command.callback._choices["mode"]}
+        self.assertEqual(video_mode_values, {"normal", "real"})
+
+        direct_image_group = next(command for command in bot.tree.commands if command.name == GROK_DIRECT_GEN_IMAGE_COMMAND)
+        self.assertEqual({command.name for command in direct_image_group.commands}, {"normal", "real"})
+        direct_image_normal = next(command for command in direct_image_group.commands if command.name == "normal")
+        direct_image_real = next(command for command in direct_image_group.commands if command.name == "real")
+        self.assertIn("prompt", direct_image_normal.callback.__annotations__)
+        self.assertNotIn("mode", direct_image_normal.callback.__annotations__)
+        self.assertNotIn("prompt", direct_image_real.callback.__annotations__)
+        self.assertIn("camera_angle", direct_image_real.callback.__annotations__)
+        self.assertIn("tattoo", direct_image_real.callback.__annotations__)
+        self.assertIn("prompt_2", direct_image_real.callback.__annotations__)
+        self.assertEqual({choice.value for choice in direct_image_real.callback._choices["quality"]}, {"speed", "quality"})
+
+        direct_video_group = next(command for command in bot.tree.commands if command.name == GROK_DIRECT_GEN_VIDEO_COMMAND)
+        self.assertEqual({command.name for command in direct_video_group.commands}, {"normal", "real"})
+        direct_video_normal = next(command for command in direct_video_group.commands if command.name == "normal")
+        direct_video_real = next(command for command in direct_video_group.commands if command.name == "real")
+        video_annotation_names = set(direct_video_real.callback.__annotations__)
+        self.assertTrue({f"image{index}" for index in range(1, 7)}.issubset(video_annotation_names))
+        self.assertEqual(len(video_annotation_names - {"interaction"}), 24)
+        self.assertNotIn("image", video_annotation_names)
+        self.assertNotIn("image7", video_annotation_names)
+        self.assertNotIn("prompt", video_annotation_names)
+        self.assertIn("tattoo", video_annotation_names)
+        self.assertIn("prompt_6", video_annotation_names)
+        self.assertNotIn("prompt_7", video_annotation_names)
+        self.assertIn("prompt", direct_video_normal.callback.__annotations__)
+        self.assertIn("image7", direct_video_normal.callback.__annotations__)
+        self.assertNotIn("mode", direct_video_normal.callback.__annotations__)
+        duration_choices = {choice.value: choice.name for choice in direct_video_real.callback._choices["duration"]}
+        duration_values = set(duration_choices)
+        resolution_values = {choice.value for choice in direct_video_real.callback._choices["resolution"]}
         self.assertEqual(duration_values, {"6s", "10s"})
         self.assertEqual(duration_choices["10s"], "10s (default)")
         self.assertEqual(resolution_values, {"480p", "720p"})
-        self.assertEqual(video_mode_values, {"normal", "real"})
 
     def test_direct_video_interaction_uses_optional_image_and_selected_options(self):
         async def run():
@@ -644,6 +679,126 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertEqual(captured["submit"]["quality"], "quality")
         self.assertEqual(captured["reply"], "ok")
 
+    def test_direct_grok_image_real_mode_composes_template_prompt(self):
+        async def run():
+            channel = _discord_channel_instance()
+            channel.admin_user_id = "100"
+            channel.guild_id = "200"
+            channel.allowed_channel_ids = {"300"}
+            channel.ephemeral_replies = False
+            channel.loop = asyncio.get_running_loop()
+            captured = {}
+
+            interaction = types.SimpleNamespace(
+                id="abc",
+                user=types.SimpleNamespace(id=100, display_name="Admin", name="admin"),
+                channel=types.SimpleNamespace(id=300, name="bot"),
+                guild=types.SimpleNamespace(id=200),
+                response=types.SimpleNamespace(defer=lambda **_kwargs: _async_noop()),
+            )
+
+            def submit_image(prompt, image_path, quality, _context):
+                captured["submit"] = {
+                    "prompt": prompt,
+                    "image_path": image_path,
+                    "quality": quality,
+                }
+                return Reply(ReplyType.TEXT, "ok")
+
+            async def send_reply(reply, _context):
+                captured["reply"] = reply.content
+                return True
+
+            channel._submit_direct_grok_image_job = submit_image
+            channel._send_reply_async = send_reply
+
+            await channel._handle_grok_image_interaction(
+                interaction,
+                "",
+                quality="speed",
+                direct=True,
+                real_mode_options={
+                    "selections": {
+                        "camera_angle": "custom:under a desk",
+                        "scene": "custom:test room",
+                        "time": "custom:midnight",
+                        "light_source": "custom:monitor",
+                        "color_tone": "custom:cyan",
+                        "nationality": "custom:Testland",
+                        "action": "custom:looking toward the lens",
+                        "clothing": "custom:a black jacket",
+                        "lower_state": "custom:with tailored pants",
+                        "tattoo": "custom:a tiny wrist tattoo",
+                        "expression": "custom:calm expression",
+                    },
+                    "extra_prompts": {},
+                },
+            )
+            return captured
+
+        captured = asyncio.run(run())
+
+        prompt = captured["submit"]["prompt"]
+        self.assertIn("One imaginary 20-year-old Testland woman", prompt)
+        self.assertIn("from under a desk looking up in test room at midnight", prompt)
+        self.assertLess(prompt.index("a tiny wrist tattoo"), prompt.index("calm expression"))
+        self.assertIn("background with test room", prompt)
+        self.assertEqual(captured["submit"]["image_path"], "")
+        self.assertEqual(captured["submit"]["quality"], "speed")
+        self.assertEqual(captured["reply"], "ok")
+
+    def test_direct_grok_image_real_mode_requires_extra_reference_prompt(self):
+        async def run():
+            channel = _discord_channel_instance()
+            channel.admin_user_id = "100"
+            channel.guild_id = "200"
+            channel.allowed_channel_ids = {"300"}
+            channel.ephemeral_replies = False
+            channel.loop = asyncio.get_running_loop()
+            captured = {"buckets": []}
+
+            interaction = types.SimpleNamespace(
+                id="abc",
+                user=types.SimpleNamespace(id=100, display_name="Admin", name="admin"),
+                channel=types.SimpleNamespace(id=300, name="bot"),
+                guild=types.SimpleNamespace(id=200),
+                response=types.SimpleNamespace(defer=lambda **_kwargs: _async_noop()),
+            )
+
+            async def save_image(_attachment, bucket_id):
+                captured["buckets"].append(bucket_id)
+                return f"C:\\tmp\\{bucket_id}.png"
+
+            def submit_image(*_args, **_kwargs):
+                captured["submitted"] = True
+                return Reply(ReplyType.TEXT, "bad")
+
+            async def send_message(text, _context):
+                captured["message"] = text
+                return True
+
+            channel._save_interaction_image_attachment = save_image
+            channel._submit_direct_grok_image_job = submit_image
+            channel._send_discord_message = send_message
+
+            await channel._handle_grok_image_interaction(
+                interaction,
+                "",
+                image_attachments=(object(), object()),
+                direct=True,
+                real_mode_options={
+                    "selections": {},
+                    "extra_prompts": {},
+                },
+            )
+            return captured
+
+        captured = asyncio.run(run())
+
+        self.assertEqual(captured["buckets"], ["abc-image1", "abc-image2"])
+        self.assertIn("prompt_2", captured["message"])
+        self.assertNotIn("submitted", captured)
+
     def test_direct_grok_video_interaction_without_image_submits_text_to_video(self):
         async def run():
             channel = _discord_channel_instance()
@@ -693,6 +848,89 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertEqual(captured["submit"]["image_path"], "")
         self.assertEqual(captured["submit"]["duration"], "10s")
         self.assertEqual(captured["submit"]["resolution"], "480p")
+        self.assertFalse(captured["submit"]["prompt_enhancement"])
+        self.assertEqual(captured["reply"], "ok")
+
+    def test_direct_grok_video_real_mode_inserts_ordered_reference_prompts(self):
+        async def run():
+            channel = _discord_channel_instance()
+            channel.admin_user_id = "100"
+            channel.guild_id = "200"
+            channel.allowed_channel_ids = {"300"}
+            channel.ephemeral_replies = False
+            channel.loop = asyncio.get_running_loop()
+            captured = {"buckets": []}
+
+            interaction = types.SimpleNamespace(
+                id="abc",
+                user=types.SimpleNamespace(id=100, display_name="Admin", name="admin"),
+                channel=types.SimpleNamespace(id=300, name="bot"),
+                guild=types.SimpleNamespace(id=200),
+                response=types.SimpleNamespace(defer=lambda **_kwargs: _async_noop()),
+            )
+
+            async def save_image(_attachment, bucket_id):
+                captured["buckets"].append(bucket_id)
+                return f"C:\\tmp\\{bucket_id}.png"
+
+            def submit_video(prompt, image_path, duration, resolution, _context, prompt_enhancement=True):
+                captured["submit"] = {
+                    "prompt": prompt,
+                    "image_path": image_path,
+                    "duration": duration,
+                    "resolution": resolution,
+                    "prompt_enhancement": prompt_enhancement,
+                }
+                return Reply(ReplyType.TEXT, "ok")
+
+            async def send_reply(reply, _context):
+                captured["reply"] = reply.content
+                return True
+
+            channel._save_interaction_image_attachment = save_image
+            channel._submit_grok_video_job = submit_video
+            channel._send_reply_async = send_reply
+
+            await channel._handle_grok_video_interaction(
+                interaction,
+                "",
+                image_attachments=(object(), object(), object()),
+                duration="10s",
+                resolution="720p",
+                direct=True,
+                real_mode_options={
+                    "selections": {
+                        "camera_angle": "custom:floor corner",
+                        "scene": "custom:studio room",
+                        "time": "custom:late evening",
+                        "light_source": "custom:soft lamp",
+                        "color_tone": "custom:warm",
+                        "nationality": "custom:Unused",
+                        "action": "custom:standing still",
+                        "clothing": "custom:a linen shirt",
+                        "lower_state": "custom:with wide-leg pants",
+                        "tattoo": "custom:a shoulder tattoo",
+                        "expression": "custom:focused expression",
+                    },
+                    "extra_prompts": {
+                        2: "the background mood board",
+                        3: "the lighting reference",
+                    },
+                },
+            )
+            return captured
+
+        captured = asyncio.run(run())
+
+        prompt = captured["submit"]["prompt"]
+        self.assertIn("<IMAGE_2> is the background mood board", prompt)
+        self.assertIn("<IMAGE_3> is the lighting reference", prompt)
+        self.assertLess(prompt.index("a shoulder tattoo"), prompt.index("focused expression"))
+        self.assertLess(prompt.index("<IMAGE_2>"), prompt.index("background with studio room"))
+        self.assertEqual(
+            captured["submit"]["image_path"],
+            ["C:\\tmp\\abc-image1.png", "C:\\tmp\\abc-image2.png", "C:\\tmp\\abc-image3.png"],
+        )
         self.assertFalse(captured["submit"]["prompt_enhancement"])
         self.assertEqual(captured["reply"], "ok")
 

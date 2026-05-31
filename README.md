@@ -55,7 +55,7 @@ CowWeCom 的目标不是做一个“所有平台都写在 README 里的通用机
 | 长期记忆 | 按用户和会话隔离的记忆文件、每日深度整理、记忆检索和管理 |
 | 知识库 | 本地知识库、协议/规范公共知识后端、上传构建索引、LLM 学习文档生成、可追溯检索 |
 | Skills | 项目内置 Skills 启动同步到运行工作区，可按需启用、禁用、校验和扩展 |
-| 图像/视频生成 | 使用本项目 `image-generation` Skill，支持按当前模型后端选择 GPT/Codex 或 Grok 生图、Grok 最多三图图生图、后台任务和结果回传；切到 Grok 后默认生图走 Grok，显式说 GPT/OpenAI/Codex 生图才回到 GPT/Codex；`image-prompt-optimization` Skill 集中保存 YouMind/Nano Banana Pro 仓库、Grok 重写模板和随机片段仓库；GPT/Codex 图片继续按默认筛选规则润色，Grok 图片/视频默认用 Grok 文本模型按模板和仓库片段重写；管理员可用 `/grok-direct image|video` 直出命令绕过 Agent 提示词润色和隐藏增强/重写，Discord Grok 媒体 Slash Commands 还可在真实/正常模式间选择，图片命令提供 `image1` 到 `image3`，视频命令提供 `image1` 到 `image7`，按 Grok 当前参考图上限顺序传入 |
+| 图像/视频生成 | 使用本项目 `image-generation` Skill，支持按当前模型后端选择 GPT/Codex 或 Grok 生图、Grok 最多三图图生图、后台任务和结果回传；切到 Grok 后默认生图走 Grok，显式说 GPT/OpenAI/Codex 生图才回到 GPT/Codex；`image-prompt-optimization` Skill 集中保存 YouMind/Nano Banana Pro 仓库、Grok 重写模板和随机片段仓库；GPT/Codex 图片继续按默认筛选规则润色，Grok 图片/视频默认用 Grok 文本模型按模板和仓库片段重写；管理员可用 `/grok-direct image|video` 直出命令绕过 Agent 提示词润色和隐藏增强/重写，Discord Grok 媒体 Slash Commands 还可在真实/正常模式间选择，图片命令提供 `image1` 到 `image3`，视频普通入口最多提供 `image1` 到 `image7`，直出 real 模式最多提供 `image1` 到 `image6`，按 Grok 当前参考图上限顺序传入 |
 | 后端路由 | Codex、OpenAI-compatible/CAPI 等 GPT 后端路由，支持额度查询、自动切换、推理强度策略，以及管理员/白名单独立 Grok 后端 |
 | 安全隔离 | 管理员/普通用户角色、普通用户文件访问边界、敏感路径保护、Web 管理接口认证 |
 
@@ -335,7 +335,7 @@ Discord 通道独立于微信和企业微信，适合把 CowCli 管理命令和 
 }
 ```
 
-也可以在 Web 控制台的「通道」页选择 Discord，填写 Bot Token、Guild ID、Admin User ID 和允许的频道 ID 后连接。Bot 启动时会同步原生 Slash Commands：保留 `help`、`status`、`backend`、`config`、`skill`、`memory`、`knowledge`、`voice`、`updates`、`tokens`、`ledger` 等 CowCli 常用项目命令，并过滤无关历史命令。Grok 媒体入口统一为 `/grok-gen-image`、`/grok-gen-video`、`/grok-direct-gen-image` 和 `/grok-direct-gen-video`；四个命令的图片附件都是可选项，不上传就是文生图/文生视频，上传就是图生图/图生视频。图片质量可选 `speed` 或 `quality`，视频时长默认 `10s`，可选 `6s` 或 `10s`，分辨率可选 `480p` 或 `720p`。四个 Grok 媒体命令都支持 `mode`：默认 `real` 会自动补入低光、颗粒、手持 iPhone 6s 风格的真实感提示词，`normal` 保持旧的原始提示词行为。配置 `discord_guild_id` 时，`discord_prune_global_commands_on_startup=true` 会在启动同步前清理历史全局 Slash Commands，避免旧的 `codex-app`、`imagine`、`image-to-image` 等残留。
+也可以在 Web 控制台的「通道」页选择 Discord，填写 Bot Token、Guild ID、Admin User ID 和允许的频道 ID 后连接。Bot 启动时会同步原生 Slash Commands：保留 `help`、`status`、`backend`、`config`、`skill`、`memory`、`knowledge`、`voice`、`updates`、`tokens`、`ledger` 等 CowCli 常用项目命令，并过滤无关历史命令。Grok 媒体入口统一为 `/grok-gen-image`、`/grok-gen-video`、`/grok-direct-gen-image` 和 `/grok-direct-gen-video`；四个命令的图片附件都是可选项，不上传就是文生图/文生视频，上传就是图生图/图生视频。图片质量可选 `speed` 或 `quality`，视频时长默认 `10s`，可选 `6s` 或 `10s`，分辨率可选 `480p` 或 `720p`。`/grok-gen-image` 和 `/grok-gen-video` 继续支持 `mode=real|normal`；两个直出命令改为 `normal` / `real` 子命令，`normal` 保持原始 prompt，`real` 不再接收自由 prompt，而是按本机素材表确定性合成完整提示词后直出。直出 real 视频为保留 Discord 25 参数上限，最多接收 `image1` 到 `image6` 与 `prompt_2` 到 `prompt_6`。管理员可在 ignored 的 `data/grok-real-mode-assets/grok_real_mode_assets.xlsx` 维护素材，每个 sheet 对应一个分类，A 列是 Discord 里输入或自动补全的缩写，B 列是最终写入 prompt 的完整片段；`tattoo` 分类默认留空表示无纹身，选择 `random` 才会随机抽取已有纹身素材。启动时会同步为同目录 JSON 缓存，运行时不反复读取 Excel。配置 `discord_guild_id` 时，`discord_prune_global_commands_on_startup=true` 会在启动同步前清理历史全局 Slash Commands，避免旧的 `codex-app`、`imagine`、`image-to-image` 等残留。
 
 如果本机 Chrome 通过 Clash、V2Ray 等代理访问 Discord，而 CowAgent 后台显示 `Cannot connect to host discord.com:443`，请设置 `discord_proxy` 或环境变量 `DISCORD_PROXY`，例如 `http://127.0.0.1:7897`。Discord 现在会直接处理普通文本消息和图片附件，不再只靠原生 Slash Commands；仍然需要在 Discord Developer Portal 为 Bot 开启 Message Content Intent。
 
@@ -540,8 +540,9 @@ CowWeCom/
 - 视觉运行记录按源文档真实 `kb_id` 归档，并使用实时只读 SQLite 连接读取 WAL 最新进度，便于区分 UCIe、AXI4-Stream 等公共协议知识库的 Codex 补图进展。
 - Web 视觉进度条改为按当前阶段显示：扫描未完成时按页面扫描进度计算，扫描完成后才按图表候选分析进度计算；后台进度会优先切到当前活跃文档的状态。
 - 视觉状态 API 会把最近运行记录的状态和计数按实时 SQLite 聚合结果校准，避免旧的 `running` 快照在已完成协议库里继续误报待处理项。
-- Discord 的四个 Grok 图片/视频 Slash Commands 新增 `mode` 选项，默认 `real` 自动补入真实低光手持照片风格提示词，选择 `normal` 时保持旧提示词行为；图生图/图生视频仍会在最终提交前追加参考图身份锁。
-- Discord Grok 图生图命令按官方多图编辑能力扩展为 `image1` 到 `image3`，图生视频命令扩展为 `image1` 到 `image7`；Grok 图生图 provider 同步支持 2-3 张参考图并按第一张图推断默认比例/分辨率。
+- Discord Grok 图生图命令按官方多图编辑能力扩展为 `image1` 到 `image3`，图生视频普通入口扩展为 `image1` 到 `image7`，直出 real 视频保留到 `image6` 以容纳素材参数；Grok 图生图 provider 同步支持 2-3 张参考图并按第一张图推断默认比例/分辨率。
+- Discord 两个 Grok 直出 Slash Commands 改为 `normal` / `real` 子命令：`normal` 保留原始 prompt 直出，`real` 按本机素材表模板合成完整提示词，图片 `quality` 默认仍为 `speed`。
+- 新增 ignored 的 Grok real-mode 素材工作簿与 JSON 缓存目录，管理员可按 sheet/A-B 列维护相机视角、场景、时间、光源、色调、国籍、动作、服装、下装状态、纹身和表情；启动时自动同步，运行时支持空值随机、缩写选择、`custom:` 自定义片段，纹身空值默认不插入、`random` 才随机抽取。
 
 ### 2026-05-30
 

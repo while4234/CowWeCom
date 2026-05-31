@@ -72,6 +72,7 @@ node_modules/
 data/llm-backend-router/
 data/codex-quota-query/
 data/voice_mode_benchmark_*.json
+data/grok-real-mode-assets/
 
 # cow cli
 dist/

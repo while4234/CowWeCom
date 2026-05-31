@@ -357,6 +357,24 @@ def _sync_builtin_skills():
         logger.warning(f"[App] Builtin skills sync failed: {e}")
 
 
+def _warmup_grok_real_mode_prompt_assets():
+    """Prepare the local Discord Grok real-mode material cache."""
+    if not conf().get("grok_real_mode_assets_sync_on_startup", True):
+        return
+    try:
+        from common.grok_real_mode_prompt_assets import sync_workbook_to_cache
+
+        result = sync_workbook_to_cache()
+        logger.info(
+            "[App] Grok real-mode prompt assets %s: workbook=%s cache=%s",
+            result.status,
+            result.workbook,
+            result.cache,
+        )
+    except Exception as e:
+        logger.warning(f"[App] Grok real-mode prompt assets warmup failed: {e}")
+
+
 def _start_scheduler_service():
     """Start the normal task scheduler during app startup."""
     try:
@@ -441,6 +459,7 @@ def run():
             channel_names.append("web")
 
         # Sync builtin skills to workspace before channels start
+        _warmup_grok_real_mode_prompt_assets()
         _sync_builtin_skills()
 
         try:

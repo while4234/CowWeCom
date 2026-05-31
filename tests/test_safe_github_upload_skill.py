@@ -47,6 +47,7 @@ class SafeGithubUploadSkillTest(unittest.TestCase):
                 ".playwright-mcp/",
                 "/memory/",
                 "data/project-optimizer/",
+                "data/grok-real-mode-assets/",
                 "",
             ]
         )
@@ -177,6 +178,21 @@ class SafeGithubUploadSkillTest(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertIn("memory/users/u1/MEMORY.md", payload["protected_staged"])
         self.assertIn("data/project-optimizer/raw_model_inputs/2026-05-26.jsonl", payload["protected_staged"])
+
+    def test_preflight_blocks_grok_real_mode_runtime_assets(self):
+        assets_dir = self.root / "data" / "grok-real-mode-assets"
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        (assets_dir / "grok_real_mode_assets.xlsx").write_bytes(b"local workbook")
+        (assets_dir / "grok_real_mode_assets.cache.json").write_text("{}\n", encoding="utf-8")
+        run_git(self.root, "add", "-f", "data/grok-real-mode-assets/grok_real_mode_assets.xlsx")
+        run_git(self.root, "add", "-f", "data/grok-real-mode-assets/grok_real_mode_assets.cache.json")
+
+        result = self.run_preflight()
+
+        self.assertEqual(result.returncode, 2)
+        payload = json.loads(result.stdout)
+        self.assertIn("data/grok-real-mode-assets/grok_real_mode_assets.xlsx", payload["protected_staged"])
+        self.assertIn("data/grok-real-mode-assets/grok_real_mode_assets.cache.json", payload["protected_staged"])
 
 
 if __name__ == "__main__":

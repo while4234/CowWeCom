@@ -34,6 +34,7 @@ REQUIRED_IGNORE_RULES = [
     ".playwright-mcp/",
     "/memory/",
     "data/project-optimizer/",
+    "data/grok-real-mode-assets/",
 ]
 
 PROTECTED_PATTERNS = [
@@ -59,6 +60,7 @@ PROTECTED_PATTERNS = [
     "tmp/*",
     "memory/*",
     "data/project-optimizer/*",
+    "data/grok-real-mode-assets/*",
     ".codex/*",
     ".playwright-mcp/*",
     ".venv/*",
@@ -135,7 +137,7 @@ def is_protected(path: str) -> bool:
         return True
     if parts and parts[0] == "memory":
         return True
-    if len(parts) >= 2 and parts[0] == "data" and parts[1] == "project-optimizer":
+    if len(parts) >= 2 and parts[0] == "data" and parts[1] in {"project-optimizer", "grok-real-mode-assets"}:
         return True
     return any(fnmatch.fnmatch(lower, pattern.lower()) for pattern in PROTECTED_PATTERNS)
 

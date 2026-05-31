@@ -6,6 +6,7 @@ web.py
 legacy-cgi; python_version >= "3.13"
 python-dotenv>=1.0.0
 PyYAML>=6.0
+openpyxl
 croniter>=2.0.0
 click>=8.0
 qrcode

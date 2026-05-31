@@ -15,6 +15,13 @@ from common.image_generation_routing import (
     match_image_create_prefix,
     match_video_create_prefix,
 )
+from common.grok_real_mode_prompt_assets import (
+    ASSET_FIELDS as GROK_REAL_MODE_ASSET_FIELDS,
+    EXTRA_PROMPT_FIELDS as GROK_REAL_MODE_EXTRA_PROMPT_FIELDS,
+    GrokRealModePromptError,
+    compose_real_mode_prompt,
+    material_choices,
+)
 from common.log import logger
 from common.singleton import singleton
 from config import conf
@@ -312,6 +319,21 @@ def _attachment_tuple(*attachments) -> Tuple[Any, ...]:
     return tuple(compact)
 
 
+def _grok_real_mode_selections(**values: Any) -> Dict[str, str]:
+    return {field: str(values.get(field) or "").strip() for field in GROK_REAL_MODE_ASSET_FIELDS}
+
+
+def _grok_real_mode_extra_prompts(**values: Any) -> Dict[int, str]:
+    extra: Dict[int, str] = {}
+    for field in GROK_REAL_MODE_EXTRA_PROMPT_FIELDS:
+        try:
+            index = int(field.rsplit("_", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        extra[index] = str(values.get(field) or "").strip()
+    return extra
+
+
 def _grok_media_option_text(kind: str, *, quality: str = "", duration: str = "", resolution: str = "") -> str:
     parts: List[str] = []
     if kind == "image" and quality:
@@ -497,53 +519,7 @@ class DiscordChannel(ChatChannel):
             ),
         )
 
-        async def grok_direct_gen_image_callback(
-            interaction,
-            prompt: str,
-            image1=None,
-            image2=None,
-            image3=None,
-            quality: str = "speed",
-            mode: str = GROK_MEDIA_DEFAULT_MODE,
-        ):
-            await self._handle_grok_image_interaction(
-                interaction,
-                prompt,
-                image_attachments=_attachment_tuple(image1, image2, image3),
-                quality=quality,
-                mode=mode,
-                direct=True,
-            )
-
-        grok_direct_gen_image_callback.__name__ = "discord_grok_direct_gen_image"
-        grok_direct_gen_image_callback.__annotations__ = {
-            "interaction": self.discord.Interaction,
-            "prompt": str,
-            "image1": Optional[self.discord.Attachment],
-            "image2": Optional[self.discord.Attachment],
-            "image3": Optional[self.discord.Attachment],
-            "quality": str,
-            "mode": str,
-        }
-        self._add_slash_command(
-            bot,
-            self.app_commands.Command(
-                name=GROK_DIRECT_GEN_IMAGE_COMMAND,
-                description="Grok direct image generation without prompt enhancement",
-                callback=self._with_grok_choices(
-                    self.app_commands.describe(
-                        prompt="Image prompt",
-                        image1="Reference image 1",
-                        image2="Reference image 2",
-                        image3="Reference image 3",
-                        quality="Image quality",
-                        mode="Prompt mode",
-                    )(grok_direct_gen_image_callback),
-                    quality=GROK_IMAGE_QUALITY_CHOICES,
-                    mode=GROK_MEDIA_MODE_CHOICES,
-                ),
-            ),
-        )
+        self._add_slash_command(bot, self._build_grok_direct_image_group())
 
         async def grok_gen_video_callback(
             interaction,
@@ -610,7 +586,161 @@ class DiscordChannel(ChatChannel):
             ),
         )
 
-        async def grok_direct_gen_video_callback(
+        self._add_slash_command(bot, self._build_grok_direct_video_group())
+
+    def _build_grok_direct_image_group(self):
+        group = self.app_commands.Group(
+            name=GROK_DIRECT_GEN_IMAGE_COMMAND,
+            description="Grok direct image generation without prompt enhancement",
+        )
+
+        async def normal_callback(
+            interaction,
+            prompt: str,
+            image1=None,
+            image2=None,
+            image3=None,
+            quality: str = "speed",
+        ):
+            await self._handle_grok_image_interaction(
+                interaction,
+                prompt,
+                image_attachments=_attachment_tuple(image1, image2, image3),
+                quality=quality,
+                mode=GROK_MEDIA_MODE_NORMAL,
+                direct=True,
+            )
+
+        normal_callback.__name__ = "discord_grok_direct_gen_image_normal"
+        normal_callback.__annotations__ = {
+            "interaction": self.discord.Interaction,
+            "prompt": str,
+            "image1": Optional[self.discord.Attachment],
+            "image2": Optional[self.discord.Attachment],
+            "image3": Optional[self.discord.Attachment],
+            "quality": str,
+        }
+        group.add_command(
+            self.app_commands.Command(
+                name=GROK_MEDIA_MODE_NORMAL,
+                description="Submit the prompt exactly as written",
+                callback=self._with_grok_choices(
+                    self.app_commands.describe(
+                        prompt="Image prompt",
+                        image1="Reference image 1",
+                        image2="Reference image 2",
+                        image3="Reference image 3",
+                        quality="Image quality",
+                    )(normal_callback),
+                    quality=GROK_IMAGE_QUALITY_CHOICES,
+                ),
+            )
+        )
+
+        async def real_callback(
+            interaction,
+            image1=None,
+            image2=None,
+            image3=None,
+            quality: str = "speed",
+            camera_angle: str = "",
+            scene: str = "",
+            time: str = "",
+            light_source: str = "",
+            color_tone: str = "",
+            nationality: str = "",
+            action: str = "",
+            clothing: str = "",
+            lower_state: str = "",
+            tattoo: str = "",
+            expression: str = "",
+            prompt_2: str = "",
+            prompt_3: str = "",
+        ):
+            await self._handle_grok_image_interaction(
+                interaction,
+                "",
+                image_attachments=_attachment_tuple(image1, image2, image3),
+                quality=quality,
+                mode=GROK_MEDIA_MODE_REAL,
+                direct=True,
+                real_mode_options={
+                    "selections": _grok_real_mode_selections(
+                        camera_angle=camera_angle,
+                        scene=scene,
+                        time=time,
+                        light_source=light_source,
+                        color_tone=color_tone,
+                        nationality=nationality,
+                        action=action,
+                        clothing=clothing,
+                        lower_state=lower_state,
+                        tattoo=tattoo,
+                        expression=expression,
+                    ),
+                    "extra_prompts": _grok_real_mode_extra_prompts(prompt_2=prompt_2, prompt_3=prompt_3),
+                },
+            )
+
+        real_callback.__name__ = "discord_grok_direct_gen_image_real"
+        real_callback.__annotations__ = {
+            "interaction": self.discord.Interaction,
+            "image1": Optional[self.discord.Attachment],
+            "image2": Optional[self.discord.Attachment],
+            "image3": Optional[self.discord.Attachment],
+            "quality": str,
+            "camera_angle": str,
+            "scene": str,
+            "time": str,
+            "light_source": str,
+            "color_tone": str,
+            "nationality": str,
+            "action": str,
+            "clothing": str,
+            "lower_state": str,
+            "tattoo": str,
+            "expression": str,
+            "prompt_2": str,
+            "prompt_3": str,
+        }
+        real_callback = self._with_grok_real_mode_autocomplete(real_callback)
+        group.add_command(
+            self.app_commands.Command(
+                name=GROK_MEDIA_MODE_REAL,
+                description="Compose a real-mode prompt from local materials",
+                callback=self._with_grok_choices(
+                    self.app_commands.describe(
+                        image1="Reference image 1",
+                        image2="Reference image 2",
+                        image3="Reference image 3",
+                        quality="Image quality",
+                        camera_angle="Material key or custom:<prompt>",
+                        scene="Material key or custom:<prompt>",
+                        time="Material key or custom:<prompt>",
+                        light_source="Material key or custom:<prompt>",
+                        color_tone="Material key or custom:<prompt>",
+                        nationality="Material key or custom:<prompt>",
+                        action="Material key or custom:<prompt>",
+                        clothing="Material key or custom:<prompt>",
+                        lower_state="Material key or custom:<prompt>",
+                        tattoo="Tattoo key, random, or custom:<prompt>; blank means no tattoo",
+                        expression="Material key or custom:<prompt>",
+                        prompt_2="Role prompt for reference image 2",
+                        prompt_3="Role prompt for reference image 3",
+                    )(real_callback),
+                    quality=GROK_IMAGE_QUALITY_CHOICES,
+                ),
+            )
+        )
+        return group
+
+    def _build_grok_direct_video_group(self):
+        group = self.app_commands.Group(
+            name=GROK_DIRECT_GEN_VIDEO_COMMAND,
+            description="Grok direct video generation",
+        )
+
+        async def normal_callback(
             interaction,
             prompt: str,
             image1=None,
@@ -622,7 +752,6 @@ class DiscordChannel(ChatChannel):
             image7=None,
             duration: str = GROK_VIDEO_DEFAULT_DURATION,
             resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
-            mode: str = GROK_MEDIA_DEFAULT_MODE,
         ):
             await self._handle_grok_video_interaction(
                 interaction,
@@ -630,12 +759,12 @@ class DiscordChannel(ChatChannel):
                 image_attachments=_attachment_tuple(image1, image2, image3, image4, image5, image6, image7),
                 duration=duration,
                 resolution=resolution,
-                mode=mode,
+                mode=GROK_MEDIA_MODE_NORMAL,
                 direct=True,
             )
 
-        grok_direct_gen_video_callback.__name__ = "discord_grok_direct_gen_video"
-        grok_direct_gen_video_callback.__annotations__ = {
+        normal_callback.__name__ = "discord_grok_direct_gen_video_normal"
+        normal_callback.__annotations__ = {
             "interaction": self.discord.Interaction,
             "prompt": str,
             "image1": Optional[self.discord.Attachment],
@@ -647,13 +776,11 @@ class DiscordChannel(ChatChannel):
             "image7": Optional[self.discord.Attachment],
             "duration": str,
             "resolution": str,
-            "mode": str,
         }
-        self._add_slash_command(
-            bot,
+        group.add_command(
             self.app_commands.Command(
-                name=GROK_DIRECT_GEN_VIDEO_COMMAND,
-                description="Grok direct video generation",
+                name=GROK_MEDIA_MODE_NORMAL,
+                description="Submit the prompt exactly as written",
                 callback=self._with_grok_choices(
                     self.app_commands.describe(
                         prompt="Video prompt",
@@ -666,14 +793,138 @@ class DiscordChannel(ChatChannel):
                         image7="Reference image 7",
                         duration="Video duration",
                         resolution="Video resolution",
-                        mode="Prompt mode",
-                    )(grok_direct_gen_video_callback),
+                    )(normal_callback),
                     duration=GROK_VIDEO_DURATION_CHOICES,
                     resolution=GROK_VIDEO_RESOLUTION_CHOICES,
-                    mode=GROK_MEDIA_MODE_CHOICES,
                 ),
-            ),
+            )
         )
+
+        async def real_callback(
+            interaction,
+            image1=None,
+            image2=None,
+            image3=None,
+            image4=None,
+            image5=None,
+            image6=None,
+            duration: str = GROK_VIDEO_DEFAULT_DURATION,
+            resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
+            camera_angle: str = "",
+            scene: str = "",
+            time: str = "",
+            light_source: str = "",
+            color_tone: str = "",
+            nationality: str = "",
+            action: str = "",
+            clothing: str = "",
+            lower_state: str = "",
+            tattoo: str = "",
+            expression: str = "",
+            prompt_2: str = "",
+            prompt_3: str = "",
+            prompt_4: str = "",
+            prompt_5: str = "",
+            prompt_6: str = "",
+        ):
+            await self._handle_grok_video_interaction(
+                interaction,
+                "",
+                image_attachments=_attachment_tuple(image1, image2, image3, image4, image5, image6),
+                duration=duration,
+                resolution=resolution,
+                mode=GROK_MEDIA_MODE_REAL,
+                direct=True,
+                real_mode_options={
+                    "selections": _grok_real_mode_selections(
+                        camera_angle=camera_angle,
+                        scene=scene,
+                        time=time,
+                        light_source=light_source,
+                        color_tone=color_tone,
+                        nationality=nationality,
+                        action=action,
+                        clothing=clothing,
+                        lower_state=lower_state,
+                        tattoo=tattoo,
+                        expression=expression,
+                    ),
+                    "extra_prompts": _grok_real_mode_extra_prompts(
+                        prompt_2=prompt_2,
+                        prompt_3=prompt_3,
+                        prompt_4=prompt_4,
+                        prompt_5=prompt_5,
+                        prompt_6=prompt_6,
+                    ),
+                },
+            )
+
+        real_callback.__name__ = "discord_grok_direct_gen_video_real"
+        real_callback.__annotations__ = {
+            "interaction": self.discord.Interaction,
+            "image1": Optional[self.discord.Attachment],
+            "image2": Optional[self.discord.Attachment],
+            "image3": Optional[self.discord.Attachment],
+            "image4": Optional[self.discord.Attachment],
+            "image5": Optional[self.discord.Attachment],
+            "image6": Optional[self.discord.Attachment],
+            "duration": str,
+            "resolution": str,
+            "camera_angle": str,
+            "scene": str,
+            "time": str,
+            "light_source": str,
+            "color_tone": str,
+            "nationality": str,
+            "action": str,
+            "clothing": str,
+            "lower_state": str,
+            "tattoo": str,
+            "expression": str,
+            "prompt_2": str,
+            "prompt_3": str,
+            "prompt_4": str,
+            "prompt_5": str,
+            "prompt_6": str,
+        }
+        real_callback = self._with_grok_real_mode_autocomplete(real_callback)
+        group.add_command(
+            self.app_commands.Command(
+                name=GROK_MEDIA_MODE_REAL,
+                description="Compose a real-mode prompt from local materials",
+                callback=self._with_grok_choices(
+                    self.app_commands.describe(
+                        image1="Reference image 1",
+                        image2="Reference image 2",
+                        image3="Reference image 3",
+                        image4="Reference image 4",
+                        image5="Reference image 5",
+                        image6="Reference image 6",
+                        duration="Video duration",
+                        resolution="Video resolution",
+                        camera_angle="Material key or custom:<prompt>",
+                        scene="Material key or custom:<prompt>",
+                        time="Material key or custom:<prompt>",
+                        light_source="Material key or custom:<prompt>",
+                        color_tone="Material key or custom:<prompt>",
+                        nationality="Material key or custom:<prompt>",
+                        action="Material key or custom:<prompt>",
+                        clothing="Material key or custom:<prompt>",
+                        lower_state="Material key or custom:<prompt>",
+                        tattoo="Tattoo key, random, or custom:<prompt>; blank means no tattoo",
+                        expression="Material key or custom:<prompt>",
+                        prompt_2="Role prompt for reference image 2",
+                        prompt_3="Role prompt for reference image 3",
+                        prompt_4="Role prompt for reference image 4",
+                        prompt_5="Role prompt for reference image 5",
+                        prompt_6="Role prompt for reference image 6",
+                    )(real_callback),
+                    duration=GROK_VIDEO_DURATION_CHOICES,
+                    resolution=GROK_VIDEO_RESOLUTION_CHOICES,
+                ),
+            )
+        )
+        return group
 
     def _add_slash_command(self, bot, command):
         guild = self._configured_command_guild()
@@ -695,6 +946,20 @@ class DiscordChannel(ChatChannel):
             decorated = self.app_commands.choices(
                 **{option_name: [self.app_commands.Choice(name=label, value=value) for label, value in values]}
             )(decorated)
+        return decorated
+
+    def _with_grok_real_mode_autocomplete(self, callback):
+        if not hasattr(self.app_commands, "autocomplete"):
+            return callback
+        decorated = callback
+        for field in GROK_REAL_MODE_ASSET_FIELDS:
+            async def autocomplete(_interaction, current: str, *, field_name=field):
+                return [
+                    self.app_commands.Choice(name=key, value=key)
+                    for key in material_choices(field_name, current, limit=25)
+                ]
+
+            decorated = self.app_commands.autocomplete(**{field: autocomplete})(decorated)
         return decorated
 
     async def _sync_commands(self):
@@ -731,11 +996,15 @@ class DiscordChannel(ChatChannel):
         quality: str = "speed",
         mode: str = GROK_MEDIA_DEFAULT_MODE,
         direct: bool = False,
+        real_mode_options: Optional[Dict[str, Any]] = None,
     ):
         if not self._is_allowed_interaction(interaction):
             await interaction.response.send_message("Discord channel is restricted to the configured administrator/channel.", ephemeral=True)
             return
-        prompt = _apply_grok_media_mode_prompt(prompt, mode)
+        if real_mode_options is None:
+            prompt = _apply_grok_media_mode_prompt(prompt, mode)
+        else:
+            prompt = str(prompt or "").strip()
 
         await interaction.response.defer(ephemeral=self.ephemeral_replies, thinking=True)
         context = self._build_interaction_context(interaction)
@@ -747,6 +1016,17 @@ class DiscordChannel(ChatChannel):
         )
         if image_paths is None:
             return
+        if real_mode_options is not None:
+            try:
+                prompt = compose_real_mode_prompt(
+                    media_type="image",
+                    image_count=len(image_paths),
+                    selections=real_mode_options.get("selections") or {},
+                    extra_prompts=real_mode_options.get("extra_prompts") or {},
+                )
+            except GrokRealModePromptError as exc:
+                await self._send_discord_message(f"Grok real-mode prompt failed: {exc}", context)
+                return
         image_value = _reference_image_value(image_paths)
 
         if direct:
@@ -780,11 +1060,15 @@ class DiscordChannel(ChatChannel):
         resolution: str = GROK_VIDEO_DEFAULT_RESOLUTION,
         mode: str = GROK_MEDIA_DEFAULT_MODE,
         direct: bool = False,
+        real_mode_options: Optional[Dict[str, Any]] = None,
     ):
         if not self._is_allowed_interaction(interaction):
             await interaction.response.send_message("Discord channel is restricted to the configured administrator/channel.", ephemeral=True)
             return
-        prompt = _apply_grok_media_mode_prompt(prompt, mode)
+        if real_mode_options is None:
+            prompt = _apply_grok_media_mode_prompt(prompt, mode)
+        else:
+            prompt = str(prompt or "").strip()
 
         await interaction.response.defer(ephemeral=self.ephemeral_replies, thinking=True)
         context = self._build_interaction_context(interaction)
@@ -796,6 +1080,17 @@ class DiscordChannel(ChatChannel):
         )
         if image_paths is None:
             return
+        if real_mode_options is not None:
+            try:
+                prompt = compose_real_mode_prompt(
+                    media_type="video",
+                    image_count=len(image_paths),
+                    selections=real_mode_options.get("selections") or {},
+                    extra_prompts=real_mode_options.get("extra_prompts") or {},
+                )
+            except GrokRealModePromptError as exc:
+                await self._send_discord_message(f"Grok real-mode prompt failed: {exc}", context)
+                return
         image_value = _reference_image_value(image_paths)
 
         if direct:
