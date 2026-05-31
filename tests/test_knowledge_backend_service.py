@@ -1,4 +1,5 @@
 import re
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -452,6 +453,79 @@ def test_visual_status_reports_latest_run_backend(tmp_path):
     assert status["latest_run"]["document_id"] == document_id
     assert status["latest_run"]["analysis_backend"] == "codex"
     assert status["analysis_backend"] == "codex"
+
+
+def test_visual_status_reads_wal_progress_for_background_runs(tmp_path):
+    sqlite_path = tmp_path / "knowledge.sqlite3"
+    config = KnowledgeBackendConfig.from_mapping(
+        {
+            "enabled": True,
+            "sqlite_path": str(sqlite_path),
+            "workspace_root": str(tmp_path),
+            "data_dir": str(tmp_path / "backend-data"),
+            "default_kb_id": "ucie_1_1",
+            "ingest": {"allowed_extensions": [".md"], "document_library_root": str(tmp_path)},
+            "vector_store": {"provider": "sqlite", "required": False},
+            "visual_analysis": {"enabled": True},
+        }
+    )
+    service = KnowledgeBackendService(config)
+    result = service.ingest_upload_bytes(
+        "ucie.md",
+        b"# UCIe\n\nFLIT transfer uses protocol-layer flow control.",
+        title="UCIe Test",
+    )
+    document = result["document"]
+    service.close()
+
+    with sqlite3.connect(sqlite_path) as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    writer = KnowledgeStorage(sqlite_path)
+    try:
+        writer.upsert_visual_prepare_state(
+            document_id=document["id"],
+            version_id=document["version_id"],
+            kb_id="ucie_1_1",
+            source_path=str(tmp_path / "ucie.md"),
+            total_pages=9,
+            next_page=8,
+            prepared_pages=7,
+            prepared_artifacts=1,
+            status="pending",
+            pipeline_version="visual-pipeline-v2",
+        )
+        writer.upsert_visual_artifact(
+            VisualArtifactCandidate(
+                id="visual-live-wal",
+                document_id=document["id"],
+                version_id=document["version_id"],
+                kb_id="ucie_1_1",
+                artifact_type="figure",
+                page=7,
+                label="Figure 1",
+                caption="Live WAL figure",
+                bbox={"x0": 1, "y0": 2, "x1": 10, "y1": 20},
+                image_hash="hash-live",
+                context_hash="context-live",
+                parser="test",
+                parser_confidence=0.95,
+            )
+        )
+        writer.create_visual_run(document_id=document["id"], kb_id="ucie_1_1", analysis_backend="codex")
+
+        live_service = KnowledgeBackendService(config)
+        try:
+            status = live_service.get_visual_stats(document_id=document["id"])
+        finally:
+            live_service.close()
+    finally:
+        writer.close()
+
+    assert status["prepare"]["prepared_pages"] == 7
+    assert status["prepare"]["prepared_artifacts"] == 1
+    assert status["stats"]["total"] == 1
+    assert status["latest_run"]["analysis_backend"] == "codex"
 
 
 def test_export_uses_documents_category_not_protocols(tmp_path):

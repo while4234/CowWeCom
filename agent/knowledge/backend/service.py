@@ -462,12 +462,16 @@ class KnowledgeBackendService:
         visual = dict(self.config.visual_analysis or {})
         visual.pop("mineru_api_url", None)
         if self.config.enabled and _visual_analysis_enabled(self.config):
+            storage = None
             try:
-                storage = self._backend._get_read_storage()
+                storage = self._open_live_read_storage()
                 if storage is not None:
                     visual["prepare"] = storage.visual_prepare_stats()
             except Exception:
                 pass
+            finally:
+                if storage is not None:
+                    storage.close()
         return BackendStatus(enabled=self.config.enabled, backend=self.config.vector_store.provider, visual_analysis=visual)
 
     def ingest_path(self, path: Path) -> IngestPathResult:
@@ -1527,65 +1531,74 @@ class KnowledgeBackendService:
             return {"ok": False, "status": "disabled", "message": "local knowledge backend is disabled"}
         if not _visual_analysis_enabled(self.config):
             return {"ok": False, "status": "disabled", "message": "knowledge_backend.visual_analysis.enabled is false"}
-        storage = self._backend._get_read_storage()
-        version_id = _current_document_version_id(storage, document_id) if storage is not None and document_id else None
-        stats = (
-            storage.visual_stats(
-                document_id=document_id,
-                kb_id=None if document_id else kb_id,
-                version_id=version_id,
+        storage = self._open_live_read_storage()
+        try:
+            version_id = _current_document_version_id(storage, document_id) if storage is not None and document_id else None
+            stats = (
+                storage.visual_stats(
+                    document_id=document_id,
+                    kb_id=None if document_id else kb_id,
+                    version_id=version_id,
+                )
+                if storage is not None
+                else {}
             )
-            if storage is not None
-            else {}
-        )
-        group_stats = (
-            storage.visual_group_stats(
-                document_id=document_id,
-                kb_id=None if document_id else kb_id,
-                version_id=version_id,
+            group_stats = (
+                storage.visual_group_stats(
+                    document_id=document_id,
+                    kb_id=None if document_id else kb_id,
+                    version_id=version_id,
+                )
+                if storage is not None
+                else {}
             )
-            if storage is not None
-            else {}
-        )
-        tile_stats = (
-            storage.visual_tile_stats(
-                document_id=document_id,
-                kb_id=None if document_id else kb_id,
-                version_id=version_id,
+            tile_stats = (
+                storage.visual_tile_stats(
+                    document_id=document_id,
+                    kb_id=None if document_id else kb_id,
+                    version_id=version_id,
+                )
+                if storage is not None
+                else {}
             )
-            if storage is not None
-            else {}
-        )
-        prepare = (
-            storage.visual_prepare_stats(
-                document_id=document_id,
-                kb_id=None if document_id else kb_id,
-                version_id=version_id,
+            prepare = (
+                storage.visual_prepare_stats(
+                    document_id=document_id,
+                    kb_id=None if document_id else kb_id,
+                    version_id=version_id,
+                )
+                if storage is not None
+                else {}
             )
-            if storage is not None
-            else {}
-        )
-        latest_run = (
-            storage.latest_visual_run(
-                document_id=document_id,
-                kb_id=None if document_id else kb_id,
+            latest_run = (
+                storage.latest_visual_run(
+                    document_id=document_id,
+                    kb_id=None if document_id else kb_id,
+                )
+                if storage is not None
+                else {}
             )
-            if storage is not None
-            else {}
-        )
-        return {
-            "ok": True,
-            "status": "success",
-            "document_id": document_id or "",
-            "kb_id": kb_id or "",
-            "prepare": prepare,
-            "stats": stats,
-            "group_stats": group_stats,
-            "latest_run": latest_run,
-            "analysis_backend": latest_run.get("analysis_backend", "") if latest_run else "",
-            **tile_stats,
-            **stats,
-        }
+            return {
+                "ok": True,
+                "status": "success",
+                "document_id": document_id or "",
+                "kb_id": kb_id or "",
+                "prepare": prepare,
+                "stats": stats,
+                "group_stats": group_stats,
+                "latest_run": latest_run,
+                "analysis_backend": latest_run.get("analysis_backend", "") if latest_run else "",
+                **tile_stats,
+                **stats,
+            }
+        finally:
+            if storage is not None:
+                storage.close()
+
+    def _open_live_read_storage(self) -> Optional[KnowledgeStorage]:
+        if not self.config.sqlite_path.is_file():
+            return None
+        return KnowledgeStorage(self.config.sqlite_path, read_only=True, immutable_read=False)
 
     def _process_visual_artifact(
         self,
