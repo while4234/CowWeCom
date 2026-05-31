@@ -545,6 +545,7 @@ CowWeCom/
 - 新增 ignored 的 Grok real-mode 素材工作簿与 JSON 缓存目录，管理员可按 sheet/A-B 列维护相机视角、场景、时间、光源、色调、国籍、姿势、动作、服装、下装状态、纹身和表情；启动时自动同步，运行时支持空值随机、缩写选择、`custom:` 自定义片段，纹身空值默认不插入、`随机多纹身` / `随机少纹身` 才随机抽取。
 - 新增 Grok real-mode 大随机素材表 `grok_real_mode_random_assets.xlsx`：空值默认从该表的完整素材池轮换抽取，不受 Discord 可见选项 25 项限制；随机状态写入 ignored 的 state JSON，减少连续抽中同一素材。
 - Grok real-mode 素材同步会给已有本地 Excel 追加缺失 sheet，例如新加的 `pose`，保留管理员已经填写的素材行。
+- 修复 Discord real-mode 素材自动补全回调签名，避免 Slash Command 注册阶段失败；重启后会重新同步 `/grok-direct-gen-image` 与 `/grok-direct-gen-video` 的 `normal` / `real` 子命令。
 
 ### 2026-05-30
 

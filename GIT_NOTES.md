@@ -362,6 +362,9 @@ Do not commit API keys, QR login material, credential JSON files, chat logs, coo
 - `2026-05-21` `b6d43bb` `feat: add OpenAI responses wire mode`: Added Responses API wire-mode support across OpenAI-compatible chat, streaming, tools, vision, voice gateway handling, config, and focused tests.
 - `2026-05-21` `ac69a90` `deploy: document windows weixin deepseek setup`: Initial local Windows Weixin deployment documentation and safe ignore policy.
 
+
+- `2026-05-31` pending commit `fix: restore discord grok real autocomplete`: Fixed the Discord real-mode material autocomplete callback factory so each callback has the two-parameter `(interaction, current)` signature required by discord.py. The previous keyword-only closure parameter caused Discord slash command registration to fail on restart, so `/grok-direct-gen-image` and `/grok-direct-gen-video` could not sync. Added a regression that records autocomplete decorators in the fake app_commands layer and checks both direct real subcommands expose autocomplete callbacks with the expected signature. Local ignored Grok real-mode workbooks were refreshed separately: visible `scene` has 24 ordinary scenes, random `scene` was filtered to normal real-life scenes and synced to cache, but these local data files remain ignored. Validation: `.\.venv\Scripts\python.exe -m py_compile channel\discord\discord_channel.py tests\test_discord_channel.py` passed; `.\.venv\Scripts\python.exe -m pytest -q tests\test_discord_channel.py` -> 26 passed, 1 warning; service restart loaded the caches and Discord logged `synced 19 slash command(s)` plus `logged in as 1505461721140166787`.
+
 ## Rollback Notes
 
 - To roll back the GitHub upload snapshot, inspect `git show af5f161` and `git show 40ee608`, then revert in reverse order if needed.

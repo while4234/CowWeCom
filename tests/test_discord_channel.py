@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import types
 import unittest
 from unittest.mock import patch
@@ -15,6 +16,7 @@ from channel.discord.discord_channel import (
     GROK_MEDIA_MODE_NORMAL,
     GROK_MEDIA_MODE_REAL,
     GROK_MEDIA_REAL_PROMPT,
+    GROK_REAL_MODE_ASSET_FIELDS,
     GROK_VIDEO_DEFAULT_DURATION,
     GROK_VIDEO_DEFAULT_RESOLUTION,
     PROJECT_DISCORD_COMMANDS,
@@ -270,6 +272,16 @@ class DiscordChannelTest(unittest.TestCase):
 
                 return decorate
 
+            @staticmethod
+            def autocomplete(**kwargs):
+                def decorate(callback):
+                    existing = dict(getattr(callback, "_autocomplete", {}))
+                    existing.update(kwargs)
+                    callback._autocomplete = existing
+                    return callback
+
+                return decorate
+
         class FakeTree:
             def __init__(self):
                 self.commands = []
@@ -318,6 +330,9 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertIn("tattoo", direct_image_real.callback.__annotations__)
         self.assertIn("prompt_2", direct_image_real.callback.__annotations__)
         self.assertEqual({choice.value for choice in direct_image_real.callback._choices["quality"]}, {"speed", "quality"})
+        self.assertTrue(set(GROK_REAL_MODE_ASSET_FIELDS).issubset(direct_image_real.callback._autocomplete))
+        image_scene_autocomplete = direct_image_real.callback._autocomplete["scene"]
+        self.assertEqual(list(inspect.signature(image_scene_autocomplete).parameters), ["_interaction", "current"])
 
         direct_video_group = next(command for command in bot.tree.commands if command.name == GROK_DIRECT_GEN_VIDEO_COMMAND)
         self.assertEqual({command.name for command in direct_video_group.commands}, {"normal", "real"})
@@ -342,6 +357,9 @@ class DiscordChannelTest(unittest.TestCase):
         self.assertEqual(duration_values, {"6s", "10s"})
         self.assertEqual(duration_choices["10s"], "10s (default)")
         self.assertEqual(resolution_values, {"480p", "720p"})
+        self.assertTrue(set(GROK_REAL_MODE_ASSET_FIELDS).issubset(direct_video_real.callback._autocomplete))
+        video_scene_autocomplete = direct_video_real.callback._autocomplete["scene"]
+        self.assertEqual(list(inspect.signature(video_scene_autocomplete).parameters), ["_interaction", "current"])
 
     def test_direct_video_interaction_uses_optional_image_and_selected_options(self):
         async def run():

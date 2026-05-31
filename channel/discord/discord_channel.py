@@ -961,14 +961,19 @@ class DiscordChannel(ChatChannel):
             return callback
         decorated = callback
         for field in GROK_REAL_MODE_ASSET_FIELDS:
-            async def autocomplete(_interaction, current: str, *, field_name=field):
-                return [
-                    self.app_commands.Choice(name=key, value=key)
-                    for key in material_choices(field_name, current, limit=25)
-                ]
-
-            decorated = self.app_commands.autocomplete(**{field: autocomplete})(decorated)
+            decorated = self.app_commands.autocomplete(
+                **{field: self._grok_real_mode_autocomplete_callback(field)}
+            )(decorated)
         return decorated
+
+    def _grok_real_mode_autocomplete_callback(self, field_name: str):
+        async def autocomplete(_interaction, current: str):
+            return [
+                self.app_commands.Choice(name=key, value=key)
+                for key in material_choices(field_name, current, limit=25)
+            ]
+
+        return autocomplete
 
     async def _sync_commands(self):
         guild = self._configured_command_guild()
